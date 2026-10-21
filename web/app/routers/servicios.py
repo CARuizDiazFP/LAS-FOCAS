@@ -1455,6 +1455,178 @@ async def servicios_trackings_esperados_web(
     return JSONResponse({"ok": True, "trackings_esperados": body.cantidad})
 
 
+class PosicionVigenteDeclararRequestModel(BaseModel):
+    """Payload para declarar conectores de ODF como posición vigente del Servicio, en lote."""
+
+    conectores_n_id: list[int] = Field(
+        min_length=1, max_length=8, description="Conectores (`cromo_odf_conectores.n_id`) a declarar"
+    )
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+class PosicionVigenteRetirarRequestModel(BaseModel):
+    """Payload para retirar a mano la posición vigente de un conector."""
+
+    conector_n_id: int = Field(description="Conector declarado a retirar")
+    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
+
+
+def _serializar_posicion_declarada(d: Any, aviso: Any) -> dict[str, Any]:
+    """Una posición declarada vigente. `valida`/`aviso` salen de `validar_en_db`: el inventario
+    ingerido ya no la sostiene (la corrida de tracking la va a retirar), pero acá sólo se informa."""
+    from core.services.cromo.servicio_posicion_vigente import texto_aviso
+
+    return {
+        "id": d.id,
+        "conector_n_id": d.conector_n_id,
+        "posicion": d.posicion,
+        "odf_n_id": d.odf_n_id,
+        "odf_nombre": d.odf_nombre,
+        "bandeja_n_id": d.bandeja_n_id,
+        "bandeja_nombre": d.bandeja_nombre,
+        "numero_conector": d.numero_conector,
+        "pelo_n_id_declarado": d.pelo_declarado,
+        "pelo_n_id_actual": d.pelo_actual,
+        "pelos_candidatos": list(d.pelos_candidatos),
+        "declarado_por": d.declarado_por,
+        "declarado_en": d.declarado_en.isoformat() if d.declarado_en else None,
+        "valida": aviso is None,
+        "aviso": texto_aviso(aviso) if aviso is not None else None,
+        "codigo_aviso": aviso.codigo if aviso is not None else None,
+    }
+
+
+def _serializar_posicion_posible(p: Any, posibles: Any, declarados: set[int]) -> dict[str, Any]:
+    """Una posición posible para el selector. `servicio_activo_ajeno` es otro servicio Activo cuyo
+    pelo también matchea (sólo puede pasar si matchea a este también: si no, el filtro compartido
+    ya lo sacó de la lista)."""
+    from core.services.cromo.servicio_posicion_vigente import par_sugerido
+
+    return {
+        "conector_n_id": p.conector_n_id,
+        "posicion": p.posicion,
+        "odf_n_id": p.odf_n_id,
+        "odf_nombre": p.odf_nombre,
+        "odf_clase": p.odf_clase,
+        "bandeja_n_id": p.bandeja_n_id,
+        "bandeja_nombre": p.bandeja_nombre,
+        "numero_conector": p.numero_conector,
+        "pelo_n_id": p.pelo_n_id,
+        "numero_pelo": p.numero_pelo,
+        "pelos_candidatos": list(p.pelos_candidatos),
+        "cable_n_id": p.cable_n_id,
+        "cable_nombre": p.cable_nombre,
+        "etiqueta_pelo": p.etiqueta_pelo,
+        "etiqueta_ajena": p.etiqueta_ajena,
+        "estado_pelo": p.estado_pelo,
+        "servicio_resuelto": p.servicio_resuelto,
+        "servicio_id_historico": p.servicio_id_historico,
+        "patch_conector_n_id": p.patch_conector_n_id,
+        "por_resuelto": p.por_resuelto,
+        "por_pelo": p.por_pelo,
+        "servicio_activo_ajeno": p.servicio_activo_ajeno,
+        "par_sugerido_n_id": par_sugerido(p, posibles),
+        "declarada": p.conector_n_id in declarados,
+    }
+
+
+def _serializar_declaradas(declaradas: Any) -> list[dict[str, Any]]:
+    from core.services.cromo.servicio_posicion_vigente import validar_en_db
+
+    avisos = {a.declaracion_id: a for a in validar_en_db(declaradas)}
+    return [_serializar_posicion_declarada(d, avisos.get(d.id)) for d in declaradas]
+
+
+@router.get("/api/admin/infra/servicios-odf/{servicio_id}/posicion-vigente")
+async def servicios_posicion_vigente_listar_web(request: Request, servicio_id: int) -> JSONResponse:
+    """Posiciones vigentes declaradas del Servicio y las posibles para el selector. Sólo informa:
+    no retira nada (retirar es efecto de la corrida de tracking). Admin."""
+    from core.services.cromo import servicio_posicion_vigente as pv
+    from db.session import AsyncSessionLocal
+
+    _require_admin(request)
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        declaradas = await pv.listar_declaradas(sesion, servicio_id)
+        posibles = await pv.posiciones_posibles(sesion, servicio_id)
+    declarados = {d.conector_n_id for d in declaradas}
+    return JSONResponse(
+        {
+            "declaradas": _serializar_declaradas(declaradas),
+            "posibles": [_serializar_posicion_posible(p, posibles, declarados) for p in posibles],
+        }
+    )
+
+
+@router.post("/api/admin/infra/servicios-odf/{servicio_id}/posicion-vigente")
+async def servicios_posicion_vigente_declarar_web(
+    request: Request, servicio_id: int, body: PosicionVigenteDeclararRequestModel
+) -> JSONResponse:
+    """Declara conectores como posición vigente del Servicio (todo o nada; los ya vigentes quedan).
+    El tracking sale de ahí: sus caminos son VIGENTE y los tramos calculados pasan a ADICIONAL.
+    409 si algún conector no es posición posible o no tiene pelo. Admin."""
+    from core.services.cromo import servicio_posicion_vigente as pv
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_posicion_vigente_declarar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        try:
+            declaradas = await pv.declarar(
+                sesion, servicio_id, body.conectores_n_id, usuario=username
+            )
+        except pv.PosicionNoValida as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+    logger.info(
+        "action=cromo_posicion_vigente evento=declarar user=%s servicio_id=%s conectores=%s",
+        username,
+        servicio_id,
+        body.conectores_n_id,
+    )
+    return JSONResponse({"ok": True, "declaradas": _serializar_declaradas(declaradas)})
+
+
+@router.post("/api/admin/infra/servicios-odf/{servicio_id}/posicion-vigente/retirar")
+async def servicios_posicion_vigente_retirar_web(
+    request: Request, servicio_id: int, body: PosicionVigenteRetirarRequestModel
+) -> JSONResponse:
+    """Retira a mano (`MANUAL`) la posición vigente de un conector; queda el historial. 404 si el
+    conector no tenía declaración vigente. Admin."""
+    from core.services.cromo import servicio_posicion_vigente as pv
+    from db.session import AsyncSessionLocal
+
+    username = _require_admin(request)
+    if not _validar_csrf(request, body.csrf_token, "cromo_posicion_vigente_retirar", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    async with AsyncSessionLocal() as sesion:
+        if not await _servicio_existe(sesion, servicio_id):
+            return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
+        if not await pv.retirar_manual(sesion, servicio_id, body.conector_n_id, usuario=username):
+            return JSONResponse(
+                {
+                    "error": (
+                        f"El conector {body.conector_n_id} no tenía una posición vigente "
+                        "declarada para este Servicio."
+                    )
+                },
+                status_code=404,
+            )
+        declaradas = await pv.listar_declaradas(sesion, servicio_id)
+    logger.info(
+        "action=cromo_posicion_vigente evento=retirar_manual user=%s servicio_id=%s conector=%s",
+        username,
+        servicio_id,
+        body.conector_n_id,
+    )
+    return JSONResponse({"ok": True, "declaradas": _serializar_declaradas(declaradas)})
+
+
 class CaminoNormalizarRequestModel(BaseModel):
     """Payload para normalizar las inconsistencias de la auditoría de un camino óptico."""
 

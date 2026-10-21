@@ -2188,11 +2188,19 @@ async def cromo_camino_tracking_txt_web(
     servicio_id: int,
     pelo_n_id: Optional[int] = None,
     tramo: Optional[int] = Query(default=None, ge=1),
+    adicional: Optional[int] = Query(default=None, ge=1),
 ) -> Response:
     """Tracking óptico de un Servicio, generado desde Cromo, en el formato `.txt` legacy.
 
     `tramo` (opcional, con `pelo_n_id`) es el número de tramo que ya conoce el frontend desde
-    `/caminos`: el archivo se llama `{at62} CROMO T{n} pelo {n_id}.txt`, igual que en Slack.
+    `/caminos`: el archivo se llama `{servicio} CROMO T{n} pelo {n_id}.txt`, igual que en Slack.
+    `adicional` es lo mismo para un camino adicional (`{servicio} CROMO A{n} pelo {n_id}.txt`); los
+    dos juntos son 400.
+
+    El pelo puede ser una semilla etiquetada del Servicio o el de una de sus posiciones (posible o
+    declarada vigente, `servicio_posicion_vigente`): el 93150 va por pelos con la etiqueta 44649.
+    Un pelo que sólo es de posición se nombra siempre con el número del Servicio, nunca con el
+    at.62 (el de esos pelos es `4649`), y si no está declarado se cachea sin servicio.
 
     `_require_auth` con el mismo criterio que `/api/infra/tracking/{ruta_id}/download`, que ya
     entrega el tracking completo de una ruta a cualquier usuario autenticado.
@@ -2207,9 +2215,19 @@ async def cromo_camino_tracking_txt_web(
         pelo_pertenece_al_servicio,
         semillas_por_defecto,
     )
+    from core.services.cromo.camino_optico_txt import (
+        nombre_archivo_adicional,
+        nombre_archivo_tracking,
+    )
     from core.services.cromo.client import CromoClient, CromoClientError
     from core.services.cromo.config import get_cromo_config
     from core.services.cromo import tracking_service
+    from core.services.cromo.servicio_posicion_vigente import (
+        listar_declaradas,
+        pelo_es_de_posicion,
+        pelos_de_posiciones,
+        posiciones_posibles,
+    )
     from core.services.cromo.tracking_service import (
         TrackingNoDisponible,
         nombre_archivo_tramo,
@@ -2219,6 +2237,10 @@ async def cromo_camino_tracking_txt_web(
     from db.session import AsyncSessionLocal
 
     usuario, _rol = _require_auth(request)
+    if tramo is not None and adicional is not None:
+        return JSONResponse(
+            {"error": "Pedí un tramo o un adicional, no los dos a la vez."}, status_code=400
+        )
 
     try:
         async with AsyncSessionLocal() as sesion:
@@ -2228,29 +2250,29 @@ async def cromo_camino_tracking_txt_web(
             # El universo real, sin el tope de `listar_pelos_semilla`. Es lo que decide tanto si
             # hay camino posible como si el nombre del archivo tiene que distinguir el pelo.
             total_pelos, _con_odf = await contar_semillas(sesion, servicio_id)
-            if total_pelos == 0:
-                return JSONResponse(
-                    {
-                        "error": (
-                            "El Servicio no tiene ningún pelo en Cromo, así que no hay camino "
-                            "que resolver."
-                        ),
-                        "estado": ESTADO_SIN_SEMILLA,
-                    },
-                    status_code=409,
-                )
+            # El pelo no tiene la etiqueta del Servicio: es de una de sus posiciones. Se nombra con
+            # el número del Servicio y, si no está declarado, se cachea sin servicio (la traza y la
+            # API v1 leen esa columna).
+            solo_de_posicion = False
+            servicio_cache: Optional[int] = servicio_id
 
             if pelo_n_id is not None:
                 # Pertenencia por consulta directa, NO contra la lista truncada de semillas: con
                 # el tope de 20 sobre cientos de pelos matcheados, un pelo legítimo que el propio
                 # selector acababa de ofrecer se rechazaba como ajeno (bug real, Servicio 93154).
+                # Va antes del 409 "sin semilla": un pelo ajeno pedido desde un Servicio sin
+                # semillas etiquetadas (el 42352 pidiendo uno del 42351) es 400.
                 if not await pelo_pertenece_al_servicio(sesion, servicio_id, pelo_n_id):
-                    return JSONResponse(
-                        {"error": f"El pelo {pelo_n_id} no pertenece al Servicio {servicio_id}."},
-                        status_code=400,
-                    )
+                    if not await pelo_es_de_posicion(sesion, servicio_id, pelo_n_id):
+                        return JSONResponse(
+                            {"error": f"El pelo {pelo_n_id} no pertenece al Servicio {servicio_id}."},
+                            status_code=400,
+                        )
+                    solo_de_posicion = True
+                    declarados = {d.pelo_declarado for d in await listar_declaradas(sesion, servicio_id)}
+                    servicio_cache = servicio_id if pelo_n_id in declarados else None
                 elegido = pelo_n_id
-            else:
+            elif total_pelos > 0:
                 # Sin pedido explícito, la posición de ODF del Servicio: mismo criterio que el
                 # default del selector, así que pedir el `.txt` "a secas" baja lo mismo que el
                 # botón de la pantalla.
@@ -2258,10 +2280,31 @@ async def cromo_camino_tracking_txt_web(
                     sesion, servicio_id, priorizar_conector=True
                 )
                 elegido = semillas_por_defecto(semillas)[0].pelo_n_id
+            else:
+                # Sin semillas etiquetadas: la posición vigente declarada o, si no hay, la primera
+                # posición posible. Sin ninguna de las dos no hay camino que resolver.
+                declarados_lista = [d.pelo_declarado for d in await listar_declaradas(sesion, servicio_id)]
+                candidatos = declarados_lista or pelos_de_posiciones(
+                    await posiciones_posibles(sesion, servicio_id)
+                )
+                if not candidatos:
+                    return JSONResponse(
+                        {
+                            "error": (
+                                "El Servicio no tiene ningún pelo en Cromo, así que no hay camino "
+                                "que resolver."
+                            ),
+                            "estado": ESTADO_SIN_SEMILLA,
+                        },
+                        status_code=409,
+                    )
+                elegido = candidatos[0]
+                solo_de_posicion = True
+                servicio_cache = servicio_id if declarados_lista else None
 
             async with CromoClient(config=get_cromo_config()) as cliente:
                 tracking = await obtener_tracking(
-                    cliente, sesion, servicio_id=servicio_id, pelo_n_id=elegido
+                    cliente, sesion, servicio_id=servicio_cache, pelo_n_id=elegido
                 )
             if not tracking.desde_cache:
                 # Evidencia para el árbitro, sólo del camino recién traído de Cromo. Nunca cambia
@@ -2288,7 +2331,9 @@ async def cromo_camino_tracking_txt_web(
                     )
             numero_servicio = (
                 await tracking_service.numero_del_servicio(sesion, servicio_id)
-                if tramo is not None and pelo_n_id is not None
+                if adicional is not None
+                or solo_de_posicion
+                or (tramo is not None and pelo_n_id is not None)
                 else None
             )
     except TrackingNoDisponible as exc:
@@ -2301,10 +2346,19 @@ async def cromo_camino_tracking_txt_web(
     # carpeta de Descargas y se pierde cuál es cuál.
     # El nombre de tramo lleva el número del Servicio en LAS-FOCAS, no el at.62 del pelo (que Cromo
     # a veces trae mal); el at.62 del nombre base queda sólo como respaldo.
-    base_at62 = re.match(r"^(\d+) CROMO", tracking.nombre_archivo)
-    if tramo is not None and pelo_n_id is not None:
+    # Un pelo que sólo es de posición nunca cae al at.62: es justamente el que está mal.
+    base_at62 = None if solo_de_posicion else re.match(r"^(\d+) CROMO", tracking.nombre_archivo)
+    if adicional is not None:
+        nombre = nombre_archivo_adicional(numero_servicio, adicional, tracking.pelo_n_id)
+    elif tramo is not None and pelo_n_id is not None:
         nombre = nombre_archivo_tramo(
             numero_servicio or (base_at62.group(1) if base_at62 else None), tramo, tracking.pelo_n_id
+        )
+    elif solo_de_posicion:
+        nombre = nombre_distinguible(
+            nombre_archivo_tracking(numero_servicio, tracking.pelo_n_id),
+            tracking.pelo_n_id,
+            distinguir=True,
         )
     else:
         nombre = nombre_distinguible(
@@ -2361,13 +2415,24 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
     `odfs` son TODAS las ODF que toca el camino (extremos e intermedias) con `odf_n_id` de linaje,
     `odf_nombre` y `odf_clase`: la UI ofrece confirmar cualquiera, también las de un residual.
 
+    Posición vigente (aditivo): cada tramo suma `rol` (`VIGENTE` si sale de la posición declarada,
+    `TRAMO` si no) y `completo` (ODF en los dos extremos). `adicionales[{n, pelo_n_id,
+    nombre_archivo, pelos_en_camino, extremos, odfs, desde_cache, completo, origen, posiciones,
+    etiquetas}]` son recorridos reales del Servicio que no son por donde va (`n` es el `A{n}` del
+    `.txt`; `origen` es `DECLARADO`, `ETIQUETADO` o `POSICION`; `posiciones`, `"O-1252871-1:1,2"`;
+    `etiquetas`, las de sus pelos). `caminos_resueltos` = tramos + adicionales (lo que baja `track
+    N full`). `posicion_vigente` es `{declarada, aplicada, posiciones, avisos[{conector_n_id,
+    posicion, codigo, retirada, texto}]}`: `aplicada=False` con declaración quiere decir que esta
+    corrida usó el cálculo automático.
+
     Existe porque la preselección de `/pelos` es SQL local y sin ODF no puede saber qué pelos son
     del mismo hilo: el 94673 (sin ODF en sus extremos) preseleccionaba uno solo de sus 2 caminos.
     """
     from core.services.cromo.client import CromoClient, CromoClientError
     from core.services.cromo.config import get_cromo_config
     from core.services.cromo.servicio_odf_confirmacion import datos_de_odfs, n_ids_de_odfs
-    from core.services.cromo.tracking_service import trackings_del_servicio
+    from core.services.cromo.servicio_posicion_vigente import etiqueta_posiciones, texto_aviso
+    from core.services.cromo.tracking_service import es_camino_completo, trackings_del_servicio
     from db.session import AsyncSessionLocal
 
     usuario, _rol = _require_auth(request)
@@ -2378,9 +2443,9 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
             async with CromoClient(config=get_cromo_config()) as cliente:
                 resultado = await trackings_del_servicio(cliente, sesion, servicio_id)
             # Los caminos pueden traer el id de versión de la ODF: se expone siempre el n_id. Entran
-            # las de los extremos y las intermedias (`odfs`), de tramos y de residuales.
+            # las de los extremos y las intermedias (`odfs`), de tramos, adicionales y residuales.
             ids_odf: list[int] = []
-            for t in (*resultado.tramos, *resultado.residuales):
+            for t in (*resultado.tramos, *resultado.adicionales, *resultado.residuales):
                 if not t.extremos:
                     continue
                 ids_odf.extend(e.odf_id for e in t.extremos.extremos if e.odf_id is not None)
@@ -2396,12 +2461,15 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
 
     logger.info(
-        "action=cromo_camino_caminos user=%s servicio_id=%s tramos=%s residuales=%s completo=%s",
+        "action=cromo_camino_caminos user=%s servicio_id=%s tramos=%s adicionales=%s residuales=%s "
+        "completo=%s posicion_aplicada=%s",
         usuario,
         servicio_id,
         len(resultado.tramos),
+        len(resultado.adicionales),
         len(resultado.residuales),
         resultado.completo,
+        resultado.posicion.aplicada,
     )
 
     def _extremo(e: Any) -> Optional[dict[str, Any]]:
@@ -2450,12 +2518,52 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
         }
 
     tramos = [
-        {"n": n, **_camino(t), "desde_cache": t.desde_cache}
+        {
+            "n": n,
+            **_camino(t),
+            "desde_cache": t.desde_cache,
+            "rol": t.rol,
+            "completo": es_camino_completo(t),
+        }
         for n, t in enumerate(resultado.tramos, start=1)
     ]
+    # `info_adicionales` viene alineada con `adicionales`; se cruza por pelo por si no lo estuviera.
+    info_por_pelo = {i.pelo_n_id: i for i in resultado.info_adicionales}
+
+    def _adicional(n: int, t: Any) -> dict[str, Any]:
+        info = info_por_pelo.get(t.pelo_n_id)
+        return {
+            "n": n,
+            **_camino(t),
+            "desde_cache": t.desde_cache,
+            "completo": es_camino_completo(t),
+            "origen": info.origen if info else None,
+            "posiciones": etiqueta_posiciones(info.posiciones) if info else "",
+            "etiquetas": list(info.etiquetas) if info else [],
+        }
+
+    adicionales = [_adicional(n, t) for n, t in enumerate(resultado.adicionales, start=1)]
+    posicion = resultado.posicion
     return JSONResponse(
         {
             "tramos": tramos,
+            "adicionales": adicionales,
+            "caminos_resueltos": len(tramos) + len(adicionales),
+            "posicion_vigente": {
+                "declarada": bool(posicion.declaradas),
+                "aplicada": posicion.aplicada,
+                "posiciones": posicion.etiqueta,
+                "avisos": [
+                    {
+                        "conector_n_id": a.conector_n_id,
+                        "posicion": a.posicion,
+                        "codigo": a.codigo,
+                        "retirada": a.retirada,
+                        "texto": texto_aviso(a),
+                    }
+                    for a in posicion.avisos
+                ],
+            },
             "residuales": [_camino(t) for t in resultado.residuales],
             "esperados_declarados": resultado.esperados_declarados,
             "odf_confirmadas": resultado.odf_confirmadas,

@@ -10,7 +10,7 @@ con uno de los tres estados posibles.
 Desde 2026-08-13 también escucha menciones directas (`app_mention`) para los comandos de Cables/
 Servicios de Cromo especificados en `docs/slack_app_cables.md` — misma Slack App/tokens que el
 listener de ingresos, sólo un evento distinto de Slack. Implementados: "track <id de servicio>",
-"Info cable <nombre>",
+"track <id> full" y "track odf <patchera>:<conectores>" (2026-10-21), "Info cable <nombre>",
 "Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>"; desde la Task 8 del plan "Corrección
 ingresos + Servicios" (2026-09-23) también "Servicios <nombre>" y "Servicios <nombre> B<N>" (IDs de
 servicio únicos con marca de frescura PROV, ver `cable_info.py`) — y desde la Task 9 del mismo plan,
@@ -88,7 +88,12 @@ from modules.slack_baneo_notifier.cable_info import (
     filtrar_servicios,
     resolver_tubo_por_numero,
 )
-from modules.slack_baneo_notifier.tracking_servicio import extraer_comando_track
+from modules.slack_baneo_notifier.tracking_servicio import (
+    ComandoTrackOdf,
+    extraer_comando_track,
+    extraer_comando_track_full,
+    extraer_comando_track_odf,
+)
 from modules.slack_baneo_notifier.camara_search import (
     AmbiguousSearchError,
     detectar_multi_bot,
@@ -1164,9 +1169,21 @@ class IngresoListener:
         thread_ts = event.get("thread_ts") or event.get("ts")
         channel = event.get("channel", "")
 
+        # Familia "track", en orden odf → full → normal (las regex se excluyen entre sí: anclan con
+        # `$` y "odf" no es un número), y toda la familia antes de los parsers golosos de cable.
+        comando_odf = extraer_comando_track_odf(texto)
+        if comando_odf is not None:
+            self._handle_track_odf(comando_odf, client, channel, thread_ts)
+            return
+
+        numero_full = extraer_comando_track_full(texto)
+        if numero_full is not None:
+            self._handle_track(numero_full, client, channel, thread_ts, full=True)
+            return
+
         numero_track = extraer_comando_track(texto)
         if numero_track is not None:
-            self._handle_track(numero_track, client, channel, thread_ts)
+            self._handle_track(numero_track, client, channel, thread_ts, full=False)
             return
 
         comando_buffer = extraer_comando_cable_buffer(texto)
@@ -1224,9 +1241,10 @@ class IngresoListener:
             session.close()
 
     def _handle_track(
-        self, numero: str, client: Any, channel: str, thread_ts: str
+        self, numero: str, client: Any, channel: str, thread_ts: str, *, full: bool = False
     ) -> None:
         """"track <id>" — sube al hilo los `.txt` de tracking del Servicio, generados desde Cromo.
+        Con `full=True` ("track <id> full") sube también los caminos adicionales.
 
         El ID puede ser el vigente, el de primera línea o uno histórico: `resolver_servicio` mira
         las tres identidades.
@@ -1266,18 +1284,19 @@ class IngresoListener:
         finally:
             session.close()
 
+        que = "el tracking completo (`full`)" if full else "el tracking"
         client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
             text=(
-                f":satellite: Generando el tracking de `{id_vigente}` — {cliente_nombre}. "
+                f":satellite: Generando {que} de `{id_vigente}` — {cliente_nombre}. "
                 "Si no está en caché puede tardar un rato."
             ),
             mrkdwn=True,
         )
 
         try:
-            resultado = generar_trackings(servicio_pk)
+            resultado = generar_trackings(servicio_pk, full=full)
         except Exception as exc:
             logger.error("Error generando tracking de %s: %s", servicio_pk, exc, exc_info=True)
             client.chat_postMessage(
@@ -1320,6 +1339,71 @@ class IngresoListener:
         aviso = mensaje_resumen(resultado)
         if aviso:
             client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=aviso, mrkdwn=True)
+
+    def _handle_track_odf(
+        self, comando: ComandoTrackOdf, client: Any, channel: str, thread_ts: str
+    ) -> None:
+        """"track odf <patchera>:<conectores>" — sube al hilo el `.txt` de cada posición pedida,
+        con un comentario que dice de qué Servicio es el conector y qué etiqueta lleva el pelo.
+
+        No es el tracking de un Servicio: no audita huérfanos ni registra evidencia. Una patchera
+        que está en varias bandejas se lista y no se elige; los conectores sin pelo o sin camino se
+        avisan uno por uno.
+        """
+        from modules.slack_baneo_notifier.tracking_servicio import (
+            ESTADO_PATCHERA_AMBIGUA,
+            ESTADO_PATCHERA_NO_ENCONTRADA,
+            generar_tracking_posiciones,
+            texto_candidatas,
+            texto_posicion_sin_archivo,
+            texto_uso_track_odf,
+        )
+
+        def responder(texto: str) -> None:
+            client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=texto, mrkdwn=True)
+
+        if comando.error is not None:
+            responder(texto_uso_track_odf(comando.error))
+            return
+
+        pedido = f"{comando.patchera}:{','.join(str(n) for n in comando.conectores)}"
+        responder(f":satellite: Buscando `{pedido}` en Cromo. Si no está en caché puede tardar un rato.")
+        try:
+            resultado = generar_tracking_posiciones(comando.patchera, comando.conectores)
+        except Exception as exc:
+            logger.error("Error generando track odf %s: %s", pedido, exc, exc_info=True)
+            responder(f":x: No se pudo generar el tracking de `{pedido}`.")
+            return
+
+        if resultado.estado == ESTADO_PATCHERA_NO_ENCONTRADA:
+            responder(f":mag: No encontré la patchera `{comando.patchera}` en las ODF ingeridas de Cromo.")
+            return
+        if resultado.estado == ESTADO_PATCHERA_AMBIGUA:
+            responder(texto_candidatas(comando.patchera, resultado.candidatas))
+            return
+
+        # Con la bandeja resuelta se muestra su nombre real ("0-…" tipeado → "O-…" de Cromo).
+        patchera = resultado.bandeja.bandeja_nombre if resultado.bandeja else comando.patchera
+        for posicion in resultado.posiciones:
+            if posicion.archivo is None:
+                aviso = texto_posicion_sin_archivo(patchera, posicion)
+                if aviso:
+                    responder(aviso)
+                continue
+            try:
+                client.files_upload_v2(
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    content=posicion.archivo.contenido,
+                    filename=posicion.archivo.nombre,
+                    title=posicion.archivo.nombre,
+                    initial_comment=posicion.descripcion,
+                )
+            except Exception as exc:
+                logger.error("Error subiendo %s: %s", posicion.archivo.nombre, exc, exc_info=True)
+                responder(f":x: No pude subir `{posicion.archivo.nombre}`.")
+        if resultado.mensaje:
+            responder(f":warning: {resultado.mensaje}")
 
     def _handle_cable_buffer(
         self, comando: tuple[str, str, int], client: Any, channel: str, thread_ts: str

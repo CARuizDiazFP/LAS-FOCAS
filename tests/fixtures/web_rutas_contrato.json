@@ -394,6 +394,27 @@
   {
     "tipo": "http",
     "metodo": "GET",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/posicion-vigente",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/posicion-vigente",
+    "endpoint": "servicios_posicion_vigente_listar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/posicion-vigente",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/posicion-vigente",
+    "endpoint": "servicios_posicion_vigente_declarar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/posicion-vigente/retirar",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/posicion-vigente/retirar",
+    "endpoint": "servicios_posicion_vigente_retirar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
     "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/senal-direccion",
     "muestra": "/api/admin/infra/servicios-odf/muestra/senal-direccion",
     "endpoint": "servicios_sin_odf_senal_direccion_web"
