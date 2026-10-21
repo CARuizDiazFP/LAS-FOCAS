@@ -69,7 +69,8 @@ _MEDICIONES: list[dict] | None = None
 
 @contextlib.contextmanager
 def _medicion(nombre: str):
-    """Mide tiempo y sentencias SQL de un bloque; cede un dict para que el llamador agregue datos."""
+    """Mide tiempo y sentencias SQL de un bloque; cede el registro para agregarle datos DESPUÉS del bloque
+    (fuera del tiempo medido)."""
     if _MEDICIONES is None:
         yield {}
         return
@@ -84,24 +85,20 @@ def _medicion(nombre: str):
         conteo[statement] += 1
         ejemplos.setdefault(statement, repr(parameters))
 
-    info: dict = {}
+    registro: dict = {"nombre": nombre}
     event.listen(engine, "before_cursor_execute", _contar)
     inicio = time.perf_counter()
     try:
-        yield info
+        yield registro
     finally:
         segundos = time.perf_counter() - inicio
         event.remove(engine, "before_cursor_execute", _contar)
-        _MEDICIONES.append({
-            "nombre": nombre,
-            "segundos": round(segundos, 3),
-            "sentencias": sum(conteo.values()),
-            **info,
-            "mas_repetidas": [
-                {"veces": n, "sql": sql, "parametros_ejemplo": ejemplos[sql]}
-                for sql, n in conteo.most_common(TOP_SENTENCIAS)
-            ],
-        })
+        registro["segundos"] = round(segundos, 3)
+        registro["sentencias"] = sum(conteo.values())
+        registro["mas_repetidas"] = [
+            {"veces": n, "sql": sql, "parametros_ejemplo": ejemplos[sql]} for sql, n in conteo.most_common(TOP_SENTENCIAS)
+        ]
+        _MEDICIONES.append(registro)
 
 
 def _abortar(mensaje: str) -> None:
@@ -184,17 +181,18 @@ def _xlsx_crudo(contenido: bytes) -> str:
 
 def _correr_smart(cliente, resultados: dict[str, str]) -> None:
     for nombre, cuerpo in _combinaciones_smart():
-        with _medicion(nombre) as info:
+        with _medicion(nombre) as registro:
             r = cliente.post("/api/infra/smart-search", json=cuerpo)
-            info["camaras"] = len(r.json().get("camaras", [])) if r.status_code == 200 else 0
+        if _MEDICIONES is not None:
+            registro["camaras"] = len(r.json().get("camaras", [])) if r.status_code == 200 else 0
         resultados[nombre] = json.dumps({"status": r.status_code, "cuerpo": r.json()}, ensure_ascii=False, indent=1)
 
 
-def _filas_exportadas(respuesta, formato: str) -> int:
-    """Cantidad de cámaras (filas de datos) de una exportación; 0 si no fue 200."""
+def _filas_exportadas(respuesta, formato: str, disposicion: str) -> int:
+    """Cantidad de cámaras (filas de datos) de una exportación; 0 si no fue 200. Sólo se usa en `medir`."""
     if respuesta.status_code != 200:
         return 0
-    if formato == "xlsx":
+    if formato == "xlsx" and "xlsx" in disposicion:
         hojas = json.loads(_xlsx_crudo(respuesta.content))
         return sum(len(h["filas"]) for h in hojas.values())
     return max(len(list(csv.reader(io.StringIO(respuesta.content.decode("utf-8"))))) - 1, 0)
@@ -207,10 +205,11 @@ def _correr_export(cliente, resultados: dict[str, str]) -> None:
         for formato in ("csv", "xlsx"):
             base = {"filter_status": estado, "format": formato}
             for variante, p in (("", base), ("_srv", {**base, "servicio_id": servicio_id})):
-                with _medicion(f"export_{estado}_{formato}{variante}") as info:
+                with _medicion(f"export_{estado}_{formato}{variante}") as registro:
                     r = cliente.get("/api/infra/export/cameras", params=p)
-                    info["camaras"] = _filas_exportadas(r, formato)
                 disp = _normalizar_ts(r.headers.get("content-disposition", ""))
+                if _MEDICIONES is not None:
+                    registro["camaras"] = _filas_exportadas(r, formato, disp)
                 cuerpo = _xlsx_crudo(r.content) if formato == "xlsx" and "xlsx" in disp else r.content.decode("utf-8")
                 resultados[f"export_{estado}_{formato}{variante}"] = (
                     f"status={r.status_code}\ncontent-type={r.headers.get('content-type')}\n"
