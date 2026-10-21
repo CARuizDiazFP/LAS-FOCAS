@@ -17,15 +17,20 @@
 
     <hr class="noc-rule" />
 
-    <CromoCaminoPanel :camino="camino" :servicio-id="base.servicio.value?.id ?? null" />
+    <!-- Sólo acá se declara la posición vigente; el modal de asociación de ODF no la muestra. -->
+    <CromoCaminoPanel
+      :camino="camino"
+      :servicio-id="base.servicio.value?.id ?? null"
+      :mostrar-posicion-vigente="true"
+    />
 
     <div class="camino__acciones">
       <button
         class="btn subtle"
         type="button"
-        :disabled="camino.pelos.value.length === 0 || camino.descargando.value"
+        :disabled="sinNadaQueDescargar || camino.descargando.value"
         :title="
-          camino.pelos.value.length === 0
+          sinNadaQueDescargar
             ? 'Cromo no tiene ningún pelo matcheado para este Servicio: no hay camino que trazar'
             : 'Descarga un .txt por tramo del Servicio (o por cada pelo tildado, si cambiaste la selección), generado desde Cromo'
         "
@@ -53,11 +58,26 @@ import OdfsAsociadasPanel from '../../components/servicios/detalle/OdfsAsociadas
 import OdfsCromoPanel from '../../components/servicios/detalle/OdfsCromoPanel.vue';
 import { useCromoPath } from '../../composables/useCromoPath';
 import { useServicioBase } from '../../composables/useServicioBase';
+import { useSession } from '../../composables/useSession';
 import ServicioSeccionLayout from './ServicioSeccionLayout.vue';
 
 const route = useRoute();
 const base = useServicioBase();
 const camino = useCromoPath();
+const { state: sesion } = useSession();
+// Mismo criterio que el panel: el rol viaja en la sesión.
+const esAdmin = computed(() => (sesion.value.role ?? '').toLowerCase() === 'admin');
+
+/**
+ * Sin semillas etiquetadas, sin posiciones de ODF y sin tramos resueltos no hay qué bajar. Con
+ * posiciones alcanza: "Descargar todos" resuelve los caminos primero (el 93150 va por ahí).
+ */
+const sinNadaQueDescargar = computed(
+  () =>
+    camino.pelos.value.length === 0 &&
+    camino.tramos.value.length === 0 &&
+    !camino.tienePosiciones.value,
+);
 
 const idServicio = computed(() => String(route.params.idServicio ?? ''));
 
@@ -79,6 +99,8 @@ async function cargar(id: string): Promise<void> {
   const ok = await base.cargar(id);
   if (ok && base.servicio.value) {
     await camino.cargarPelos(base.servicio.value.id, { priorizarConector: true });
+    // Las posiciones son un endpoint admin: a un no admin sólo le daría un 403.
+    if (esAdmin.value) await camino.cargarPosiciones(base.servicio.value.id);
   }
 }
 

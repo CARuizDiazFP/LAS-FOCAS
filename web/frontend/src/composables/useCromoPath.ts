@@ -1,32 +1,41 @@
 // Nombre de archivo: useCromoPath.ts
 // Ubicación de archivo: web/frontend/src/composables/useCromoPath.ts
 // Descripción: Estado reutilizable para resolver el camino óptico de Cromo — elección de semilla,
-// espera cancelable, memoización por pelo y descarga de un .txt por cada tramo del Servicio
+// espera cancelable, memoización por pelo, descarga de un .txt por cada tramo del Servicio y su
+// posición vigente declarada (conectores de ODF de los que sale el tracking)
 
-import { computed, ref } from 'vue';
+import { type Ref, computed, ref } from 'vue';
 
 import {
+  type CaminoAdicional,
   type CaminoResidual,
   type CaminoOpticoResponse,
   type CaminosServicioResponse,
+  type EstadoPosicionCaminos,
   type OdfConfirmada,
   type RolOdfConfirmada,
   type PeloExcluido,
   type PeloSemilla,
   type PelosCaminoResponse,
+  type PosicionDeclarada,
+  type PosicionPosible,
   type ResumenInconsistenciasServicio,
   type TramoDelServicio,
   confirmarOdfsServicio,
+  declararPosicionVigente,
   declararTrackingsEsperados,
   desconfirmarOdfServicio,
   descargarTrackingCromo,
   listarPelosCamino,
   mensajeErrorCromoPath,
+  mensajeErrorPosicionVigente,
   normalizarConsistencia,
+  obtenerPosicionVigente,
   relevarOdfsDelCamino,
   resolverCaminoOptico,
   resolverCaminosServicio,
   restaurarPeloServicio,
+  retirarPosicionVigente,
 } from '../api/cromoPath';
 
 /** Resultado de bajar los trackings de los pelos elegidos. */
@@ -35,7 +44,7 @@ export interface ResultadoDescargaTrackings {
   fallidos: { peloNId: number; motivo: string }[];
 }
 
-/** ODF que toca algún camino resuelto (tramo o residual) o que ya está confirmada. */
+/** ODF que toca algún camino resuelto (tramo, adicional o residual) o que ya está confirmada. */
 export interface OdfDelTramo {
   odf_n_id: number;
   nombre: string | null;
@@ -51,7 +60,7 @@ export interface OdfDelTramo {
  * camino, para poder quitarlas—. Un residual puede ser la única vía a una ODF del Servicio.
  */
 export function odfsConfirmables(
-  caminos: (TramoDelServicio | CaminoResidual)[],
+  caminos: (TramoDelServicio | CaminoAdicional | CaminoResidual)[],
   confirmadas: OdfConfirmada[],
 ): OdfDelTramo[] {
   const vistas = new Map<number, OdfDelTramo>();
@@ -115,15 +124,21 @@ export function avisosDeCaminos(respuesta: CaminosServicioResponse): string[] {
   if (respuesta.tope_llamadas) {
     avisos.push('Se alcanzó el tope de consultas a Cromo.');
   }
-  if (
-    respuesta.esperados_declarados != null &&
-    respuesta.esperados_declarados !== respuesta.tramos.length
-  ) {
+  // Lo esperado se compara contra todo lo que Cromo documenta (tramos + adicionales, lo que baja
+  // `track N full`), no sólo contra los tramos: un adicional también es un tracking del Servicio.
+  // Un backend anterior a la posición vigente no manda `caminos_resueltos`: ahí son los tramos.
+  const resueltos = respuesta.caminos_resueltos ?? respuesta.tramos.length;
+  if (respuesta.esperados_declarados != null && respuesta.esperados_declarados !== resueltos) {
     avisos.push(
-      `Se esperaban ${respuesta.esperados_declarados} trackings y se generaron ${respuesta.tramos.length}.`,
+      `Se esperaban ${respuesta.esperados_declarados} trackings y Cromo documenta ${resueltos} camino(s).`,
     );
   }
   return avisos;
+}
+
+/** Avisos de la posición vigente declarada (pelo dañado, pelo que cambió, retirada, …). */
+export function avisosDePosicion(respuesta: CaminosServicioResponse): string[] {
+  return (respuesta.posicion_vigente?.avisos ?? []).map((a) => a.texto);
 }
 
 /** 30 s: seis veces el peor caso medido por objeto contra Cromo, sobre un endpoint documentado
@@ -170,7 +185,31 @@ export function useCromoPath() {
   const tramos = ref<TramoDelServicio[]>([]);
   /** Caminos que no son tramos del Servicio: no se descargan (la auditoría los trata aparte). */
   const residuales = ref<CaminoResidual[]>([]);
+  /**
+   * Caminos completos que Cromo también documenta y no son vigentes ni tramos. Tienen `.txt`
+   * propio (fila por fila), pero "Descargar todos" baja sólo los tramos/vigentes.
+   */
+  const adicionales = ref<CaminoAdicional[]>([]);
+  /** `true` cuando ya se resolvieron los caminos (gate del panel). */
   const caminosResueltos = ref(false);
+  /**
+   * Cuántos caminos resolvió el backend: tramos + adicionales (`caminos_resueltos`). Es otro
+   * nombre que `caminosResueltos` porque ese ya es el booleano de "se resolvieron".
+   */
+  const cantidadCaminosResueltos = ref(0);
+  /** Cómo se aplicó la posición vigente declarada en la última resolución, o `null`. */
+  const estadoPosicion = ref<EstadoPosicionCaminos | null>(null);
+  /** Conectores de ODF que pueden ser posición vigente del Servicio (selector, admin). */
+  const posicionesPosibles = ref<PosicionPosible[]>([]);
+  /** Posiciones vigentes declaradas del Servicio. */
+  const posicionesDeclaradas = ref<PosicionDeclarada[]>([]);
+  const cargandoPosiciones = ref(false);
+  const errorPosiciones = ref('');
+  /**
+   * `true` si las posiciones ya se cargaron una vez (sólo un admin puede): recién ahí tiene sentido
+   * recargarlas cuando la resolución de caminos retira alguna. Un no admin recibiría un 403.
+   */
+  let posicionesCargadas = false;
   const resolviendoCaminos = ref(false);
   const errorCaminos = ref('');
   /** ODF confirmadas vigentes del Servicio (vienen con `/caminos`; los POST las refrescan). */
@@ -186,9 +225,12 @@ export function useCromoPath() {
   /** Se confirmó/quitó una ODF o se cambió lo esperado: hay que volver a resolver los caminos. */
   const declaracionCambio = ref(false);
 
-  /** ODF confirmables: las de tramos y residuales (extremos e intermedias) más las confirmadas. */
+  /** ODF confirmables: las de tramos, adicionales y residuales (extremos e intermedias) más las confirmadas. */
   const odfsDelCamino = computed<OdfDelTramo[]>(() =>
-    odfsConfirmables([...tramos.value, ...residuales.value], odfConfirmadas.value),
+    odfsConfirmables(
+      [...tramos.value, ...adicionales.value, ...residuales.value],
+      odfConfirmadas.value,
+    ),
   );
 
   /** Pelos ya sacados del Servicio en local. */
@@ -213,6 +255,13 @@ export function useCromoPath() {
   let tickId: number | null = null;
 
   const tieneSemilla = computed(() => pelos.value.length > 0);
+  /**
+   * Hay posiciones de ODF con las que resolver aunque no haya semillas etiquetadas: el 93150 va por
+   * pelos con la etiqueta de un servicio de Baja del mismo cliente.
+   */
+  const tienePosiciones = computed(
+    () => posicionesPosibles.value.length > 0 || posicionesDeclaradas.value.length > 0,
+  );
   const avisoLento = computed(() => resolviendo.value && segundos.value >= AVISO_LENTO_MS / 1000);
   const peloActivo = computed<PeloSemilla | null>(
     () => pelos.value.find((p) => p.pelo_n_id === peloElegido.value) ?? pelos.value[0] ?? null,
@@ -440,6 +489,9 @@ export function useCromoPath() {
       const respuesta = await resolverCaminosServicio(servicioId);
       tramos.value = respuesta.tramos;
       residuales.value = respuesta.residuales;
+      adicionales.value = respuesta.adicionales ?? [];
+      cantidadCaminosResueltos.value = respuesta.caminos_resueltos ?? respuesta.tramos.length;
+      estadoPosicion.value = respuesta.posicion_vigente ?? null;
       caminosEsperados.value = respuesta.esperados_declarados ?? respuesta.tramos.length;
       caminosResueltos.value = true;
       odfConfirmadas.value = respuesta.odf_confirmadas ?? [];
@@ -450,8 +502,14 @@ export function useCromoPath() {
       seleccionManual.value = false;
       pelosSeleccionados.value = respuesta.tramos.map((t) => t.pelo_n_id);
       // Con semillas que no resolvieron se avisa aunque el recorrido haya terminado: puede faltar
-      // un tramo entero. El tope de consultas se menciona sólo si de verdad se tocó.
+      // un tramo entero. El tope de consultas se menciona sólo si de verdad se tocó. Los avisos de
+      // la posición vigente van aparte (`estadoPosicion`): el panel los pinta como aviso, no error.
       errorCaminos.value = avisosDeCaminos(respuesta).join(' ');
+      // La corrida puede retirar una posición declarada (pelo que cambió, otro camino sano): la
+      // lista del selector tiene que reflejarlo sin recargar la vista.
+      if (posicionesCargadas && respuesta.posicion_vigente?.avisos.some((a) => a.retirada)) {
+        await cargarPosiciones(servicioId);
+      }
       return respuesta.tramos.length > 0;
     } catch (error) {
       errorCaminos.value = mensajeErrorCromoPath(error);
@@ -461,16 +519,24 @@ export function useCromoPath() {
     }
   }
 
-  /** Corre una escritura de lo declarado (ODF o esperados) con su estado de carga y su error. */
-  async function guardarDeclaracion(accion: () => Promise<void>): Promise<boolean> {
+  /**
+   * Corre una escritura de lo declarado (ODF, esperados o posición vigente) con su estado de carga
+   * y su error. La posición vigente reporta en su propio error y con sus propios mensajes: su
+   * bloque del panel se ve aunque los caminos no estén resueltos.
+   */
+  async function guardarDeclaracion(
+    accion: () => Promise<void>,
+    opciones: { error?: Ref<string>; mensaje?: (error: unknown) => string } = {},
+  ): Promise<boolean> {
+    const destinoError = opciones.error ?? errorDeclaracion;
     guardandoDeclaracion.value = true;
-    errorDeclaracion.value = '';
+    destinoError.value = '';
     try {
       await accion();
       declaracionCambio.value = true;
       return true;
     } catch (error) {
-      errorDeclaracion.value = mensajeErrorCromoPath(error);
+      destinoError.value = (opciones.mensaje ?? mensajeErrorCromoPath)(error);
       return false;
     } finally {
       guardandoDeclaracion.value = false;
@@ -501,6 +567,77 @@ export function useCromoPath() {
     });
   }
 
+  /** Deja las posibles marcadas según lo declarado (el POST devuelve sólo las declaradas). */
+  function _sincronizarDeclaradas(declaradas: PosicionDeclarada[]): void {
+    posicionesDeclaradas.value = declaradas;
+    const vigentes = new Set(declaradas.map((d) => d.conector_n_id));
+    posicionesPosibles.value = posicionesPosibles.value.map((p) => ({
+      ...p,
+      declarada: vigentes.has(p.conector_n_id),
+    }));
+  }
+
+  /** Posiciones declaradas y posibles del Servicio. SQL local, no toca Cromo. Admin. */
+  async function cargarPosiciones(servicioId: number): Promise<boolean> {
+    cargandoPosiciones.value = true;
+    errorPosiciones.value = '';
+    try {
+      const respuesta = await obtenerPosicionVigente(servicioId);
+      posicionesPosibles.value = respuesta.posibles;
+      posicionesDeclaradas.value = respuesta.declaradas;
+      posicionesCargadas = true;
+      return true;
+    } catch (error) {
+      errorPosiciones.value = mensajeErrorPosicionVigente(error);
+      return false;
+    } finally {
+      cargandoPosiciones.value = false;
+    }
+  }
+
+  /**
+   * Declara conectores como posición vigente (todo o nada). Se aplica al volver a resolver los
+   * caminos: por eso pasa por `guardarDeclaracion`, que prende `declaracionCambio`. Admin.
+   */
+  function declararPosicion(servicioId: number, conectoresNId: number[]): Promise<boolean> {
+    return guardarDeclaracion(
+      async () => {
+        const r = await declararPosicionVigente(servicioId, conectoresNId);
+        _sincronizarDeclaradas(r.declaradas);
+      },
+      { error: errorPosiciones, mensaje: mensajeErrorPosicionVigente },
+    );
+  }
+
+  /** Retira a mano una posición vigente; el Servicio vuelve al cálculo automático. Admin. */
+  function retirarPosicion(servicioId: number, conectorNId: number): Promise<boolean> {
+    return guardarDeclaracion(
+      async () => {
+        const r = await retirarPosicionVigente(servicioId, conectorNId);
+        _sincronizarDeclaradas(r.declaradas);
+      },
+      { error: errorPosiciones, mensaje: mensajeErrorPosicionVigente },
+    );
+  }
+
+  /** Baja el `.txt` de un camino adicional (`{servicio} CROMO A{n} pelo {id}.txt`). */
+  async function descargarAdicional(servicioId: number, adicional: CaminoAdicional): Promise<boolean> {
+    descargando.value = true;
+    errorDescarga.value = '';
+    try {
+      await descargarTrackingCromo(servicioId, {
+        peloNId: adicional.pelo_n_id,
+        adicional: adicional.n,
+      });
+      return true;
+    } catch (error) {
+      errorDescarga.value = mensajeErrorCromoPath(error, { peloNId: adicional.pelo_n_id });
+      return false;
+    } finally {
+      descargando.value = false;
+    }
+  }
+
   /** Baja el `.txt` de un solo tramo (botón "Descargar" de su fila). */
   async function descargarTramo(servicioId: number, tramo: TramoDelServicio): Promise<boolean> {
     descargando.value = true;
@@ -525,6 +662,9 @@ export function useCromoPath() {
       caminosResueltos.value = false;
       tramos.value = [];
       residuales.value = [];
+      adicionales.value = [];
+      cantidadCaminosResueltos.value = 0;
+      estadoPosicion.value = null;
       await cargarPelos(servicioId, ultimasOpcionesPelos);
       return true;
     } catch (error) {
@@ -610,6 +750,14 @@ export function useCromoPath() {
     caminosEsperados.value = 0;
     tramos.value = [];
     residuales.value = [];
+    adicionales.value = [];
+    cantidadCaminosResueltos.value = 0;
+    estadoPosicion.value = null;
+    posicionesPosibles.value = [];
+    posicionesDeclaradas.value = [];
+    cargandoPosiciones.value = false;
+    errorPosiciones.value = '';
+    posicionesCargadas = false;
     caminosResueltos.value = false;
     resolviendoCaminos.value = false;
     errorCaminos.value = '';
@@ -663,7 +811,15 @@ export function useCromoPath() {
     caminosEsperados,
     tramos,
     residuales,
+    adicionales,
     caminosResueltos,
+    cantidadCaminosResueltos,
+    estadoPosicion,
+    posicionesPosibles,
+    posicionesDeclaradas,
+    cargandoPosiciones,
+    errorPosiciones,
+    tienePosiciones,
     resolviendoCaminos,
     errorCaminos,
     odfConfirmadas,
@@ -692,6 +848,10 @@ export function useCromoPath() {
     relevarOdf,
     resolverCaminos,
     descargarTramo,
+    descargarAdicional,
+    cargarPosiciones,
+    declararPosicion,
+    retirarPosicion,
     confirmarOdf,
     quitarOdf,
     declararEsperados,

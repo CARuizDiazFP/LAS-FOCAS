@@ -305,6 +305,9 @@ export interface OdfDeCamino {
   odf_clase: number | null;
 }
 
+/** `VIGENTE`: el camino sale de una posición vigente declarada; `TRAMO`: lo calculó el motor. */
+export type RolCamino = 'VIGENTE' | 'TRAMO';
+
 /** Camino que es un tramo del Servicio: tiene su propio `.txt` (`{at62} CROMO T{n} pelo {n_id}.txt`). */
 export interface TramoDelServicio {
   /** Número de tramo, el mismo que lleva el nombre del archivo. */
@@ -317,6 +320,10 @@ export interface TramoDelServicio {
   extremos: ExtremosCamino;
   /** Todas las ODF que toca el camino, extremos e intermedias. */
   odfs: OdfDeCamino[];
+  /** Opcional por compatibilidad con un backend anterior a la posición vigente. */
+  rol?: RolCamino;
+  /** ODF en los dos extremos. */
+  completo?: boolean;
 }
 
 /** Camino que no es un tramo del Servicio: no se descarga. */
@@ -327,6 +334,103 @@ export interface CaminoResidual {
   extremos: ExtremosCamino;
   /** Todas las ODF que toca el camino: un residual puede ser la única vía a una ODF del Servicio. */
   odfs: OdfDeCamino[];
+}
+
+/**
+ * Camino completo que Cromo también documenta para el Servicio pero que no es vigente ni tramo:
+ * tiene `.txt` propio (`{servicio} CROMO A{n} pelo {n_id}.txt`, lo baja `track N full`) y
+ * "Descargar todos" no lo incluye.
+ */
+export interface CaminoAdicional extends CaminoResidual {
+  /** Número de adicional, el mismo que lleva el nombre del archivo (`A{n}`). */
+  n: number;
+  desde_cache: boolean;
+  completo: boolean;
+  /** De dónde salió: una posición declarada, un pelo etiquetado o una posición posible. */
+  origen: 'DECLARADO' | 'ETIQUETADO' | 'POSICION' | null;
+  /** Posiciones de ODF del camino ("O-1239922-1:1"), vacío si no tiene. */
+  posiciones: string;
+  /** Etiquetas (`at.61`) de sus pelos. */
+  etiquetas: string[];
+}
+
+/** Aviso de una posición vigente declarada al resolver los caminos (y si la corrida la retiró). */
+export interface AvisoPosicion {
+  conector_n_id: number;
+  posicion?: string;
+  /** `SIN_PELO`, `PELO_CAMBIO`, `CONECTOR_INEXISTENTE`, `PELO_DANADO`, … */
+  codigo: string;
+  retirada: boolean;
+  texto: string;
+}
+
+/** Cómo se aplicó la posición vigente declarada en la última resolución de caminos. */
+export interface EstadoPosicionCaminos {
+  declarada: boolean;
+  aplicada: boolean;
+  /** "O-1252871-1:1,2", o vacío si no hay declarada. */
+  posiciones: string;
+  avisos: AvisoPosicion[];
+}
+
+/** Conector de ODF que puede ser posición vigente del Servicio (selector del panel). */
+export interface PosicionPosible {
+  conector_n_id: number;
+  /** "O-1252871-1:1". */
+  posicion: string;
+  odf_n_id: number | null;
+  odf_nombre: string | null;
+  /** 69 = ODF, 86 = ODF Nodo. */
+  odf_clase: number | null;
+  bandeja_n_id: number | null;
+  bandeja_nombre: string | null;
+  numero_conector: string | null;
+  /** `null`: el conector no tiene pelo, no se puede declarar. */
+  pelo_n_id: number | null;
+  numero_pelo: string | null;
+  pelos_candidatos: number[];
+  cable_n_id: number | null;
+  cable_nombre: string | null;
+  /** `at.61` del pelo. */
+  etiqueta_pelo: string | null;
+  /** La etiqueta del pelo es de otro servicio (p. ej. uno de Baja del mismo cliente). */
+  etiqueta_ajena: boolean;
+  estado_pelo: string | null;
+  servicio_resuelto: string | null;
+  servicio_id_historico: string | null;
+  patch_conector_n_id: number | null;
+  por_resuelto: boolean;
+  por_pelo: boolean;
+  /** Número de otro servicio Activo cuyo pelo también matchea, o `null`. */
+  servicio_activo_ajeno: string | null;
+  /** El otro hilo del par (mismo cable, conector contiguo), para declararlos juntos. */
+  par_sugerido_n_id: number | null;
+  declarada: boolean;
+}
+
+/** Posición vigente declarada. `valida`/`aviso` dicen si el inventario ingerido todavía la sostiene. */
+export interface PosicionDeclarada {
+  id: number;
+  conector_n_id: number;
+  posicion: string;
+  odf_n_id: number | null;
+  odf_nombre: string | null;
+  bandeja_n_id: number | null;
+  bandeja_nombre: string | null;
+  numero_conector: string | null;
+  pelo_n_id_declarado: number | null;
+  pelo_n_id_actual: number | null;
+  pelos_candidatos: number[];
+  declarado_por: string | null;
+  declarado_en: string | null;
+  valida: boolean;
+  aviso: string | null;
+  codigo_aviso: string | null;
+}
+
+export interface PosicionVigenteResponse {
+  declaradas: PosicionDeclarada[];
+  posibles: PosicionPosible[];
 }
 
 export type RolOdfConfirmada = 'EXTREMO' | 'TRANSITO';
@@ -360,6 +464,12 @@ export interface CaminosServicioResponse {
   segmentos: number;
   /** Casos de inconsistencias de Cromo que tocan al Servicio (aviso del panel). */
   inconsistencias?: ResumenInconsistenciasServicio;
+  // Opcionales por compatibilidad con un backend anterior a la posición vigente.
+  /** Caminos completos que no son vigentes ni tramos: con `.txt` propio, fuera de "Descargar todos". */
+  adicionales?: CaminoAdicional[];
+  /** Tramos + adicionales: lo que baja `track N full`. */
+  caminos_resueltos?: number;
+  posicion_vigente?: EstadoPosicionCaminos;
 }
 
 /** Casos de inconsistencias de Cromo del Servicio: en cuarentena (no cuentan como uso) y en revisión. */
@@ -386,6 +496,30 @@ export function etiquetaTramo(tramo: TramoDelServicio): string {
     `Tramo ${tramo.n} · ${etiquetaExtremo(tramo.extremos.a)} → ` +
     `${etiquetaExtremo(tramo.extremos.b)} · ${tramo.pelos_en_camino} pelos`
   );
+}
+
+/** "Adicional 1 · ODF X P1:1 → ODF Y P2:1 · 40 pelos". */
+export function etiquetaAdicional(adicional: CaminoAdicional): string {
+  return (
+    `Adicional ${adicional.n} · ${etiquetaExtremo(adicional.extremos.a)} → ` +
+    `${etiquetaExtremo(adicional.extremos.b)} · ${adicional.pelos_en_camino} pelos`
+  );
+}
+
+/** "ODF San Martin 137 P5 D · O-1252871-1:1 · pelo 1 F-PC-CC · etiqueta 44649 (otra etiqueta)". */
+export function etiquetaPosicion(posicion: PosicionPosible): string {
+  const bandejaConector =
+    posicion.bandeja_nombre && posicion.numero_conector
+      ? `${posicion.bandeja_nombre}:${posicion.numero_conector}`
+      : posicion.posicion;
+  const partes = [
+    `ODF ${posicion.odf_nombre ?? posicion.odf_n_id ?? '?'}`,
+    bandejaConector,
+    ['pelo', posicion.numero_pelo, posicion.cable_nombre].filter(Boolean).join(' '),
+    posicion.etiqueta_pelo ? `etiqueta ${posicion.etiqueta_pelo}` : null,
+  ];
+  const texto = partes.filter(Boolean).join(' · ');
+  return posicion.etiqueta_ajena ? `${texto} (otra etiqueta)` : texto;
 }
 
 // ── Llamadas ──────────────────────────────────────────────────────────────
@@ -431,15 +565,23 @@ export async function resolverCaminoOptico(
 /** Descarga el tracking `.txt` generado desde Cromo. Devuelve el nombre del archivo. */
 export async function descargarTrackingCromo(
   servicioId: number,
-  opciones: { peloNId?: number | null; tramo?: number | null; signal?: AbortSignal } = {},
+  opciones: {
+    peloNId?: number | null;
+    tramo?: number | null;
+    adicional?: number | null;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<string> {
   const params = new URLSearchParams();
   if (opciones.peloNId != null) {
     params.set('pelo_n_id', String(opciones.peloNId));
   }
-  // El número de tramo hace que el archivo se llame igual que el que sube Slack.
+  // El número de tramo (o de adicional) hace que el archivo se llame igual que el que sube Slack.
+  // Son excluyentes: el backend responde 400 si llegan los dos.
   if (opciones.tramo != null) {
     params.set('tramo', String(opciones.tramo));
+  } else if (opciones.adicional != null) {
+    params.set('adicional', String(opciones.adicional));
   }
   const query = params.toString();
   return requestDownload(
@@ -514,6 +656,43 @@ export async function desconfirmarOdfServicio(
   );
 }
 
+/**
+ * Posiciones vigentes declaradas del Servicio y las posibles para el selector. SQL local: no toca
+ * Cromo ni retira nada (retirar es efecto de la resolución de caminos). Admin.
+ */
+export async function obtenerPosicionVigente(servicioId: number): Promise<PosicionVigenteResponse> {
+  return requestJson<PosicionVigenteResponse>(
+    `/api/admin/infra/servicios-odf/${servicioId}/posicion-vigente`,
+  );
+}
+
+/**
+ * Declara conectores de ODF como posición vigente del Servicio (todo o nada, 1 a 8; los ya
+ * vigentes quedan). 409 si alguno no es posición posible o no tiene pelo. Admin.
+ */
+export async function declararPosicionVigente(
+  servicioId: number,
+  conectoresNId: number[],
+): Promise<{ ok: boolean; declaradas: PosicionDeclarada[] }> {
+  return requestJson(`/api/admin/infra/servicios-odf/${servicioId}/posicion-vigente`, {
+    method: 'POST',
+    json: { conectores_n_id: conectoresNId },
+    csrf: true,
+  });
+}
+
+/** Retira a mano la posición vigente de un conector (el historial queda). Admin. */
+export async function retirarPosicionVigente(
+  servicioId: number,
+  conectorNId: number,
+): Promise<{ ok: boolean; declaradas: PosicionDeclarada[] }> {
+  return requestJson(`/api/admin/infra/servicios-odf/${servicioId}/posicion-vigente/retirar`, {
+    method: 'POST',
+    json: { conector_n_id: conectorNId },
+    csrf: true,
+  });
+}
+
 /** Declara cuántos trackings espera el Servicio; `null` borra la declaración. Admin. */
 export async function declararTrackingsEsperados(
   servicioId: number,
@@ -558,6 +737,23 @@ export function mensajeErrorCromoPath(
     }
   }
   return error instanceof Error ? error.message : 'Error resolviendo el camino óptico en Cromo.';
+}
+
+/**
+ * Error de leer, declarar o retirar la posición vigente. El backend ya manda un mensaje accionable
+ * (409 "el conector X no es posición posible…", 404 "no tenía una posición vigente…"); los textos
+ * genéricos de `mensajeErrorCromoPath` hablan de resolver el camino y acá confundirían.
+ */
+export function mensajeErrorPosicionVigente(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 422) return 'Elegí entre 1 y 8 conectores para declarar.';
+    if (error.status === 403 && error.message === 'CSRF inválido') {
+      return 'La sesión venció: recargá la página y volvé a intentarlo.';
+    }
+    if (error.status === 403) return 'Necesitás rol admin para declarar la posición vigente.';
+    return error.message;
+  }
+  return error instanceof Error ? error.message : 'Error con la posición vigente del Servicio.';
 }
 
 // ── Normalización de la consistencia y relevamiento de ODF ─────────────────
