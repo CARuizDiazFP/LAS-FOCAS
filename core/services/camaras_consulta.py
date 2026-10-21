@@ -23,6 +23,15 @@ LIMITE_MAXIMO = 500
 
 
 @dataclass(frozen=True)
+class CamaraEncontrada:
+    """Cámara de la página con las rutas y servicios ya calculados (no se recalculan al serializar)."""
+
+    camara: Camara
+    rutas_info: list[dict[str, Any]]
+    servicios_ids: list[str]
+
+
+@dataclass(frozen=True)
 class ResultadoSmartSearch:
     """Página de resultados: cámaras ya filtradas y en orden."""
 
@@ -31,7 +40,7 @@ class ResultadoSmartSearch:
     offset: int
     estado_filter: str | None
     terminos_aplicados: int
-    camaras: list[Camara]
+    camaras: list[CamaraEncontrada]
 
 
 def _collect_camara_rutas_info(camara: Any, *, incluir_botellas: bool = False) -> list[dict[str, Any]]:
@@ -149,11 +158,19 @@ def _consulta_base(session: Session, estado: str | None, incluir_no_operativas: 
     return query, estado_filter
 
 
-def _coincide_con_todos(camara: Any, terminos_limpios: list[str]) -> bool:
+def _rutas_y_servicios(camara: Any) -> tuple[list[dict[str, Any]], list[str]]:
     rutas_info = _collect_camara_rutas_info(camara, incluir_botellas=True)
-    servicios_ids = _collect_camara_servicios_ids(camara, rutas_info)
+    return rutas_info, _collect_camara_servicios_ids(camara, rutas_info)
+
+
+def _coincide_con_todos(camara: Any, terminos_limpios: list[str]) -> CamaraEncontrada | None:
+    """Devuelve la cámara con lo calculado si cumple todos los términos (AND); si no, `None`."""
+
+    rutas_info, servicios_ids = _rutas_y_servicios(camara)
     cables_nombres = _cables_nombres(camara)
-    return all(termino_coincide(t, camara, servicios_ids, cables_nombres) for t in terminos_limpios)
+    if all(termino_coincide(t, camara, servicios_ids, cables_nombres) for t in terminos_limpios):
+        return CamaraEncontrada(camara, rutas_info, servicios_ids)
+    return None
 
 
 def buscar_camaras_por_terminos(
@@ -176,12 +193,13 @@ def buscar_camaras_por_terminos(
     if not terminos:
         total = query.count()
         pagina = query.order_by(Camara.nombre).offset(offset).limit(limit).all()
-        return ResultadoSmartSearch(total, limit, offset, estado_filter, 0, pagina)
+        encontradas = [CamaraEncontrada(c, *_rutas_y_servicios(c)) for c in pagina]
+        return ResultadoSmartSearch(total, limit, offset, estado_filter, 0, encontradas)
 
     # Con términos: el match incluye campos computados (servicios/cables/rutas), se filtra en
     # Python sobre el set completo ordenado y DESPUÉS se pagina.
     todas = query.order_by(Camara.nombre).all()
-    coinciden = [c for c in todas if _coincide_con_todos(c, terminos_limpios)]
+    coinciden = [e for e in (_coincide_con_todos(c, terminos_limpios) for c in todas) if e is not None]
     return ResultadoSmartSearch(
         len(coinciden), limit, offset, estado_filter, len(terminos_limpios),
         coinciden[offset:offset + limit],

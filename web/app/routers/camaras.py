@@ -2307,14 +2307,13 @@ async def smart_search_camaras_web(
             )
 
             camaras_response = []
-            for cam in resultado.camaras:
-                rutas_info = _collect_camara_rutas_info(cam, incluir_botellas=True)
-                servicios_ids = _collect_camara_servicios_ids(cam, rutas_info)
+            for encontrada in resultado.camaras:
+                cam = encontrada.camara
                 camaras_response.append(
                     _serialize_camara_response(
                         camara=cam,
-                        rutas_info=rutas_info,
-                        servicios_ids=servicios_ids,
+                        rutas_info=encontrada.rutas_info,
+                        servicios_ids=encontrada.servicios_ids,
                         contexto=get_camara_estado_contexto(session, cam.id),
                         editable=role == "admin",
                     )

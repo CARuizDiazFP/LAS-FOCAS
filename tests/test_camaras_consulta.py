@@ -155,7 +155,7 @@ def test_terminos_filtran_en_python_y_paginan_despues():
     camaras[1].nombre = "Otra"
     r = _buscar(_SesionFalsa(camaras), ["  cam "], limit=2, offset=1)
     assert r.total == 4
-    assert [c.nombre for c in r.camaras] == ["Cam 2", "Cam 3"]
+    assert [e.camara.nombre for e in r.camaras] == ["Cam 2", "Cam 3"]
     assert r.terminos_aplicados == 1
 
 
@@ -172,3 +172,63 @@ def test_terminos_son_and():
     ]
     r = _buscar(_SesionFalsa(camaras), ["norte", "CALLE 2"])
     assert r.total == 1
+
+
+# --- reuso de lo calculado (conteo de llamadas) -----------------------------------------------
+
+def _con_contadores(monkeypatch):
+    llamadas = {"rutas": 0, "servicios": 0}
+    orig_r, orig_s = cc._collect_camara_rutas_info, cc._collect_camara_servicios_ids
+
+    def rutas(*a, **k):
+        llamadas["rutas"] += 1
+        return orig_r(*a, **k)
+
+    def servicios(*a, **k):
+        llamadas["servicios"] += 1
+        return orig_s(*a, **k)
+
+    monkeypatch.setattr(cc, "_collect_camara_rutas_info", rutas)
+    monkeypatch.setattr(cc, "_collect_camara_servicios_ids", servicios)
+    return llamadas
+
+
+def _camara_con_servicio(nombre, servicio_id, ruta_id):
+    servicio = SimpleNamespace(servicio_id=servicio_id, alias_ids=None)
+    ruta = SimpleNamespace(
+        id=ruta_id, servicio=servicio, nombre="R", tipo=SimpleNamespace(value="PRINCIPAL"),
+        empalmes=[SimpleNamespace(es_transito=True)], punta_a=None, punta_b=None,
+    )
+    return _camara(
+        nombre=nombre, cables=[], botellas=[],
+        empalmes=[SimpleNamespace(rutas=[ruta], servicios=[servicio])],
+    )
+
+
+def test_con_terminos_helpers_se_llaman_una_vez_por_camara(monkeypatch):
+    camaras = [_camara_con_servicio(f"C{i}", f"SVC-{i}", i) for i in range(4)]
+    llamadas = _con_contadores(monkeypatch)
+    r = _buscar(_SesionFalsa(camaras), ["c"], limit=2, offset=1)
+    assert llamadas == {"rutas": 4, "servicios": 4}
+    assert [e.camara.nombre for e in r.camaras] == ["C1", "C2"]
+    assert r.camaras[0].servicios_ids == ["SVC-1"]
+    assert r.camaras[0].rutas_info[0]["ruta_id"] == 1
+
+
+def test_sin_terminos_helpers_solo_para_la_pagina(monkeypatch):
+    camaras = [_camara_con_servicio(f"C{i}", f"SVC-{i}", i) for i in range(3)]
+    llamadas = _con_contadores(monkeypatch)
+    r = _buscar(_SesionFalsa(camaras))
+    assert llamadas == {"rutas": 3, "servicios": 3}
+    assert len(r.camaras) == 3
+
+
+def test_match_por_servicio_y_and_con_empalme_real():
+    camaras = [
+        _camara_con_servicio("Norte", "SVC-10", 1),
+        _camara_con_servicio("Sur", "SVC-10", 2),
+        _camara_con_servicio("Norte", "SVC-20", 3),
+    ]
+    r = _buscar(_SesionFalsa(camaras), ["svc-10", "norte"])
+    assert [e.rutas_info[0]["ruta_id"] for e in r.camaras] == [1]
+    assert r.camaras[0].servicios_ids == ["SVC-10"]
