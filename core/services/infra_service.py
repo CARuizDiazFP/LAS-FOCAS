@@ -523,7 +523,6 @@ class InfraService:
             # ESCENARIO 2/3/4: Servicio existe
             rutas_info = []
             ruta_identica = None
-            ruta_mismo_camino: Optional[RutaServicio] = None
             
             for ruta in servicio.rutas:
                 info = RutaInfo(
@@ -541,10 +540,6 @@ class InfraService:
                 # Comparar hash exacto
                 if ruta.hash_contenido == nuevo_hash:
                     ruta_identica = ruta.id
-                
-                # Verificar si es el mismo camino (mismas puntas) para detectar nuevo pelo
-                if self._routes_have_same_path(ruta, punta_a_sitio, punta_b_sitio):
-                    ruta_mismo_camino = ruta  # noqa: F841 - asignación sin uso; revisar si es un bug (Fase 3)
             
             # ESCENARIO 2: Hash coincide exacto
             if ruta_identica:
