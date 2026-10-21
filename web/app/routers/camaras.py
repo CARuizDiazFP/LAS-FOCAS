@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from core.services.camaras_exportacion import a_csv, a_xlsx, filas_exportacion
 from core.services.camaras_consulta import (
     _collect_camara_rutas_info,
     _collect_camara_servicios_ids,
@@ -1303,90 +1304,23 @@ async def generate_eml_file(
 # -----------------------------------------------------------------------------
 
 @router.get("/api/infra/export/cameras")
-async def export_cameras_web(  # noqa: C901
+async def export_cameras_web(
     request: Request,
     filter_status: Optional[str] = None,
     servicio_id: Optional[str] = None,
     format: str = "csv",
 ) -> Response:
     """Exporta listado de cámaras a CSV o XLSX."""
-    
+
     username, _ = _require_auth(request)
-    
+
     try:
-        from db.models.infra import Camara, CamaraEstado, IncidenteBaneo, Servicio
         from db.session import SessionLocal
         from datetime import datetime, timezone
-        import csv
-        import io
-        
+
         with SessionLocal() as session:
-            query = session.query(Camara)
-            
-            # Filtrar por estado
-            if filter_status and filter_status.upper() != "ALL":
-                estado_upper = filter_status.upper()
-                if estado_upper in [e.value for e in CamaraEstado]:
-                    query = query.filter(Camara.estado == CamaraEstado(estado_upper))
-            
-            # Filtrar por servicio
-            if servicio_id:
-                servicio = session.query(Servicio).filter(
-                    Servicio.servicio_id == servicio_id
-                ).first()
-                
-                if servicio:
-                    camara_ids = set()
-                    for ruta in servicio.rutas_activas:
-                        for empalme in ruta.empalmes:
-                            if empalme.camara:
-                                camara_ids.add(empalme.camara.id)
-                    
-                    if camara_ids:
-                        query = query.filter(Camara.id.in_(camara_ids))
-                    else:
-                        query = query.filter(Camara.id == -1)
-            
-            camaras = query.order_by(Camara.nombre).all()
-            
-            # Obtener tickets de baneo activos
-            baneos_activos = session.query(IncidenteBaneo).filter(
-                IncidenteBaneo.activo == True
-            ).all()
-            
-            ticket_por_servicio: dict = {}
-            for baneo in baneos_activos:
-                ticket_por_servicio[baneo.servicio_protegido_id] = baneo.ticket_asociado or f"INC-{baneo.id}"
-            
-            # Preparar datos
-            rows = []
-            for cam in camaras:
-                servicios_cat6 = []
-                for empalme in cam.empalmes:
-                    for srv in empalme.servicios:
-                        if srv.servicio_id and srv.servicio_id not in servicios_cat6:
-                            servicios_cat6.append(srv.servicio_id)
-                
-                ticket_baneo = ""
-                if cam.estado == CamaraEstado.BANEADA:
-                    for svc_id in servicios_cat6:
-                        if svc_id in ticket_por_servicio:
-                            ticket_baneo = ticket_por_servicio[svc_id]
-                            break
-                
-                rows.append({
-                    "ID": cam.id,
-                    "Nombre": cam.nombre or "",
-                    "Fontine_ID": cam.fontine_id or "",
-                    "Dirección": cam.direccion or "",
-                    "Estado": cam.estado.value if cam.estado else "LIBRE",
-                    "Servicios_Cat6": ", ".join(servicios_cat6),
-                    "Ticket_Baneo": ticket_baneo,
-                    "Latitud": cam.latitud or "",
-                    "Longitud": cam.longitud or "",
-                    "Origen_Datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
-                })
-            
+            rows = filas_exportacion(session, filter_status=filter_status, servicio_id=servicio_id)
+
             logger.info(
                 "action=export_cameras user=%s filter_status=%s format=%s rows=%d",
                 username,
@@ -1394,51 +1328,29 @@ async def export_cameras_web(  # noqa: C901
                 format,
                 len(rows),
             )
-            
+
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            
+
             if format.lower() == "xlsx":
-                try:
-                    import pandas as pd
-                    
-                    df = pd.DataFrame(rows)
-                    output = io.BytesIO()
-                    
-                    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                        df.to_excel(writer, sheet_name="Cámaras", index=False)
-                    
-                    output.seek(0)
-                    
+                contenido_xlsx = a_xlsx(rows)
+                if contenido_xlsx is not None:
                     return Response(
-                        content=output.getvalue(),
+                        content=contenido_xlsx,
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={
                             "Content-Disposition": f'attachment; filename="camaras_{timestamp}.xlsx"',
                         },
                     )
-                    
-                except ImportError:
-                    logger.warning("action=export_cameras warning=pandas_not_available fallback=csv")
-            
-            # CSV (default)
-            output = io.StringIO()
-            if rows:
-                writer = csv.DictWriter(output, fieldnames=rows[0].keys())
-                writer.writeheader()
-                writer.writerows(rows)
-            else:
-                output.write("Sin datos\\n")
-            
-            content = output.getvalue().encode("utf-8-sig")
-            
+                logger.warning("action=export_cameras warning=pandas_not_available fallback=csv")
+
             return Response(
-                content=content,
+                content=a_csv(rows),
                 media_type="text/csv; charset=utf-8",
                 headers={
                     "Content-Disposition": f'attachment; filename="camaras_{timestamp}.csv"',
                 },
             )
-            
+
     except Exception as exc:
         logger.exception("action=export_cameras_error user=%s error=%s", username, exc)
         return JSONResponse(
