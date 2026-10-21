@@ -57,6 +57,7 @@ from core.services.cromo.servicio_posicion_vigente import (
     decidir_retiro,
     etiqueta_posiciones,
     listar_declaradas,
+    pelos_de_otro_servicio_activo,
     pelos_de_posiciones,
     posiciones_posibles,
     validar_camino,
@@ -640,6 +641,7 @@ def clasificar_con_posiciones(
     etiquetados: frozenset[int],
     declarados: frozenset[int],
     odfs_confirmadas: frozenset[int] = frozenset(),
+    de_otro_activo: frozenset[int] = frozenset(),
 ) -> list[str]:
     """Rol de cada camino (`VIGENTE`, `TRAMO`, `ADICIONAL` o `RESIDUAL`), en el mismo orden. Pura.
 
@@ -651,7 +653,10 @@ def clasificar_con_posiciones(
        declaración se aplicó), sus `TRAMO` pasan a `ADICIONAL`: siguen siendo un recorrido real,
        pero el servicio va por el vigente.
     4. `POSICION` es `ADICIONAL` si es un camino completo (ODF en los dos extremos) y `RESIDUAL`
-       si no.
+       si no, o si recorre algún pelo de `de_otro_activo` (pelos que matchean a otro servicio
+       Activo y no a este, `pelos_de_otro_servicio_activo`): el filtro de las posiciones sólo mira
+       el pelo semilla, y el camino puede ser el de otro Activo. No aplica al `DECLARADO` (decisión
+       explícita del admin) ni al `ETIQUETADO`.
 
     Con `declarados` vacío y todas las semillas etiquetadas da exactamente lo mismo que
     `clasificar_caminos` (regresión sobre los 77 caminos medidos).
@@ -677,6 +682,8 @@ def clasificar_con_posiciones(
         elif origen == ORIGEN_ETIQUETADO:
             rol = roles_etiquetados[i]
             roles.append(ROL_ADICIONAL if hay_vigente and rol == ROL_TRAMO else rol)
+        elif _pelos_de_tracking(camino) & de_otro_activo:
+            roles.append(ROL_RESIDUAL)
         else:
             roles.append(ROL_ADICIONAL if es_camino_completo(camino) else ROL_RESIDUAL)
     return roles
@@ -806,37 +813,60 @@ async def _por_camino_en_fases(
 ) -> list[TrackingsPorCamino]:
     """`trackings_por_camino` fase por fase, compartiendo los topes y lo ya recorrido.
 
-    Cada fase es `(servicio_id del caché, pelos)`. Un pelo que ya pidió una fase anterior, o que ya
-    recorrió uno de sus caminos, no se vuelve a pedir. Los topes de llamadas y de fallidas son los
-    de una sola corrida: cada fase recibe lo que dejaron las anteriores. Separar las fases es lo
-    que permite contar aparte las fallas de las semillas declaradas y de las posiciones, y cachear
-    las posiciones sin servicio. Con una sola fase es exactamente `trackings_por_camino`.
+    Cada fase es `(servicio_id del caché, pelos)`. Un pelo que ya recorrió un camino de una fase
+    anterior no se vuelve a pedir. Uno que falló en una fase anterior tampoco (sería otra llamada
+    de 4,6-14 s a Cromo con el mismo resultado), pero sigue contando en cada fase que lo pide: si
+    ningún camino de esa fase lo recorre, va a sus `errores` (con el motivo original) y a sus
+    `no_cubiertos`. Así una semilla etiquetada que también estaba declarada y falló como declarada
+    deja la fase de etiquetadas incompleta, en vez de darse por vista. Uno que no se llegó a pedir
+    por un tope vuelve a entrar en la fase siguiente (que, con el tope agotado, lo deja sin
+    cubrir). Los topes de llamadas y de fallidas son los de una sola corrida: cada fase recibe lo
+    que dejaron las anteriores. Separar las fases es lo que permite contar aparte las fallas de las
+    semillas declaradas y de las posiciones, y cachear las posiciones sin servicio. Con una sola
+    fase es exactamente `trackings_por_camino`.
     """
     max_llamadas = tracking_max_llamadas()
     llamadas = 0
     fallidas = 0
-    vistos: set[int] = set()
+    cubiertos: set[int] = set()
+    fallidos: dict[int, str] = {}  # pelo → error de la fase en que falló
     resultados: list[TrackingsPorCamino] = []
     for servicio_cache, pelos in fases:
-        pendientes = [p for p in dict.fromkeys(pelos) if p not in vistos]
-        vistos.update(pendientes)
-        if not pendientes:
-            resultados.append(TrackingsPorCamino())
-            continue
-        resultado = await trackings_por_camino(
-            cliente,
-            sesion,
-            servicio_id=servicio_cache,
-            pelos_n_id=pendientes,
-            max_fallidos=_MAX_FALLIDOS_TOLERADOS - fallidas,
-            max_llamadas=max_llamadas - llamadas,
-        )
+        pedidos = [p for p in dict.fromkeys(pelos) if p not in cubiertos]
+        ya_fallidos = [p for p in pedidos if p in fallidos]
+        pendientes = [p for p in pedidos if p not in fallidos]
+        if pendientes:
+            resultado = await trackings_por_camino(
+                cliente,
+                sesion,
+                servicio_id=servicio_cache,
+                pelos_n_id=pendientes,
+                max_fallidos=_MAX_FALLIDOS_TOLERADOS - fallidas,
+                max_llamadas=max_llamadas - llamadas,
+            )
+        else:
+            resultado = TrackingsPorCamino()
         llamadas += resultado.llamadas
         fallidas += len(resultado.errores)
         for tracking in resultado.trackings:
-            vistos.update(tracking.pelos_camino | {tracking.pelo_n_id})
+            cubiertos.update(tracking.pelos_camino | {tracking.pelo_n_id})
+        for error in resultado.errores:
+            pelo = _pelo_del_error(error)
+            if pelo is not None and pelo not in cubiertos:
+                fallidos.setdefault(pelo, error)
+        for pelo in ya_fallidos:
+            if pelo not in cubiertos:
+                resultado.errores.append(fallidos[pelo])
+                resultado.no_cubiertos.append(pelo)
         resultados.append(resultado)
     return resultados
+
+
+def _pelo_del_error(error: str) -> Optional[int]:
+    """El pelo de un error de `trackings_por_camino` (`"Pelo 7028862: motivo"`), o `None`."""
+    cabeza, _, _ = error.partition(":")
+    numero = cabeza.removeprefix("Pelo ").strip()
+    return int(numero) if numero.lstrip("-").isdigit() else None
 
 
 def _pelos_de_tracking(t: TrackingGenerado) -> frozenset[int]:
@@ -1065,11 +1095,27 @@ async def trackings_del_servicio(
 
     declarados = frozenset(pelos_declarados) if aplicada else frozenset()
     etiquetados_set = frozenset(etiquetados)
+    # Una sola consulta por corrida, y sólo si hay caminos de origen POSICION: sus pelos de otro
+    # servicio Activo los bajan a RESIDUAL (el filtro de las posiciones sólo mira el pelo semilla).
+    pelos_de_posicion = frozenset().union(
+        *(
+            _pelos_de_tracking(c)
+            for c in caminos
+            if origen_del_camino(c, etiquetados=etiquetados_set, declarados=declarados)
+            == ORIGEN_POSICION
+        )
+    )
+    de_otro_activo = (
+        await pelos_de_otro_servicio_activo(sesion, servicio_id, pelos_de_posicion)
+        if pelos_de_posicion
+        else frozenset()
+    )
     roles = clasificar_con_posiciones(
         caminos,
         etiquetados=etiquetados_set,
         declarados=declarados,
         odfs_confirmadas=frozenset(confirmadas),
+        de_otro_activo=de_otro_activo,
     )
     tramos: list[TrackingGenerado] = []
     adicionales: list[TrackingGenerado] = []
@@ -1186,8 +1232,12 @@ async def trackings_del_servicio(
             etiqueta=_etiqueta_de_declaradas(vigentes_tras_retiro),
             avisos=avisos,
         ),
-        errores_posiciones=[*por_declarados.errores, *por_posiciones.errores],
-        no_cubiertos_posiciones=[*por_declarados.no_cubiertos, *por_posiciones.no_cubiertos],
+        # Sin repetir: un pelo declarado que falló vuelve a contar en la fase de posiciones si
+        # ningún camino lo recorrió (`_por_camino_en_fases`).
+        errores_posiciones=list(dict.fromkeys([*por_declarados.errores, *por_posiciones.errores])),
+        no_cubiertos_posiciones=list(
+            dict.fromkeys([*por_declarados.no_cubiertos, *por_posiciones.no_cubiertos])
+        ),
     )
 
 

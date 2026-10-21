@@ -184,11 +184,14 @@ def _fake_semillas(monkeypatch, semillas, *, total_matcheados=None, esperados=1,
     _fake_posiciones(monkeypatch)
 
 
-def _fake_posiciones(monkeypatch, *, posibles=(), declaradas=()):
+def _fake_posiciones(monkeypatch, *, posibles=(), declaradas=(), invalidas=()):
     """Stubea las posiciones del Servicio (`servicio_posicion_vigente`) sin DB.
 
-    `posibles` son pelos de posiciones posibles (en orden) y `declaradas` pelos de posiciones
-    declaradas vigentes; `pelo_es_de_posicion` y `tiene_posiciones` se resuelven contra los dos.
+    `posibles` son pelos de posiciones posibles (en orden), `declaradas` pelos de posiciones
+    declaradas vigentes que el inventario sostiene e `invalidas` pelos de declaradas vigentes que
+    `validar_en_db` ya invalidó (PELO_CAMBIO, SIN_PELO, conector inexistente). `listar_declaradas`
+    devuelve las dos, `declaradas_validas` sólo las primeras; `pelo_es_de_posicion` y
+    `tiene_posiciones` miran todo, como su SQL (la rama de declaradas no valida).
     """
     from types import SimpleNamespace
 
@@ -198,16 +201,20 @@ def _fake_posiciones(monkeypatch, *, posibles=(), declaradas=()):
         return [SimpleNamespace(pelo_n_id=p) for p in posibles]
 
     async def _declaradas(_sesion, _servicio_id):
+        return [SimpleNamespace(pelo_declarado=p) for p in (*declaradas, *invalidas)]
+
+    async def _validas(_sesion, _servicio_id):
         return [SimpleNamespace(pelo_declarado=p) for p in declaradas]
 
     async def _es_de_posicion(_sesion, _servicio_id, pelo_n_id):
-        return pelo_n_id in {*posibles, *declaradas}
+        return pelo_n_id in {*posibles, *declaradas, *invalidas}
 
     async def _tiene(_sesion, _servicio_id):
-        return bool(posibles or declaradas)
+        return bool(posibles or declaradas or invalidas)
 
     monkeypatch.setattr(pv, "posiciones_posibles", _posibles)
     monkeypatch.setattr(pv, "listar_declaradas", _declaradas)
+    monkeypatch.setattr(pv, "declaradas_validas", _validas, raising=False)
     monkeypatch.setattr(pv, "pelo_es_de_posicion", _es_de_posicion)
     monkeypatch.setattr(pv, "tiene_posiciones", _tiene)
 
@@ -395,7 +402,25 @@ def test_pelos_devuelve_lista_vacia_sin_semillas(monkeypatch):
         "total_con_posicion_odf": 0,
         "caminos_esperados": 0,
         "excluidos": [],
+        "tiene_posiciones": False,
     }
+
+
+def test_pelos_informa_tiene_posiciones_a_un_usuario_no_admin(monkeypatch):
+    """Sin semillas etiquetadas pero con posiciones de ODF (el 93150 va por pelos con la etiqueta
+    44649): el endpoint de posiciones es admin, así que `/pelos` (`_require_auth`) dice si hay con
+    qué resolver. Sin esto el panel de un no admin mostraba «no tiene ningún pelo» y ocultaba
+    Resolver / Descargar todos, aunque `/caminos` y el `.txt` sí los resuelven."""
+    _fake_session(monkeypatch)
+    _fake_frescura(monkeypatch)
+    _fake_semillas(monkeypatch, [], esperados=0)
+    _fake_posiciones(monkeypatch, posibles=[7028862, 7028863])
+
+    res = _cliente_user(monkeypatch).get(_url_pelos())
+
+    assert res.status_code == 200
+    assert res.json()["total"] == 0
+    assert res.json()["tiene_posiciones"] is True
 
 
 def test_pelos_distingue_el_universo_matcheado_de_lo_listado(monkeypatch):
@@ -804,6 +829,60 @@ def test_tracking_txt_sin_semillas_con_posiciones_no_da_409(monkeypatch):
 
     assert declarada.status_code == 200
     assert pedidos[-1] == (SERVICIO, 7028863)
+
+
+def test_tracking_txt_default_ignora_la_declarada_que_el_inventario_ya_no_sostiene(monkeypatch):
+    """El conector declarado cambió de pelo en Cromo (PELO_CAMBIO pendiente de retiro, todavía sin
+    `/caminos` ni track). Sin semillas etiquetadas, el default no puede bajar el camino del pelo
+    viejo con el número del Servicio ni cachearlo con `servicio_id` (re-atribuiría la fila a la
+    traza y a la API v1): cae a la primera posición posible, sin servicio."""
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [])
+    _fake_posiciones(monkeypatch, posibles=[7028862], invalidas=[7000001])
+    pedidos = _txt_con_registro(monkeypatch)
+
+    res = _cliente_user(monkeypatch).get(_url_txt())
+
+    assert res.status_code == 200
+    assert pedidos == [(None, 7028862)]
+
+
+def test_tracking_txt_sin_semillas_y_solo_declarada_invalida_da_409(monkeypatch):
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [])
+    _fake_posiciones(monkeypatch, invalidas=[7000001])
+    pedidos = _txt_con_registro(monkeypatch)
+
+    res = _cliente_user(monkeypatch).get(_url_txt())
+
+    assert res.status_code == 409
+    assert res.json()["estado"] == ESTADO_SIN_SEMILLA
+    assert pedidos == []
+
+
+def test_tracking_txt_pelo_de_declarada_invalida_no_se_atribuye_al_servicio(monkeypatch):
+    """Pedido explícito del pelo viejo de una declarada invalidada: si ya no es posición del
+    Servicio es ajeno (400); si sigue siendo posición posible se baja, pero sin servicio en caché."""
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(6799280)])
+    pedidos = _txt_con_registro(monkeypatch)
+    client = _cliente_user(monkeypatch)
+
+    _fake_posiciones(monkeypatch, posibles=[7028862], invalidas=[7000001])
+    ajeno = client.get(_url_txt(), params={"pelo_n_id": 7000001})
+
+    assert ajeno.status_code == 400
+    assert "no pertenece" in ajeno.json()["error"]
+    assert pedidos == []
+
+    _fake_posiciones(monkeypatch, posibles=[7000001], invalidas=[7000001])
+    posible = client.get(_url_txt(), params={"pelo_n_id": 7000001})
+
+    assert posible.status_code == 200
+    assert pedidos == [(None, 7000001)]
 
 
 def test_tracking_txt_400_pelo_ajeno_aunque_el_servicio_no_tenga_semillas(monkeypatch):

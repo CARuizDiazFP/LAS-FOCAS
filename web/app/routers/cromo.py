@@ -2132,6 +2132,7 @@ async def cromo_camino_pelos_web(
         semillas_por_defecto,
     )
     from core.services.cromo.pelos_excluidos import listar_excluidos
+    from core.services.cromo.servicio_posicion_vigente import tiene_posiciones
     from db.session import AsyncSessionLocal
 
     _require_auth(request)
@@ -2146,6 +2147,7 @@ async def cromo_camino_pelos_web(
         total_matcheados, total_con_conector = await contar_semillas(sesion, servicio_id)
         esperados = await caminos_esperados(sesion, servicio_id)
         excluidos = await listar_excluidos(sesion, servicio_id)
+        hay_posiciones = await tiene_posiciones(sesion, servicio_id)
 
     preseleccionados = [s.pelo_n_id for s in semillas_por_defecto(semillas)]
     # Si ninguna semilla tiene conector, la ODF del Servicio todavía no fue relevada y la
@@ -2178,6 +2180,11 @@ async def cromo_camino_pelos_web(
             # cable u ODF. Cuáles son esos caminos lo resuelve `/caminos`, que sí va a Cromo.
             "caminos_esperados": esperados,
             "excluidos": [_serializar_pelo_excluido(x) for x in excluidos],
+            # Hay posiciones de ODF con pelo (o una declarada vigente) con las que resolver aunque
+            # no haya semillas etiquetadas: el 93150 va por pelos con la etiqueta 44649. El endpoint
+            # de posiciones es admin; esto es lo que necesita el panel de un no admin para no decir
+            # «no tiene ningún pelo» ni ocultar Resolver / Descargar todos.
+            "tiene_posiciones": hay_posiciones,
         }
     )
 
@@ -2223,8 +2230,7 @@ async def cromo_camino_tracking_txt_web(
     from core.services.cromo.config import get_cromo_config
     from core.services.cromo import tracking_service
     from core.services.cromo.servicio_posicion_vigente import (
-        listar_declaradas,
-        pelo_es_de_posicion,
+        declaradas_validas,
         pelos_de_posiciones,
         posiciones_posibles,
     )
@@ -2263,14 +2269,23 @@ async def cromo_camino_tracking_txt_web(
                 # Va antes del 409 "sin semilla": un pelo ajeno pedido desde un Servicio sin
                 # semillas etiquetadas (el 42352 pidiendo uno del 42351) es 400.
                 if not await pelo_pertenece_al_servicio(sesion, servicio_id, pelo_n_id):
-                    if not await pelo_es_de_posicion(sesion, servicio_id, pelo_n_id):
+                    # Sólo las declaradas que el inventario sostiene (`declaradas_validas`): el pelo
+                    # viejo de una con PELO_CAMBIO pendiente de retiro ni pasa la guarda por ser
+                    # "declarado" ni se cachea con el Servicio (re-atribuiría la fila a la traza y a
+                    # la API v1). Si sigue siendo posición posible se baja, sin servicio.
+                    validos = {d.pelo_declarado for d in await declaradas_validas(sesion, servicio_id)}
+                    if pelo_n_id in validos:
+                        servicio_cache = servicio_id
+                    elif pelo_n_id in pelos_de_posiciones(
+                        await posiciones_posibles(sesion, servicio_id)
+                    ):
+                        servicio_cache = None
+                    else:
                         return JSONResponse(
                             {"error": f"El pelo {pelo_n_id} no pertenece al Servicio {servicio_id}."},
                             status_code=400,
                         )
                     solo_de_posicion = True
-                    declarados = {d.pelo_declarado for d in await listar_declaradas(sesion, servicio_id)}
-                    servicio_cache = servicio_id if pelo_n_id in declarados else None
                 elegido = pelo_n_id
             elif total_pelos > 0:
                 # Sin pedido explícito, la posición de ODF del Servicio: mismo criterio que el
@@ -2281,9 +2296,13 @@ async def cromo_camino_tracking_txt_web(
                 )
                 elegido = semillas_por_defecto(semillas)[0].pelo_n_id
             else:
-                # Sin semillas etiquetadas: la posición vigente declarada o, si no hay, la primera
-                # posición posible. Sin ninguna de las dos no hay camino que resolver.
-                declarados_lista = [d.pelo_declarado for d in await listar_declaradas(sesion, servicio_id)]
+                # Sin semillas etiquetadas: la posición vigente declarada que el inventario sostiene
+                # o, si no hay, la primera posición posible. Sin ninguna de las dos no hay camino que
+                # resolver. Una declarada que `validar_en_db` ya invalidó no es candidata ni da
+                # motivo para cachear con el Servicio.
+                declarados_lista = [
+                    d.pelo_declarado for d in await declaradas_validas(sesion, servicio_id)
+                ]
                 candidatos = declarados_lista or pelos_de_posiciones(
                     await posiciones_posibles(sesion, servicio_id)
                 )

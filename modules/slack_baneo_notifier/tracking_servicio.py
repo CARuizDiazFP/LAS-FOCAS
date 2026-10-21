@@ -111,7 +111,9 @@ class TrackingArchivo:
 
 @dataclass(slots=True)
 class ResultadoTrack:
-    """`estado` es "ok" cuando hay al menos un archivo; si no, el motivo por el que no lo hay.
+    """`estado` es "ok" cuando hay al menos un archivo o, en modo normal, algún camino adicional
+    (sin tramos no se sube nada, pero el resumen avisa los adicionales e invita a `full`); si no,
+    el motivo por el que no lo hay.
 
     `errores` puede venir poblado junto con archivos: un Servicio de 4 posiciones de ODF donde una
     sola falla igual entrega las otras tres, en vez de perderlas por un pelo roto.
@@ -139,6 +141,9 @@ class ResultadoTrack:
     etiquetas_adicionales: str = ""
     # Etiqueta de la posición vigente declarada, sólo si se aplicó en esta corrida.
     posicion_declarada: str = ""
+    # Hay posiciones declaradas vigentes aunque no se hayan aplicado en esta corrida (camino no
+    # resuelto o incompleto): el resumen no puede pedir que se declare lo que ya está declarado.
+    hay_declaradas: bool = False
     # Retiros y avisos de la posición vigente (`servicio_posicion_vigente.textos_avisos`).
     avisos_posicion: list[str] = field(default_factory=list)
     # Vigentes/tramos + adicionales: contra esto se comparan los esperados. `None` = comportamiento
@@ -206,7 +211,18 @@ def _linea_adicionales(resultado: ResultadoTrack) -> str:
             if resultado.etiquetas_adicionales
             else ""
         )
-        return f"{hay}{etiqueta}. Declarar la posición vigente en el Detalle de Servicio."
+        linea = f"{hay}{etiqueta}."
+        # Con una declaración vigente que no se pudo aplicar, el aviso de arriba ya dice que se
+        # mantiene: pedir que se declare la posición sería contradictorio.
+        if not resultado.hay_declaradas:
+            linea += " Declarar la posición vigente en el Detalle de Servicio."
+        # Sin tramos no se subió nada: la única forma de bajar estos caminos es `full`.
+        if not resultado.full and not resultado.archivos:
+            linea += (
+                f" No hay tramos para subir: pedí `track {resultado.numero_servicio} full` para "
+                "bajar los adicionales."
+            )
+        return linea
     linea = f"Posición vigente declarada: {resultado.posicion_declarada}. {hay}."
     if not resultado.full:
         linea += f" No se suben: pedí `track {resultado.numero_servicio} full` para incluirlos."
@@ -230,7 +246,8 @@ def resultado_de_trackings(
     En modo normal se suben los vigentes/tramos (ya con su nombre `{n} CROMO T{k} pelo X.txt`) y
     los adicionales sólo se mencionan; en `full`, un `.txt` por camino resuelto (`caminos_resueltos`
     = vigentes/tramos ∪ adicionales, con los nombres T{k} y A{k} que puso el core). Los residuales
-    nunca se suben ni se mencionan.
+    nunca se suben ni se mencionan. Sin tramos pero con adicionales (Servicio cuyas semillas son
+    todas posiciones), en modo normal es "ok" sin archivos: el resumen los avisa, no es un error.
     """
     from core.services.cromo.servicio_posicion_vigente import etiqueta_posiciones, textos_avisos
 
@@ -238,7 +255,7 @@ def resultado_de_trackings(
     errores = del_servicio.errores
     origen = del_servicio.caminos_resueltos if full else del_servicio.tramos
     archivos = [_archivo(tracking) for tracking in origen]
-    if not archivos:
+    if not archivos and not del_servicio.adicionales:
         mensaje = "No se pudo generar ningún tracking para este Servicio."
         return ResultadoTrack(
             estado=ESTADO_ERROR,
@@ -260,6 +277,7 @@ def resultado_de_trackings(
         posiciones_adicionales=etiqueta_posiciones(p for info in infos for p in info.posiciones),
         etiquetas_adicionales=", ".join(etiquetas),
         posicion_declarada=del_servicio.posicion.etiqueta if del_servicio.posicion.aplicada else "",
+        hay_declaradas=bool(del_servicio.posicion.declaradas),
         avisos_posicion=avisos,
         caminos_resueltos=len(del_servicio.caminos_resueltos),
         tramos=len(del_servicio.tramos),
@@ -431,6 +449,8 @@ POSICION_OK = "ok"
 POSICION_INEXISTENTE = "inexistente"
 POSICION_SIN_PELO = "sin_pelo"
 POSICION_SIN_CAMINO = "sin_camino"
+# Cromo se cayó en esta posición o antes de pedirla: quedó sin resolver (no es que no exista).
+POSICION_CROMO_CAIDO = "cromo_caido"
 
 _MAX_CANDIDATAS_LISTADAS = 10
 
@@ -452,7 +472,8 @@ class PosicionTrack:
 @dataclass(slots=True)
 class ResultadoTrackOdf:
     """`estado`: "ok", patchera no encontrada o ambigua (`candidatas`), o error de Cromo (`mensaje`,
-    con las `posiciones` que se llegaron a resolver antes de la caída)."""
+    que lista los conectores que quedaron sin resolver; en `posiciones` siguen todas, las que no se
+    llegaron a resolver con `POSICION_CROMO_CAIDO`)."""
 
     estado: str
     patchera: str
@@ -460,10 +481,6 @@ class ResultadoTrackOdf:
     candidatas: list[Any] = field(default_factory=list)
     posiciones: list[PosicionTrack] = field(default_factory=list)
     mensaje: str = ""
-
-
-def _es_activo(estado: Optional[str]) -> bool:
-    return (estado or "").strip().lower() == "activo"
 
 
 def _con_estado(numero: str, estado: Optional[str]) -> str:
@@ -528,7 +545,8 @@ def texto_candidatas(patchera: str, candidatas: list[Any]) -> str:
 
 
 def texto_posicion_sin_archivo(patchera: str, posicion: PosicionTrack) -> Optional[str]:
-    """Aviso de un conector que no dio `.txt`, o `None` si dio."""
+    """Aviso de un conector que no dio `.txt`, o `None` si dio. Las `POSICION_CROMO_CAIDO` también
+    dan `None`: se informan todas juntas en el `mensaje` de la caída, no una línea por conector."""
     donde = f"`{patchera}:{posicion.conector}`"
     if posicion.estado == POSICION_INEXISTENTE:
         return f":mag: {donde} no existe en esa patchera."
@@ -557,8 +575,10 @@ async def resolver_posiciones(
 
     `abrir_cliente()` devuelve el context manager async del cliente de Cromo; se abre una sola vez
     y sólo si algún conector tiene pelo. El pelo es el del conector o, si no tiene, el del conector
-    al que tiene patch (un salto). La caché se atribuye al Servicio del conector sólo si está
-    Activo; si no, `servicio_id=None` (el upsert conserva la atribución que ya tuviera la fila).
+    al que tiene patch (un salto). La caché se guarda SIEMPRE con `servicio_id=None` (el COALESCE
+    del upsert conserva la atribución que ya tuviera la fila): el `servicio_resuelto` del conector
+    no prueba que el pelo sea de ese Servicio (hay conectores de un Activo cuyo pelo matchea a OTRO
+    Activo, caso 42352↔42351), y atribuirlo metería un camino ajeno en la traza y la API v1.
     No escribe auditoría ni evidencia del árbitro: una posición suelta no es el Servicio entero.
     """
     from core.services.cromo import client as cromo_client
@@ -606,18 +626,28 @@ async def resolver_posiciones(
                 tracking = await tracking_service.obtener_tracking(
                     cliente,
                     sesion,
-                    servicio_id=conector.servicio_pk if _es_activo(conector.estado_servicio) else None,
+                    servicio_id=None,
                     pelo_n_id=pelo,
                 )
             except tracking_service.TrackingNoDisponible as exc:
                 posicion.estado, posicion.motivo = POSICION_SIN_CAMINO, exc.motivo or str(exc)
                 continue
             except cromo_client.CromoClientError as exc:
-                # Cromo caído: lo ya resuelto se entrega, el resto no se llegó a pedir.
-                resultado.posiciones = resultado.posiciones[:indice] + [
-                    p for p in resultado.posiciones[indice + 1 :] if p.estado != POSICION_OK
+                # Cromo caído: lo ya resuelto se entrega y el resto (esta y las que no se llegaron
+                # a pedir) queda marcado y se lista en el mensaje, para que no parezca omitido.
+                sin_resolver = [
+                    p
+                    for p in (resultado.posiciones[i] for i, _ in pendientes)
+                    if p.estado == POSICION_OK and p.archivo is None
                 ]
-                resultado.estado, resultado.mensaje = ESTADO_ERROR, f"Cromo no respondió: {exc}"
+                for pendiente in sin_resolver:
+                    pendiente.estado = POSICION_CROMO_CAIDO
+                lista = ",".join(str(p.conector) for p in sin_resolver)
+                resultado.estado = ESTADO_ERROR
+                resultado.mensaje = (
+                    f"Cromo no respondió: {exc}. Quedaron sin resolver: "
+                    f"`{bandeja.bandeja_nombre}:{lista}`."
+                )
                 return resultado
             posicion.descripcion = descripcion_posicion(bandeja, conector)
             posicion.archivo = TrackingArchivo(

@@ -352,3 +352,56 @@ def test_tracking_txt_400_para_un_pelo_del_42351_pedido_desde_el_42352_real(monk
 
     assert res.status_code == 400
     assert res.json()["error"] == "El pelo 6976963 no pertenece al Servicio 568."
+
+
+def _camino_sin_cromo(monkeypatch) -> list[int]:
+    """`CromoClient` inerte y `/path` stubeado: registra qué pelo se pidió y nunca sale a la red.
+    Devuelve `SIN_CAMINO` para que el endpoint no registre evidencia del árbitro en la DB real."""
+    from core.services.cromo import camino_optico_service as svc
+
+    class _Cliente:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    pedidos: list[int] = []
+
+    async def _camino_de_pelo(_cliente, _sesion, pelo_n_id, **_k):
+        pedidos.append(pelo_n_id)
+        return svc.CaminoOptico(estado=svc.ESTADO_SIN_CAMINO, pelo_n_id=pelo_n_id, motivo="stub")
+
+    monkeypatch.setattr("core.services.cromo.client.CromoClient", lambda config=None: _Cliente())
+    monkeypatch.setattr("core.services.cromo.config.get_cromo_config", lambda: object())
+    monkeypatch.setattr(svc, "resolver_camino_de_pelo", _camino_de_pelo)
+    return pedidos
+
+
+@requiere_postgres_real
+def test_camino_optico_acepta_el_pelo_de_posicion_del_93150_real(monkeypatch, _testing, db_real):
+    """«Detalle» de un tramo VIGENTE / adicional del 93150: el pelo 7028862 (O-1252871-1:1) lleva la
+    etiqueta 44649, no es semilla etiquetada, pero es posición del Servicio. Antes daba 400."""
+    pedidos = _camino_sin_cromo(monkeypatch)
+
+    res = _cliente_admin(monkeypatch).get(
+        "/api/admin/infra/servicios-odf/4/camino-optico", params={"pelo_n_id": 7028862}
+    )
+
+    assert res.status_code == 200, res.text
+    assert pedidos == [7028862]
+
+
+@requiere_postgres_real
+def test_camino_optico_400_para_un_pelo_del_42351_pedido_desde_el_42352_real(monkeypatch, _testing, db_real):
+    """El guard no se afloja: el pelo 6976963 es del 42351 (Activo), ni etiquetado ni posición del
+    42352. 400 sin llegar a `/path`."""
+    pedidos = _camino_sin_cromo(monkeypatch)
+
+    res = _cliente_admin(monkeypatch).get(
+        "/api/admin/infra/servicios-odf/568/camino-optico", params={"pelo_n_id": 6976963}
+    )
+
+    assert res.status_code == 400
+    assert res.json()["error"] == "El pelo 6976963 no pertenece al Servicio 568."
+    assert pedidos == []

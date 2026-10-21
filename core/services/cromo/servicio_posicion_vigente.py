@@ -21,7 +21,9 @@ Como las semillas del tracking salen de pelos etiquetados, ese camino nunca se c
   pelos candidatos del conector (`pelo_n_id` más los de `tp[]`): la ingesta puede cambiar cuál
   elige como `pelo_n_id` cuando entra el cable de un tercero, y eso no es un cambio de pelo.
 - **Retirar** (`retirar`): `vigente=false`, condicionado por id **y** por el pelo leído, para que un
-  retiro automático calculado con datos viejos nunca pise una re-declaración concurrente.
+  retiro automático calculado con datos viejos nunca pise una re-declaración concurrente. Un retiro
+  efectivo le saca al Servicio la atribución del caché de esos pelos (salvo etiquetados u otra
+  declarada vigente), para que la traza no siga mostrando el camino retirado.
 - **Validación**: `validar_en_db` (pura) retira por conector inexistente, sin pelo o con un pelo
   que ya no es ninguno de los candidatos. `validar_camino` detecta pelos Cortados/Dañados o cables
   "Sin Uso" en el camino declarado, y `decidir_retiro` sólo retira por eso si existe otro camino
@@ -67,6 +69,7 @@ __all__ = [
     "PosicionNoValida",
     "PosicionPosible",
     "aplicar_retiros",
+    "declaradas_validas",
     "declarar",
     "decidir_retiro",
     "es_estado_pelo_danado",
@@ -74,6 +77,7 @@ __all__ = [
     "listar_declaradas",
     "par_sugerido",
     "pelo_es_de_posicion",
+    "pelos_de_otro_servicio_activo",
     "pelos_de_posiciones",
     "posiciones_posibles",
     "retirar",
@@ -226,11 +230,36 @@ _DECLARADA_VIGENTE_SQL = (
     "SELECT 1 FROM app.servicio_posicion_vigente d WHERE d.servicio_id = :servicio_id AND d.vigente"
 )
 
+# La rama de declaradas replica `validar_en_db`: el conector sigue vigente, con pelo, y ese pelo es el
+# declarado o uno de los candidatos. Una declarada con PELO_CAMBIO, SIN_PELO o CONECTOR_INEXISTENTE
+# pendiente de retiro no habilita su pelo viejo en la guarda del `.txt` (bajaría el camino viejo con
+# el número del Servicio y re-atribuiría el caché a su traza).
 _SQL_PELO_ES_DE_POSICION = text(
     f"""
     {_CTE_POSICIONES}
     SELECT EXISTS (SELECT 1 {_FROM_POSICIONES} AND c.pelo_n_id = :pelo_n_id)
-        OR EXISTS ({_DECLARADA_VIGENTE_SQL} AND d.pelo_n_id = :pelo_n_id)
+        OR EXISTS (
+            SELECT 1 FROM app.servicio_posicion_vigente d
+            JOIN app.cromo_odf_conectores cd ON cd.n_id = d.conector_n_id AND cd.vigente
+            WHERE d.servicio_id = :servicio_id AND d.vigente AND d.pelo_n_id = :pelo_n_id
+              AND cd.pelo_n_id IS NOT NULL
+              AND (cd.pelo_n_id = d.pelo_n_id OR cd.pelo_n_id = ANY(d.pelos_candidatos))
+        )
+    """
+)
+
+# Los pelos (de un camino ya resuelto) que matchean a otro servicio Activo y no a este: el mismo
+# fragmento que filtra el pelo semilla, negado, sobre `unnest(:pelos)`. Una sola consulta por corrida.
+_SQL_PELOS_DE_OTRO_SERVICIO_ACTIVO = text(
+    f"""
+    WITH s AS (
+        SELECT id, servicio_id, numero_primer_servicio, alias_ids
+        FROM app.servicios WHERE id = :servicio_id
+    )
+    SELECT u.pelo_n_id
+    FROM unnest(CAST(:pelos AS bigint[])) AS u(pelo_n_id)
+    CROSS JOIN s
+    WHERE NOT (TRUE {SIN_PELO_DE_OTRO_SERVICIO_ACTIVO_SQL.format(pelo="u.pelo_n_id")})
     """
 )
 
@@ -283,6 +312,32 @@ _SQL_RETIRAR = text(
     SET vigente = false, retirado_en = CURRENT_TIMESTAMP, retirado_por = :usuario,
         motivo_retiro = :motivo, detalle_retiro = CAST(:detalle AS jsonb)
     WHERE id = :id AND vigente AND pelo_n_id = :pelo_leido
+    """
+)
+
+# Después de un retiro efectivo (misma transacción): el caché deja de atribuir al Servicio los pelos de
+# la declaración retirada (`pelo_n_id` y candidatos). Sin esto, el upsert con `COALESCE` de
+# `tracking_cache.guardar` conservaba el Servicio cuando la fase de posiciones volvía a sembrar el
+# pelo con `servicio_id=None`, y la traza (y la API v1) seguía mostrando el camino retirado. Se
+# conserva si el pelo está etiquetado al Servicio o si lo sostiene otra declaración vigente suya.
+_SQL_LIMPIAR_CACHE_RETIRADA = text(
+    f"""
+    UPDATE app.cromo_tracking_cache tc
+    SET servicio_id = NULL
+    FROM app.servicio_posicion_vigente d
+    JOIN app.servicios s ON s.id = d.servicio_id
+    WHERE d.id = :id
+      AND tc.servicio_id = d.servicio_id
+      AND tc.pelo_n_id = ANY(ARRAY[d.pelo_n_id] || COALESCE(d.pelos_candidatos, ARRAY[]::bigint[]))
+      AND NOT EXISTS (
+          SELECT 1 FROM app.v_cromo_servicio_match_vigente m
+          WHERE m.pelo_n_id = tc.pelo_n_id AND ({IDENTIDADES_DEL_SERVICIO_SQL})
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM app.servicio_posicion_vigente d2
+          WHERE d2.servicio_id = d.servicio_id AND d2.vigente AND d2.id <> d.id
+            AND d2.pelo_n_id = tc.pelo_n_id
+      )
     """
 )
 
@@ -456,11 +511,30 @@ async def tiene_posiciones(sesion: AsyncSession, servicio_id: int) -> bool:
 
 
 async def pelo_es_de_posicion(sesion: AsyncSession, servicio_id: int, pelo_n_id: int) -> bool:
-    """¿El pelo es de una posición posible (mismos filtros) o de una declarada vigente? Guarda del `.txt`."""
+    """¿El pelo es de una posición posible (mismos filtros) o de una declarada vigente que el
+    inventario todavía sostiene (mismo criterio que `validar_en_db`)? Guarda del `.txt`."""
     resultado = await sesion.execute(
         _SQL_PELO_ES_DE_POSICION, {"servicio_id": servicio_id, "pelo_n_id": pelo_n_id}
     )
     return bool(resultado.scalar())
+
+
+async def pelos_de_otro_servicio_activo(
+    sesion: AsyncSession, servicio_id: int, pelos: Iterable[int]
+) -> frozenset[int]:
+    """Los `pelos` que matchean a otro servicio Activo y a ninguna identidad de este, en UNA consulta.
+
+    Mismo criterio que `SIN_PELO_DE_OTRO_SERVICIO_ACTIVO_SQL`, pero sobre los pelos de un camino ya
+    resuelto y no sólo sobre el pelo semilla: un conector resuelto a este Servicio con un pelo sin
+    etiqueta pasa el filtro de las posiciones, y su `/path` puede recorrer pelos de otro Activo.
+    """
+    ids = sorted({int(p) for p in pelos})
+    if not ids:
+        return frozenset()
+    filas = (
+        await sesion.execute(_SQL_PELOS_DE_OTRO_SERVICIO_ACTIVO, {"servicio_id": servicio_id, "pelos": ids})
+    ).all()
+    return frozenset(int(f[0]) for f in filas)
 
 
 def _numero(conector: Optional[str]) -> Optional[int]:
@@ -520,6 +594,15 @@ async def listar_declaradas(sesion: AsyncSession, servicio_id: int) -> list[Posi
     """Las posiciones declaradas VIGENTES del Servicio, con el estado actual del conector en la ingesta."""
     filas = (await sesion.execute(_SQL_LISTAR_DECLARADAS, {"servicio_id": servicio_id})).all()
     return [_declarada_de_fila(f) for f in filas]
+
+
+async def declaradas_validas(sesion: AsyncSession, servicio_id: int) -> list[PosicionDeclarada]:
+    """Las declaradas vigentes que el inventario ingerido todavía sostiene (sin aviso de
+    `validar_en_db`). Las demás están pendientes de retiro: no sirven como candidatas ni para
+    atribuir el caché al Servicio (endpoint del `.txt`)."""
+    declaradas = await listar_declaradas(sesion, servicio_id)
+    invalidas = {a.declaracion_id for a in validar_en_db(declaradas)}
+    return [d for d in declaradas if d.id not in invalidas]
 
 
 async def declarar(
@@ -584,7 +667,9 @@ async def retirar(
     """Retira la declaración (`vigente=false`, se conserva la fila) en su propia transacción.
 
     Condicionado por id y por el pelo con que se leyó: `False` si ya no estaba vigente o si se
-    re-declaró con otro pelo mientras tanto. `ValueError` si el motivo no es uno del CHECK.
+    re-declaró con otro pelo mientras tanto. `ValueError` si el motivo no es uno del CHECK. Un
+    retiro efectivo además le saca al Servicio la atribución del caché de esos pelos
+    (`_SQL_LIMPIAR_CACHE_RETIRADA`), en la misma transacción.
     """
     if motivo not in MOTIVOS_RETIRO:
         raise ValueError(f"Motivo inválido {motivo!r}: debe ser uno de {', '.join(MOTIVOS_RETIRO)}.")
@@ -598,8 +683,11 @@ async def retirar(
             "detalle": json.dumps(detalle, ensure_ascii=False, default=str) if detalle else None,
         },
     )
+    retirada = bool(resultado.rowcount)
+    if retirada:
+        await sesion.execute(_SQL_LIMPIAR_CACHE_RETIRADA, {"id": declaracion_id})
     await sesion.commit()
-    return bool(resultado.rowcount)
+    return retirada
 
 
 async def retirar_manual(

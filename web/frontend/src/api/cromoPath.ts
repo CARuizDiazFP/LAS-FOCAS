@@ -266,6 +266,12 @@ export interface PelosCaminoResponse {
   caminos_esperados?: number;
   /** Pelos que se sacaron del Servicio en local (huérfanos excluidos). */
   excluidos?: PeloExcluido[];
+  /**
+   * Hay posiciones de ODF con pelo (o una declarada vigente) con las que resolver aunque no haya
+   * semillas etiquetadas (el 93150 va por pelos con la etiqueta 44649). Viene acá porque el
+   * endpoint de posiciones es admin: un no admin no tiene otra forma de saberlo.
+   */
+  tiene_posiciones?: boolean;
 }
 
 export interface PeloExcluido {

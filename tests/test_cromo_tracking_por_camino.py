@@ -518,9 +518,15 @@ def declaraciones(monkeypatch):
         posibles = list(estado.get("posibles", [])) if modo == "todas" else []
         return posibles, list(estado.get("declaradas", []))
 
+    async def _de_otro_activo(_sesion, servicio_id, pelos):
+        # Pelos de otro servicio Activo entre los de los caminos de posición: ninguno por defecto.
+        estado.setdefault("consultas_otro_activo", []).append((servicio_id, sorted(pelos)))
+        return frozenset(estado.get("de_otro_activo", ())) & frozenset(pelos)
+
     monkeypatch.setattr(tracking_service, "declaraciones_del_servicio", _leer)
     monkeypatch.setattr(tracking_service, "numero_del_servicio", _numero)
     monkeypatch.setattr(tracking_service, "posiciones_del_servicio", _posiciones)
+    monkeypatch.setattr(tracking_service, "pelos_de_otro_servicio_activo", _de_otro_activo)
     return estado
 
 
@@ -1552,3 +1558,84 @@ async def test_retiro_que_falla_no_rompe_el_resultado(monkeypatch, caso_93150):
     assert [a.codigo for a in resultado.posicion.avisos] == ["SIN_PELO"]
     assert _Sesion.rollbacks == 1
     assert _pelos(resultado.tramos) == [6799280, 6799281]
+
+
+# ── Hallazgos de revisión: camino de otro Activo y semilla declarada fallida ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_adicional_de_posicion_que_recorre_pelos_de_otro_activo_pasa_a_residual(caso_93150):
+    """El camino viejo (7028862/63, origen POSICION) recorre un pelo de otro servicio Activo: no
+    puede ofrecerse como ADICIONAL. Se consulta UNA sola vez por corrida, sólo con los pelos de
+    los caminos de posición (los etiquetados no entran)."""
+    from tests.test_cromo_tracking_clasificacion import _caminos_93150
+
+    viejo = _caminos_93150()[0]
+    ajeno = next(iter(viejo.pelos_camino - {viejo.pelo_n_id}))
+    caso_93150["declaraciones"]["de_otro_activo"] = {ajeno}
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 4)
+
+    assert _pelos(resultado.tramos) == [6799280, 6799281]
+    assert _pelos(resultado.adicionales) == [7028863]
+    assert sorted(_pelos(resultado.residuales)) == [7028862, 7469850]
+    (consulta,) = caso_93150["declaraciones"]["consultas_otro_activo"]
+    servicio, pelos = consulta
+    assert servicio == 4
+    assert ajeno in pelos and 7028862 in pelos and 7028863 in pelos
+    assert 6799280 not in pelos and 7469850 not in pelos
+
+
+@pytest.mark.asyncio
+async def test_camino_declarado_por_pelos_de_otro_activo_sigue_vigente(caso_93150):
+    """Lo declarado es decisión explícita del admin: el filtro no lo toca, y sin caminos de
+    posición no se consulta."""
+    from tests.test_cromo_tracking_clasificacion import _caminos_93150
+
+    caso_93150["declaraciones"]["declaradas"] = list(_DECLARADAS_93150)
+    caso_93150["declaraciones"]["de_otro_activo"] = set(_caminos_93150()[0].pelos_camino)
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 4)
+
+    assert resultado.posicion.aplicada is True
+    assert _pelos(resultado.tramos) == [7028862, 7028863]
+    assert caso_93150["declaraciones"].get("consultas_otro_activo", []) == []
+
+
+@pytest.mark.asyncio
+async def test_semilla_etiquetada_declarada_que_falla_cuenta_como_incompleta(caso_93150):
+    """7469850 está etiquetada con el Servicio y además declarada. Si su pedido como declarada
+    falla, la fase de etiquetadas no puede darla por vista: sigue en `errores`/`no_cubiertos`, la
+    corrida no audita y la evidencia sale incompleta. No se vuelve a pedir a Cromo."""
+    caso_93150["declaraciones"]["declaradas"] = [_declarada(9, 8546320, "4", 7469850)]
+    caso_93150["fallan"] = {7469850}
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 4)
+
+    assert resultado.errores == ["Pelo 7469850: sin camino"]
+    assert resultado.no_cubiertos == [7469850]
+    assert resultado.auditoria_omitida == "INCOMPLETO"
+    assert caso_93150["auditorias"] == []
+    assert [p for p, _ in caso_93150["pedidos"]].count(7469850) == 1
+    # La falla de la declarada sigue informándose una sola vez entre las de posiciones.
+    assert resultado.errores_posiciones == ["Pelo 7469850: sin camino"]
+    assert resultado.no_cubiertos_posiciones == [7469850]
+
+
+@pytest.mark.asyncio
+async def test_semilla_declarada_fallida_que_otro_camino_cubre_no_es_incompleta(monkeypatch, caso_93150):
+    """Si el pedido como declarada de 6799284 (etiquetada en este caso) falla pero el camino de otra
+    semilla etiquetada (7028862, el viejo) lo recorre, quedó cubierta: la corrida es completa."""
+
+    async def _semillas(_sesion, _servicio_id):
+        return [_semilla(p) for p in (6799284, 7028862, 6799280, 6799281, 7469850)]
+
+    monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    caso_93150["declaraciones"]["declaradas"] = [_declarada(3, 8546318, "5", 6799284)]
+    caso_93150["fallan"] = {6799284}
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 4)
+
+    assert resultado.errores == [] and resultado.no_cubiertos == []
+    assert resultado.auditoria_omitida is None
+    assert [p for p, _ in caso_93150["pedidos"]].count(6799284) == 1

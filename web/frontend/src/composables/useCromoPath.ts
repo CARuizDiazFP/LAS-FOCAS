@@ -205,6 +205,8 @@ export function useCromoPath() {
   const posicionesDeclaradas = ref<PosicionDeclarada[]>([]);
   const cargandoPosiciones = ref(false);
   const errorPosiciones = ref('');
+  /** `tiene_posiciones` de `/pelos`: lo único que ve un no admin (posiciones es un endpoint admin). */
+  const posicionesEnServidor = ref(false);
   /**
    * `true` si las posiciones ya se cargaron una vez (sólo un admin puede): recién ahí tiene sentido
    * recargarlas cuando la resolución de caminos retira alguna. Un no admin recibiría un 403.
@@ -260,7 +262,11 @@ export function useCromoPath() {
    * pelos con la etiqueta de un servicio de Baja del mismo cliente.
    */
   const tienePosiciones = computed(
-    () => posicionesPosibles.value.length > 0 || posicionesDeclaradas.value.length > 0,
+    () =>
+      posicionesEnServidor.value ||
+      // Un conector sin pelo se lista en el selector pero no es input de `/path`.
+      posicionesPosibles.value.some((p) => p.pelo_n_id !== null) ||
+      posicionesDeclaradas.value.length > 0,
   );
   const avisoLento = computed(() => resolviendo.value && segundos.value >= AVISO_LENTO_MS / 1000);
   const peloActivo = computed<PeloSemilla | null>(
@@ -335,9 +341,11 @@ export function useCromoPath() {
       totalConPosicionOdf.value = respuesta.total_con_posicion_odf ?? 0;
       caminosEsperados.value = respuesta.caminos_esperados ?? 0;
       excluidos.value = respuesta.excluidos ?? [];
+      posicionesEnServidor.value = respuesta.tiene_posiciones ?? false;
     } catch (error) {
       errorPelos.value = mensajeErrorCromoPath(error);
       pelos.value = [];
+      posicionesEnServidor.value = false;
     } finally {
       cargandoPelos.value = false;
     }
@@ -755,6 +763,7 @@ export function useCromoPath() {
     estadoPosicion.value = null;
     posicionesPosibles.value = [];
     posicionesDeclaradas.value = [];
+    posicionesEnServidor.value = false;
     cargandoPosiciones.value = false;
     errorPosiciones.value = '';
     posicionesCargadas = false;

@@ -924,8 +924,8 @@ def test_resolver_posiciones_ok_sin_pelo_e_inexistente(posiciones_con_fakes):
     # Nunca el at.62 del pelo (4649): el nombre sale del servicio del conector.
     assert ok.archivo.nombre == "93150 CROMO O-1252871-1_1 pelo 7028862.txt"
     assert ok.descripcion.startswith("`O-1252871-1:1` · ODF San Martin 137 P5 D · pelo 7028862")
-    # Servicio Activo: la caché se atribuye al Servicio.
-    assert estado["tracking_llamadas"] == [(4, 7028862)]
+    # Aunque el Servicio del conector esté Activo, la caché no se le atribuye (hallazgo 2026-10-21).
+    assert estado["tracking_llamadas"] == [(None, 7028862)]
     assert estado["clientes_abiertos"] == 1
 
 
@@ -963,8 +963,11 @@ def test_resolver_posiciones_cromo_caido_es_error_y_conserva_lo_hecho(posiciones
     estado["fallan"] = {7028863: client_mod.CromoClientError("timeout")}
     resultado = _resolver(estado, "O-1252871-1", (1, 2))
     assert resultado.estado == ts_mod.ESTADO_ERROR
-    assert resultado.mensaje == "Cromo no respondió: timeout"
-    assert [p.conector for p in resultado.posiciones] == [1]
+    assert resultado.mensaje == "Cromo no respondió: timeout. Quedaron sin resolver: `O-1252871-1:2`."
+    assert [(p.conector, p.estado) for p in resultado.posiciones] == [
+        (1, ts_mod.POSICION_OK),
+        (2, ts_mod.POSICION_CROMO_CAIDO),
+    ]
 
 
 def test_resolver_posiciones_sin_pelos_no_abre_cromo(posiciones_con_fakes):
@@ -1176,7 +1179,7 @@ def test_resolver_posiciones_con_datos_reales_del_93150(monkeypatch):
         (2, ts_mod.POSICION_OK),
         (5, ts_mod.POSICION_SIN_PELO),
     ]
-    assert llamadas == [(4, 7028862), (4, 7028863)]
+    assert llamadas == [(None, 7028862), (None, 7028863)]
     uno = resultado.posiciones[0]
     assert uno.archivo.nombre == "93150 CROMO O-1252871-1_1 pelo 7028862.txt"
     assert uno.descripcion == (
@@ -1184,3 +1187,166 @@ def test_resolver_posiciones_con_datos_reales_del_93150(monkeypatch):
         "conector: 93150 BANCO DE LA PROVINCIA DE BUENOS AIRES (Activo) · "
         "etiqueta del pelo: 44649 (Baja)"
     )
+
+
+# ── Hallazgos de revisión (2026-10-21) ───────────────────────────────────────
+
+from core.services.cromo.servicio_posicion_vigente import (  # noqa: E402
+    AVISO_CAMINO_NO_RESUELTO,
+    PosicionDeclarada,
+)
+
+
+def test_track_odf_nunca_atribuye_la_cache_al_servicio_del_conector(posiciones_con_fakes):
+    """El `servicio_resuelto` del conector no prueba que el pelo sea de ese Servicio (hay ~94
+    conectores de un Activo cuyo pelo matchea a OTRO Activo, caso 42352↔42351). `servicio_id=None`:
+    el COALESCE del upsert conserva la atribución que ya tenga la fila."""
+    estado = posiciones_con_fakes
+    estado["conectores"] = [
+        _conector_93150("1", 7028862),
+        replace_conector(_conector_93150("2", 7028863), estado_servicio="Activo"),
+    ]
+    _resolver(estado, "O-1252871-1", (1, 2))
+    assert estado["tracking_llamadas"] == [(None, 7028862), (None, 7028863)]
+
+
+def _del_servicio_solo_adicionales(**kw) -> TrackingsDelServicio:
+    """Servicio sin pelos etiquetados: todo sale de posiciones, sin tramos y con 2 adicionales."""
+    adicionales = [
+        _tracking(7028862, "93150 CROMO A1 pelo 7028862.txt"),
+        _tracking(7028863, "93150 CROMO A2 pelo 7028863.txt"),
+    ]
+    return _del_servicio_93150(tramos=[], adicionales=adicionales, caminos_resueltos=adicionales, **kw)
+
+
+def test_resultado_normal_sin_tramos_pero_con_adicionales_no_es_error():
+    resultado = ts_mod.resultado_de_trackings(
+        _del_servicio_solo_adicionales(), full=False, numero_servicio="93150"
+    )
+    assert resultado.estado == ts_mod.ESTADO_OK
+    assert resultado.archivos == []
+    assert resultado.adicionales == 2
+    assert ts_mod.mensaje_resumen(resultado) == (
+        "Hay 2 camino(s) óptico(s) adicional(es) por O-1252871-1:1,2 (pelos con etiqueta 44649). "
+        "Declarar la posición vigente en el Detalle de Servicio. No hay tramos para subir: pedí "
+        "`track 93150 full` para bajar los adicionales."
+    )
+
+
+def test_resultado_full_sin_tramos_sube_los_adicionales_sin_invitar_a_full():
+    resultado = ts_mod.resultado_de_trackings(
+        _del_servicio_solo_adicionales(), full=True, numero_servicio="93150"
+    )
+    assert len(resultado.archivos) == 2
+    assert "track 93150 full" not in ts_mod.mensaje_resumen(resultado)
+
+
+def test_track_normal_ok_sin_archivos_no_sube_nada_y_publica_el_resumen():
+    listener = _listener()
+    client = MagicMock()
+    servicio = SimpleNamespace(id=4, servicio_id="93150", nombre_cliente="X")
+    resultado = ts_mod.resultado_de_trackings(
+        _del_servicio_solo_adicionales(), full=False, numero_servicio="93150"
+    )
+    with patch.object(ts_mod, "resolver_servicio", return_value=servicio), patch.object(
+        ts_mod, "generar_trackings", return_value=resultado
+    ):
+        listener._handle_track("93150", client, "C123", "1.1")
+    client.files_upload_v2.assert_not_called()
+    textos = [c[1]["text"] for c in client.chat_postMessage.call_args_list]
+    assert len(textos) == 2
+    assert "No se pudo generar" not in textos[1]
+    assert textos[1].startswith("Hay 2 camino(s) óptico(s) adicional(es) por O-1252871-1:1,2")
+    assert "`track 93150 full`" in textos[1]
+
+
+def _declarada(conector: str, pelo: int) -> PosicionDeclarada:
+    return PosicionDeclarada(
+        id=int(conector),
+        conector_n_id=8604881 + int(conector),
+        odf_n_id=6644560,
+        odf_nombre="ODF San Martin 137 P5 D",
+        bandeja_n_id=8604881,
+        bandeja_nombre="O-1252871-1",
+        numero_conector=conector,
+        pelo_declarado=pelo,
+        pelos_candidatos=(pelo,),
+        pelo_actual=pelo,
+        conector_existe=True,
+        declarado_por="admin",
+        declarado_en=None,
+    )
+
+
+def test_declaracion_no_aplicada_no_pide_declarar_la_posicion():
+    """Declarada O-1252871-1:1,2 y Cromo no resolvió el :1 en esta corrida: el aviso dice que la
+    declaración se mantiene, así que la línea de adicionales no puede pedir que se declare."""
+    aviso = AvisoPosicion(
+        conector_n_id=8604882, posicion="O-1252871-1:1", codigo=AVISO_CAMINO_NO_RESUELTO,
+        retirada=False, pelo_declarado=7028862,
+    )
+    del_servicio = _del_servicio_93150(
+        adicionales=[_tracking(7028863, "93150 CROMO A1 pelo 7028863.txt")],
+        info_adicionales=[InfoAdicional(7028863, "POSICION", (("O-1252871-1", "2"),), ("44649",))],
+        posicion=EstadoPosicion(
+            declaradas=[_declarada("1", 7028862), _declarada("2", 7028863)],
+            aplicada=False,
+            etiqueta="O-1252871-1:1,2",
+            avisos=[aviso],
+        ),
+    )
+    resultado = ts_mod.resultado_de_trackings(del_servicio, full=False, numero_servicio="93150")
+    texto = ts_mod.mensaje_resumen(resultado)
+    assert "Declarar la posición vigente" not in texto
+    assert texto.split("\n")[-1] == (
+        "Hay 1 camino(s) óptico(s) adicional(es) por O-1252871-1:2 (pelos con etiqueta 44649)."
+    )
+
+
+def test_resolver_posiciones_cromo_caido_marca_las_pendientes(posiciones_con_fakes):
+    estado = posiciones_con_fakes
+    estado["conectores"] = [
+        _conector_93150("1", 7028862),
+        _conector_93150("2", 7028863),
+        _conector_93150("3", 7028864),
+        _conector("5"),
+        _conector_93150("4", 7028865),
+    ]
+    estado["fallan"] = {7028863: client_mod.CromoClientError("timeout")}
+    resultado = _resolver(estado, "0-1252871-1", (1, 2, 3, 5, 4))
+    assert resultado.estado == ts_mod.ESTADO_ERROR
+    assert [(p.conector, p.estado) for p in resultado.posiciones] == [
+        (1, ts_mod.POSICION_OK),
+        (2, ts_mod.POSICION_CROMO_CAIDO),
+        (3, ts_mod.POSICION_CROMO_CAIDO),
+        (5, ts_mod.POSICION_SIN_PELO),
+        (4, ts_mod.POSICION_CROMO_CAIDO),
+    ]
+    # Después de la caída no se le pide nada más a Cromo.
+    assert [pelo for _, pelo in estado["tracking_llamadas"]] == [7028862, 7028863]
+    assert resultado.mensaje == (
+        "Cromo no respondió: timeout. Quedaron sin resolver: `O-1252871-1:2,3,4`."
+    )
+
+
+def test_track_odf_cromo_caido_informa_los_conectores_sin_resolver():
+    listener = _listener()
+    client = MagicMock()
+    archivo = ts_mod.TrackingArchivo("a.txt", "txt", True, 1)
+    resultado = _resultado_odf(
+        estado=ts_mod.ESTADO_ERROR,
+        mensaje="Cromo no respondió: timeout. Quedaron sin resolver: `O-1252871-1:2,3`.",
+        posiciones=[
+            ts_mod.PosicionTrack(1, ts_mod.POSICION_OK, descripcion="d", archivo=archivo),
+            ts_mod.PosicionTrack(2, ts_mod.POSICION_CROMO_CAIDO, pelo_n_id=7028863),
+            ts_mod.PosicionTrack(3, ts_mod.POSICION_CROMO_CAIDO, pelo_n_id=7028864),
+        ],
+    )
+    with patch.object(ts_mod, "generar_tracking_posiciones", return_value=resultado):
+        listener._handle_track_odf(ComandoTrackOdf("O-1252871-1", (1, 2, 3)), client, "C123", "1.1")
+    assert client.files_upload_v2.call_count == 1
+    textos = [c[1]["text"] for c in client.chat_postMessage.call_args_list]
+    # Una sola línea para la caída (no una por conector), con los que quedaron sin resolver.
+    assert textos[1:] == [
+        ":warning: Cromo no respondió: timeout. Quedaron sin resolver: `O-1252871-1:2,3`."
+    ]

@@ -320,3 +320,148 @@ async def test_validar_camino_detecta_cable_sin_uso_real(sesion):
     assert aviso is not None and aviso.codigo == pv.MOTIVO_CABLE_SIN_USO
     assert aviso.detalle == {"cable": cable.n_id, "nombre": cable.nombre}
     assert "con tendido «Sin Uso»" in pv.texto_aviso(aviso)
+
+
+# ── Hallazgos de revisión (transacción revertida) ───────────────────────────────────────────
+
+_PELO_FALSO = -910_000_077  # no existe en Cromo: sólo vive en esta transacción
+_PELO_FALSO_2 = -910_000_078
+
+
+async def _insertar_declarada(sesion, conector: int, pelo: int, candidatos=None) -> int:
+    return (
+        await sesion.execute(
+            text(
+                "INSERT INTO app.servicio_posicion_vigente "
+                "(servicio_id, conector_n_id, odf_n_id, pelo_n_id, pelos_candidatos, declarado_por) "
+                "VALUES (:sid, :c, -78, :p, CAST(:cand AS bigint[]), 'test') RETURNING id"
+            ),
+            {"sid": _SERVICIO_93150, "c": conector, "p": pelo, "cand": candidatos or [pelo]},
+        )
+    ).scalar_one()
+
+
+async def _atribucion(sesion, pelo: int):
+    return (
+        await sesion.execute(
+            text("SELECT servicio_id FROM app.cromo_tracking_cache WHERE pelo_n_id = :p"), {"p": pelo}
+        )
+    ).scalar_one()
+
+
+async def _cachear(sesion, pelo: int, servicio_id):
+    from core.services.cromo import tracking_cache
+
+    await tracking_cache.guardar(
+        sesion, pelo_n_id=pelo, servicio_id=servicio_id, nombre_archivo="x.txt", contenido="v"
+    )
+
+
+@pytest.mark.asyncio
+async def test_retirar_saca_del_servicio_el_cache_del_pelo_retirado(sesion):
+    """Paso a paso del hallazgo: la fase 1 cachea el pelo declarado con el Servicio; se retira;
+    la fase 3 vuelve a sembrarlo con `servicio_id=None`. Antes el COALESCE conservaba el Servicio
+    y la traza (`_SQL_TRACKINGS_DEL_SERVICIO`) seguía mostrando el camino retirado."""
+    from core.services.servicio_traza import _SQL_TRACKINGS_DEL_SERVICIO
+
+    await sesion.execute(
+        text("DELETE FROM app.servicio_posicion_vigente WHERE servicio_id = :sid"),
+        {"sid": _SERVICIO_93150},
+    )
+    await _insertar_declarada(sesion, -77, _PELO_FALSO)
+    await _cachear(sesion, _PELO_FALSO, _SERVICIO_93150)
+
+    assert await pv.retirar_manual(sesion, _SERVICIO_93150, -77, usuario="test") is True
+
+    assert await _atribucion(sesion, _PELO_FALSO) is None
+    await _cachear(sesion, _PELO_FALSO, None)  # fase 3: posición no declarada
+    assert await _atribucion(sesion, _PELO_FALSO) is None
+    traza = (await sesion.execute(_SQL_TRACKINGS_DEL_SERVICIO, {"sid": _SERVICIO_93150})).all()
+    assert _PELO_FALSO not in [fila[0] for fila in traza]
+
+
+@pytest.mark.asyncio
+async def test_retiro_automatico_tambien_limpia_y_respeta_etiquetados_y_otras_declaradas(sesion):
+    """`aplicar_retiros` pasa por el mismo `retirar`. No pierde la atribución: un pelo etiquetado
+    al Servicio, un pelo que sostiene otra declarada vigente ni la fila de otro servicio."""
+    await sesion.execute(
+        text("DELETE FROM app.servicio_posicion_vigente WHERE servicio_id = :sid"),
+        {"sid": _SERVICIO_93150},
+    )
+    etiquetado = (
+        await sesion.execute(
+            text(
+                "SELECT pelo_n_id FROM app.v_cromo_servicio_match_vigente "
+                "WHERE servicio_id = :sid ORDER BY pelo_n_id LIMIT 1"
+            ),
+            {"sid": _SERVICIO_93150},
+        )
+    ).scalar_one()
+    id_falso = await _insertar_declarada(sesion, -77, _PELO_FALSO)
+    id_etiquetado = await _insertar_declarada(sesion, -79, etiquetado)
+    id_compartido = await _insertar_declarada(sesion, -80, _PELO_FALSO_2)
+    await _insertar_declarada(sesion, -81, _PELO_FALSO_2)  # sigue vigente: sostiene el pelo
+    await _cachear(sesion, _PELO_FALSO, _SERVICIO_93150)
+    await _cachear(sesion, etiquetado, _SERVICIO_93150)
+    await _cachear(sesion, _PELO_FALSO_2, _SERVICIO_93150)
+
+    avisos = [
+        pv.AvisoPosicion(-77, "A:1", pv.MOTIVO_SIN_PELO, True, id_falso, _PELO_FALSO),
+        pv.AvisoPosicion(-79, "A:2", pv.MOTIVO_SIN_PELO, True, id_etiquetado, etiquetado),
+        pv.AvisoPosicion(-80, "A:3", pv.MOTIVO_SIN_PELO, True, id_compartido, _PELO_FALSO_2),
+    ]
+    assert await pv.aplicar_retiros(sesion, avisos) == 3
+
+    assert await _atribucion(sesion, _PELO_FALSO) is None
+    assert await _atribucion(sesion, etiquetado) == _SERVICIO_93150
+    assert await _atribucion(sesion, _PELO_FALSO_2) == _SERVICIO_93150
+
+    # La fila de otro servicio con el mismo pelo no se toca (sólo se limpia la del retirado).
+    await _cachear(sesion, _PELO_FALSO, _SERVICIO_42351)
+    id_otra = await _insertar_declarada(sesion, -82, _PELO_FALSO)
+    assert await pv.retirar(sesion, id_otra, pelo_leido=_PELO_FALSO, motivo=pv.MOTIVO_MANUAL) is True
+    assert await _atribucion(sesion, _PELO_FALSO) == _SERVICIO_42351
+
+
+@pytest.mark.asyncio
+async def test_guarda_del_txt_y_declaradas_validas_ignoran_declaradas_invalidas(sesion):
+    """Una declarada que `validar_en_db` ya invalidó (pendiente de retiro) no habilita su pelo en
+    la guarda del `.txt`; una con el pelo actual entre sus candidatos sí."""
+    await sesion.execute(
+        text("DELETE FROM app.servicio_posicion_vigente WHERE servicio_id = :sid"),
+        {"sid": _SERVICIO_93150},
+    )
+    inexistente = await _insertar_declarada(sesion, -77, _PELO_FALSO)  # CONECTOR_INEXISTENTE
+    # El conector real sigue con 7028862: un pelo declarado que ya no es candidato es PELO_CAMBIO.
+    cambiado = await _insertar_declarada(sesion, _CONECTOR_1, _PELO_FALSO_2)
+    # El conector real (8604883, pelo 7028863) entre los candidatos: válida aunque el declarado difiera.
+    valida = await _insertar_declarada(sesion, _CONECTOR_2, -910_000_079, [-910_000_079, _PELO_2])
+
+    assert await pv.pelo_es_de_posicion(sesion, _SERVICIO_93150, _PELO_FALSO) is False
+    assert await pv.pelo_es_de_posicion(sesion, _SERVICIO_93150, _PELO_FALSO_2) is False
+    assert await pv.pelo_es_de_posicion(sesion, _SERVICIO_93150, -910_000_079) is True
+
+    todas = {d.id for d in await pv.listar_declaradas(sesion, _SERVICIO_93150)}
+    assert todas == {inexistente, cambiado, valida}
+    assert [d.id for d in await pv.declaradas_validas(sesion, _SERVICIO_93150)] == [valida]
+
+
+@pytest.mark.asyncio
+async def test_pelos_de_otro_servicio_activo_con_los_datos_del_42351_y_42352(sesion):
+    """Los pelos del 42351 (Activo), vistos desde el 42352, son de otro Activo; desde el propio
+    42351 no. Los pelos con etiqueta 44649 (de Baja) del 93150 no son de otro Activo."""
+    pelos_42351 = await _escalares(
+        sesion,
+        "SELECT pelo_n_id FROM app.v_cromo_servicio_match_vigente WHERE servicio_id = :sid "
+        "ORDER BY pelo_n_id LIMIT 5",
+        sid=_SERVICIO_42351,
+    )
+    assert pelos_42351, "el 42351 ya no tiene pelos etiquetados en dev"
+
+    assert await pv.pelos_de_otro_servicio_activo(sesion, _SERVICIO_42352, pelos_42351) == frozenset(
+        pelos_42351
+    )
+    assert await pv.pelos_de_otro_servicio_activo(sesion, _SERVICIO_42351, pelos_42351) == frozenset()
+    assert await pv.pelos_de_otro_servicio_activo(
+        sesion, _SERVICIO_93150, [_PELO_1, _PELO_2]
+    ) == frozenset()

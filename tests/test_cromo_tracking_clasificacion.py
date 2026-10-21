@@ -582,3 +582,49 @@ def test_odf_confirmada_sigue_rescatando_solo_entre_etiquetados():
 
 def test_clasificar_con_posiciones_sin_caminos_devuelve_lista_vacia():
     assert clasificar_con_posiciones([], etiquetados=frozenset(), declarados=frozenset()) == []
+
+
+# ── Camino de posición que recorre pelos de otro servicio Activo (hallazgo de revisión) ────────
+
+
+def test_camino_de_posicion_por_pelos_de_otro_activo_es_residual():
+    """El filtro de las posiciones mira sólo el pelo semilla: un conector resuelto a este Servicio
+    con un pelo sin etiqueta pasa, pero su `/path` puede recorrer pelos de OTRO servicio Activo.
+    Ese camino de origen POSICION, aunque termine en ODF en los dos extremos, no es ADICIONAL."""
+    caminos = _caminos_93150()
+    ajeno = next(iter(caminos[0].pelos_camino - {caminos[0].pelo_n_id}))
+    roles = _roles_por_pelo(
+        caminos,
+        clasificar_con_posiciones(
+            caminos,
+            etiquetados=_ETIQUETADOS_93150,
+            declarados=frozenset(),
+            de_otro_activo=frozenset({ajeno}),
+        ),
+    )
+    assert roles == {
+        6799280: ROL_TRAMO, 6799281: ROL_TRAMO,
+        7028862: ROL_RESIDUAL, 7028863: ROL_ADICIONAL,
+        7469850: ROL_RESIDUAL,
+    }
+
+
+def test_pelos_de_otro_activo_no_degradan_al_declarado_ni_al_etiquetado():
+    """El DECLARADO es una decisión explícita del admin y el ETIQUETADO lleva la etiqueta del
+    Servicio: el filtro sólo aplica a los caminos de origen POSICION."""
+    caminos = _caminos_93150()
+    todos = frozenset().union(*(c.pelos_camino for c in caminos))
+    roles = _roles_por_pelo(
+        caminos,
+        clasificar_con_posiciones(
+            caminos,
+            etiquetados=_ETIQUETADOS_93150,
+            declarados=_DECLARADOS_93150,
+            de_otro_activo=todos,
+        ),
+    )
+    assert roles == {
+        7028862: ROL_VIGENTE, 7028863: ROL_VIGENTE,
+        6799280: ROL_ADICIONAL, 6799281: ROL_ADICIONAL,
+        7469850: ROL_RESIDUAL,
+    }

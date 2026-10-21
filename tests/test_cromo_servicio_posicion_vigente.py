@@ -98,6 +98,15 @@ class _Sesion:
         return [e for e in self.ejecuciones if e[0].lstrip().startswith(("INSERT", "UPDATE"))]
 
 
+def _retiros(sesion: "_Sesion") -> list[tuple[str, dict]]:
+    """Sólo los UPDATE de retiro (cada retiro efectivo suma además la limpieza del caché)."""
+    return [e for e in sesion.escrituras() if "UPDATE app.servicio_posicion_vigente" in e[0]]
+
+
+def _limpiezas(sesion: "_Sesion") -> list[tuple[str, dict]]:
+    return [e for e in sesion.escrituras() if "UPDATE app.cromo_tracking_cache" in e[0]]
+
+
 def _fila_posible(conector, numero, pelo, *, bandeja=8604881, bandeja_nombre="O-1252871-1",
                   cable=6600854, etiqueta="44649", por_resuelto=True, por_pelo=False, candidatos=None):
     return SimpleNamespace(
@@ -328,7 +337,7 @@ async def test_retirar_manual_busca_la_declarada_vigente_del_conector():
     assert await pv.retirar_manual(sesion, 4, 8604882, usuario="ana") is True
     assert await pv.retirar_manual(sesion, 4, 999, usuario="ana") is False
 
-    (sql, params), = sesion.escrituras()
+    (sql, params), = _retiros(sesion)
     assert params["id"] == 5 and params["motivo"] == "MANUAL" and params["usuario"] == "ana"
 
 
@@ -550,5 +559,93 @@ async def test_aplicar_retiros_solo_los_marcados_y_con_el_pelo_leido():
         pv.AvisoPosicion(2, "A:2", "PELO_DANADO", False, 11, 7028863, {"pelo": 1}),
     ]
     assert await pv.aplicar_retiros(sesion, avisos) == 1
-    (sql, params), = sesion.escrituras()
+    (sql, params), = _retiros(sesion)
     assert params["id"] == 10 and params["pelo_leido"] == 7028862 and params["motivo"] == "SIN_PELO"
+
+
+# ── Hallazgos de revisión ────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_retirar_limpia_la_atribucion_del_cache_antes_del_commit():
+    """Con el COALESCE del caché, un pelo de una declaración retirada seguía con `servicio_id` del
+    Servicio y en su traza (y en la API v1). Retirar le saca la atribución en la misma transacción,
+    salvo que el pelo esté etiquetado al Servicio o lo sostenga otra declaración vigente."""
+    sesion = _Sesion(rowcount=1)
+
+    assert await pv.retirar(sesion, 7, pelo_leido=7028862, motivo="MANUAL", usuario="ana") is True
+
+    (retiro_sql, _), (limpieza_sql, params) = sesion.escrituras()
+    assert "UPDATE app.servicio_posicion_vigente" in retiro_sql
+    assert "UPDATE app.cromo_tracking_cache" in limpieza_sql
+    assert "SET servicio_id = NULL" in limpieza_sql
+    assert "tc.servicio_id = d.servicio_id" in limpieza_sql
+    assert "app.v_cromo_servicio_match_vigente" in limpieza_sql  # etiquetado al Servicio: se queda
+    assert "d2.vigente" in limpieza_sql and "d2.id <> d.id" in limpieza_sql  # otra declarada vigente
+    assert params == {"id": 7}
+    assert sesion.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_retirar_sin_fila_no_toca_el_cache():
+    sesion = _Sesion(rowcount=0)
+    assert await pv.retirar(sesion, 7, pelo_leido=1, motivo="MANUAL") is False
+    assert _limpiezas(sesion) == []
+
+
+@pytest.mark.asyncio
+async def test_aplicar_retiros_limpia_el_cache_de_cada_retirada():
+    sesion = _Sesion(rowcount=1)
+    avisos = [
+        pv.AvisoPosicion(1, "A:1", "SIN_PELO", True, 10, 7028862, {}),
+        pv.AvisoPosicion(2, "A:2", "PELO_CAMBIO", True, 11, 7028863, {}),
+    ]
+    assert await pv.aplicar_retiros(sesion, avisos) == 2
+    assert [p["id"] for _, p in _limpiezas(sesion)] == [10, 11]
+
+
+def test_guarda_del_txt_solo_acepta_declaradas_que_validar_en_db_sostiene():
+    """La rama de declaradas de `pelo_es_de_posicion` replica `validar_en_db`: conector vigente con
+    pelo, y ese pelo es el declarado o uno de los candidatos. Una declarada con PELO_CAMBIO,
+    SIN_PELO o CONECTOR_INEXISTENTE pendiente de retiro no habilita su pelo viejo."""
+    sql = " ".join(str(pv._SQL_PELO_ES_DE_POSICION).split())
+    assert "JOIN app.cromo_odf_conectores cd ON cd.n_id = d.conector_n_id AND cd.vigente" in sql
+    assert "cd.pelo_n_id IS NOT NULL" in sql
+    assert "(cd.pelo_n_id = d.pelo_n_id OR cd.pelo_n_id = ANY(d.pelos_candidatos))" in sql
+    assert "LEFT JOIN" not in sql
+
+
+@pytest.mark.asyncio
+async def test_declaradas_validas_filtra_las_que_validar_en_db_retira():
+    sesion = _Sesion(
+        declaradas=[
+            _fila_declarada(1, 8604882, 7028862),
+            _fila_declarada(2, 8604883, 7028863, actual=1),  # PELO_CAMBIO
+            _fila_declarada(3, 8604884, 7028864, actual=None),  # SIN_PELO
+            _fila_declarada(4, 8604885, 7028865, existe=False),  # CONECTOR_INEXISTENTE
+            _fila_declarada(5, 8604886, 7028866, actual=6799284, candidatos=[7028866, 6799284]),
+        ]
+    )
+    assert [d.id for d in await pv.declaradas_validas(sesion, 4)] == [1, 5]
+
+
+@pytest.mark.asyncio
+async def test_pelos_de_otro_servicio_activo_una_consulta_con_el_fragmento_compartido():
+    sesion = _Sesion(escalar=7028862)
+
+    ajenos = await pv.pelos_de_otro_servicio_activo(sesion, 4, [7028863, 7028862, 7028862])
+
+    assert ajenos == frozenset({7028862})
+    (sql, params), = sesion.ejecuciones
+    assert params == {"servicio_id": 4, "pelos": [7028862, 7028863]}
+    assert "ILIKE 'activo'" in sql and "unnest(CAST(:pelos AS bigint[]))" in sql
+    assert pv.SIN_PELO_DE_OTRO_SERVICIO_ACTIVO_SQL.format(pelo="u.pelo_n_id") in str(
+        pv._SQL_PELOS_DE_OTRO_SERVICIO_ACTIVO
+    )
+
+
+@pytest.mark.asyncio
+async def test_pelos_de_otro_servicio_activo_sin_pelos_no_consulta():
+    sesion = _Sesion()
+    assert await pv.pelos_de_otro_servicio_activo(sesion, 4, []) == frozenset()
+    assert sesion.ejecuciones == []

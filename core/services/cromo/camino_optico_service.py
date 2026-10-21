@@ -1579,19 +1579,17 @@ async def resolver_camino_de_servicio(
 
     Una sola llamada a `/path` por invocación: sin fan-out. Pedir otra semilla es una acción
     explícita del operador con `pelo_n_id`.
+
+    El pelo también puede ser el de una posición del Servicio (posible o declarada vigente,
+    `servicio_posicion_vigente`), con el mismo criterio que el `.txt`: el 93150 va por pelos con la
+    etiqueta 44649, y el «Detalle» de sus tramos VIGENTE y de sus adicionales pide justamente esos
+    pelos. Sin semillas etiquetadas ni pelo pedido se arranca de la posición declarada válida o, si
+    no hay, de la primera posible; `SIN_SEMILLA` queda para el Servicio sin ninguna de las dos.
     """
+    # Import diferido: `servicio_posicion_vigente` importa este módulo.
+    from core.services.cromo import servicio_posicion_vigente as posicion_vigente
+
     semillas = await listar_pelos_semilla(sesion, servicio_id)
-    if not semillas:
-        return (
-            CaminoOptico(
-                estado=ESTADO_SIN_SEMILLA,
-                motivo=(
-                    "El Servicio no tiene ningún pelo en `cromo_servicio_match`, así que "
-                    "`/path` no tiene input posible."
-                ),
-            ),
-            [],
-        )
 
     if pelo_n_id is not None:
         # Pertenencia por consulta directa, NO contra `semillas`: esa lista viene truncada en 20 y
@@ -1600,14 +1598,37 @@ async def resolver_camino_de_servicio(
         # dev: el pelo 6754728 matchea por el histórico y tiene conector de ODF, pero de 95 pelos
         # matcheados cae en el puesto 31 y se rechazaba como ajeno. Es el mismo criterio que ya
         # usa el endpoint del `.txt`; el guard sigue vivo, pero contra el dato y no contra la
-        # ventana que se listó.
-        if not await pelo_pertenece_al_servicio(sesion, servicio_id, pelo_n_id):
+        # ventana que se listó. Va antes de `SIN_SEMILLA`: un pelo ajeno pedido desde un Servicio
+        # sin semillas etiquetadas (el 42352 pidiendo uno del 42351) es un pedido inválido.
+        if not await pelo_pertenece_al_servicio(
+            sesion, servicio_id, pelo_n_id
+        ) and not await posicion_vigente.pelo_es_de_posicion(sesion, servicio_id, pelo_n_id):
             raise PeloAjenoAlServicio(
                 f"El pelo {pelo_n_id} no pertenece al Servicio {servicio_id}."
             )
         elegido = pelo_n_id
-    else:
+    elif semillas:
         elegido = semillas[0].pelo_n_id
+    else:
+        # Sin semillas etiquetadas: la posición declarada que el inventario sostiene o, si no hay,
+        # la primera posible. Una declarada que `validar_en_db` ya invalidó no es candidata.
+        candidatos = [
+            d.pelo_declarado for d in await posicion_vigente.declaradas_validas(sesion, servicio_id)
+        ] or posicion_vigente.pelos_de_posiciones(
+            await posicion_vigente.posiciones_posibles(sesion, servicio_id)
+        )
+        if not candidatos:
+            return (
+                CaminoOptico(
+                    estado=ESTADO_SIN_SEMILLA,
+                    motivo=(
+                        "El Servicio no tiene ningún pelo en `cromo_servicio_match` ni posiciones "
+                        "de ODF, así que `/path` no tiene input posible."
+                    ),
+                ),
+                [],
+            )
+        elegido = candidatos[0]
 
     camino = await resolver_camino_de_pelo(
         cliente, sesion, elegido, incluir_raw=incluir_raw
