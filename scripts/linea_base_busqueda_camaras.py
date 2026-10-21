@@ -17,6 +17,12 @@ Uso:
 
     python scripts/linea_base_busqueda_camaras.py grabar --salida DIR [--solo smart|export]
     python scripts/linea_base_busqueda_camaras.py comparar --salida DIR [--solo smart|export]
+    python scripts/linea_base_busqueda_camaras.py medir --salida DIR [--solo smart|export]
+
+`medir` no compara respuestas: por cada consulta registra el tiempo de pared y la cantidad de
+sentencias SQL (listener `before_cursor_execute` sobre `db.session.engine`, el que usa
+`SessionLocal`), con las sentencias más repetidas. Escribe `DIR/tiempos.json` e imprime el
+total, la mediana y el peor caso por grupo.
 
 Tiempos aproximados: smart unos 20 min, export unos 1,5 min.
 
@@ -34,12 +40,17 @@ se graba FRESCA con el código anterior justo antes de comparar. Pasos:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import csv
 import difflib
 import io
 import json
 import os
 import re
+import statistics
 import sys
+import time
+from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 
@@ -50,6 +61,47 @@ PUERTO_DEV = "5433"
 BASE_DEV = "focas_dev"
 HOSTS_LOCALES = {"127.0.0.1", "localhost", "::1"}
 _TS = re.compile(r"camaras_\d{8}_\d{6}")
+TOP_SENTENCIAS = 5
+
+# Lista de mediciones de `medir`; None cuando se graba o compara (el medidor no hace nada).
+_MEDICIONES: list[dict] | None = None
+
+
+@contextlib.contextmanager
+def _medicion(nombre: str):
+    """Mide tiempo y sentencias SQL de un bloque; cede un dict para que el llamador agregue datos."""
+    if _MEDICIONES is None:
+        yield {}
+        return
+    from sqlalchemy import event
+
+    from db.session import engine
+
+    conteo: Counter[str] = Counter()
+    ejemplos: dict[str, str] = {}
+
+    def _contar(conn, cursor, statement, parameters, context, executemany):
+        conteo[statement] += 1
+        ejemplos.setdefault(statement, repr(parameters))
+
+    info: dict = {}
+    event.listen(engine, "before_cursor_execute", _contar)
+    inicio = time.perf_counter()
+    try:
+        yield info
+    finally:
+        segundos = time.perf_counter() - inicio
+        event.remove(engine, "before_cursor_execute", _contar)
+        _MEDICIONES.append({
+            "nombre": nombre,
+            "segundos": round(segundos, 3),
+            "sentencias": sum(conteo.values()),
+            **info,
+            "mas_repetidas": [
+                {"veces": n, "sql": sql, "parametros_ejemplo": ejemplos[sql]}
+                for sql, n in conteo.most_common(TOP_SENTENCIAS)
+            ],
+        })
 
 
 def _abortar(mensaje: str) -> None:
@@ -132,8 +184,20 @@ def _xlsx_crudo(contenido: bytes) -> str:
 
 def _correr_smart(cliente, resultados: dict[str, str]) -> None:
     for nombre, cuerpo in _combinaciones_smart():
-        r = cliente.post("/api/infra/smart-search", json=cuerpo)
+        with _medicion(nombre) as info:
+            r = cliente.post("/api/infra/smart-search", json=cuerpo)
+            info["camaras"] = len(r.json().get("camaras", [])) if r.status_code == 200 else 0
         resultados[nombre] = json.dumps({"status": r.status_code, "cuerpo": r.json()}, ensure_ascii=False, indent=1)
+
+
+def _filas_exportadas(respuesta, formato: str) -> int:
+    """Cantidad de cámaras (filas de datos) de una exportación; 0 si no fue 200."""
+    if respuesta.status_code != 200:
+        return 0
+    if formato == "xlsx":
+        hojas = json.loads(_xlsx_crudo(respuesta.content))
+        return sum(len(h["filas"]) for h in hojas.values())
+    return max(len(list(csv.reader(io.StringIO(respuesta.content.decode("utf-8"))))) - 1, 0)
 
 
 def _correr_export(cliente, resultados: dict[str, str]) -> None:
@@ -143,7 +207,9 @@ def _correr_export(cliente, resultados: dict[str, str]) -> None:
         for formato in ("csv", "xlsx"):
             base = {"filter_status": estado, "format": formato}
             for variante, p in (("", base), ("_srv", {**base, "servicio_id": servicio_id})):
-                r = cliente.get("/api/infra/export/cameras", params=p)
+                with _medicion(f"export_{estado}_{formato}{variante}") as info:
+                    r = cliente.get("/api/infra/export/cameras", params=p)
+                    info["camaras"] = _filas_exportadas(r, formato)
                 disp = _normalizar_ts(r.headers.get("content-disposition", ""))
                 cuerpo = _xlsx_crudo(r.content) if formato == "xlsx" and "xlsx" in disp else r.content.decode("utf-8")
                 resultados[f"export_{estado}_{formato}{variante}"] = (
@@ -212,14 +278,46 @@ def _comparar(salida: Path, solo: str | None) -> int:
     return 0
 
 
+def _resumen_grupo(nombre: str, filas: list[dict]) -> None:
+    if not filas:
+        return
+    seg = [f["segundos"] for f in filas]
+    sent = [f["sentencias"] for f in filas]
+    print(
+        f"{nombre}: consultas={len(filas)} tiempo_total={sum(seg):.1f}s mediana={statistics.median(seg):.2f}s "
+        f"peor={max(seg):.2f}s sentencias_total={sum(sent)} mediana={statistics.median(sent):.0f} peor={max(sent)}"
+    )
+
+
+def _medir(salida: Path, solo: str | None) -> int:
+    global _MEDICIONES
+    salida.mkdir(parents=True, exist_ok=True)
+    _MEDICIONES = []
+    try:
+        _correr(solo)
+        mediciones = _MEDICIONES
+    finally:
+        _MEDICIONES = None
+    with open(salida / "tiempos.json", "w", encoding="utf-8") as f:
+        json.dump(mediciones, f, ensure_ascii=False, indent=1)
+    smart = [m for m in mediciones if m["nombre"].startswith("smart_")]
+    _resumen_grupo("smart (todas)", smart)
+    _resumen_grupo("smart con terminos", [m for m in smart if not m["nombre"].startswith("smart_vacio_")])
+    _resumen_grupo("smart sin terminos", [m for m in smart if m["nombre"].startswith("smart_vacio_")])
+    _resumen_grupo("export", [m for m in mediciones if m["nombre"].startswith("export_")])
+    print(f"Escrito {salida / 'tiempos.json'}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("accion", choices=["grabar", "comparar"])
+    parser.add_argument("accion", choices=["grabar", "comparar", "medir"])
     parser.add_argument("--salida", required=True, type=Path)
     parser.add_argument("--solo", choices=["smart", "export"], default=None, help="limita a un grupo de consultas")
     args = parser.parse_args()
     _verificar_base_dev()
-    return _grabar(args.salida, args.solo) if args.accion == "grabar" else _comparar(args.salida, args.solo)
+    accion = {"grabar": _grabar, "comparar": _comparar, "medir": _medir}[args.accion]
+    return accion(args.salida, args.solo)
 
 
 if __name__ == "__main__":
