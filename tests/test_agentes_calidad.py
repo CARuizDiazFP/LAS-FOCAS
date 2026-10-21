@@ -80,6 +80,24 @@ def test_tests_focales_de_la_spa_incluyen_imports_como_app(repo: Path) -> None:
     assert calidad.tests_focales(repo, ["web/app/main.py"]) == ["tests/test_usa_app.py"]
 
 
+def test_tests_focales_de_un_router_suman_los_que_importan_main(repo: Path) -> None:
+    _commit(
+        repo,
+        {
+            "web/app/routers/x.py": "X = 1\n",
+            "web/app/comun.py": "C = 1\n",
+            "tests/test_usa_main.py": "from web.app.main import app\n\n\ndef test_m():\n    assert app\n",
+            "tests/test_alias_main.py": "import web.app.main as web_main\n\n\ndef test_a():\n    assert web_main\n",
+        },
+        "feat: router",
+    )
+
+    esperado = ["tests/test_alias_main.py", "tests/test_usa_app.py", "tests/test_usa_main.py"]
+    assert calidad.tests_focales(repo, ["web/app/routers/x.py"]) == esperado
+    assert calidad.tests_focales(repo, ["web/app/comun.py"]) == esperado
+    assert "tests/test_usa_main.py" not in calidad.tests_focales(repo, ["core/services/cromo/ingesta.py"])
+
+
 def test_tests_focales_incluyen_los_tests_cambiados_y_el_smoke(repo: Path) -> None:
     _escribir(repo, "config/quality-gate.json", json.dumps({"smoke": ["tests/test_ajeno.py", "tests/no_existe.py"]}))
 

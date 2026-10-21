@@ -34,6 +34,8 @@ ARCHIVO_CONFIG = Path("config") / "quality-gate.json"
 DIRECTORIOS_TESTS = ("tests", "nlp_intent/tests")
 LINEAS_SALIDA = 40
 TIMEOUT_SEGUNDOS = 1800
+PREFIJO_ROUTERS = "web/app/routers/"
+ARCHIVO_COMUN_SPA = "web/app/comun.py"
 ENTORNO_TESTS = {"LLM_PROVIDER": "heuristic", "TESTING": "true"}
 
 
@@ -127,6 +129,18 @@ def _patrones_import(nombre: str) -> list[re.Pattern[str]]:
     return patrones
 
 
+def _llega_por_main(archivo: str) -> bool:
+    """Los routers de la SPA y ``comun.py`` se montan en ``web.app.main``: los tests no los importan."""
+    return archivo.startswith(PREFIJO_ROUTERS) or archivo == ARCHIVO_COMUN_SPA
+
+
+def _patrones_main() -> list[re.Pattern[str]]:
+    """Imports de ``web.app.main`` (o ``app.main``) y el alias ``web_main`` que usan los tests de la SPA."""
+    patrones = [pat for nombre in ("web.app.main", "app.main") for pat in _patrones_import(nombre)]
+    patrones.append(re.compile(r"\bweb_main\b"))
+    return patrones
+
+
 def _smoke(ruta: Path) -> list[str]:
     config = ruta / ARCHIVO_CONFIG
     if not config.is_file():
@@ -147,6 +161,8 @@ def tests_focales(ruta: Path, archivos: list[str]) -> list[str]:
 
     modulos = [archivo for archivo in archivos if archivo.endswith(".py") and not _es_test(archivo)]
     patrones = [patron for archivo in modulos for nombre in _nombres_modulo(archivo) for patron in _patrones_import(nombre)]
+    if any(_llega_por_main(archivo) for archivo in modulos):
+        patrones += _patrones_main()
     for archivo in modulos:
         stem = Path(archivo).stem
         elegidos.update(test for test in candidatos if Path(test).name.startswith(f"test_{stem}"))
