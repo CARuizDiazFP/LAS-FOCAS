@@ -1,9 +1,34 @@
 # Nombre de archivo: linea_base_busqueda_camaras.py
 # Ubicación de archivo: scripts/linea_base_busqueda_camaras.py
 # Descripción: Graba y compara la línea base de smart search y exportación de Cámaras contra la base de dev
-"""Uso: python scripts/linea_base_busqueda_camaras.py {grabar,comparar} --salida DIR
+"""Línea base de la smart search y la exportación de Cámaras.
 
-Sólo lecturas (SELECT). Aborta con exit 2 si la base no es la de dev local (puerto 5433).
+Sirve para verificar que un refactor de la smart search (`POST /api/infra/smart-search`)
+o de la exportación (`GET /api/infra/export/cameras`) de Cámaras no cambia las respuestas.
+
+Sólo lecturas (SELECT). Variables de entorno para la base de DEV:
+
+    POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5433 POSTGRES_DB=focas_dev \
+    POSTGRES_USER=FOCALBOT POSTGRES_PASSWORD="$(cat .secrets/Dev_db_password_v1.txt)"
+
+Aborta con exit 2 si no es host local, puerto 5433 y base focas_dev (nunca producción, 5432).
+
+Uso:
+
+    python scripts/linea_base_busqueda_camaras.py grabar --salida DIR [--solo smart|export]
+    python scripts/linea_base_busqueda_camaras.py comparar --salida DIR [--solo smart|export]
+
+Tiempos aproximados: smart unos 20 min, export unos 1,5 min.
+
+Advertencia de deriva: la base de dev cambia (los workers escriben), así que la línea base
+se graba FRESCA con el código anterior justo antes de comparar. Pasos:
+
+    1. git worktree add --detach <scratch>/base <commit-anterior>
+    2. Enlazar `.venv` y `.secrets` dentro de ese worktree.
+    3. `grabar` en <scratch>/base.
+    4. `comparar` en el worktree con el cambio.
+    5. Si difiere, repetir una vez para descartar deriva.
+    6. Al final, `git worktree remove <scratch>/base` sin `--force`.
 """
 
 from __future__ import annotations
