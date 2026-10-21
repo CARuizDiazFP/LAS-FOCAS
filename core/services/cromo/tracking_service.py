@@ -64,6 +64,16 @@ class DemasiadosPelos(ValueError):
 
 ROL_TRAMO = "TRAMO"
 ROL_RESIDUAL = "RESIDUAL"
+# Con posición vigente declarada: el camino del pelo declarado es el VIGENTE, y los caminos resueltos
+# que no son el vigente pero sí un recorrido real del servicio son ADICIONAL (`clasificar_con_posiciones`).
+ROL_VIGENTE = "VIGENTE"
+ROL_ADICIONAL = "ADICIONAL"
+
+# De dónde sale un camino, por los pelos que recorre (`origen_del_camino`): de un pelo declarado por el
+# operador, de una semilla etiquetada con el servicio, o sólo de las posiciones posibles (conectores).
+ORIGEN_DECLARADO = "DECLARADO"
+ORIGEN_ETIQUETADO = "ETIQUETADO"
+ORIGEN_POSICION = "POSICION"
 
 
 @dataclass(slots=True, frozen=True)
@@ -562,6 +572,92 @@ def clasificar_caminos(
     ]
     for i in con_par or largos:
         roles[i] = ROL_TRAMO
+    return roles
+
+
+def _es_extremo_odf(extremo: Optional[ExtremoCamino]) -> bool:
+    # Mismo criterio que `_termina_en_odf`: sin clase conocida alcanza con que sea conector de ODF.
+    return bool(
+        extremo is not None
+        and extremo.es_conector_odf
+        and (extremo.odf_clase is None or extremo.odf_clase in CLASES_ODF_EXTREMO)
+    )
+
+
+def es_camino_completo(t: TrackingGenerado) -> bool:
+    """El camino termina en un conector de ODF (69) u ODF Nodo (86) en sus DOS extremos. Pura.
+
+    Es lo que separa un recorrido real que sale sólo de posiciones (93150: el camino viejo va de
+    O-1252871-1:1 a O-1252734-1:11, medido en dev el 2026-10-21) de un camino que corta en un pelo
+    (7469850: de un pelo suelto a la ODF de Ramos Mejía, 19 pelos).
+    """
+    resumen = _resumen(t)
+    return _es_extremo_odf(resumen.inicio) and _es_extremo_odf(resumen.fin)
+
+
+def origen_del_camino(
+    t: TrackingGenerado, *, etiquetados: frozenset[int], declarados: frozenset[int]
+) -> str:
+    """`DECLARADO`, `ETIQUETADO` o `POSICION`, por intersección de pelos. Pura.
+
+    Se mira qué pelos recorre el camino y no qué semilla lo resolvió: el camino nuevo del 93150
+    también sale de una posición (O-1239922-1:1), y el resultado no puede depender de cuál de las
+    dos semillas se pidió primero. Un camino que toca un pelo declarado es el declarado aunque
+    también toque uno etiquetado.
+    """
+    pelos = t.pelos_camino | {t.pelo_n_id}
+    if pelos & declarados:
+        return ORIGEN_DECLARADO
+    if pelos & etiquetados:
+        return ORIGEN_ETIQUETADO
+    return ORIGEN_POSICION
+
+
+def clasificar_con_posiciones(
+    caminos: Sequence[TrackingGenerado],
+    *,
+    etiquetados: frozenset[int],
+    declarados: frozenset[int],
+    odfs_confirmadas: frozenset[int] = frozenset(),
+) -> list[str]:
+    """Rol de cada camino (`VIGENTE`, `TRAMO`, `ADICIONAL` o `RESIDUAL`), en el mismo orden. Pura.
+
+    1. `clasificar_caminos` corre SÓLO sobre los caminos de origen `ETIQUETADO`: si entraran los
+       de posiciones o el declarado moverían el máximo del 25 % y los pares, y un tramo de hoy podía
+       pasar a RESIDUAL. Por lo mismo la ODF confirmada sólo rescata entre los etiquetados.
+    2. `DECLARADO` es `VIGENTE`.
+    3. `ETIQUETADO` lleva el rol de `clasificar_caminos`; si algún camino es `DECLARADO` (la
+       declaración se aplicó), sus `TRAMO` pasan a `ADICIONAL`: siguen siendo un recorrido real,
+       pero el servicio va por el vigente.
+    4. `POSICION` es `ADICIONAL` si es un camino completo (ODF en los dos extremos) y `RESIDUAL`
+       si no.
+
+    Con `declarados` vacío y todas las semillas etiquetadas da exactamente lo mismo que
+    `clasificar_caminos` (regresión sobre los 77 caminos medidos).
+    """
+    origenes = [
+        origen_del_camino(c, etiquetados=etiquetados, declarados=declarados) for c in caminos
+    ]
+    indices_etiquetados = [i for i, o in enumerate(origenes) if o == ORIGEN_ETIQUETADO]
+    roles_etiquetados = dict(
+        zip(
+            indices_etiquetados,
+            clasificar_caminos(
+                [caminos[i] for i in indices_etiquetados], odfs_confirmadas=odfs_confirmadas
+            ),
+        )
+    )
+    hay_vigente = ORIGEN_DECLARADO in origenes
+
+    roles: list[str] = []
+    for i, (camino, origen) in enumerate(zip(caminos, origenes)):
+        if origen == ORIGEN_DECLARADO:
+            roles.append(ROL_VIGENTE)
+        elif origen == ORIGEN_ETIQUETADO:
+            rol = roles_etiquetados[i]
+            roles.append(ROL_ADICIONAL if hay_vigente and rol == ROL_TRAMO else rol)
+        else:
+            roles.append(ROL_ADICIONAL if es_camino_completo(camino) else ROL_RESIDUAL)
     return roles
 
 

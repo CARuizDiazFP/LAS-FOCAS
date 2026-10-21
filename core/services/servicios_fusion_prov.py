@@ -200,7 +200,8 @@ def cargar_filas(session: Session, ids: list[int]) -> dict[int, FilaServicio]:
 
 # Tablas con FK a app.servicios (auditadas en prod el 2026-09-30, 8 en total). Las que se reasignan
 # siempre: el perdedor no debe perder nada de esto. `servicio_empalme_association` tiene PK
-# (servicio_id, empalme_id): se inserta lo que falte y se borra lo del perdedor.
+# (servicio_id, empalme_id): se inserta lo que falte y se borra lo del perdedor. Lo mismo
+# `servicio_posicion_vigente` (2026-10-21), con su índice único parcial entre las vigentes.
 _REASIGNAR = ("cromo_servicio_match", "rutas_servicio", "cromo_servicio_odf_override", "cromo_tracking_cache")
 # Datos propios de PROV (se borran en cascada con el perdedor): se conservan los del sobreviviente;
 # sólo se mueven los del perdedor si el sobreviviente no tiene ninguno.
@@ -229,6 +230,19 @@ def aplicar_plan(session: Session, plan: PlanGrupo) -> dict[str, int]:
             {"s": sid, "p": pid},
         )
         session.execute(text("DELETE FROM app.servicio_empalme_association WHERE servicio_id = :p"), {"p": pid})
+        # Posición vigente declarada: mismo patrón que la asociación de empalmes, pero el índice único
+        # es parcial (`WHERE vigente`). Se mueve el historial retirado y las vigentes en conectores que
+        # el sobreviviente no declaró; las vigentes duplicadas se borran (gana la del sobreviviente).
+        session.execute(
+            text(
+                "UPDATE app.servicio_posicion_vigente d SET servicio_id = :s "
+                "WHERE d.servicio_id = :p AND (NOT d.vigente OR NOT EXISTS ("
+                "SELECT 1 FROM app.servicio_posicion_vigente x "
+                "WHERE x.servicio_id = :s AND x.vigente AND x.conector_n_id = d.conector_n_id))"
+            ),
+            {"s": sid, "p": pid},
+        )
+        session.execute(text("DELETE FROM app.servicio_posicion_vigente WHERE servicio_id = :p"), {"p": pid})
         for tabla in _DATOS_PROV:
             tiene = session.execute(text(f"SELECT 1 FROM app.{tabla} WHERE servicio_id = :s LIMIT 1"), {"s": sid}).first()
             if tiene is None:

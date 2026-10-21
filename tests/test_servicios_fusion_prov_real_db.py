@@ -243,3 +243,49 @@ def test_realinea_una_fila_suelta_que_quedo_con_el_pendiente() -> None:
         assert r.servicio.id == pk and r.servicio.servicio_id == VIEJO and r.es_id_vigente is False
     finally:
         _borrar()
+
+
+def test_fusion_reasigna_posiciones_vigentes_sin_violar_la_unicidad(par_mutuo) -> None:
+    """`servicio_posicion_vigente` tiene CASCADE: sin reasignarla, borrar al perdedor perdía su
+    declaración sin aviso. El sobreviviente conserva la suya si los dos declararon el mismo conector
+    (índice único parcial), recibe la del perdedor en otro conector y también su historial retirado.
+    Todo en una transacción que se revierte: nunca se commitea nada en la tabla nueva."""
+
+    vieja, nueva = par_mutuo
+    conector_a, conector_b = 999_970_001, 999_970_002
+    with SessionLocal() as s:
+        try:
+            def _declarar(sid, conector, vigente=True):
+                return s.execute(
+                    text(
+                        "INSERT INTO app.servicio_posicion_vigente (servicio_id, conector_n_id, odf_n_id, "
+                        "pelo_n_id, declarado_por, vigente, retirado_en, motivo_retiro) "
+                        "VALUES (:s, :c, 1, 1, 'qa', :v, CASE WHEN :v THEN NULL ELSE now() END, "
+                        "CASE WHEN :v THEN NULL ELSE 'MANUAL' END) RETURNING id"
+                    ),
+                    {"s": sid, "c": conector, "v": vigente},
+                ).scalar_one()
+
+            propia = _declarar(vieja, conector_a)
+            _declarar(nueva, conector_a)  # duplicada: queda la del sobreviviente
+            movida = _declarar(nueva, conector_b)
+            historial = _declarar(nueva, conector_a, vigente=False)
+
+            plan = planificar(list(cargar_filas(s, [vieja, nueva]).values()))
+            assert plan.sobreviviente.id == vieja
+            aplicar_plan(s, plan)
+
+            filas = s.execute(
+                text(
+                    "SELECT id, conector_n_id, vigente FROM app.servicio_posicion_vigente "
+                    "WHERE servicio_id = :s ORDER BY id"
+                ),
+                {"s": vieja},
+            ).all()
+            assert [(f.id, f.conector_n_id, f.vigente) for f in filas] == [
+                (propia, conector_a, True),
+                (movida, conector_b, True),
+                (historial, conector_a, False),
+            ]
+        finally:
+            s.rollback()

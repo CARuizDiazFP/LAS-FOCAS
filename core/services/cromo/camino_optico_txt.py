@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -88,6 +89,42 @@ def nombre_archivo_tramo(servicio_numero: Optional[str], numero_tramo: int, pelo
     # Sin número plausible igual se conserva el tramo: medido en dev (2026-10-17), 4 de los 6
     # tramos del 102452 caían acá y salían indistinguibles salvo por el pelo.
     return f"tracking_cromo T{numero_tramo} pelo {pelo_n_id}.txt"
+
+
+def nombre_archivo_adicional(servicio_numero: Optional[str], numero: int, pelo_n_id: int) -> str:
+    """Nombre del `.txt` de un camino adicional: `"{servicio} CROMO A{n} pelo {n_id}.txt"`.
+
+    Mismo molde que `nombre_archivo_tramo`, con `A` en vez de `T` para que un camino bajado como
+    adicional no pise al tramo del mismo pelo. `servicio_numero` es siempre el número del Servicio
+    en LAS-FOCAS, nunca el at.62 del pelo: medido en dev (2026-10-21) el de los pelos viejos del
+    93150 es `4649`, y el parser legacy toma el primer número de 4 dígitos o más del nombre.
+    """
+    if _at62_plausible(servicio_numero):
+        return f"{servicio_numero} CROMO A{numero} pelo {pelo_n_id}.txt"
+    return f"tracking_cromo A{numero} pelo {pelo_n_id}.txt"
+
+
+_NO_SEGURO_EN_NOMBRE = re.compile(r"[^A-Za-z0-9-]+")
+
+
+def _segmento_seguro(valor: str) -> str:
+    # Sin espacios adentro: así ningún pedazo del nombre arma un alias `<4 dígitos> <letra+dígitos>`.
+    return _NO_SEGURO_EN_NOMBRE.sub("_", valor).strip("_")
+
+
+def nombre_archivo_posicion(
+    servicio_numero: Optional[str], bandeja: Optional[str], conector: str, pelo_n_id: int
+) -> str:
+    """Nombre del `.txt` de una posición de ODF (`track odf`): `"93150 CROMO O-1252871-1_1 pelo X.txt"`.
+
+    La patchera y el conector se sanean (medido en dev: hay nombres de patchera con coma y con
+    `:`). Sin un número de Servicio plausible el nombre empieza por `sin_servicio`: el parser legacy
+    tomaría como servicio el primer número de la patchera, así que ese `.txt` no es ingerible como
+    tracking de un Servicio (asumido y cubierto por un test).
+    """
+    posicion = f"{_segmento_seguro(bandeja or '') or 'ODF'}_{_segmento_seguro(str(conector))}"
+    prefijo = servicio_numero if _at62_plausible(servicio_numero) else "sin_servicio"
+    return f"{prefijo} CROMO {posicion} pelo {pelo_n_id}.txt"
 
 
 def _linea_tramo(nodo: NodoCamino, acum_geo: float, acum_real: float) -> str:

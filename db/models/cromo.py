@@ -670,6 +670,58 @@ class ServicioOdfConfirmada(Base):
         return f"<ServicioOdfConfirmada servicio_id={self.servicio_id} odf_n_id={self.odf_n_id} rol={self.rol}>"
 
 
+class ServicioPosicionVigente(Base):
+    """Conector de ODF que un admin declara como la posición vigente de un Servicio (migración 20261021_01).
+
+    El tracking siembra desde `pelo_n_id` y su camino es VIGENTE (`servicio_posicion_vigente`).
+    `conector_n_id` es referencia blanda a `cromo_odf_conectores.n_id`; ODF, bandeja, número de
+    conector y pelo son una foto al declarar, para avisar aunque el conector desaparezca.
+    `pelos_candidatos` son todos los pelos del conector al declarar: sólo es `PELO_CAMBIO` si el pelo
+    actual no está entre ellos. Retirar es `vigente=False` con fecha, autor y `motivo_retiro` (Text +
+    CHECK en la migración), nunca un DELETE. A lo sumo una fila vigente por (`servicio_id`,
+    `conector_n_id`) (índice único parcial).
+    """
+
+    __tablename__ = "servicio_posicion_vigente"
+    __table_args__ = (
+        Index(
+            "ux_servicio_posicion_vigente_vigente",
+            "servicio_id",
+            "conector_n_id",
+            unique=True,
+            postgresql_where=text("vigente"),
+        ),
+        # Nombre explícito, el mismo de la migración 20261021_01 (ver ServicioOdfConfirmada).
+        Index("ix_servicio_posicion_vigente_servicio", "servicio_id"),
+        {"schema": "app"},
+    )
+
+    id = Column(Integer, primary_key=True)
+    servicio_id = Column(
+        Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), nullable=False
+    )
+    conector_n_id = Column(BigInteger, nullable=False)  # referencia blanda a cromo_odf_conectores.n_id
+    odf_n_id = Column(BigInteger, nullable=False)
+    bandeja_n_id = Column(BigInteger, nullable=True)
+    bandeja_nombre = Column(Text, nullable=True)
+    numero_conector = Column(Text, nullable=True)
+    pelo_n_id = Column(BigInteger, nullable=False)  # el pelo declarado (semilla del tracking)
+    pelos_candidatos = Column(ARRAY(BigInteger), nullable=True)
+    declarado_por = Column(String(128), nullable=False)
+    declarado_en = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    vigente = Column(Boolean, nullable=False, server_default=text("true"))
+    retirado_en = Column(DateTime(timezone=True), nullable=True)
+    retirado_por = Column(String(128), nullable=True)  # 'auto' o el usuario
+    motivo_retiro = Column(Text, nullable=True)  # MANUAL|SIN_PELO|PELO_CAMBIO|... — CHECK en la migración
+    detalle_retiro = Column(JSONB(astext_type=Text(), none_as_null=True), nullable=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"<ServicioPosicionVigente servicio_id={self.servicio_id} "
+            f"conector_n_id={self.conector_n_id} vigente={self.vigente}>"
+        )
+
+
 class CromoServicioMatch(Base):
     """Puente entre un pelo con servicio parseado (`at.61`) y el maestro `app.servicios`."""
 
