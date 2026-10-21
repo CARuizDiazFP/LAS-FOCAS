@@ -13,9 +13,9 @@ from __future__ import annotations
 import csv
 import io
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from db.models.infra import Camara, CamaraEstado, IncidenteBaneo, Servicio
+from db.models.infra import Camara, CamaraEstado, Empalme, IncidenteBaneo, RutaServicio, Servicio
 
 HOJA_XLSX = "Cámaras"
 
@@ -42,7 +42,17 @@ def _filtrar_por_servicio(session: Session, query, servicio_id: str | None):
     """Restringe a las cámaras del servicio; un servicio sin cámaras deja la query vacía."""
     if not servicio_id:
         return query
-    servicio = session.query(Servicio).filter(Servicio.servicio_id == servicio_id).first()
+    # Rutas -> empalmes -> cámara por lote; el resultado es un set de ids, el orden no importa.
+    servicio = (
+        session.query(Servicio)
+        .filter(Servicio.servicio_id == servicio_id)
+        .options(
+            selectinload(Servicio.rutas)
+            .selectinload(RutaServicio.empalmes)
+            .selectinload(Empalme.camara)
+        )
+        .first()
+    )
     if not servicio:
         return query
     camara_ids = _camara_ids_de_servicio(servicio)
@@ -95,7 +105,9 @@ def filas_exportacion(
     session: Session, *, filter_status: str | None, servicio_id: str | None
 ) -> list[dict[str, object]]:
     """Filas de la exportación, ordenadas por nombre, con filtros opcionales de estado y servicio."""
-    query = _filtrar_por_estado(session.query(Camara), filter_status)
+    # Empalmes y sus servicios por lote (`selectinload`), no una query lazy por cámara y por empalme.
+    query = session.query(Camara).options(selectinload(Camara.empalmes).selectinload(Empalme.servicios))
+    query = _filtrar_por_estado(query, filter_status)
     query = _filtrar_por_servicio(session, query, servicio_id)
     camaras = query.order_by(Camara.nombre).all()
     tickets = _tickets_por_servicio(session)
