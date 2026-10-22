@@ -82,8 +82,8 @@ def _collect_camara_rutas_info(camara: Any, *, incluir_botellas: bool = False) -
                 seen_rutas.add(ruta.id)
                 alias_ids = ruta.servicio.alias_ids or []
                 transitos_count = sum(1 for item in ruta.empalmes if item.es_transito)
-                punta_a_sitio = ruta.punta_a.sitio if ruta.punta_a else None
-                punta_b_sitio = ruta.punta_b.sitio if ruta.punta_b else None
+                punta_a_sitio = ruta.punta_a.sitio_descripcion if ruta.punta_a else None
+                punta_b_sitio = ruta.punta_b.sitio_descripcion if ruta.punta_b else None
                 rutas_info.append(
                     {
                         "ruta_id": ruta.id,

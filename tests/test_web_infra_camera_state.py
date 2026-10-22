@@ -196,8 +196,8 @@ def _build_fake_camara() -> Any:
         nombre="Ruta Principal",
         tipo=RutaTipo.PRINCIPAL,
         empalmes=[SimpleNamespace(es_transito=False), SimpleNamespace(es_transito=True)],
-        punta_a=SimpleNamespace(sitio="POP A"),
-        punta_b=SimpleNamespace(sitio="POP B"),
+        punta_a=SimpleNamespace(sitio_descripcion="POP A"),
+        punta_b=SimpleNamespace(sitio_descripcion="POP B"),
     )
     empalme = SimpleNamespace(rutas=[ruta], servicios=[])
     camara = SimpleNamespace(
