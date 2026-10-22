@@ -1162,7 +1162,10 @@ async function openAvisoModal(inc: IncidenteActivo) {
   avisoModalEl.value?.showModal();
 }
 
-function closeAvisoModal() {
+// Siempre se llama con paréntesis (el evento no debe llegar como `force`). Durante el envío no
+// cierra salvo `force`; sendAviso() fuerza porque avisoSending recién baja en su `finally`.
+function closeAvisoModal(force = false) {
+  if (avisoSending.value && !force) return;
   avisoModalEl.value?.close();
   avisoIncidente.value = null;
 }
@@ -1197,7 +1200,7 @@ async function sendAviso() {
     if (!res.ok || !(data as { success: boolean }).success) {
       throw new Error((data as Record<string, string>).error ?? (data as Record<string, string>).detail ?? `Error ${res.status}`);
     }
-    closeAvisoModal();
+    closeAvisoModal(true);
     showToast('success', 'Aviso enviado', `Notificación enviada a ${toList.length} destinatario${toList.length !== 1 ? 's' : ''}`);
   } catch (e: unknown) {
     showToast('error', 'Error al enviar aviso', e instanceof Error ? e.message : String(e));
