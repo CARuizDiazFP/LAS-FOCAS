@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -157,3 +158,39 @@ def test_gate_sin_python_saltea_ambos_pasos(repo: Path) -> None:
     assert resultado.ok
     assert [paso.salteado for paso in resultado.pasos] == [True, True]
     assert resultado.como_dict()["ok"] is True
+
+
+def test_gate_sin_cambios_de_frontend_no_agrega_type_check(repo: Path) -> None:
+    _commit(repo, {"core/services/cromo/ingesta.py": "VALOR = 4\n"}, "feat: sólo backend")
+
+    resultado = calidad.ejecutar_gate(repo, "dev")
+
+    assert [paso.nombre for paso in resultado.pasos] == ["lint", "tests"]
+
+
+def test_gate_con_cambios_de_frontend_corre_type_check(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(calidad, "COMANDO_TYPE_CHECK", [sys.executable, "-c", "import sys; sys.exit(3)"])
+    (repo / "web" / "frontend" / "node_modules").mkdir(parents=True)
+    _commit(repo, {"web/frontend/src/views/Vista.vue": "<template><div /></template>\n"}, "feat: vista")
+
+    resultado = calidad.ejecutar_gate(repo, "dev")
+
+    tipos = resultado.pasos[-1]
+    assert tipos.nombre == "type-check"
+    assert not tipos.salteado
+    assert tipos.exit_code == 3
+    assert not resultado.ok
+    assert resultado.fallido is tipos
+
+
+def test_gate_con_cambios_de_frontend_sin_node_modules_saltea_con_motivo(repo: Path) -> None:
+    _commit(repo, {"web/frontend/src/api/cliente.ts": "export const x = 1\n"}, "feat: api")
+
+    resultado = calidad.ejecutar_gate(repo, "dev")
+
+    tipos = resultado.pasos[-1]
+    assert tipos.nombre == "type-check"
+    assert tipos.salteado
+    assert tipos.motivo == "sin node_modules (correr npm ci)"
+    assert resultado.ok
+    assert "type-check salteado (sin node_modules (correr npm ci))" in resultado.resumen()

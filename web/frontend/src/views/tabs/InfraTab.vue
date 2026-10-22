@@ -595,7 +595,7 @@
       <div v-else class="fop-grid">
         <article
           v-for="camara in camaras"
-          :key="camara.id"
+          :key="camara.id as string"
           class="fop-camara-card"
           :data-estado="camara.estado ?? 'LIBRE'"
           :data-inconsistente="camara.inconsistente ? 'true' : 'false'"
@@ -894,7 +894,7 @@ function openBanModal() {
   banModalEl.value?.showModal();
 }
 
-function closeBanModal(force = false) {
+function closeBanModal(force: unknown = false) {
   if (banLoading.value && !force) return;
   banModalEl.value?.close();
   resetBanModalState();
