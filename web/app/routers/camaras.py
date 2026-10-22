@@ -1374,7 +1374,7 @@ class SearchRequestModel(BaseModel):
 
 
 @router.post("/api/infra/search")
-async def advanced_search_camaras_web(  # noqa: C901
+async def advanced_search_camaras_web(  # noqa: C901 - variante conservada a propósito
     request: Request,
     body: SearchRequestModel,
 ) -> JSONResponse:

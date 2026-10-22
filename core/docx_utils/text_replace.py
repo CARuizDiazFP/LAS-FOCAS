@@ -54,7 +54,6 @@ def replace_title_everywhere(document: Document, titulo: str) -> int:
     Si no se detecta el placeholder original, inserta un párrafo nuevo al inicio.
     """
 
-    mapping = {TITLE_PLACEHOLDER: titulo}  # noqa: F841 - asignación sin uso; revisar si es un bug (Fase 3)
     replacements = 0
 
     for part in _iter_unique_parts(document):

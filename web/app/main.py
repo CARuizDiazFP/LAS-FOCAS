@@ -22,6 +22,12 @@ from web.chat_ws import ChatWebSocketSettings, mount_chat_websocket
 import psycopg  # noqa: F401  (los tests parchean web_main.psycopg.connect)
 from pathlib import Path
 
+# El logging se configura ANTES de importar los routers: así sus warnings de import van a `web.log`
+# y no sólo a stderr. `setup_logging` es idempotente (reutiliza el handler de archivo del raíz).
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+LOGS_ROOT = Path(os.getenv("LOGS_DIR", str(Path(__file__).resolve().parents[2] / "Logs")))
+logger = setup_logging("web", LOG_LEVEL, enable_file=True, logs_dir=LOGS_ROOT, filename="web.log")
+
 from .routers import admin_datos, camaras, chat, cromo, servicios, sesion
 from .comun import (
     BASE_DIR,
@@ -34,10 +40,6 @@ from .comun import (
 
 # Configuración básica
 NLP_INTENT_URL = os.getenv("NLP_INTENT_URL", "http://nlp_intent:8100")
-
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-LOGS_ROOT = Path(os.getenv("LOGS_DIR", str(Path(__file__).resolve().parents[2] / "Logs")))
-logger = setup_logging("web", LOG_LEVEL, enable_file=True, logs_dir=LOGS_ROOT, filename="web.log")
 
 
 def _env_bool(name: str, default: bool = False) -> bool:

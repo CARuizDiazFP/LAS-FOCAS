@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from typing import Any, Literal, Optional
 
 import httpx
@@ -359,158 +361,167 @@ async def get_servicio_ingresos_web(
         )
 
 
+_PATRON_ODF_EN_LINEA = re.compile(r"(O-[\w-]+):\s*(\d+)")
+
+
+def _punta_desde_parseo(punta: Any) -> Optional[dict[str, str]]:
+    """Punta A/B a partir del objeto que devuelve `parse_tracking` (None si no hay punta)."""
+    if not punta:
+        return None
+    return {
+        "sitio": punta.sitio_descripcion or "",
+        "identificador": punta.identificador_fisico or "",
+        "conector": punta.pelo_conector or "",
+    }
+
+
+def _punta_desde_json(punta: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Punta A/B a partir del dict guardado en `contenido_original` (None si no hay punta)."""
+    if not punta:
+        return None
+    return {
+        "sitio": punta.get("sitio_descripcion", ""),
+        "identificador": punta.get("identificador_fisico", ""),
+        "conector": punta.get("pelo_conector", ""),
+    }
+
+
+def _punta_por_odf_de_tramos(entries: Any) -> Optional[dict[str, str]]:
+    """Punta deducida del primer tramo con nombre de cable: sitio:conector tipo `O-xxxxx: n`.
+
+    Corta en el primer tramo con cable aunque su línea no coincida con el patrón.
+    """
+    for entry in entries:
+        if entry.tipo == "tramo" and entry.cable_nombre:
+            coincidencia = _PATRON_ODF_EN_LINEA.search(entry.raw_line)
+            if coincidencia:
+                return {"sitio": coincidencia.group(1), "identificador": "", "conector": coincidencia.group(2)}
+            return None
+    return None
+
+
+def _entradas_desde_parseo(entries: Any) -> list[dict[str, Any]]:
+    """Secuencia cámara-cable a partir de las entradas de `parse_tracking`."""
+    resultado: list[dict[str, Any]] = []
+    for entry in entries:
+        if entry.tipo == "empalme":
+            resultado.append(
+                {"tipo": "camara", "descripcion": entry.empalme_descripcion or "", "empalme_id": entry.empalme_id}
+            )
+        elif entry.tipo == "tramo":
+            resultado.append(
+                {"tipo": "cable", "nombre": entry.cable_nombre or "", "atenuacion_db": entry.atenuacion_db}
+            )
+    return resultado
+
+
+def _entradas_desde_json(entries: Any) -> list[dict[str, Any]]:
+    """Secuencia cámara-cable a partir de las entradas del JSON guardado."""
+    resultado: list[dict[str, Any]] = []
+    for entry in entries:
+        if entry.get("tipo") == "empalme":
+            resultado.append(
+                {
+                    "tipo": "camara",
+                    "descripcion": entry.get("empalme_descripcion", ""),
+                    "empalme_id": entry.get("empalme_id"),
+                }
+            )
+        elif entry.get("tipo") == "tramo":
+            resultado.append(
+                {
+                    "tipo": "cable",
+                    "nombre": entry.get("cable_nombre", ""),
+                    "atenuacion_db": entry.get("atenuacion_db"),
+                }
+            )
+    return resultado
+
+
+def _tracking_desde_raw(ruta: Any) -> dict[str, Any]:
+    """Parsea el TXT original (`raw_file_content`); las puntas caen al ODF de los tramos si faltan."""
+    from core.parsers.tracking_parser import parse_tracking
+
+    parsed = parse_tracking(ruta.raw_file_content, ruta.nombre_archivo_origen or "")
+    punta_a = _punta_desde_parseo(parsed.punta_a)
+    punta_b = _punta_desde_parseo(parsed.punta_b)
+    if not punta_a and parsed.entries:
+        punta_a = _punta_por_odf_de_tramos(parsed.entries)
+    if not punta_b and parsed.entries:
+        punta_b = _punta_por_odf_de_tramos(reversed(parsed.entries))
+    return {
+        "tracking": _entradas_desde_parseo(parsed.entries),
+        "punta_a": punta_a,
+        "punta_b": punta_b,
+        "transitos_count": parsed.transitos_count,
+    }
+
+
+def _tracking_desde_json(ruta: Any) -> dict[str, Any]:
+    """Lee el JSON guardado en `contenido_original`; un JSON inválido se ignora (tracking vacío)."""
+    try:
+        parsed = json.loads(ruta.contenido_original)
+        entries = parsed.get("entries", [])
+        punta_a = _punta_desde_json(parsed.get("punta_a"))
+        punta_b = _punta_desde_json(parsed.get("punta_b"))
+        tracking = _entradas_desde_json(entries)
+    except json.JSONDecodeError:
+        return {"tracking": [], "punta_a": None, "punta_b": None, "transitos_count": None}
+    return {"tracking": tracking, "punta_a": punta_a, "punta_b": punta_b, "transitos_count": None}
+
+
+def _tracking_desde_empalmes(ruta: Any) -> list[dict[str, Any]]:
+    """Secuencia de cámaras a partir de los empalmes de la base."""
+    return [
+        {
+            "tipo": "camara",
+            "descripcion": empalme.camara.nombre if empalme.camara else "Sin cámara",
+            "empalme_id": empalme.tracking_empalme_id,
+        }
+        for empalme in ruta.empalmes
+    ]
+
+
+def _armar_tracking_de_ruta(ruta: Any) -> dict[str, Any]:
+    """Tracking de la ruta: TXT original, si no JSON guardado, y si queda vacío los empalmes."""
+    if ruta.raw_file_content:
+        datos = _tracking_desde_raw(ruta)
+    elif ruta.contenido_original:
+        datos = _tracking_desde_json(ruta)
+    else:
+        datos = {"tracking": [], "punta_a": None, "punta_b": None, "transitos_count": None}
+    if not datos["tracking"]:
+        datos["tracking"] = _tracking_desde_empalmes(ruta)
+    return datos
+
+
 @router.get("/api/infra/rutas/{ruta_id}/tracking")
-async def get_ruta_tracking(  # noqa: C901
+async def get_ruta_tracking(
     request: Request,
     ruta_id: int,
 ) -> JSONResponse:
     """Obtiene el tracking completo de una ruta (secuencia cámara-cable-cámara)."""
-    
+
     username, _ = _require_auth(request)
-    
+
     try:
         from db.models.infra import RutaServicio
         from db.session import SessionLocal
-        import json as json_module
-        
+
         with SessionLocal() as session:
             ruta = session.query(RutaServicio).filter(RutaServicio.id == ruta_id).first()
-            
+
             if not ruta:
                 return JSONResponse({"error": "Ruta no encontrada"}, status_code=404)
-            
-            # Parsear el contenido original del tracking
-            tracking_entries = []
-            punta_a_info = None
-            punta_b_info = None
-            # Sólo se calcula cuando se parsea raw_file_content (parse_tracking ya lo
-            # trae); en los fallbacks (contenido_original / empalmes de la base) queda
-            # en None por no tener esa info disponible sin reparsear el texto original.
-            transitos_count = None
 
-            # Primero intentar parsear raw_file_content (el TXT original)
-            if ruta.raw_file_content:
-                from core.parsers.tracking_parser import parse_tracking
-                parsed = parse_tracking(ruta.raw_file_content, ruta.nombre_archivo_origen or "")
-                transitos_count = parsed.transitos_count
-
-                # Extraer puntas A y B del parsing
-                if parsed.punta_a:
-                    punta_a_info = {
-                        "sitio": parsed.punta_a.sitio_descripcion or "",
-                        "identificador": parsed.punta_a.identificador_fisico or "",
-                        "conector": parsed.punta_a.pelo_conector or "",
-                    }
-                if parsed.punta_b:
-                    punta_b_info = {
-                        "sitio": parsed.punta_b.sitio_descripcion or "",
-                        "identificador": parsed.punta_b.identificador_fisico or "",
-                        "conector": parsed.punta_b.pelo_conector or "",
-                    }
-                
-                # Construir secuencia cámara-cable desde entries
-                for entry in parsed.entries:
-                    if entry.tipo == "empalme":
-                        tracking_entries.append({
-                            "tipo": "camara",
-                            "descripcion": entry.empalme_descripcion or "",
-                            "empalme_id": entry.empalme_id,
-                        })
-                    elif entry.tipo == "tramo":
-                        tracking_entries.append({
-                            "tipo": "cable",
-                            "nombre": entry.cable_nombre or "",
-                            "atenuacion_db": entry.atenuacion_db,
-                        })
-                
-                # Extraer terminales de primera/última línea si no hay puntas formales
-                if not punta_a_info and parsed.entries:
-                    # Buscar primer tramo con nombre de cable tipo ODF (O-xxxxx)
-                    for entry in parsed.entries:
-                        if entry.tipo == "tramo" and entry.cable_nombre:
-                            # Extraer sitio:conector del raw_line si está presente
-                            import re
-                            match = re.search(r"(O-[\w-]+):\s*(\d+)", entry.raw_line)
-                            if match:
-                                punta_a_info = {
-                                    "sitio": match.group(1),
-                                    "identificador": "",
-                                    "conector": match.group(2),
-                                }
-                            break
-                
-                if not punta_b_info and parsed.entries:
-                    # Buscar último tramo con ODF
-                    for entry in reversed(parsed.entries):
-                        if entry.tipo == "tramo" and entry.cable_nombre:
-                            import re
-                            match = re.search(r"(O-[\w-]+):\s*(\d+)", entry.raw_line)
-                            if match:
-                                punta_b_info = {
-                                    "sitio": match.group(1),
-                                    "identificador": "",
-                                    "conector": match.group(2),
-                                }
-                            break
-            
-            # Fallback a contenido_original (JSON guardado)
-            elif ruta.contenido_original:
-                try:
-                    parsed = json_module.loads(ruta.contenido_original)
-                    entries = parsed.get("entries", [])
-                    
-                    # Extraer info de puntas A y B
-                    punta_a_raw = parsed.get("punta_a")
-                    punta_b_raw = parsed.get("punta_b")
-                    if punta_a_raw:
-                        punta_a_info = {
-                            "sitio": punta_a_raw.get("sitio_descripcion", ""),
-                            "identificador": punta_a_raw.get("identificador_fisico", ""),
-                            "conector": punta_a_raw.get("pelo_conector", ""),
-                        }
-                    if punta_b_raw:
-                        punta_b_info = {
-                            "sitio": punta_b_raw.get("sitio_descripcion", ""),
-                            "identificador": punta_b_raw.get("identificador_fisico", ""),
-                            "conector": punta_b_raw.get("pelo_conector", ""),
-                        }
-                    
-                    # Construir secuencia cámara-cable
-                    for entry in entries:
-                        if entry.get("tipo") == "empalme":
-                            tracking_entries.append({
-                                "tipo": "camara",
-                                "descripcion": entry.get("empalme_descripcion", ""),
-                                "empalme_id": entry.get("empalme_id"),
-                            })
-                        elif entry.get("tipo") == "tramo":
-                            tracking_entries.append({
-                                "tipo": "cable",
-                                "nombre": entry.get("cable_nombre", ""),
-                                "atenuacion_db": entry.get("atenuacion_db"),
-                            })
-                except json_module.JSONDecodeError:
-                    pass
-            
-            # Si no hay contenido original, construir desde empalmes
-            if not tracking_entries:
-                for empalme in ruta.empalmes:
-                    tracking_entries.append({
-                        "tipo": "camara",
-                        "descripcion": empalme.camara.nombre if empalme.camara else "Sin cámara",
-                        "empalme_id": empalme.tracking_empalme_id,
-                    })
-            
+            datos = _armar_tracking_de_ruta(ruta)
             return JSONResponse({
                 "status": "ok",
                 "ruta_id": ruta.id,
                 "servicio_id": ruta.servicio.servicio_id,
                 "ruta_nombre": ruta.nombre,
                 "ruta_tipo": ruta.tipo.value,
-                "tracking": tracking_entries,
-                "punta_a": punta_a_info,
-                "punta_b": punta_b_info,
-                "transitos_count": transitos_count,
+                **datos,
             })
 
     except Exception as exc:

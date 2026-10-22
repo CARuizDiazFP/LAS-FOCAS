@@ -1031,7 +1031,7 @@ def _limpiar(entorno: Entorno, agente: Agente, *, borrar_rama: bool) -> dict[str
 # ----------------------------------------------------------------------- doctor
 
 
-def comando_doctor(entorno: Entorno, args: argparse.Namespace) -> dict[str, object]:  # noqa: C901
+def comando_doctor(entorno: Entorno, args: argparse.Namespace) -> dict[str, object]:  # noqa: C901 - CLI de tooling con tests propios
     """Detecta inconsistencias entre registro, Git y disco. No corrige nada."""
     control = entorno.control
     hallazgos: list[dict[str, str]] = []

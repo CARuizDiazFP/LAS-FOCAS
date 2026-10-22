@@ -795,3 +795,67 @@ async def test_actualizar_regla_valida(entorno):
     with pytest.raises(ValueError):
         await actualizar_regla(sesion, "NO_EXISTE", modo="AUTO", umbral=90,
                                presupuesto_por_corrida=1, usuario="qa")
+
+
+# ── Caracterización de `_evaluar_regla` (ramas sin cubrir antes del refactor) ───────────────────
+
+
+@requiere_db
+@pytest.mark.asyncio
+async def test_evaluaciones_repetidas_gana_mayor_confianza_y_empate_la_primera(
+    entorno, sin_ingesta, caplog
+):
+    sesion, conn, _ = entorno
+    regla = ReglaFake()
+    regla.evaluaciones = [
+        _ev(999_920_601, peso=50, parametros={"x": 1}),
+        _ev(999_920_601, peso=80, parametros={"x": 2}),
+        _ev(999_920_602, peso=70, parametros={"x": 3}),
+        _ev(999_920_602, peso=70, parametros={"x": 4}),
+    ]
+    with caplog.at_level("WARNING"):
+        r = await evaluar(sesion, _TODO, "VIEWER", reglas=[regla])
+    assert r.nuevas == 2
+    por_objeto = {f.objeto_id: f for f in await _filas(conn)}
+    assert (por_objeto[999_920_601].confianza, por_objeto[999_920_601].parametros) == (80, {"x": 2})
+    assert (por_objeto[999_920_602].confianza, por_objeto[999_920_602].parametros) == (70, {"x": 3})
+    assert any(
+        "action=arbitro_cromo evento=evaluaciones_repetidas" in m
+        and "total=4 objetos=2" in m
+        for m in caplog.messages
+    )
+
+
+@requiere_db
+@pytest.mark.asyncio
+async def test_auto_informar_no_se_aplica_ni_consume_presupuesto(entorno, sin_ingesta):
+    sesion, conn, _ = entorno
+    s1 = await _servicio(conn, _NUMEROS[0])
+    await _odf(conn)
+    await _modo(conn, "AUTO", presupuesto=1)
+    regla = ReglaFake()
+    regla.evaluaciones = [_ev(999_920_601, peso=100), _ev(999_920_602, peso=100), _ev_odf(s1)]
+    r = await evaluar(sesion, _TODO, "VIEWER", reglas=[regla])
+    assert r.presupuesto_excedido == []
+    por_id = {f.objeto_id: f for f in await _filas(conn)}
+    assert r.aplicadas_auto == [por_id[s1].id]
+    assert por_id[999_920_601].estado == "PROPUESTA" and por_id[999_920_602].estado == "PROPUESTA"
+
+
+@requiere_db
+@pytest.mark.asyncio
+async def test_propuesta_nueva_registra_modo_disparo_y_estado(entorno, sin_ingesta):
+    sesion, conn, _ = entorno
+    await _modo(conn, "AUTO")
+    regla = ReglaFake()
+    regla.evaluaciones = [_ev(999_920_601, peso=40)]
+    r = await evaluar(sesion, _TODO, "REGISTRADOR", reglas=[regla])
+    (fila,) = await _filas(conn)
+    assert (fila.estado, fila.disparo, fila.confianza) == ("PROPUESTA", "REGISTRADOR", 40)
+    modo = (
+        await conn.execute(
+            text("SELECT modo_al_evaluar FROM app.cromo_propuesta WHERE id = :i"), {"i": fila.id}
+        )
+    ).scalar_one()
+    assert modo == "AUTO"
+    assert r.a_dict()["por_regla"][_REGLA]["nuevas"] == 1

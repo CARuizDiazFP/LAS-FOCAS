@@ -2195,7 +2195,7 @@ class ExportFormat(str, Enum):
 
 
 @router.get("/api/infra/export/cameras")
-async def export_cameras(  # noqa: C901
+async def export_cameras(  # noqa: C901 - API interna; se conserva por decisión del usuario
     filter_status: Optional[str] = None,
     servicio_id: Optional[str] = None,
     format: ExportFormat = ExportFormat.CSV,

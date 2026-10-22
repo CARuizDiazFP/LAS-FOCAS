@@ -16,10 +16,27 @@ from typing import Any
 
 from sqlalchemy.orm import Session, selectinload
 
-from db.models.infra import Camara
+from db.models.infra import Camara, Empalme
 from db.models.infra import CamaraEstado as _CamaraEstado
 
 LIMITE_MAXIMO = 500
+
+# Relaciones que el matching y la serialización recorren por cámara, cargadas por lote
+# (`selectinload`: una sentencia por relación cada 500 padres, sin multiplicar ni reordenar filas
+# como haría un `joinedload` sobre colecciones). Sin esto, la smart search con términos hacía unas
+# 34.000 sentencias (lazy load por cámara raíz: empalmes, cables origen/destino, empalmes de botellas).
+# `Camara.cables` es una @property (`cables_origen + cables_destino`), por eso se cargan las dos.
+# Las botellas sólo aportan sus empalmes (`_collect_camara_rutas_info`); sus cables no se leen.
+# `Empalme.servicios` se lee sólo en la cámara raíz, cuando no hay rutas.
+# `Empalme.rutas` queda lazy A PROPÓSITO: es many-to-many sin `order_by` y el lote devuelve las
+# rutas de un empalme en otro orden que la carga individual (151 empalmes en dev), lo que cambiaría
+# el orden de `rutas` en la respuesta. Se mantiene hasta que se decida un orden explícito.
+_CARGA_POR_LOTE = (
+    selectinload(Camara.empalmes).selectinload(Empalme.servicios),
+    selectinload(Camara.cables_origen),
+    selectinload(Camara.cables_destino),
+    selectinload(Camara.botellas).selectinload(Camara.empalmes),
+)
 
 
 @dataclass(frozen=True)
@@ -140,10 +157,8 @@ def _consulta_base(session: Session, estado: str | None, incluir_no_operativas: 
     """Query de cámaras-raíz con el filtro de estado y el de NO_OPERATIVA. Devuelve (query, estado_filter)."""
 
     # Etapa Cámara/Botella: el dashboard sólo muestra cámaras-raíz — sus Botellas viven en el
-    # detalle. `selectinload(Camara.botellas)` evita una query lazy por cámara al recorrer botellas.
-    query = session.query(Camara).filter(Camara.camara_padre_id.is_(None)).options(
-        selectinload(Camara.botellas)
-    )
+    # detalle. `_CARGA_POR_LOTE` (incluye `Camara.botellas`) evita las queries lazy por cámara.
+    query = session.query(Camara).filter(Camara.camara_padre_id.is_(None)).options(*_CARGA_POR_LOTE)
     estado_filter: str | None = None
     if estado:
         estado_upper = estado.strip().upper()

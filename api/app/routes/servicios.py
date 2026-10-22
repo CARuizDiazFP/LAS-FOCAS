@@ -247,7 +247,7 @@ async def _buscar_servicio_por_id(db: AsyncSession, id_consultado: str) -> Servi
 
 
 @router.post("/ingest", response_model=IngestServiciosResponse)
-async def ingest_servicios(  # noqa: C901
+async def ingest_servicios(  # noqa: C901 - API interna; se conserva por decisión del usuario
     file: UploadFile = File(..., description="Archivo XLSX/CSV con servicios SLA"),
     db: AsyncSession = Depends(get_async_db),
 ) -> IngestServiciosResponse:
