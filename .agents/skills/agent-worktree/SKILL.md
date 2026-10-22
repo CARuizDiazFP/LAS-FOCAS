@@ -155,7 +155,12 @@ sólo corre a mano por falta de créditos de Actions:
 1. `ruff check` sobre los `.py` que la rama cambió respecto de `origin/dev` (config en `pyproject.toml`).
 2. `pytest` sobre los **tests focales**: los tests cambiados, `tests/test_<módulo>*.py`, los tests
    que importan un módulo cambiado (incluido `app.*` para `web/app/*`) y el smoke de
-   `config/quality-gate.json`. Si el lint falla, los tests no se corren.
+   `config/quality-gate.json`. Si cambia `web/app/routers/*` o `web/app/comun.py`, se suman los
+   tests que importan `web.app.main` o `app.main`. Si el lint falla, los tests no se corren.
+3. `type-check` (`npm run type-check` en `web/frontend`) cuando cambian `.vue` o `.ts` bajo
+   `web/frontend/src`. Sin `web/frontend/node_modules` se saltea con el motivo "sin node_modules
+   (correr npm ci)" y el gate igual pasa. Por eso, quien toque el frontend en un worktree tiene que
+   correr `npm ci` en `web/frontend` antes de `ready`: los worktrees nacen sin `node_modules`.
 
 Si el gate falla, `ready` sale con código 1, muestra el paso y su salida, y el agente queda en su
 estado. Si pasa, registra `quality_gate_passed` con el sha del HEAD. **`integrate` rechaza un HEAD
