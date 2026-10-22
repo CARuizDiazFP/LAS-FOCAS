@@ -200,6 +200,8 @@ def _correr(nombre: str, comando: list[str], ruta: Path, *, entorno: dict[str, s
             env={**os.environ, **(entorno or {})},
         )
         exit_code, texto = proceso.returncode, proceso.stdout + proceso.stderr
+    except FileNotFoundError:
+        exit_code, texto = 127, f"comando no encontrado: {comando[0]}"
     except subprocess.TimeoutExpired as error:
         exit_code, texto = 124, f"timeout tras {TIMEOUT_SEGUNDOS}s\n{error.stdout or ''}"
     lineas = texto.strip().splitlines()[-LINEAS_SALIDA:]
