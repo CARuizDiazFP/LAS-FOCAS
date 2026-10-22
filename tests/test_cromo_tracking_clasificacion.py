@@ -627,3 +627,78 @@ def test_caminos_ajenos_no_degradan_al_declarado_ni_al_etiquetado():
         6799280: ROL_ADICIONAL, 6799281: ROL_ADICIONAL,
         7469850: ROL_RESIDUAL,
     }
+
+
+# ── Umbral de tamaño en los adicionales de posición (proporción del 25 %) ─────────────────────
+#
+# Caso 102452 (`servicios.id=1168`), E2E real contra Cromo en dev (2026-10-22): las posiciones
+# daban 2 adicionales de 1 pelo cada uno (semillas 9614673/9614674), jumpers dentro del mismo Nodo
+# Dixon entre 'Rack 1 Sala 2' O-9585104-6:3/4 y 'Rack 2 SAENZ PEÑA' O-1247502-3:3/4. Terminan en
+# ODF Nodo en los dos extremos (camino "completo"), pero los tramos reales tienen 47/27/24 pelos.
+# El id de la ODF del Rack 2 SAENZ PEÑA no se midió: se usa uno de fantasía.
+_ODF_NODO_DIXON_RACK_1 = 9585104
+_ODF_NODO_DIXON_RACK_2 = 900_003
+
+
+def _jumpers_102452():
+    return [
+        _camino_real(
+            semilla,
+            {semilla},
+            ini=_conector(_ODF_NODO_DIXON_RACK_1, "O-9585104-6", numero, clase=86),
+            fin=_conector(_ODF_NODO_DIXON_RACK_2, "O-1247502-3", numero, clase=86),
+            cables=(),
+        )
+        for semilla, numero in ((9614673, "3"), (9614674, "4"))
+    ]
+
+
+def test_102452_jumper_de_posicion_de_1_pelo_frente_a_tramos_de_47_es_residual():
+    caminos = [*_caminos("102452"), *_jumpers_102452()]
+    etiquetados = frozenset(c.pelo_n_id for c in _caminos("102452"))
+    roles = _roles_por_pelo(
+        caminos,
+        clasificar_con_posiciones(caminos, etiquetados=etiquetados, declarados=frozenset()),
+    )
+    assert all(es_camino_completo(j) for j in _jumpers_102452())
+    assert roles[9614673] == ROL_RESIDUAL and roles[9614674] == ROL_RESIDUAL
+    # Los tramos medidos no cambian.
+    assert {p for p, r in roles.items() if r == ROL_TRAMO} == TRAMOS_ESPERADOS["102452"]
+    assert ROL_ADICIONAL not in roles.values()
+
+
+def test_93150_adicional_de_posicion_de_49_pelos_frente_a_tramos_de_40_sigue_adicional():
+    caminos = _caminos_93150()
+    assert [len(c.pelos_camino) for c in caminos[:4]] == [49, 49, 40, 40]
+    roles = _roles_por_pelo(
+        caminos,
+        clasificar_con_posiciones(caminos, etiquetados=_ETIQUETADOS_93150, declarados=frozenset()),
+    )
+    assert roles[7028862] == ROL_ADICIONAL and roles[7028863] == ROL_ADICIONAL
+
+
+def test_la_proporcion_de_posicion_mira_el_camino_completo_mas_largo_de_cualquier_origen():
+    """El máximo sale de TODOS los caminos completos (etiquetados, declarados y de posición), no
+    sólo de los etiquetados: un camino de posición de 10 pelos frente a un declarado completo de
+    49 (10 < 12,25) es RESIDUAL; frente a un tramo de 40 sólo (10 ≥ 10) es ADICIONAL. Un camino
+    incompleto no entra al máximo."""
+    viejo, _, nuevo, nuevo_2, residual = _caminos_93150()
+    chico = _camino_real(
+        1, set(range(1, 11)), ini=_conector(10, "O-10", "1"), fin=_conector(11, "O-11", "1"),
+        cables=(1,),
+    )
+    roles = clasificar_con_posiciones(
+        [viejo, nuevo, nuevo_2, chico],
+        etiquetados=_ETIQUETADOS_93150,
+        declarados=frozenset({viejo.pelo_n_id}),
+    )
+    assert roles == [ROL_VIGENTE, ROL_ADICIONAL, ROL_ADICIONAL, ROL_RESIDUAL]
+    largo_incompleto = _camino_real(
+        500, set(range(500, 800)), ini=_PELO, fin=_conector(12, "O-12", "1"), cables=(2,),
+    )
+    roles = clasificar_con_posiciones(
+        [nuevo, nuevo_2, largo_incompleto, chico],
+        etiquetados=frozenset({6799280, 6799281, 500}),
+        declarados=frozenset(),
+    )
+    assert roles[-1] == ROL_ADICIONAL

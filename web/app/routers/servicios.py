@@ -1483,8 +1483,9 @@ class PosicionVigenteRetirarRequestModel(BaseModel):
 
 
 def _serializar_posicion_declarada(d: Any, aviso: Any) -> dict[str, Any]:
-    """Una posición declarada vigente. `valida`/`aviso` salen de `validar_en_db`: el inventario
-    ingerido ya no la sostiene (la corrida de tracking la va a retirar), pero acá sólo se informa."""
+    """Una posición declarada vigente. `valida`/`aviso` salen de `validar_en_db` y `arrastrar_par`:
+    el inventario ingerido ya no la sostiene, o no sostiene a su par (la corrida de tracking la va a
+    retirar), pero acá sólo se informa."""
     from core.services.cromo.servicio_posicion_vigente import texto_aviso
 
     return {
@@ -1542,9 +1543,11 @@ def _serializar_posicion_posible(p: Any, posibles: Any, declarados: set[int]) ->
 
 
 def _serializar_declaradas(declaradas: Any) -> list[dict[str, Any]]:
-    from core.services.cromo.servicio_posicion_vigente import validar_en_db
+    # Con el arrastre del par (`arrastrar_par`): la que la corrida va a retirar junto con su par
+    # tampoco se muestra como válida.
+    from core.services.cromo.servicio_posicion_vigente import arrastrar_par, validar_en_db
 
-    avisos = {a.declaracion_id: a for a in validar_en_db(declaradas)}
+    avisos = {a.declaracion_id: a for a in arrastrar_par(declaradas, validar_en_db(declaradas))}
     return [_serializar_posicion_declarada(d, avisos.get(d.id)) for d in declaradas]
 
 

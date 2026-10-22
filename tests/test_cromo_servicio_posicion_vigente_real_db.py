@@ -1,6 +1,6 @@
 # Nombre de archivo: test_cromo_servicio_posicion_vigente_real_db.py
 # Ubicación de archivo: tests/test_cromo_servicio_posicion_vigente_real_db.py
-# Descripción: Pruebas contra Postgres real de la posición vigente por conector: posiciones posibles con sus filtros (93150, 42352, 93153), par sugerido, declarar/retirar, estados reales de pelo y camino ajeno por etiqueta dominante (93150/61972, 42351/42352)
+# Descripción: Pruebas contra Postgres real de la posición vigente por conector: posiciones posibles con sus filtros (93150, 42352, 93153), par sugerido, declarar/retirar, estados reales de pelo, camino ajeno por etiqueta dominante (93150/61972, 42351/42352) y retiro del par (93150)
 
 """Casos reales de dev (2026-10-21) que una sesión fake no puede cubrir: lo que se prueba es el SQL
 de `posiciones_posibles` (UNION por identidad, filtro de pelo de otro servicio Activo, pelos
@@ -512,3 +512,93 @@ async def test_camino_del_42351_es_ajeno_desde_el_42352_y_no_desde_el_42351(sesi
         {pelos_42351[0]}
     )
     assert await pv.caminos_de_otro_servicio_activo(sesion, _SERVICIO_42351, camino) == frozenset()
+
+
+# ── Retiro del par (transacción revertida) ──────────────────────────────────────────────────
+
+
+async def _insertar_declarada_en_patchera(sesion, conector: int, pelo: int, bandeja: int) -> int:
+    return (
+        await sesion.execute(
+            text(
+                "INSERT INTO app.servicio_posicion_vigente "
+                "(servicio_id, conector_n_id, odf_n_id, bandeja_n_id, bandeja_nombre, numero_conector, "
+                " pelo_n_id, pelos_candidatos, declarado_por) "
+                "SELECT :sid, c.n_id, c.odf_n_id, :bandeja, c.bandeja_nombre, c.numero_conector, :p, "
+                "       ARRAY[CAST(:p AS bigint)], 'test' "
+                "FROM app.cromo_odf_conectores c WHERE c.n_id = :c RETURNING id"
+            ),
+            {"sid": _SERVICIO_93150, "c": conector, "p": pelo, "bandeja": bandeja},
+        )
+    ).scalar_one()
+
+
+async def _fila_retiro(sesion, declaracion_id: int):
+    return (
+        await sesion.execute(
+            text(
+                "SELECT vigente, motivo_retiro, detalle_retiro, retirado_por "
+                "FROM app.servicio_posicion_vigente WHERE id = :id"
+            ),
+            {"id": declaracion_id},
+        )
+    ).one()
+
+
+@pytest.mark.asyncio
+async def test_pelo_cambio_en_1_retira_tambien_el_2_del_par_y_limpia_ambos_caches(sesion):
+    """93150: O-1252871-1:1 (conector 8604882) declarado con un pelo que ya no es el del conector
+    (PELO_CAMBIO) arrastra a :2 (8604883, pelo real 7028863), misma patchera. Los dos quedan
+    retirados con el mismo motivo, el :2 con `arrastrada_por` en `detalle_retiro`, y el caché de
+    los dos pelos deja de atribuirse al Servicio."""
+    await sesion.execute(
+        text("DELETE FROM app.servicio_posicion_vigente WHERE servicio_id = :sid"),
+        {"sid": _SERVICIO_93150},
+    )
+    bandeja = -78_001
+    id_1 = await _insertar_declarada_en_patchera(sesion, _CONECTOR_1, _PELO_FALSO, bandeja)
+    id_2 = await _insertar_declarada_en_patchera(sesion, _CONECTOR_2, _PELO_2, bandeja)
+    await _cachear(sesion, _PELO_FALSO, _SERVICIO_93150)
+    await _cachear(sesion, _PELO_2, _SERVICIO_93150)
+
+    declaradas = await pv.listar_declaradas(sesion, _SERVICIO_93150)
+    avisos = pv.arrastrar_par(declaradas, pv.validar_en_db(declaradas))
+    assert [(a.declaracion_id, a.codigo) for a in avisos] == [
+        (id_1, pv.MOTIVO_PELO_CAMBIO),
+        (id_2, pv.MOTIVO_PELO_CAMBIO),
+    ]
+    assert await pv.declaradas_validas(sesion, _SERVICIO_93150) == []
+
+    assert await pv.aplicar_retiros(sesion, avisos) == 2
+
+    uno, dos = await _fila_retiro(sesion, id_1), await _fila_retiro(sesion, id_2)
+    assert (uno.vigente, uno.motivo_retiro) == (False, pv.MOTIVO_PELO_CAMBIO)
+    assert (dos.vigente, dos.motivo_retiro, dos.retirado_por) == (False, pv.MOTIVO_PELO_CAMBIO, "auto")
+    assert dos.detalle_retiro == {
+        "arrastrada_por": _CONECTOR_1, "declarado": _PELO_FALSO, "actual": _PELO_1,
+    }
+    assert await _atribucion(sesion, _PELO_FALSO) is None
+    assert await _atribucion(sesion, _PELO_2) is None
+
+
+@pytest.mark.asyncio
+async def test_arrastre_no_pisa_una_redeclaracion_concurrente_del_par(sesion):
+    """Retiro condicionado: el aviso del :2 se calculó con el pelo 7028863; si mientras tanto un
+    admin lo re-declaró con otro pelo, el arrastre no lo retira (sí al :1)."""
+    await sesion.execute(
+        text("DELETE FROM app.servicio_posicion_vigente WHERE servicio_id = :sid"),
+        {"sid": _SERVICIO_93150},
+    )
+    bandeja = -78_002
+    id_1 = await _insertar_declarada_en_patchera(sesion, _CONECTOR_1, _PELO_FALSO, bandeja)
+    id_2 = await _insertar_declarada_en_patchera(sesion, _CONECTOR_2, _PELO_2, bandeja)
+    declaradas = await pv.listar_declaradas(sesion, _SERVICIO_93150)
+    avisos = pv.arrastrar_par(declaradas, pv.validar_en_db(declaradas))
+    await sesion.execute(
+        text("UPDATE app.servicio_posicion_vigente SET pelo_n_id = :p WHERE id = :id"),
+        {"p": _PELO_FALSO_2, "id": id_2},
+    )
+
+    assert await pv.aplicar_retiros(sesion, avisos) == 1
+    assert (await _fila_retiro(sesion, id_1)).vigente is False
+    assert (await _fila_retiro(sesion, id_2)).vigente is True

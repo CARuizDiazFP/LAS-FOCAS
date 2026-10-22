@@ -1,6 +1,6 @@
 # Nombre de archivo: servicio_posicion_vigente.py
 # Ubicación de archivo: core/services/cromo/servicio_posicion_vigente.py
-# Descripción: Posición vigente por conector de un Servicio (app.servicio_posicion_vigente): posiciones posibles, declarar/retirar, validación contra el inventario y el camino, y textos de aviso
+# Descripción: Posición vigente por conector de un Servicio (app.servicio_posicion_vigente): posiciones posibles, declarar/retirar, validación contra el inventario y el camino, retiro del par y textos de aviso
 
 """La posición de ODF por la que hoy va un Servicio, cuando la etiqueta de los pelos no alcanza.
 
@@ -33,6 +33,12 @@ Como las semillas del tracking salen de pelos etiquetados, ese camino nunca se c
   "Sin Uso" en el camino declarado, y `decidir_retiro` sólo retira por eso si existe otro camino
   completo sano: `estado_cromo` cubre a medias y tiene falsos positivos (el tramo 6731007 del
   111835, en uso, tiene un pelo "Dañado"). En los demás casos la declaración se mantiene y se avisa.
+- **Retiro del par** (`arrastrar_par`): un retiro automático arrastra, en la misma corrida, a las
+  demás declaradas vigentes del Servicio en la misma patchera (`bandeja_n_id`), con el mismo motivo
+  y `detalle_retiro = {"arrastrada_por": <conector que lo disparó>, ...}`. El Servicio es un par de
+  pelos que van juntos (93150 = O-1252871-1:1 y :2, siempre 2 trackings): retirando sólo :1, esa
+  corrida usaba el cálculo automático y la siguiente aplicaba sólo :2, así que dos `track`
+  seguidos daban resultados distintos y quedaba un tracking suelto. El retiro manual no arrastra.
 
 `tracking_service` importa este módulo a nivel de módulo: los tipos del tracking van bajo
 `TYPE_CHECKING` y `auditoria_huerfanos` (que importa `tracking_service`) se importa diferido.
@@ -75,6 +81,7 @@ __all__ = [
     "PosicionNoValida",
     "PosicionPosible",
     "aplicar_retiros",
+    "arrastrar_par",
     "caminos_ajenos_por_etiqueta",
     "caminos_de_otro_servicio_activo",
     "declaradas_validas",
@@ -442,7 +449,8 @@ class PosicionDeclarada:
 @dataclass(slots=True, frozen=True)
 class AvisoPosicion:
     """Algo que el operador tiene que saber de una posición declarada. `retirada` dice si se retira
-    (o se retiró); `declaracion_id` y `pelo_declarado` son lo que condiciona el retiro."""
+    (o se retiró); `declaracion_id` y `pelo_declarado` son lo que condiciona el retiro.
+    `arrastrada_con` es la posición cuyo retiro la arrastró (`arrastrar_par`), para el texto."""
 
     conector_n_id: int
     posicion: str
@@ -451,6 +459,7 @@ class AvisoPosicion:
     declaracion_id: Optional[int] = None
     pelo_declarado: Optional[int] = None
     detalle: dict[str, Any] = field(default_factory=dict)
+    arrastrada_con: Optional[str] = None
 
 
 def _int_o_none(valor: Any) -> Optional[int]:
@@ -694,9 +703,10 @@ async def listar_declaradas(sesion: AsyncSession, servicio_id: int) -> list[Posi
 async def declaradas_validas(sesion: AsyncSession, servicio_id: int) -> list[PosicionDeclarada]:
     """Las declaradas vigentes que el inventario ingerido todavía sostiene (sin aviso de
     `validar_en_db`). Las demás están pendientes de retiro: no sirven como candidatas ni para
-    atribuir el caché al Servicio (endpoint del `.txt`)."""
+    atribuir el caché al Servicio (endpoint del `.txt`). Tampoco las que arrastra su par
+    (`arrastrar_par`): la próxima corrida las retira juntas."""
     declaradas = await listar_declaradas(sesion, servicio_id)
-    invalidas = {a.declaracion_id for a in validar_en_db(declaradas)}
+    invalidas = {a.declaracion_id for a in arrastrar_par(declaradas, validar_en_db(declaradas))}
     return [d for d in declaradas if d.id not in invalidas]
 
 
@@ -866,6 +876,66 @@ def validar_en_db(declaradas: Sequence[PosicionDeclarada]) -> list[AvisoPosicion
     return avisos
 
 
+ARRASTRADA_POR = "arrastrada_por"
+
+
+def arrastrar_par(
+    declaradas: Sequence[PosicionDeclarada], avisos: Sequence[AvisoPosicion]
+) -> list[AvisoPosicion]:
+    """Los `avisos` más un retiro por cada declarada vigente arrastrada por su par. Pura.
+
+    Un aviso con `retirada=True` que no es `MANUAL` (de `validar_en_db` o de `decidir_retiro`)
+    arrastra a las demás `declaradas` con el mismo `bandeja_n_id` (misma patchera) que no tengan ya
+    un retiro propio: mismo `codigo` (motivo del retiro), su propio id y pelo leído (el retiro sigue
+    condicionado y no pisa una re-declaración concurrente) y `detalle = {"arrastrada_por": <conector
+    que lo disparó>, **detalle del disparo}`. El aviso propio que no retiraba de una arrastrada
+    (p. ej. `CAMINO_INCOMPLETO`) se reemplaza; cada arrastrada va después de su disparo.
+    Declaradas sin `bandeja_n_id` no arrastran ni son arrastradas. Idempotente: un aviso ya
+    arrastrado no dispara otro arrastre.
+
+    Caso real 93150 (2026-10-22): O-1252871-1:1 y :2 van juntos. Retirar sólo :1 dejaba la corrida
+    en el cálculo automático y la siguiente aplicaba sólo :2 (dos `track` seguidos distintos).
+    """
+    por_id = {d.id: d for d in declaradas}
+    con_retiro = {a.declaracion_id for a in avisos if a.retirada}
+    arrastradas: dict[int, AvisoPosicion] = {}
+    por_disparo: dict[int, list[AvisoPosicion]] = {}
+    for i, aviso in enumerate(avisos):
+        if not aviso.retirada or aviso.codigo == MOTIVO_MANUAL or ARRASTRADA_POR in aviso.detalle:
+            continue
+        disparo = por_id.get(aviso.declaracion_id) if aviso.declaracion_id is not None else None
+        if disparo is None or disparo.bandeja_n_id is None:
+            continue
+        for d in declaradas:
+            if (
+                d.id == disparo.id
+                or d.bandeja_n_id != disparo.bandeja_n_id
+                or d.id in con_retiro
+                or d.id in arrastradas
+            ):
+                continue
+            arrastrada = AvisoPosicion(
+                conector_n_id=d.conector_n_id,
+                posicion=d.posicion,
+                codigo=aviso.codigo,
+                retirada=True,
+                declaracion_id=d.id,
+                pelo_declarado=d.pelo_declarado,
+                detalle={ARRASTRADA_POR: aviso.conector_n_id, **aviso.detalle},
+                arrastrada_con=aviso.posicion,
+            )
+            arrastradas[d.id] = arrastrada
+            por_disparo.setdefault(i, []).append(arrastrada)
+    if not arrastradas:
+        return list(avisos)
+    salida: list[AvisoPosicion] = []
+    for i, aviso in enumerate(avisos):
+        if aviso.declaracion_id not in arrastradas:
+            salida.append(aviso)
+        salida.extend(por_disparo.get(i, ()))
+    return salida
+
+
 def _pelos_de(tracking: "TrackingGenerado") -> frozenset[int]:
     return frozenset(tracking.pelos_camino) | {tracking.pelo_n_id}
 
@@ -940,36 +1010,43 @@ async def decidir_retiro(
 # ── Textos (Slack y web) ─────────────────────────────────────────────────────────────────────
 
 
+def _causa_de_retiro(codigo: str, d: Mapping[str, Any]) -> Optional[str]:
+    """La causa de un retiro (sin punto final), o `None` si el código no es un motivo de retiro."""
+    if codigo == MOTIVO_SIN_PELO:
+        return "el conector ya no tiene pelo en Cromo"
+    if codigo == MOTIVO_CONECTOR_INEXISTENTE:
+        return "el conector ya no está en el inventario de Cromo"
+    if codigo == MOTIVO_PELO_CAMBIO:
+        return f"el pelo del conector cambió en Cromo (declarado {d.get('declarado')}, ahora {d.get('actual')})"
+    if codigo == MOTIVO_PELO_DANADO:
+        return f"su camino pasa por el pelo {d.get('pelo')} en estado «{d.get('estado')}»"
+    if codigo == MOTIVO_CABLE_SIN_USO:
+        return f"su camino pasa por el cable {d.get('nombre') or d.get('cable')} con tendido «Sin Uso»"
+    return None
+
+
 def texto_aviso(aviso: AvisoPosicion) -> str:
-    """Texto del aviso para el operador (Slack le antepone `:warning: `)."""
+    """Texto del aviso para el operador (Slack le antepone `:warning: `). Una arrastrada por su par
+    (`arrastrar_par`) dice junto con cuál se retiró y la causa de esa otra."""
     pos, d = aviso.posicion, aviso.detalle
-    retiro = f"Se retiró la posición vigente {pos}: "
-    if aviso.codigo == MOTIVO_SIN_PELO:
-        return retiro + "el conector ya no tiene pelo en Cromo."
-    if aviso.codigo == MOTIVO_CONECTOR_INEXISTENTE:
-        return retiro + "el conector ya no está en el inventario de Cromo."
-    if aviso.codigo == MOTIVO_PELO_CAMBIO:
-        return retiro + (
-            f"el pelo del conector cambió en Cromo (declarado {d.get('declarado')}, ahora {d.get('actual')})."
-        )
-    if aviso.codigo == MOTIVO_PELO_DANADO:
-        causa = f"su camino pasa por el pelo {d.get('pelo')} en estado «{d.get('estado')}»"
-    elif aviso.codigo == MOTIVO_CABLE_SIN_USO:
-        causa = f"su camino pasa por el cable {d.get('nombre') or d.get('cable')} con tendido «Sin Uso»"
-    elif aviso.codigo == AVISO_CAMINO_NO_RESUELTO:
+    if aviso.codigo == AVISO_CAMINO_NO_RESUELTO:
         return (
             f"No se pudo usar la posición vigente {pos}: Cromo no resolvió su camino "
             f"({d.get('motivo') or 'sin detalle'}). Se usó el cálculo automático; la declaración se mantiene."
         )
-    elif aviso.codigo == AVISO_CAMINO_INCOMPLETO:
+    if aviso.codigo == AVISO_CAMINO_INCOMPLETO:
         return (
             f"No se pudo usar la posición vigente {pos}: su camino no termina en ODF en ambos "
             "extremos. Se usó el cálculo automático; la declaración se mantiene."
         )
-    else:
+    causa = _causa_de_retiro(aviso.codigo, d)
+    if causa is None:
         return f"Posición vigente {pos}: {aviso.codigo}."
-    if aviso.retirada:
-        return f"{retiro}{causa}."
+    if aviso.arrastrada_con:
+        return f"Se retiró la posición vigente {pos} junto con {aviso.arrastrada_con} (mismo par): {causa}."
+    # Los de inventario siempre retiran; los de estado/tendido sólo con otro camino completo sano.
+    if aviso.retirada or aviso.codigo in (MOTIVO_SIN_PELO, MOTIVO_CONECTOR_INEXISTENTE, MOTIVO_PELO_CAMBIO):
+        return f"Se retiró la posición vigente {pos}: {causa}."
     return f"La posición vigente {pos} se mantiene, pero {causa} y no hay otro camino completo sano."
 
 

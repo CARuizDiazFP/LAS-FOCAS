@@ -54,6 +54,7 @@ from core.services.cromo.servicio_posicion_vigente import (
     PosicionDeclarada,
     PosicionPosible,
     aplicar_retiros,
+    arrastrar_par,
     caminos_de_otro_servicio_activo,
     decidir_retiro,
     etiqueta_posiciones,
@@ -652,8 +653,14 @@ def clasificar_con_posiciones(
     3. `ETIQUETADO` lleva el rol de `clasificar_caminos`; si algún camino es `DECLARADO` (la
        declaración se aplicó), sus `TRAMO` pasan a `ADICIONAL`: siguen siendo un recorrido real,
        pero el servicio va por el vigente.
-    4. `POSICION` es `ADICIONAL` si es un camino completo (ODF en los dos extremos) y `RESIDUAL`
-       si no, o si su semilla está en `caminos_ajenos` (en sus pelos domina la etiqueta de otro
+    4. `POSICION` es `ADICIONAL` si es un camino completo (ODF en los dos extremos) con al menos
+       `_PROPORCION_PELOS_MINIMA` (25 %) de los pelos del camino completo más largo del Servicio
+       (de cualquier origen: etiquetado, declarado o de posición; los incompletos no cuentan), y
+       `RESIDUAL` si no. Medido E2E en dev (2026-10-22): en el 102452 las posiciones daban 2
+       "adicionales" de 1 pelo (9614673/74, jumpers dentro del Nodo Dixon entre O-9585104-6:3/4 y
+       O-1247502-3:3/4) frente a tramos de 47/27/24 pelos (1 < 11,75: RESIDUAL); en el 93150 el
+       camino viejo tiene 49 pelos frente a los 40 del nuevo y sigue ADICIONAL. También es
+       `RESIDUAL` si su semilla está en `caminos_ajenos` (en sus pelos domina la etiqueta de otro
        servicio Activo, `caminos_de_otro_servicio_activo`): el filtro de las posiciones sólo mira
        el pelo semilla, y el camino puede ser el de otro Activo (42352 ↔ 42351). Unos pelos sueltos
        de otro Activo no alcanzan: el hilo 2 del camino viejo del 93150 recorre 4 de 61972 entre 49
@@ -676,6 +683,10 @@ def clasificar_con_posiciones(
         )
     )
     hay_vigente = ORIGEN_DECLARADO in origenes
+    # Base del 25 % de los caminos de posición: el completo más largo, de cualquier origen.
+    minimo_posicion = _PROPORCION_PELOS_MINIMA * max(
+        (len(c.pelos_camino) for c in caminos if es_camino_completo(c)), default=0
+    )
 
     roles: list[str] = []
     for i, (camino, origen) in enumerate(zip(caminos, origenes)):
@@ -687,7 +698,8 @@ def clasificar_con_posiciones(
         elif camino.pelo_n_id in caminos_ajenos:
             roles.append(ROL_RESIDUAL)
         else:
-            roles.append(ROL_ADICIONAL if es_camino_completo(camino) else ROL_RESIDUAL)
+            adicional = es_camino_completo(camino) and len(camino.pelos_camino) >= minimo_posicion
+            roles.append(ROL_ADICIONAL if adicional else ROL_RESIDUAL)
     return roles
 
 
@@ -1035,9 +1047,12 @@ async def trackings_del_servicio(
 
     Posición vigente (`servicio_posicion_vigente`): antes de resolver, `validar_en_db` marca para
     retiro las declaradas que el inventario ya no sostiene (conector inexistente, sin pelo, pelo
-    cambiado); después, `_validar_caminos_declarados` revisa sus caminos. Si alguna declarada
-    tiene un aviso que impide usarla, la corrida entera usa el cálculo automático; los retiros se
-    aplican al final, cada uno en su transacción. Roles: `clasificar_con_posiciones`.
+    cambiado); después, `_validar_caminos_declarados` revisa sus caminos. Cada retiro automático
+    arrastra en la misma corrida a las demás declaradas de su patchera (`arrastrar_par`, el par
+    :1/:2 del 93150): las arrastradas antes de resolver no se siembran como declaradas, y
+    `posicion.declaradas` queda sin ninguna de ellas, así la corrida siguiente da lo mismo. Si
+    alguna declarada tiene un aviso que impide usarla, la corrida entera usa el cálculo automático;
+    los retiros se aplican al final, cada uno en su transacción. Roles: `clasificar_con_posiciones`.
 
     Lo declarado por el operador (ODF confirmadas y trackings esperados) se lee de la DB. Si
     `odfs_confirmadas` se pasa explícito, pisa a las de la DB (tests); los esperados siempre salen
@@ -1056,7 +1071,7 @@ async def trackings_del_servicio(
     semillas = await semillas_para_tracking(sesion, servicio_id)
     posibles, declaradas_pos = await posiciones_del_servicio(sesion, servicio_id, posiciones)
 
-    avisos = validar_en_db(declaradas_pos)
+    avisos = arrastrar_par(declaradas_pos, validar_en_db(declaradas_pos))
     invalidas = {a.declaracion_id for a in avisos}
     validas = [d for d in declaradas_pos if d.id not in invalidas]
     etiquetados = [s.pelo_n_id for s in semillas]
@@ -1087,10 +1102,13 @@ async def trackings_del_servicio(
     caminos = [*por_declarados.trackings, *por_camino.trackings, *por_posiciones.trackings]
 
     if validas:
-        avisos = [
-            *avisos,
-            *await _validar_caminos_declarados(sesion, validas, caminos, por_declarados.errores),
-        ]
+        avisos = arrastrar_par(
+            declaradas_pos,
+            [
+                *avisos,
+                *await _validar_caminos_declarados(sesion, validas, caminos, por_declarados.errores),
+            ],
+        )
     aplicada = bool(validas) and not any(_impide_aplicar(a) for a in avisos)
     retiradas = {a.declaracion_id for a in avisos if a.retirada}
     vigentes_tras_retiro = [d for d in declaradas_pos if d.id not in retiradas]

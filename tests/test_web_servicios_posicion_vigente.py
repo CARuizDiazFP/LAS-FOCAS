@@ -242,6 +242,30 @@ def test_get_informa_la_declarada_que_el_inventario_ya_no_sostiene_sin_retirarla
     assert cuerpo["posibles"] == []
 
 
+def test_get_informa_la_declarada_que_arrastra_su_par_sin_retirarla(monkeypatch, _testing):
+    """Regla del par: si :1 tiene PELO_CAMBIO, la corrida retira también a :2 (misma patchera). El
+    GET lo informa igual (sin retirar nada); una declarada de otra patchera sigue válida."""
+    _fake_session(monkeypatch)
+    otra = replace(
+        _declarada(8546314, "1", 6799280), bandeja_n_id=8546313, bandeja_nombre="O-1239922-1"
+    )
+    declaradas = [
+        _declarada(8604882, "1", 7028862, actual=1),
+        _declarada(8604883, "2", 7028863),
+        otra,
+    ]
+    _fake_core(monkeypatch, declaradas=declaradas)
+
+    cuerpo = _cliente_admin(monkeypatch).get(URL).json()
+
+    por_id = {d["conector_n_id"]: d for d in cuerpo["declaradas"]}
+    assert [por_id[c]["valida"] for c in (8604882, 8604883, 8546314)] == [False, False, True]
+    assert por_id[8604883]["codigo_aviso"] == "PELO_CAMBIO"
+    assert por_id[8604883]["aviso"].startswith(
+        "Se retiró la posición vigente O-1252871-1:2 junto con O-1252871-1:1 (mismo par): "
+    )
+
+
 # ── POST: declarar y retirar ─────────────────────────────────────────────────────────────────
 
 

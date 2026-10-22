@@ -1,9 +1,10 @@
 # Nombre de archivo: test_cromo_servicio_posicion_vigente.py
 # Ubicación de archivo: tests/test_cromo_servicio_posicion_vigente.py
-# Descripción: Pruebas puras de la posición vigente por conector (modelo, posiciones posibles, declarar/retirar, validación y retiro) con una sesión fake que registra el SQL
+# Descripción: Pruebas puras de la posición vigente por conector (modelo, posiciones posibles, declarar/retirar, validación, retiro y retiro del par) con una sesión fake que registra el SQL
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -125,10 +126,11 @@ def _posible(conector, numero, pelo, **kw) -> pv.PosicionPosible:
     return pv._posible_de_fila(_fila_posible(conector, numero, pelo, **kw))
 
 
-def _fila_declarada(id_=1, conector=8604882, pelo=7028862, *, actual=7028862, existe=True, candidatos=None):
+def _fila_declarada(id_=1, conector=8604882, pelo=7028862, *, actual=7028862, existe=True, candidatos=None,
+                    numero="1", bandeja=8604881, bandeja_nombre="O-1252871-1"):
     return SimpleNamespace(
         id=id_, conector_n_id=conector, odf_n_id=6644560, odf_nombre="ODF San Martin 137 P5 D",
-        bandeja_n_id=8604881, bandeja_nombre="O-1252871-1", numero_conector="1",
+        bandeja_n_id=bandeja, bandeja_nombre=bandeja_nombre, numero_conector=numero,
         pelo_declarado=pelo, pelos_candidatos=candidatos if candidatos is not None else [pelo],
         declarado_por="admin", declarado_en=AHORA, conector_existe=existe, pelo_actual=actual,
     )
@@ -617,13 +619,14 @@ def test_guarda_del_txt_solo_acepta_declaradas_que_validar_en_db_sostiene():
 
 @pytest.mark.asyncio
 async def test_declaradas_validas_filtra_las_que_validar_en_db_retira():
+    # Cada una en su propia patchera: lo que se prueba es el filtro de `validar_en_db`, no el par.
     sesion = _Sesion(
         declaradas=[
-            _fila_declarada(1, 8604882, 7028862),
-            _fila_declarada(2, 8604883, 7028863, actual=1),  # PELO_CAMBIO
-            _fila_declarada(3, 8604884, 7028864, actual=None),  # SIN_PELO
-            _fila_declarada(4, 8604885, 7028865, existe=False),  # CONECTOR_INEXISTENTE
-            _fila_declarada(5, 8604886, 7028866, actual=6799284, candidatos=[7028866, 6799284]),
+            _fila_declarada(1, 8604882, 7028862, bandeja=1),
+            _fila_declarada(2, 8604883, 7028863, actual=1, bandeja=2),  # PELO_CAMBIO
+            _fila_declarada(3, 8604884, 7028864, actual=None, bandeja=3),  # SIN_PELO
+            _fila_declarada(4, 8604885, 7028865, existe=False, bandeja=4),  # CONECTOR_INEXISTENTE
+            _fila_declarada(5, 8604886, 7028866, actual=6799284, candidatos=[7028866, 6799284], bandeja=5),
         ]
     )
     assert [d.id for d in await pv.declaradas_validas(sesion, 4)] == [1, 5]
@@ -733,3 +736,199 @@ async def test_caminos_de_otro_servicio_activo_sin_caminos_no_consulta():
     assert await pv.caminos_de_otro_servicio_activo(sesion, 4, {}) == frozenset()
     assert await pv.caminos_de_otro_servicio_activo(sesion, 4, {1: []}) == frozenset()
     assert sesion.ejecuciones == []
+
+
+# ── Retiro del par: una declarada retirada automáticamente arrastra a las de su misma patchera ──
+#
+# Caso 93150 (decisión del usuario, 2026-10-22): el servicio es un par de pelos que van juntos
+# (O-1252871-1:1 y :2, siempre 2 trackings). Si se retiraba sólo :1, esa corrida usaba el cálculo
+# automático y la siguiente aplicaba sólo :2: dos `track` seguidos daban resultados distintos y
+# quedaba un tracking suelto.
+
+
+def _par_93150(**kw_1):
+    uno = _declarada(id_=1, conector=8604882, pelo=7028862, **kw_1)
+    dos = _declarada(id_=2, conector=8604883, pelo=7028863, actual=7028863, numero="2")
+    return uno, dos
+
+
+def test_arrastrar_par_pelo_cambio_en_1_retira_tambien_el_2_con_el_mismo_motivo():
+    uno, dos = _par_93150(actual=1)
+    avisos = pv.arrastrar_par([uno, dos], pv.validar_en_db([uno, dos]))
+
+    assert [(a.declaracion_id, a.codigo, a.retirada) for a in avisos] == [
+        (1, "PELO_CAMBIO", True),
+        (2, "PELO_CAMBIO", True),
+    ]
+    arrastrada = avisos[1]
+    assert arrastrada.conector_n_id == 8604883 and arrastrada.posicion == "O-1252871-1:2"
+    # Condicionado por SU id y SU pelo leído (no los de la que la disparó).
+    assert arrastrada.pelo_declarado == 7028863
+    assert arrastrada.detalle == {"arrastrada_por": 8604882, "declarado": 7028862, "actual": 1}
+    assert arrastrada.arrastrada_con == "O-1252871-1:1"
+
+
+def test_validar_en_db_sigue_siendo_solo_el_inventario():
+    """`validar_en_db` no arrastra: el arrastre es `arrastrar_par`, que también corre después de
+    resolver los caminos (PELO_DANADO / CABLE_SIN_USO)."""
+    uno, dos = _par_93150(actual=1)
+    assert [a.declaracion_id for a in pv.validar_en_db([uno, dos])] == [1]
+
+
+def test_arrastrar_par_no_toca_otra_patchera_ni_declaradas_sin_bandeja():
+    uno, dos = _par_93150(actual=None)
+    otra = _declarada(id_=3, conector=8546314, pelo=6799280, actual=6799280, bandeja=8546313,
+                      bandeja_nombre="O-1239922-1")
+    sin_bandeja = _declarada(id_=4, conector=1, pelo=2, actual=2, bandeja=None)
+    declaradas = [uno, dos, otra, sin_bandeja]
+
+    avisos = pv.arrastrar_par(declaradas, pv.validar_en_db(declaradas))
+
+    assert [(a.declaracion_id, a.codigo) for a in avisos] == [(1, "SIN_PELO"), (2, "SIN_PELO")]
+
+
+def test_arrastrar_par_desde_declarada_sin_bandeja_no_arrastra():
+    uno = _declarada(id_=1, conector=8604882, pelo=7028862, actual=None, bandeja=None)
+    dos = _declarada(id_=2, conector=8604883, pelo=7028863, actual=7028863, numero="2", bandeja=None)
+    assert [a.declaracion_id for a in pv.arrastrar_par([uno, dos], pv.validar_en_db([uno, dos]))] == [1]
+
+
+def test_arrastrar_par_post_resolucion_reemplaza_el_aviso_que_no_retira_y_es_idempotente():
+    """PELO_DANADO con alternativa sana en :1 (retira): :2 se arrastra y su aviso propio que no
+    retira (p. ej. CAMINO_INCOMPLETO) se reemplaza. Aplicarlo dos veces da lo mismo."""
+    uno, dos = _par_93150()
+    danado = pv.AvisoPosicion(
+        8604882, "O-1252871-1:1", "PELO_DANADO", True, 1, 7028862,
+        {"pelo": 7028900, "estado": "Cortado", "camino_alternativo": 6799280},
+    )
+    incompleto = pv.AvisoPosicion(8604883, "O-1252871-1:2", "CAMINO_INCOMPLETO", False, 2, 7028863)
+
+    avisos = pv.arrastrar_par([uno, dos], [danado, incompleto])
+
+    assert [(a.declaracion_id, a.codigo, a.retirada) for a in avisos] == [
+        (1, "PELO_DANADO", True),
+        (2, "PELO_DANADO", True),
+    ]
+    assert avisos[1].detalle == {
+        "arrastrada_por": 8604882, "pelo": 7028900, "estado": "Cortado", "camino_alternativo": 6799280,
+    }
+    assert pv.arrastrar_par([uno, dos], avisos) == avisos
+
+
+def test_arrastrar_par_respeta_el_retiro_propio_y_no_arrastra_lo_que_no_retira():
+    uno, dos = _par_93150(actual=None)
+    dos = replace(dos, pelo_actual=None)
+    propios = pv.validar_en_db([uno, dos])
+    assert pv.arrastrar_par([uno, dos], propios) == propios
+    solo_aviso = [pv.AvisoPosicion(8604882, "O-1252871-1:1", "PELO_DANADO", False, 1, 7028862, {})]
+    assert pv.arrastrar_par(list(_par_93150()), solo_aviso) == solo_aviso
+
+
+def test_arrastrar_par_no_arrastra_un_retiro_manual():
+    uno, dos = _par_93150()
+    manual = [pv.AvisoPosicion(8604882, "O-1252871-1:1", "MANUAL", True, 1, 7028862, {})]
+    assert pv.arrastrar_par([uno, dos], manual) == manual
+
+
+@pytest.mark.parametrize(
+    ("codigo", "detalle", "causa"),
+    [
+        ("PELO_CAMBIO", {"declarado": 7028862, "actual": 1},
+         "el pelo del conector cambió en Cromo (declarado 7028862, ahora 1)"),
+        ("SIN_PELO", {}, "el conector ya no tiene pelo en Cromo"),
+        ("CONECTOR_INEXISTENTE", {}, "el conector ya no está en el inventario de Cromo"),
+        ("PELO_DANADO", {"pelo": 7, "estado": "Cortado"}, "su camino pasa por el pelo 7 en estado «Cortado»"),
+        ("CABLE_SIN_USO", {"cable": 5, "nombre": "F-X"}, "su camino pasa por el cable F-X con tendido «Sin Uso»"),
+    ],
+)
+def test_texto_aviso_de_la_arrastrada(codigo, detalle, causa):
+    aviso = pv.AvisoPosicion(
+        8604883, "O-1252871-1:2", codigo, True, 2, 7028863,
+        {"arrastrada_por": 8604882, **detalle}, arrastrada_con="O-1252871-1:1",
+    )
+    assert pv.texto_aviso(aviso) == (
+        f"Se retiró la posición vigente O-1252871-1:2 junto con O-1252871-1:1 (mismo par): {causa}."
+    )
+
+
+def test_textos_avisos_del_par_agrega_una_sola_vez_el_calculo_automatico():
+    uno, dos = _par_93150(actual=1)
+    textos = pv.textos_avisos(pv.arrastrar_par([uno, dos], pv.validar_en_db([uno, dos])))
+    assert textos == [
+        "Se retiró la posición vigente O-1252871-1:1: el pelo del conector cambió en Cromo "
+        "(declarado 7028862, ahora 1).",
+        "Se retiró la posición vigente O-1252871-1:2 junto con O-1252871-1:1 (mismo par): el pelo "
+        "del conector cambió en Cromo (declarado 7028862, ahora 1).",
+        pv.TEXTO_CALCULO_AUTOMATICO,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_declaradas_validas_excluye_la_arrastrada_por_su_par():
+    sesion = _Sesion(
+        declaradas=[
+            _fila_declarada(1, 8604882, 7028862, actual=1),  # PELO_CAMBIO
+            _fila_declarada(2, 8604883, 7028863, actual=7028863, numero="2"),  # su par
+            _fila_declarada(3, 8546314, 6799280, actual=6799280, bandeja=8546313),  # otra patchera
+        ]
+    )
+    assert [d.id for d in await pv.declaradas_validas(sesion, 4)] == [3]
+
+
+class _SesionPorId(_Sesion):
+    """`rowcount` del UPDATE de retiro por id de declaración (0 = re-declarada mientras tanto)."""
+
+    def __init__(self, rowcount_por_id):
+        super().__init__(rowcount=1)
+        self.rowcount_por_id = rowcount_por_id
+
+    async def execute(self, stmt, params=None):
+        sql = str(stmt)
+        if "UPDATE app.servicio_posicion_vigente" in sql:
+            self.ejecuciones.append((sql, dict(params or {})))
+            return _Resultado(rowcount=self.rowcount_por_id.get(params["id"], 1))
+        return await super().execute(stmt, params)
+
+
+@pytest.mark.asyncio
+async def test_aplicar_retiros_con_arrastre_retira_las_dos_y_limpia_ambos_caches():
+    uno, dos = _par_93150(actual=1)
+    sesion = _SesionPorId({})
+    avisos = pv.arrastrar_par([uno, dos], pv.validar_en_db([uno, dos]))
+
+    assert await pv.aplicar_retiros(sesion, avisos) == 2
+
+    retiros = [p for _, p in _retiros(sesion)]
+    assert [(p["id"], p["pelo_leido"], p["motivo"]) for p in retiros] == [
+        (1, 7028862, "PELO_CAMBIO"),
+        (2, 7028863, "PELO_CAMBIO"),
+    ]
+    import json
+
+    assert json.loads(retiros[1]["detalle"]) == {"arrastrada_por": 8604882, "declarado": 7028862, "actual": 1}
+    assert [p["id"] for _, p in _limpiezas(sesion)] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_aplicar_retiros_con_arrastre_no_pisa_una_redeclaracion_concurrente_del_par():
+    """Retiro condicionado: si el :2 se re-declaró con otro pelo mientras se calculaba, su UPDATE
+    no encuentra la fila (rowcount 0): no se retira ni se limpia su caché."""
+    uno, dos = _par_93150(actual=1)
+    sesion = _SesionPorId({2: 0})
+    avisos = pv.arrastrar_par([uno, dos], pv.validar_en_db([uno, dos]))
+
+    assert await pv.aplicar_retiros(sesion, avisos) == 1
+    assert [p["id"] for _, p in _limpiezas(sesion)] == [1]
+
+
+@pytest.mark.asyncio
+async def test_retiro_manual_no_arrastra_al_par():
+    sesion = _Sesion(
+        declaradas=[
+            _fila_declarada(1, 8604882, 7028862),
+            _fila_declarada(2, 8604883, 7028863, actual=7028863, numero="2"),
+        ],
+        rowcount=1,
+    )
+    assert await pv.retirar_manual(sesion, 4, 8604882, usuario="ana") is True
+    assert [p["id"] for _, p in _retiros(sesion)] == [1]

@@ -415,7 +415,11 @@ posibles** del Servicio y el operador puede declarar en el portal cuál es la **
 - **Avisos de posición** (`texto_aviso`, primero en el resumen, con `:warning:`):
   - retiro: `Se retiró la posición vigente O-1252871-1:2: el pelo del conector cambió en Cromo (declarado 7028863, ahora …).`
     (también `SIN_PELO`, `CONECTOR_INEXISTENTE`, y `PELO_DANADO`/`CABLE_SIN_USO` cuando hay otro
-    camino completo sano), seguido una sola vez de
+    camino completo sano). Regla del par (2026-10-22): el retiro automático arrastra en la misma
+    corrida a las demás declaradas de la misma patchera, con el mismo motivo:
+    `Se retiró la posición vigente O-1252871-1:2 junto con O-1252871-1:1 (mismo par): el pelo del conector cambió en Cromo (…).`
+    Así dos `track 93150` seguidos dan lo mismo (antes el segundo aplicaba un solo hilo). El retiro
+    manual no arrastra. Todo eso va seguido una sola vez de
     `Se usó el cálculo automático. Declarar la posición vigente en el Detalle de Servicio.`;
   - se mantiene: `La posición vigente … se mantiene, pero su camino pasa por el pelo X en estado «Dañado» y no hay otro camino completo sano.`;
   - no usable en esta corrida: `No se pudo usar la posición vigente …: Cromo no resolvió su camino (…)` o
@@ -427,6 +431,9 @@ posibles** del Servicio y el operador puede declarar en el portal cuál es la **
   tampoco hay posiciones (`tiene_posiciones`). El 93150 pasa a tener tracking aunque ninguno de sus
   pelos diga 93150.
 - Las fallas de las semillas de posición no marcan el tracking como incompleto.
+- Un camino de posición sólo es adicional si tiene al menos el 25% de los pelos del camino completo
+  más largo del Servicio: en el 102452 los jumpers de 1 pelo del Nodo Dixon (9614673/74) frente a
+  tramos de 47/27/24 pelos ya no se mencionan como adicionales (2026-10-22).
 
 ## `@bot track <id> full` — implementado (2026-10-21, sólo dev)
 

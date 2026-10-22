@@ -1066,7 +1066,14 @@ ETIQUETADO o POSICION).
 |---|---|
 | DECLARADO | **VIGENTE** |
 | ETIQUETADO | el de `clasificar_caminos`, salvo que, con una declaración aplicada, sus TRAMO pasan a **ADICIONAL** |
-| POSICION | **ADICIONAL** si es ODF↔ODF en ambos extremos (`es_camino_completo`, clases 69/86), si no RESIDUAL |
+| POSICION | **ADICIONAL** si es ODF↔ODF en ambos extremos (`es_camino_completo`, clases 69/86) **y** tiene al menos el 25% (`_PROPORCION_PELOS_MINIMA`) de los pelos del camino completo más largo del Servicio (de cualquier origen); si no RESIDUAL |
+
+Umbral de tamaño de los adicionales de posición (2026-10-22, medido E2E contra Cromo en dev): en el
+102452 (`servicios.id=1168`) las posiciones daban 2 "adicionales" de 1 pelo (semillas
+9614673/9614674), jumpers dentro del Nodo Dixon entre 'Rack 1 Sala 2' O-9585104-6:3/4 y 'Rack 2
+SAENZ PEÑA' O-1247502-3:3/4, frente a tramos de 47/27/24 pelos: ahora son RESIDUAL (1 < 0,25 × 47).
+En el 93150 el camino viejo (49 pelos) frente al nuevo (40) sigue ADICIONAL. Los caminos
+incompletos no cuentan para el máximo.
 
 Regresión cubierta: sin posiciones el resultado es idéntico al de `clasificar_caminos` sobre los
 casos medidos (102452, 42351, 93154, 94673). `TrackingsDelServicio` suma `adicionales`,
@@ -1116,13 +1123,26 @@ el id.
    no retire al otro). Si no lo hay, se mantiene y se avisa.
 3. Si Cromo no resuelve el camino declarado (`CAMINO_NO_RESUELTO`) o el camino no es ODF↔ODF
    (`CAMINO_INCOMPLETO`), la corrida usa el cálculo automático y la declaración no se retira.
+4. **Retiro del par** (`arrastrar_par`, 2026-10-22): cualquier retiro automático de los puntos 1 y 2
+   arrastra, en la **misma corrida**, a las demás declaradas vigentes del Servicio con el mismo
+   `bandeja_n_id` (misma patchera), con el mismo `motivo_retiro` y
+   `detalle_retiro = {"arrastrada_por": <conector que lo disparó>, …detalle original}`. Cada una
+   genera su aviso (`Se retiró la posición vigente O-1252871-1:2 junto con O-1252871-1:1 (mismo
+   par): …`) y su retiro sigue condicionado por su propio `id` + pelo leído (no pisa una
+   re-declaración concurrente) y limpia su propio caché. Motivo: el Servicio es un par de pelos que
+   van juntos (93150 = O-1252871-1:1 y :2, siempre 2 trackings); antes se retiraba sólo :1, esa
+   corrida usaba el cálculo automático y la siguiente aplicaba sólo :2, así que dos `track`
+   seguidos daban resultados distintos y quedaba 1 tracking suelto. Ahora `posicion.declaradas`
+   queda sin ninguna y la corrida siguiente da lo mismo. Las declaradas de **otra** patchera (o sin
+   `bandeja_n_id`) no se arrastran, y el retiro **manual** no arrastra. `declaradas_validas` y el
+   GET del portal ya excluyen a la arrastrada pendiente.
 
 Con cualquier retiro o aviso de camino no usable, esa corrida cae al cálculo automático.
 
 **Endpoints** (admin + CSRF, en `web/app/routers/servicios.py`, junto a ODF confirmadas):
 
 - `GET /api/admin/infra/servicios-odf/{id}/posicion-vigente`: devuelve `{declaradas, posibles}`.
-  Las declaradas traen `valida`, `aviso` y `codigo_aviso` de `validar_en_db`; las posibles traen
+  Las declaradas traen `valida`, `aviso` y `codigo_aviso` de `validar_en_db` + `arrastrar_par`; las posibles traen
   `etiqueta_ajena`, `servicio_activo_ajeno`, `par_sugerido_n_id` y `declarada`. **Sólo informa, no
   retira.**
 - `POST …/posicion-vigente` con `{conectores_n_id: [1..8], csrf_token}`. Responde 200

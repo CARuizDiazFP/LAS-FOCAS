@@ -1,6 +1,6 @@
 # Nombre de archivo: test_cromo_tracking_por_camino.py
 # Ubicación de archivo: tests/test_cromo_tracking_por_camino.py
-# Descripción: Pruebas de "un .txt por camino distinto" — pelos del camino, descarte de semillas ya recorridas, recorrido sin corte en esperados con tope de llamadas, caché sin pelos o sin extremos, separación en tramos y residuales y posición vigente (semillas de posiciones, vigentes/adicionales, retiro y fallback)
+# Descripción: Pruebas de "un .txt por camino distinto" — pelos del camino, descarte de semillas ya recorridas, recorrido sin corte en esperados con tope de llamadas, caché sin pelos o sin extremos, separación en tramos y residuales y posición vigente (semillas de posiciones, vigentes/adicionales, retiro, retiro del par y fallback)
 
 from __future__ import annotations
 
@@ -1319,13 +1319,105 @@ async def test_pelo_danado_en_el_declarado_con_otro_camino_sano_retira(caso_9315
     resultado = await tracking_service.trackings_del_servicio(object(), object(), 4)
 
     avisos = resultado.posicion.avisos
-    assert [(a.codigo, a.retirada, a.declaracion_id) for a in avisos] == [("PELO_DANADO", True, 1)]
+    # Regla del par: el retiro de :1 arrastra a :2 (misma patchera) con el mismo motivo.
+    assert [(a.codigo, a.retirada, a.declaracion_id) for a in avisos] == [
+        ("PELO_DANADO", True, 1),
+        ("PELO_DANADO", True, 2),
+    ]
     # El camino alternativo sano es el nuevo (no el otro hilo declarado).
     assert avisos[0].detalle["camino_alternativo"] == 6799280
-    assert [a.codigo for a in caso_93150["retiros"] if a.retirada] == ["PELO_DANADO"]
+    assert avisos[1].detalle == {"arrastrada_por": 8604882, **avisos[0].detalle}
+    assert avisos[1].pelo_declarado == 7028863
+    assert [(a.codigo, a.declaracion_id) for a in caso_93150["retiros"] if a.retirada] == [
+        ("PELO_DANADO", 1),
+        ("PELO_DANADO", 2),
+    ]
     assert resultado.posicion.aplicada is False
-    assert [d.id for d in resultado.posicion.declaradas] == [2]
+    assert resultado.posicion.declaradas == []
     assert _pelos(resultado.tramos) == [6799280, 6799281]
+    assert _pelos(resultado.adicionales) == [7028862, 7028863]
+
+
+@pytest.mark.asyncio
+async def test_pelo_cambio_en_1_arrastra_al_2_y_cae_al_calculo_automatico(caso_93150):
+    """Regla del par (93150 = O-1252871-1:1 y :2, siempre 2 trackings): el PELO_CAMBIO de :1 retira
+    también a :2 en la MISMA corrida. Ninguno se siembra como declarado, la corrida usa el cálculo
+    automático y `posicion.declaradas` queda vacía."""
+    caso_93150["declaraciones"]["declaradas"] = [
+        _declarada(1, 8604882, "1", 7028862, pelo_actual=1),
+        _declarada(2, 8604883, "2", 7028863),
+    ]
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 4)
+
+    avisos = resultado.posicion.avisos
+    assert [(a.codigo, a.retirada, a.declaracion_id) for a in avisos] == [
+        ("PELO_CAMBIO", True, 1),
+        ("PELO_CAMBIO", True, 2),
+    ]
+    assert avisos[1].detalle == {"arrastrada_por": 8604882, "declarado": 7028862, "actual": 1}
+    assert [(a.declaracion_id, a.pelo_declarado) for a in caso_93150["retiros"] if a.retirada] == [
+        (1, 7028862),
+        (2, 7028863),
+    ]
+    # Ningún pelo declarado se pide como declarado (con el Servicio en el caché).
+    assert (7028863, 4) not in caso_93150["pedidos"]
+    assert caso_93150["pedidos"][0] == (6799280, 4)
+    assert resultado.posicion.aplicada is False
+    assert resultado.posicion.declaradas == [] and resultado.posicion.etiqueta == ""
+    assert _pelos(resultado.tramos) == [6799280, 6799281]
+
+
+@pytest.mark.asyncio
+async def test_retiro_no_arrastra_declaradas_de_otra_patchera(caso_93150):
+    from dataclasses import replace
+
+    otra = replace(
+        _declarada(3, 8546314, "1", 6799280), bandeja_n_id=8546313, bandeja_nombre="O-1239922-1"
+    )
+    caso_93150["declaraciones"]["declaradas"] = [
+        _declarada(1, 8604882, "1", 7028862, pelo_actual=1),
+        _declarada(2, 8604883, "2", 7028863),
+        otra,
+    ]
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 4)
+
+    assert [(a.declaracion_id, a.retirada) for a in resultado.posicion.avisos] == [(1, True), (2, True)]
+    assert [d.id for d in resultado.posicion.declaradas] == [3]
+    assert resultado.posicion.aplicada is False
+
+
+def _foto(resultado):
+    return (
+        [t.nombre_archivo for t in resultado.tramos],
+        [t.rol for t in resultado.tramos],
+        [t.nombre_archivo for t in resultado.adicionales],
+        _pelos(resultado.residuales),
+        resultado.posicion.aplicada,
+        [d.id for d in resultado.posicion.declaradas],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disparo", ["PELO_CAMBIO", "PELO_DANADO"])
+async def test_dos_corridas_seguidas_dan_el_mismo_resultado(caso_93150, disparo):
+    """Antes: la corrida 1 retiraba sólo :1 (cálculo automático) y la 2 aplicaba sólo :2 (1
+    tracking suelto). Con el par retirado junto, la corrida siguiente da exactamente lo mismo."""
+    if disparo == "PELO_CAMBIO":
+        declaradas = [_declarada(1, 8604882, "1", 7028862, pelo_actual=1), _declarada(2, 8604883, "2", 7028863)]
+    else:
+        declaradas = list(_DECLARADAS_93150)
+        caso_93150["problemas"][7028862] = ("PELO_DANADO", {"pelo": 7028900, "estado": "Cortado"})
+    caso_93150["declaraciones"]["declaradas"] = declaradas
+
+    primera = await tracking_service.trackings_del_servicio(object(), object(), 4)
+    caso_93150["declaraciones"]["declaradas"] = list(primera.posicion.declaradas)
+    segunda = await tracking_service.trackings_del_servicio(object(), object(), 4)
+
+    assert _foto(primera) == _foto(segunda)
+    assert _foto(segunda)[0] == ["93150 CROMO T1 pelo 6799280.txt", "93150 CROMO T2 pelo 6799281.txt"]
+    assert segunda.posicion.avisos == []
 
 
 @pytest.mark.asyncio
