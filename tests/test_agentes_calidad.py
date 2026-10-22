@@ -194,3 +194,52 @@ def test_gate_con_cambios_de_frontend_sin_node_modules_saltea_con_motivo(repo: P
     assert tipos.motivo == "sin node_modules (correr npm ci)"
     assert resultado.ok
     assert "type-check salteado (sin node_modules (correr npm ci))" in resultado.resumen()
+
+
+# ------------------------------------------------- huecos: negativo de main, filtro de type-check, npm ausente
+
+
+def test_tests_focales_de_un_router_no_incluyen_los_que_importan_main_de_la_api(repo: Path) -> None:
+    _commit(
+        repo,
+        {
+            "web/app/routers/x.py": "X = 1\n",
+            "tests/test_usa_main_api.py": "from api.app.main import app\n\n\ndef test_api():\n    assert app\n",
+        },
+        "feat: router",
+    )
+
+    assert "tests/test_usa_main_api.py" not in calidad.tests_focales(repo, ["web/app/routers/x.py"])
+
+
+def test_gate_type_check_ignora_md_bajo_src_y_ts_fuera_de_src(repo: Path) -> None:
+    (repo / "web" / "frontend" / "node_modules").mkdir(parents=True)
+    _commit(
+        repo,
+        {"web/frontend/src/README.md": "# nota\n", "web/frontend/vite.config.ts": "export default {}\n"},
+        "chore: no cuentan para type-check",
+    )
+
+    resultado = calidad.ejecutar_gate(repo, "dev")
+
+    assert [paso.nombre for paso in resultado.pasos] == ["lint", "tests"]
+
+
+def test_correr_sin_el_comando_en_el_path_devuelve_paso_fallido_127(tmp_path: Path) -> None:
+    paso = calidad._correr("type-check", ["comando-que-no-existe-xyz", "run"], tmp_path)
+
+    assert not paso.ok
+    assert paso.exit_code == 127
+    assert paso.salida == "comando no encontrado: comando-que-no-existe-xyz"
+
+
+def test_gate_con_node_modules_pero_sin_npm_falla_sin_romper(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(calidad, "COMANDO_TYPE_CHECK", ["comando-que-no-existe-xyz", "run", "type-check"])
+    (repo / "web" / "frontend" / "node_modules").mkdir(parents=True)
+    _commit(repo, {"web/frontend/src/views/Vista.vue": "<template><div /></template>\n"}, "feat: vista")
+
+    resultado = calidad.ejecutar_gate(repo, "dev")
+
+    assert not resultado.ok
+    assert resultado.fallido is not None and resultado.fallido.nombre == "type-check"
+    assert resultado.fallido.exit_code == 127
