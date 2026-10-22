@@ -325,3 +325,121 @@ def test_logs_de_validacion_y_error(monkeypatch, cliente, caplog) -> None:  # no
         _post(cliente, use_db="true")
     msgs = [x.getMessage() for x in caplog.records]
     assert "action=sla_web_report stage=validation user=user source=db mes=10 anio=2025 error=x" in msgs
+
+
+# ------------------------------------------------- huecos: 3 archivos, CSRF válido, cierre de uploads
+
+
+def test_excel_tres_archivos_400_sin_leerlos(cliente, historia) -> None:  # noqa: ANN001
+    s, rc = _servicios_excel_bytes(), _reclamos_excel_bytes()
+    r = _post(cliente, files=[_f("a.xlsx", s), _f("b.xlsx", rc), _f("c.xlsx", rc)])
+    assert r.status_code == 400
+    assert r.json() == {"ok": False, "error": "Debés adjuntar dos archivos: servicios y reclamos"}
+    _error_registrado(historia, "HTTP_400", "Debés adjuntar dos archivos: servicios y reclamos")
+    rec = historia.list_records(report_type="sla", status="error")[0]
+    assert rec["input_metadata"]["archivo_count"] == 3
+
+
+def test_csrf_valido_con_testing_false_pasa_la_validacion_y_sigue(monkeypatch, cliente, historia) -> None:  # noqa: ANN001
+    monkeypatch.setenv("TESTING", "false")
+    r = _post(cliente, files=[_f("uno.xlsx", b"x")])  # _post manda el token real de la sesión
+    assert r.status_code == 400
+    assert r.json()["error"] == "Debés adjuntar dos archivos: servicios y reclamos"
+    _error_registrado(historia, "HTTP_400", "Debés adjuntar dos archivos: servicios y reclamos")
+
+
+class _UploadEspia:
+    """UploadFile mínimo que cuenta los `close`: el cierre se mide llamando al handler directo,
+    porque FastAPI vuelve a cerrar todos los uploads al terminar la request."""
+
+    def __init__(self, filename: str, contenido: bytes) -> None:
+        self.filename = filename
+        self._contenido = contenido
+        self.cierres = 0
+
+    async def read(self) -> bytes:
+        return self._contenido
+
+    async def close(self) -> None:
+        self.cierres += 1
+
+
+class _UploadCierreFalla(_UploadEspia):
+    async def close(self) -> None:
+        await super().close()
+        raise OSError("no cierra")
+
+
+async def _handler(monkeypatch: pytest.MonkeyPatch, files, *, csrf="tok", testing="false", **extra):  # noqa: ANN001
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("TESTING", testing)
+    monkeypatch.setattr(web_informes, "REPORT_HISTORY", InMemoryReportHistory())
+    request = SimpleNamespace(session={"username": "user", "csrf": "tok"})
+    args = dict(
+        mes="10", anio="2025", periodo_mes=None, periodo_anio=None,
+        pdf_enabled=False, use_db=False, csrf_token=csrf, files=files,
+    )
+    args.update(extra)
+    return await web_informes.generar_informe_sla_web(request, **args)
+
+
+@pytest.mark.asyncio
+async def test_uploads_se_cierran_con_csrf_invalido(monkeypatch) -> None:  # noqa: ANN001
+    ups = [_UploadEspia("a.xlsx", b"x"), _UploadEspia("b.xlsx", b"x")]
+    r = await _handler(monkeypatch, ups, csrf="malo")
+    assert r.status_code == 403
+    assert [u.cierres for u in ups] == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_uploads_se_cierran_con_periodo_invalido(monkeypatch) -> None:  # noqa: ANN001
+    ups = [_UploadEspia("a.xlsx", b"x"), _UploadEspia("b.xlsx", b"x")]
+    r = await _handler(monkeypatch, ups, mes="abc")
+    assert r.status_code == 422
+    assert [u.cierres for u in ups] == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_uploads_se_cierran_con_cantidad_incorrecta(monkeypatch) -> None:  # noqa: ANN001
+    ups = [_UploadEspia("a.xlsx", b"x"), _UploadEspia("b.xlsx", b"x"), _UploadEspia("c.xlsx", b"x")]
+    r = await _handler(monkeypatch, ups, testing="true")
+    assert r.status_code == 400
+    assert [u.cierres for u in ups] == [1, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_uploads_se_cierran_al_ignorarlos_por_use_db(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(web_informes.sla_service, "compute_from_db", lambda mes, anio: (_ for _ in ()).throw(ValueError("x")))
+    ups = [_UploadEspia("a.xlsx", b"x")]
+    r = await _handler(monkeypatch, ups, testing="true", use_db=True)
+    assert r.status_code == 422
+    assert ups[0].cierres == 1
+
+
+@pytest.mark.asyncio
+async def test_upload_con_extension_invalida_se_cierra_en_el_error(monkeypatch) -> None:  # noqa: ANN001
+    mala, otra = _UploadEspia("servicios.txt", b"t"), _UploadEspia("reclamos.xlsx", b"t")
+    r = await _handler(monkeypatch, [mala, otra], testing="true")
+    assert r.status_code == 415
+    assert mala.cierres == 1  # caracterización: el segundo no se llegó a procesar y queda sin cerrar por el handler
+    assert otra.cierres == 0
+
+
+@pytest.mark.asyncio
+async def test_uploads_se_cierran_en_el_camino_de_exito(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        web_informes.sla_service, "generate_report_from_excel_pair", lambda s, r, **kw: _falso_resultado(tmp_path, False)
+    )
+    ups = [_UploadEspia("s.xlsx", _servicios_excel_bytes()), _UploadEspia("r.xlsx", _reclamos_excel_bytes())]
+    r = await _handler(monkeypatch, ups, testing="true")
+    assert r.status_code == 200
+    assert [u.cierres for u in ups] == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_cierre_que_falla_no_rompe_la_respuesta(monkeypatch) -> None:  # noqa: ANN001
+    ups = [_UploadCierreFalla("a.xlsx", b"x")]
+    r = await _handler(monkeypatch, ups, csrf="malo")
+    assert r.status_code == 403
+    assert ups[0].cierres == 1
