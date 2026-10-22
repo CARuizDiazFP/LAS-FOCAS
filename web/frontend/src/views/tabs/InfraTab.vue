@@ -29,13 +29,18 @@
     <input ref="trackingFileInputEl" type="file" accept=".txt" style="display:none" @change="handleTrackingFile">
 
     <!-- Modal: Protocolo de Protección (ban) — Wizard 3 pasos -->
-    <dialog ref="banModalEl" class="infra-generic-modal ban-wizard-modal" @click.self="closeBanModal">
+    <dialog
+      ref="banModalEl"
+      class="infra-generic-modal ban-wizard-modal"
+      @click.self="closeBanModal()"
+      @cancel.prevent="closeBanModal()"
+    >
       <div class="modal-inner">
 
         <!-- Header fijo -->
         <div class="modal-header-row">
           <h3 class="modal-title">🔴 Protocolo de Protección</h3>
-          <button class="close-btn" :disabled="banLoading" @click="closeBanModal">×</button>
+          <button class="close-btn" :disabled="banLoading" @click="closeBanModal()">×</button>
         </div>
 
         <!-- Stepper visual -->
@@ -63,7 +68,7 @@
           <label class="form-label">Motivo (opcional)</label>
           <textarea v-model="banForm.motivo" rows="2" placeholder="Corte de fibra en Av. Corrientes..."></textarea>
           <div class="modal-actions">
-            <button class="btn subtle" @click="closeBanModal">Cancelar</button>
+            <button class="btn subtle" @click="closeBanModal()">Cancelar</button>
             <button
               class="btn primary"
               :disabled="!banForm.servicio_afectado_id.trim()"
@@ -894,7 +899,9 @@ function openBanModal() {
   banModalEl.value?.showModal();
 }
 
-function closeBanModal(force: unknown = false) {
+// Siempre se llama con paréntesis: con `@click="closeBanModal"` Vue pasaría el MouseEvent como
+// `force` (truthy) y el modal se cerraría durante "Activando...", saltándose la guarda.
+function closeBanModal(force = false) {
   if (banLoading.value && !force) return;
   banModalEl.value?.close();
   resetBanModalState();
