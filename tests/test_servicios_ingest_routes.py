@@ -48,6 +48,12 @@ def client():
     # es un singleton a nivel de proceso (`db.session.async_engine`): si cada test abriera y cerrara
     # su propio portal, el segundo test heredaría en el pool una conexión atada al loop ya cerrado
     # del primero y volvería a romper — un solo loop para todo el archivo evita la colisión.
+    # Red de seguridad: si un test anterior (de otro archivo) dejó conexiones en el pool singleton
+    # atadas a un loop ya cerrado, se descartan SIN cerrarlas (`close=False`: cerrarlas desde
+    # acá las tocaría contra el loop muerto). No es el arreglo de la causa (cada test que usa el
+    # engine debe disponerlo en su propio loop) sino un aislamiento para que este módulo no
+    # dependa del orden de la suite.
+    async_engine.sync_engine.dispose(close=False)
     with TestClient(app) as test_client:
         yield test_client
 

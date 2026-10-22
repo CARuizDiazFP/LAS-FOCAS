@@ -113,6 +113,8 @@ RUNTIME_IGNORADO_RAIZ = (
     ARCHIVO_METADATA,
     "web/frontend/node_modules",
     "web/frontend/dist",
+    # Scratch del flujo con subagentes (ledgers, briefs, reportes): se descarta al cerrar.
+    ".superpowers",
 )
 RUNTIME_IGNORADO_CUALQUIER_NIVEL = ("__pycache__", ".pytest_cache", ".ruff_cache")
 

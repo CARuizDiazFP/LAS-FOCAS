@@ -1058,6 +1058,24 @@ def test_cleanup_aborta_si_hay_ignorados_que_no_son_runtime(
     assert resultado["worktree_removido"] is True
 
 
+def test_cleanup_descarta_el_workspace_sdd(control: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`.superpowers/` (ledgers y reportes del flujo con subagentes) es scratch de la sesión: no
+    bloquea el cleanup. Real 2026-10-21/22: lo trabó en 4 worktrees y hubo que borrarlo a mano."""
+    (control / ".gitignore").write_text(".superpowers/\n", encoding="utf-8")
+    _git(["add", ".gitignore"], control)
+    _git(["commit", "-m", "chore: ignorar superpowers"], control)
+    _git(["push", "origin", "dev"], control)
+    worktree = Path(_iniciar("claude-api", "tarea-a", capsys)["worktree"])
+    ledger = worktree / ".superpowers" / "sdd" / "plan-x" / "progress.md"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text("# ledger\n", encoding="utf-8")
+    _correr_json(["finish", "--agent", "claude-api"], capsys)
+
+    resultado = _correr_json(["cleanup", "--agent", "claude-api"], capsys)
+
+    assert resultado["worktree_removido"] is True
+
+
 def test_cleanup_descarta_el_runtime_conocido(
     control: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

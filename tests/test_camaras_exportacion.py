@@ -90,3 +90,112 @@ def test_xlsx_sin_pandas_devuelve_none(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", falso)
     assert ce.a_xlsx([ce._fila(_camara(), {})]) is None
+
+
+# ------------------------------------------------- filas_exportacion contra Postgres real (transacción revertida)
+
+import pytest  # noqa: E402
+
+from tests.soporte_postgres_real import requiere_postgres_real  # noqa: E402
+
+PREFIJO = "ZZEXPTEST"
+
+
+@pytest.fixture()
+def sesion_real():
+    """Sesión sobre la DB real; todo lo sembrado se revierte al terminar."""
+    from db.session import SessionLocal
+
+    sesion = SessionLocal()
+    try:
+        yield sesion
+    finally:
+        sesion.rollback()
+        sesion.close()
+
+
+def _sembrar_camaras(sesion):
+    from db.models.infra import Camara
+
+    # Se insertan fuera de orden alfabético para que el ORDER BY sea observable.
+    camaras = {
+        nombre: Camara(nombre=f"{PREFIJO}-{nombre}", estado=estado)
+        for nombre, estado in (("C", CamaraEstado.LIBRE), ("A", CamaraEstado.BANEADA), ("B", CamaraEstado.LIBRE))
+    }
+    sesion.add_all(camaras.values())
+    sesion.flush()
+    return camaras
+
+
+def _nombres_propios(filas):
+    return [f["Nombre"] for f in filas if f["Nombre"].startswith(PREFIJO)]
+
+
+@requiere_postgres_real
+def test_filas_ordenadas_por_nombre(sesion_real):
+    _sembrar_camaras(sesion_real)
+    filas = ce.filas_exportacion(sesion_real, filter_status=None, servicio_id=None)
+    assert _nombres_propios(filas) == [f"{PREFIJO}-A", f"{PREFIJO}-B", f"{PREFIJO}-C"]
+
+
+@requiere_postgres_real
+def test_filtro_estado_valido_filtra_sin_distinguir_mayusculas(sesion_real):
+    _sembrar_camaras(sesion_real)
+    filas = ce.filas_exportacion(sesion_real, filter_status="baneada", servicio_id=None)
+    assert {f["Estado"] for f in filas} == {"BANEADA"}
+    assert _nombres_propios(filas) == [f"{PREFIJO}-A"]
+
+
+@pytest.mark.parametrize("estado", ["ALL", "all", "", None, "NO_EXISTE"])
+@requiere_postgres_real
+def test_filtro_estado_all_vacio_o_invalido_no_filtra(sesion_real, estado):
+    _sembrar_camaras(sesion_real)
+    filas = ce.filas_exportacion(sesion_real, filter_status=estado, servicio_id=None)
+    assert _nombres_propios(filas) == [f"{PREFIJO}-A", f"{PREFIJO}-B", f"{PREFIJO}-C"]
+
+
+def _sembrar_servicio(sesion, camaras, servicio_id, con_camaras=True):
+    from db.models.infra import Empalme, RutaServicio, Servicio
+
+    servicio = Servicio(servicio_id=servicio_id, estado_servicio="Activo")
+    sesion.add(servicio)
+    sesion.flush()
+    ruta = RutaServicio(servicio_id=servicio.id, nombre="Principal", activa=True)
+    sesion.add(ruta)
+    if con_camaras:
+        for i, nombre in enumerate(("A", "C")):
+            empalme = Empalme(tracking_empalme_id=f"{PREFIJO}-E{i}", camara_id=camaras[nombre].id)
+            sesion.add(empalme)
+            ruta.empalmes.append(empalme)
+    sesion.flush()
+    return servicio
+
+
+@requiere_postgres_real
+def test_filtro_servicio_existente_restringe_a_sus_camaras(sesion_real):
+    camaras = _sembrar_camaras(sesion_real)
+    _sembrar_servicio(sesion_real, camaras, f"{PREFIJO}-SRV1")
+    filas = ce.filas_exportacion(sesion_real, filter_status=None, servicio_id=f"{PREFIJO}-SRV1")
+    assert [f["Nombre"] for f in filas] == [f"{PREFIJO}-A", f"{PREFIJO}-C"]
+
+
+@requiere_postgres_real
+def test_filtro_servicio_inexistente_no_filtra(sesion_real):
+    _sembrar_camaras(sesion_real)
+    filas = ce.filas_exportacion(sesion_real, filter_status=None, servicio_id=f"{PREFIJO}-NO-EXISTE")
+    assert _nombres_propios(filas) == [f"{PREFIJO}-A", f"{PREFIJO}-B", f"{PREFIJO}-C"]
+
+
+@requiere_postgres_real
+def test_filtro_servicio_sin_camaras_devuelve_vacio(sesion_real):
+    camaras = _sembrar_camaras(sesion_real)
+    _sembrar_servicio(sesion_real, camaras, f"{PREFIJO}-SRV2", con_camaras=False)
+    assert ce.filas_exportacion(sesion_real, filter_status=None, servicio_id=f"{PREFIJO}-SRV2") == []
+
+
+@requiere_postgres_real
+def test_filtros_de_estado_y_servicio_se_combinan(sesion_real):
+    camaras = _sembrar_camaras(sesion_real)
+    _sembrar_servicio(sesion_real, camaras, f"{PREFIJO}-SRV3")
+    filas = ce.filas_exportacion(sesion_real, filter_status="LIBRE", servicio_id=f"{PREFIJO}-SRV3")
+    assert [f["Nombre"] for f in filas] == [f"{PREFIJO}-C"]

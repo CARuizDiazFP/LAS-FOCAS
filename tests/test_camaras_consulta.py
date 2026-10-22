@@ -232,3 +232,19 @@ def test_match_por_servicio_y_and_con_empalme_real():
     r = _buscar(_SesionFalsa(camaras), ["svc-10", "norte"])
     assert [e.rutas_info[0]["ruta_id"] for e in r.camaras] == [1]
     assert r.camaras[0].servicios_ids == ["SVC-10"]
+
+
+def test_rutas_info_usa_sitio_descripcion_de_las_puntas():
+    """Regresión: `PuntoTerminal` no tiene `.sitio`, tiene `sitio_descripcion`.
+
+    Con puntos terminales cargados, la smart search y el detalle de Cámara daban 500.
+    """
+    camara = _camara_con_servicio("C1", "SVC-1", 7)
+    ruta = camara.empalmes[0].rutas[0]
+    ruta.punta_a = SimpleNamespace(sitio_descripcion="ODF MAIPU 316 1")
+    ruta.punta_b = SimpleNamespace(sitio_descripcion=None)
+
+    info = cc._collect_camara_rutas_info(camara)
+
+    assert info[0]["punta_a_sitio"] == "ODF MAIPU 316 1"
+    assert info[0]["punta_b_sitio"] is None

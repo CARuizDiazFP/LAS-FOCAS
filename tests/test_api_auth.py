@@ -6,13 +6,20 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from db.session import async_engine
+
 from api.app.main import create_app
 
 
 def test_health_sigue_publico_sin_credenciales() -> None:
-    client = TestClient(create_app())
-
-    response = client.get("/health")
+    # `/health` hace un SELECT 1 con el engine async global (`db.session.async_engine`). Con un
+    # `TestClient` suelto el portal/loop se cierra al terminar la request y la conexión asyncpg
+    # queda en el pool singleton atada a ese loop muerto: el siguiente test que use el pool desde
+    # otro loop (p. ej. test_servicios_ingest_routes) fallaba con "attached to a different loop".
+    # Dentro de `with`, el `dispose()` corre en el mismo loop que creó la conexión y la cierra limpia.
+    with TestClient(create_app()) as client:
+        response = client.get("/health")
+        client.portal.call(async_engine.dispose)
 
     assert response.status_code == 200
 

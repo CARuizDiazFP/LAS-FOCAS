@@ -8,11 +8,13 @@ La CI de GitHub sólo corre a mano (no hay créditos de Actions), así que la re
 corre en la VM, dentro del flujo que ya usan todas las sesiones: ``ready`` ejecuta este gate
 sobre lo que la rama cambió respecto de ``dev`` e ``integrate`` exige que el HEAD lo haya pasado.
 
-El gate tiene dos pasos, ambos acotados a la rama:
+El gate tiene hasta tres pasos, acotados a la rama:
 
 1. ``ruff check`` sobre los ``.py`` cambiados, con la config versionada del worktree.
 2. ``pytest`` sobre los tests focales: los tests cambiados, los ``tests/test_<módulo>*.py`` y los
    tests que importan un módulo cambiado, más el smoke de ``config/quality-gate.json``.
+3. ``type-check`` (``npm run type-check`` en ``web/frontend``) sólo si cambió un ``.vue`` o ``.ts``
+   bajo ``web/frontend/src``. Sin ``node_modules`` el paso se saltea con el motivo explícito.
 
 La suite completa queda para el despliegue productivo (ver la skill ``cierre-sesion``).
 """
@@ -36,6 +38,9 @@ LINEAS_SALIDA = 40
 TIMEOUT_SEGUNDOS = 1800
 PREFIJO_ROUTERS = "web/app/routers/"
 ARCHIVO_COMUN_SPA = "web/app/comun.py"
+DIRECTORIO_FRONTEND = Path("web") / "frontend"
+PREFIJO_FRONTEND_SRC = "web/frontend/src/"
+COMANDO_TYPE_CHECK = ["npm", "run", "type-check"]
 ENTORNO_TESTS = {"LLM_PROVIDER": "heuristic", "TESTING": "true"}
 
 
@@ -195,6 +200,8 @@ def _correr(nombre: str, comando: list[str], ruta: Path, *, entorno: dict[str, s
             env={**os.environ, **(entorno or {})},
         )
         exit_code, texto = proceso.returncode, proceso.stdout + proceso.stderr
+    except FileNotFoundError:
+        exit_code, texto = 127, f"comando no encontrado: {comando[0]}"
     except subprocess.TimeoutExpired as error:
         exit_code, texto = 124, f"timeout tras {TIMEOUT_SEGUNDOS}s\n{error.stdout or ''}"
     lineas = texto.strip().splitlines()[-LINEAS_SALIDA:]
@@ -221,8 +228,22 @@ def paso_tests(ruta: Path, tests: list[str]) -> Paso:
     return _correr("tests", comando, ruta, entorno=ENTORNO_TESTS)
 
 
+def _cambio_frontend(archivos: list[str]) -> bool:
+    return any(a.startswith(PREFIJO_FRONTEND_SRC) and a.endswith((".vue", ".ts")) for a in archivos)
+
+
+def paso_type_check(ruta: Path, archivos: list[str]) -> Paso | None:
+    """Type-check del SPA; ``None`` si no cambió código del frontend (el paso no aplica)."""
+    if not _cambio_frontend(archivos):
+        return None
+    frontend = ruta / DIRECTORIO_FRONTEND
+    if not (frontend / "node_modules").is_dir():
+        return Paso(nombre="type-check", salteado=True, motivo="sin node_modules (correr npm ci)")
+    return _correr("type-check", list(COMANDO_TYPE_CHECK), frontend)
+
+
 def ejecutar_gate(ruta: Path, base: str) -> ResultadoGate:
-    """Corre lint y tests focales sobre lo que HEAD cambió respecto de ``base``.
+    """Corre lint, tests focales y, si cambió el frontend, type-check sobre lo que HEAD cambió respecto de ``base``.
 
     Si el lint falla, los tests no se corren: el paso queda salteado con el motivo.
     """
@@ -233,10 +254,11 @@ def ejecutar_gate(ruta: Path, base: str) -> ResultadoGate:
         pruebas = paso_tests(ruta, tests)
     else:
         pruebas = Paso(nombre="tests", salteado=True, motivo="el lint falló")
+    tipos = paso_type_check(ruta, archivos)
     return ResultadoGate(
         sha=gitops.sha("HEAD", ruta),
         base=base,
         archivos=archivos,
         tests=tests,
-        pasos=[lint, pruebas],
+        pasos=[lint, pruebas, *([tipos] if tipos else [])],
     )

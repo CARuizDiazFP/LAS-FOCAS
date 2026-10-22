@@ -67,9 +67,12 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
   `pytest` sobre los tests focales (`scripts/agentes/calidad.py`, smoke en `config/quality-gate.json`);
   `integrate` rechaza un HEAD que no lo pasó. Reemplaza a la CI de GitHub, que sólo corre a mano
   (sin créditos de Actions). Emergencia auditada: `ready --sin-gate --motivo "..."`.
+  Si el cambio toca `.vue`/`.ts` bajo `web/frontend/src`, el gate también corre
+  `npm run type-check` (`vue-tsc --noEmit`, script de `web/frontend/package.json`); sin
+  `node_modules` lo saltea con motivo explícito ("correr npm ci"), nunca pasa en silencio.
 - Lint: `ruff check .` con la config de `pyproject.toml` (E9 + F + C901 ≤ 20). El repo está en 0
   avisos; las 6 funciones que todavía superan complejidad 20 llevan `# noqa: C901 - <motivo>`.
-  Las excepciones a C901 llevan motivo; `except Exception` → errores tipados y `_require_auth` →
+  `except Exception` → errores tipados y `_require_auth` →
   `Depends` quedan fuera hasta decisión explícita (cambian respuestas).
   Código inalcanzable conservado a propósito, hasta decisión del usuario: el "Intento 3" (sin
   números) de `_buscar_camara_intento` en `modules/slack_baneo_notifier/camara_search.py` y la rama
