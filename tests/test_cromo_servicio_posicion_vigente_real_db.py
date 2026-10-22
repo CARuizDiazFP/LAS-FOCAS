@@ -1,6 +1,6 @@
 # Nombre de archivo: test_cromo_servicio_posicion_vigente_real_db.py
 # Ubicación de archivo: tests/test_cromo_servicio_posicion_vigente_real_db.py
-# Descripción: Pruebas contra Postgres real de la posición vigente por conector: posiciones posibles con sus filtros (93150, 42352, 93153), par sugerido, declarar/retirar y estados reales de pelo
+# Descripción: Pruebas contra Postgres real de la posición vigente por conector: posiciones posibles con sus filtros (93150, 42352, 93153), par sugerido, declarar/retirar, estados reales de pelo y camino ajeno por etiqueta dominante (93150/61972, 42351/42352)
 
 """Casos reales de dev (2026-10-21) que una sesión fake no puede cubrir: lo que se prueba es el SQL
 de `posiciones_posibles` (UNION por identidad, filtro de pelo de otro servicio Activo, pelos
@@ -446,22 +446,69 @@ async def test_guarda_del_txt_y_declaradas_validas_ignoran_declaradas_invalidas(
     assert [d.id for d in await pv.declaradas_validas(sesion, _SERVICIO_93150)] == [valida]
 
 
+_SERVICIO_44649 = 24547  # Baja
+_SERVICIO_61972 = 34651  # BBVA, Activo
+# Pelos etiquetados 61972 (sueltos, mal cargados en Cromo) que recorre el hilo 2 del camino viejo
+# del 93150 (semilla 6822051, O-1252871-1:2 ↔ O-1252734-1:12, 49 pelos), medidos en dev 2026-10-22.
+_PELOS_61972_DEL_93150 = (6801908, 7477077, 7487940, 7500336)
+
+
 @pytest.mark.asyncio
-async def test_pelos_de_otro_servicio_activo_con_los_datos_del_42351_y_42352(sesion):
-    """Los pelos del 42351 (Activo), vistos desde el 42352, son de otro Activo; desde el propio
-    42351 no. Los pelos con etiqueta 44649 (de Baja) del 93150 no son de otro Activo."""
+async def test_matches_de_pelos_reales_del_hilo_2_del_93150(sesion):
+    matches = await pv._matches_de_pelos(sesion, _SERVICIO_93150, [*_PELOS_61972_DEL_93150, _PELO_1])
+
+    for pelo in _PELOS_61972_DEL_93150:
+        assert matches[pelo] == pv.MatchDePelo(f"servicio:{_SERVICIO_61972}", propio=False, activo=True)
+    assert matches[_PELO_1] == pv.MatchDePelo(f"servicio:{_SERVICIO_44649}", propio=False, activo=False)
+
+
+@pytest.mark.asyncio
+async def test_hilo_del_93150_con_4_pelos_de_otro_activo_no_es_ajeno(sesion):
+    """Bug real (2026-10-22): el hilo 2 del camino viejo del 93150 recorre 4 pelos de 61972
+    (Activo) entre 42 de 44649 (Baja). Domina 44649: no es ajeno. Con más pelos de 61972 que de
+    44649 sí lo es."""
+    pelos_44649 = await _escalares(
+        sesion,
+        "SELECT pelo_n_id FROM app.v_cromo_servicio_match_vigente WHERE servicio_id = :sid "
+        "ORDER BY pelo_n_id LIMIT 42",
+        sid=_SERVICIO_44649,
+    )
+    assert len(pelos_44649) == 42, "el 44649 ya no tiene sus pelos etiquetados en dev"
+
+    hilo_2 = [*pelos_44649, *_PELOS_61972_DEL_93150]
+    mayormente_61972 = [*pelos_44649[:3], *_PELOS_61972_DEL_93150]
+    ajenos = await pv.caminos_de_otro_servicio_activo(
+        sesion, _SERVICIO_93150, {6822051: hilo_2, 1: mayormente_61972}
+    )
+    assert ajenos == frozenset({1})
+
+
+@pytest.mark.asyncio
+async def test_camino_cacheado_del_hilo_2_del_93150_no_es_ajeno(sesion):
+    """Con el camino real que dejó el E2E en el caché (si sigue ahí)."""
+    pelos = await _escalares(
+        sesion,
+        "SELECT unnest(pelos_camino) FROM app.cromo_tracking_cache WHERE pelo_n_id = 6822051",
+    )
+    if not pelos or not set(_PELOS_61972_DEL_93150) <= set(pelos):
+        pytest.skip("el camino del hilo 2 del 93150 ya no está en el caché de dev")
+    assert await pv.caminos_de_otro_servicio_activo(sesion, _SERVICIO_93150, {6822051: pelos}) == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_camino_del_42351_es_ajeno_desde_el_42352_y_no_desde_el_42351(sesion):
+    """El camino del 42351 (Activo) pedido desde el 42352 lleva su etiqueta: es ajeno. Desde el
+    propio 42351 no."""
     pelos_42351 = await _escalares(
         sesion,
         "SELECT pelo_n_id FROM app.v_cromo_servicio_match_vigente WHERE servicio_id = :sid "
-        "ORDER BY pelo_n_id LIMIT 5",
+        "ORDER BY pelo_n_id LIMIT 40",
         sid=_SERVICIO_42351,
     )
     assert pelos_42351, "el 42351 ya no tiene pelos etiquetados en dev"
+    camino = {pelos_42351[0]: [*pelos_42351, _PELO_1, _PELO_2]}
 
-    assert await pv.pelos_de_otro_servicio_activo(sesion, _SERVICIO_42352, pelos_42351) == frozenset(
-        pelos_42351
+    assert await pv.caminos_de_otro_servicio_activo(sesion, _SERVICIO_42352, camino) == frozenset(
+        {pelos_42351[0]}
     )
-    assert await pv.pelos_de_otro_servicio_activo(sesion, _SERVICIO_42351, pelos_42351) == frozenset()
-    assert await pv.pelos_de_otro_servicio_activo(
-        sesion, _SERVICIO_93150, [_PELO_1, _PELO_2]
-    ) == frozenset()
+    assert await pv.caminos_de_otro_servicio_activo(sesion, _SERVICIO_42351, camino) == frozenset()

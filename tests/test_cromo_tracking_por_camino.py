@@ -10,6 +10,7 @@ import pytest
 
 from core.services.cromo import tracking_service
 from core.services.cromo.camino_optico_service import ESTADO_OK, CaminoOptico, NodoCamino
+from core.services.cromo.servicio_posicion_vigente import MatchDePelo
 from core.services.cromo.tracking_cache import TrackingCacheado
 from core.services.cromo.tracking_service import (
     TrackingGenerado,
@@ -518,15 +519,19 @@ def declaraciones(monkeypatch):
         posibles = list(estado.get("posibles", [])) if modo == "todas" else []
         return posibles, list(estado.get("declaradas", []))
 
-    async def _de_otro_activo(_sesion, servicio_id, pelos):
-        # Pelos de otro servicio Activo entre los de los caminos de posición: ninguno por defecto.
+    async def _matches(_sesion, servicio_id, pelos):
+        # El match vigente de los pelos de los caminos de posición (`estado["matches"]`, pelo →
+        # `MatchDePelo`): ninguno por defecto. Se reemplaza sólo la lectura: la moda es la real.
         estado.setdefault("consultas_otro_activo", []).append((servicio_id, sorted(pelos)))
-        return frozenset(estado.get("de_otro_activo", ())) & frozenset(pelos)
+        matches = estado.get("matches", {})
+        return {p: matches[p] for p in pelos if p in matches}
+
+    from core.services.cromo import servicio_posicion_vigente as pv
 
     monkeypatch.setattr(tracking_service, "declaraciones_del_servicio", _leer)
     monkeypatch.setattr(tracking_service, "numero_del_servicio", _numero)
     monkeypatch.setattr(tracking_service, "posiciones_del_servicio", _posiciones)
-    monkeypatch.setattr(tracking_service, "pelos_de_otro_servicio_activo", _de_otro_activo)
+    monkeypatch.setattr(pv, "_matches_de_pelos", _matches)
     return estado
 
 
@@ -1563,16 +1568,52 @@ async def test_retiro_que_falla_no_rompe_el_resultado(monkeypatch, caso_93150):
 # ── Hallazgos de revisión: camino de otro Activo y semilla declarada fallida ─────────────────
 
 
+_BAJA_44649 = MatchDePelo("servicio:24547", propio=False, activo=False)
+_ACTIVO_61972 = MatchDePelo("servicio:34651", propio=False, activo=True)
+_ACTIVO_42351 = MatchDePelo("servicio:567", propio=False, activo=True)
+
+
+def _matches_reales_93150(caminos):
+    """Como en dev (2026-10-22): los 49 pelos de cada hilo viejo llevan la etiqueta 44649 (Baja)
+    salvo uno sin match, y el hilo 2 recorre además 4 pelos etiquetados 61972 (BBVA, Activo) mal
+    cargados en Cromo (6801908, 7477077, 7487940, 7500336 en la medición real)."""
+    hilo_1, hilo_2 = caminos[0], caminos[1]
+    matches = {p: _BAJA_44649 for p in sorted(hilo_1.pelos_camino | hilo_2.pelos_camino)}
+    sueltos = sorted(hilo_2.pelos_camino - {hilo_2.pelo_n_id})[:5]
+    for pelo in sueltos[:4]:
+        matches[pelo] = _ACTIVO_61972
+    del matches[sueltos[4]]
+    return matches
+
+
 @pytest.mark.asyncio
-async def test_adicional_de_posicion_que_recorre_pelos_de_otro_activo_pasa_a_residual(caso_93150):
-    """El camino viejo (7028862/63, origen POSICION) recorre un pelo de otro servicio Activo: no
-    puede ofrecerse como ADICIONAL. Se consulta UNA sola vez por corrida, sólo con los pelos de
-    los caminos de posición (los etiquetados no entran)."""
+async def test_93150_hilo_con_etiquetas_sueltas_de_otro_activo_sigue_adicional(caso_93150):
+    """Bug real (E2E en dev, 2026-10-22): con el criterio "algún pelo de otro Activo" el hilo 2 del
+    camino viejo (4 de 49 pelos con 61972) pasaba a RESIDUAL y `track 93150 full` daba 3 archivos.
+    Domina 44649 (Baja): no es ajeno, los dos hilos viejos son ADICIONALES."""
     from tests.test_cromo_tracking_clasificacion import _caminos_93150
 
-    viejo = _caminos_93150()[0]
-    ajeno = next(iter(viejo.pelos_camino - {viejo.pelo_n_id}))
-    caso_93150["declaraciones"]["de_otro_activo"] = {ajeno}
+    caso_93150["declaraciones"]["matches"] = _matches_reales_93150(_caminos_93150())
+
+    resultado = await tracking_service.trackings_del_servicio(object(), object(), 4)
+
+    assert _pelos(resultado.tramos) == [6799280, 6799281]
+    assert _pelos(resultado.adicionales) == [7028862, 7028863]
+    assert _pelos(resultado.residuales) == [7469850]
+
+
+@pytest.mark.asyncio
+async def test_camino_de_posicion_mayormente_de_otro_activo_pasa_a_residual(caso_93150):
+    """El camino viejo 7028862 (origen POSICION) lleva casi toda la etiqueta de otro servicio
+    Activo (como el del 42351 pedido desde el 42352): no puede ofrecerse como ADICIONAL. Se
+    consulta UNA sola vez por corrida, sólo con los pelos de los caminos de posición."""
+    from tests.test_cromo_tracking_clasificacion import _caminos_93150
+
+    caminos = _caminos_93150()
+    matches = _matches_reales_93150(caminos)
+    for pelo in sorted(caminos[0].pelos_camino)[:40]:
+        matches[pelo] = _ACTIVO_42351
+    caso_93150["declaraciones"]["matches"] = matches
 
     resultado = await tracking_service.trackings_del_servicio(object(), object(), 4)
 
@@ -1582,18 +1623,20 @@ async def test_adicional_de_posicion_que_recorre_pelos_de_otro_activo_pasa_a_res
     (consulta,) = caso_93150["declaraciones"]["consultas_otro_activo"]
     servicio, pelos = consulta
     assert servicio == 4
-    assert ajeno in pelos and 7028862 in pelos and 7028863 in pelos
+    assert set(pelos) == caminos[0].pelos_camino | caminos[1].pelos_camino
     assert 6799280 not in pelos and 7469850 not in pelos
 
 
 @pytest.mark.asyncio
-async def test_camino_declarado_por_pelos_de_otro_activo_sigue_vigente(caso_93150):
+async def test_camino_declarado_de_otro_activo_sigue_vigente(caso_93150):
     """Lo declarado es decisión explícita del admin: el filtro no lo toca, y sin caminos de
     posición no se consulta."""
     from tests.test_cromo_tracking_clasificacion import _caminos_93150
 
     caso_93150["declaraciones"]["declaradas"] = list(_DECLARADAS_93150)
-    caso_93150["declaraciones"]["de_otro_activo"] = set(_caminos_93150()[0].pelos_camino)
+    caso_93150["declaraciones"]["matches"] = {
+        p: _ACTIVO_42351 for c in _caminos_93150()[:2] for p in c.pelos_camino
+    }
 
     resultado = await tracking_service.trackings_del_servicio(object(), object(), 4)
 

@@ -629,23 +629,107 @@ async def test_declaradas_validas_filtra_las_que_validar_en_db_retira():
     assert [d.id for d in await pv.declaradas_validas(sesion, 4)] == [1, 5]
 
 
-@pytest.mark.asyncio
-async def test_pelos_de_otro_servicio_activo_una_consulta_con_el_fragmento_compartido():
-    sesion = _Sesion(escalar=7028862)
+# ── Camino de posición ajeno por etiqueta dominante (caso real 93150 / 61972) ─────────────────
 
-    ajenos = await pv.pelos_de_otro_servicio_activo(sesion, 4, [7028863, 7028862, 7028862])
+_PROPIO = pv.MatchDePelo(servicio="servicio:4", propio=True, activo=True)
+_BAJA_44649 = pv.MatchDePelo(servicio="servicio:24547", propio=False, activo=False)
+_ACTIVO_61972 = pv.MatchDePelo(servicio="servicio:34651", propio=False, activo=True)
+_ACTIVO_42351 = pv.MatchDePelo(servicio="servicio:567", propio=False, activo=True)
 
-    assert ajenos == frozenset({7028862})
-    (sql, params), = sesion.ejecuciones
-    assert params == {"servicio_id": 4, "pelos": [7028862, 7028863]}
-    assert "ILIKE 'activo'" in sql and "unnest(CAST(:pelos AS bigint[]))" in sql
-    assert pv.SIN_PELO_DE_OTRO_SERVICIO_ACTIVO_SQL.format(pelo="u.pelo_n_id") in str(
-        pv._SQL_PELOS_DE_OTRO_SERVICIO_ACTIVO
+
+@pytest.mark.parametrize(
+    ("matches", "esperado"),
+    [
+        pytest.param([], False, id="sin-pelos"),
+        pytest.param([None, None, None], False, id="sin-match-no-cuenta"),
+        pytest.param([_ACTIVO_61972, None, None, None], True, id="unico-match-otro-activo"),
+        pytest.param([_ACTIVO_61972] * 2 + [_BAJA_44649] * 2, False, id="empate-no-es-ajeno"),
+        pytest.param([_ACTIVO_61972] * 2 + [_ACTIVO_42351] * 2, False, id="empate-entre-activos"),
+        pytest.param([_ACTIVO_61972] * 3 + [_PROPIO] * 5, False, id="domina-propio"),
+        # 93150 hilo 2 (6822051): 42 pelos 44649 (Baja), 4 de 61972 (Activo), 2 de 64586 (Baja).
+        pytest.param(
+            [_BAJA_44649] * 42 + [_ACTIVO_61972] * 4 + [pv.MatchDePelo("servicio:26066", False, False)] * 2
+            + [None],
+            False,
+            id="domina-baja-93150",
+        ),
+        # 42352 pidiendo el camino del 42351: casi todo etiqueta 42351 (Activo).
+        pytest.param([_ACTIVO_42351] * 40 + [_BAJA_44649] * 3 + [None] * 6, True, id="domina-otro-activo"),
+    ],
+)
+def test_domina_otro_servicio_activo(matches, esperado):
+    assert pv.domina_otro_servicio_activo(matches) is esperado
+
+
+def test_identidades_propias_distintas_suman_como_una_sola():
+    """Un pelo etiquetado con el número del Servicio y otro con su alias son el mismo Servicio:
+    juntos superan al otro Activo aunque por separado empaten con él."""
+    por_numero = pv.MatchDePelo("etiqueta:93150", propio=True, activo=False)
+    por_alias = pv.MatchDePelo("servicio:4", propio=True, activo=True)
+    assert pv.domina_otro_servicio_activo([por_numero, por_alias, _ACTIVO_61972, _ACTIVO_61972]) is False
+
+
+def test_caminos_ajenos_por_etiqueta_mira_cada_camino_por_separado():
+    matches = {
+        **{p: _BAJA_44649 for p in range(100, 142)},
+        **{p: _ACTIVO_61972 for p in (6801908, 7477077, 7487940, 7500336)},
+        **{p: _ACTIVO_42351 for p in range(200, 240)},
+    }
+    caminos = {
+        6822051: [6822051, *range(100, 142), 6801908, 7477077, 7487940, 7500336],
+        7000001: [7000001, *range(200, 240), *range(100, 103)],
+        7000002: [7000002],  # sin ningún match
+    }
+    assert pv.caminos_ajenos_por_etiqueta(caminos, matches) == frozenset({7000001})
+
+
+class _SesionMatches:
+    def __init__(self, filas):
+        self.filas = filas
+        self.ejecuciones: list[tuple[str, dict]] = []
+
+    async def execute(self, stmt, params=None):
+        self.ejecuciones.append((str(stmt), dict(params or {})))
+        return _Resultado(self.filas)
+
+
+def _fila_match(pelo, servicio_id, numero, *, propio=False, activo=False):
+    return SimpleNamespace(
+        pelo_n_id=pelo, match_servicio_id=servicio_id, match_numero=numero, propio=propio, activo=activo
     )
 
 
 @pytest.mark.asyncio
-async def test_pelos_de_otro_servicio_activo_sin_pelos_no_consulta():
-    sesion = _Sesion()
-    assert await pv.pelos_de_otro_servicio_activo(sesion, 4, []) == frozenset()
+async def test_caminos_de_otro_servicio_activo_una_sola_consulta_por_corrida():
+    sesion = _SesionMatches(
+        [
+            *(_fila_match(p, 24547, "44649") for p in range(100, 105)),
+            *(_fila_match(p, 34651, "61972", activo=True) for p in (6801908, 7477077)),
+            *(_fila_match(p, 567, "42351", activo=True) for p in range(200, 203)),
+            _fila_match(300, None, "99999"),  # etiqueta sin Servicio: cuenta, pero no es Activo
+            _fila_match(301, None, None),  # sin servicio ni etiqueta: no cuenta
+        ]
+    )
+    caminos = {
+        6822051: [6822051, *range(100, 105), 6801908, 7477077],
+        7000001: {7000001, 200, 201, 202, 100, 300, 301},
+    }
+
+    ajenos = await pv.caminos_de_otro_servicio_activo(sesion, 4, caminos)
+
+    assert ajenos == frozenset({7000001})
+    (sql, params), = sesion.ejecuciones
+    assert params["servicio_id"] == 4
+    assert params["pelos"] == sorted({p for pelos in caminos.values() for p in pelos})
+    assert "unnest(CAST(:pelos AS bigint[]))" in sql
+    assert "app.v_cromo_servicio_match_vigente" in sql and "ILIKE 'activo'" in sql
+    assert "DISTINCT ON (u.pelo_n_id)" in sql
+    assert "m.servicio_numero = ANY(s.alias_ids)" in sql  # mismas identidades que el resto
+
+
+@pytest.mark.asyncio
+async def test_caminos_de_otro_servicio_activo_sin_caminos_no_consulta():
+    sesion = _SesionMatches([])
+    assert await pv.caminos_de_otro_servicio_activo(sesion, 4, {}) == frozenset()
+    assert await pv.caminos_de_otro_servicio_activo(sesion, 4, {1: []}) == frozenset()
     assert sesion.ejecuciones == []

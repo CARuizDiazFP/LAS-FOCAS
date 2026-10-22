@@ -54,10 +54,10 @@ from core.services.cromo.servicio_posicion_vigente import (
     PosicionDeclarada,
     PosicionPosible,
     aplicar_retiros,
+    caminos_de_otro_servicio_activo,
     decidir_retiro,
     etiqueta_posiciones,
     listar_declaradas,
-    pelos_de_otro_servicio_activo,
     pelos_de_posiciones,
     posiciones_posibles,
     validar_camino,
@@ -641,7 +641,7 @@ def clasificar_con_posiciones(
     etiquetados: frozenset[int],
     declarados: frozenset[int],
     odfs_confirmadas: frozenset[int] = frozenset(),
-    de_otro_activo: frozenset[int] = frozenset(),
+    caminos_ajenos: frozenset[int] = frozenset(),
 ) -> list[str]:
     """Rol de cada camino (`VIGENTE`, `TRAMO`, `ADICIONAL` o `RESIDUAL`), en el mismo orden. Pura.
 
@@ -653,10 +653,12 @@ def clasificar_con_posiciones(
        declaración se aplicó), sus `TRAMO` pasan a `ADICIONAL`: siguen siendo un recorrido real,
        pero el servicio va por el vigente.
     4. `POSICION` es `ADICIONAL` si es un camino completo (ODF en los dos extremos) y `RESIDUAL`
-       si no, o si recorre algún pelo de `de_otro_activo` (pelos que matchean a otro servicio
-       Activo y no a este, `pelos_de_otro_servicio_activo`): el filtro de las posiciones sólo mira
-       el pelo semilla, y el camino puede ser el de otro Activo. No aplica al `DECLARADO` (decisión
-       explícita del admin) ni al `ETIQUETADO`.
+       si no, o si su semilla está en `caminos_ajenos` (en sus pelos domina la etiqueta de otro
+       servicio Activo, `caminos_de_otro_servicio_activo`): el filtro de las posiciones sólo mira
+       el pelo semilla, y el camino puede ser el de otro Activo (42352 ↔ 42351). Unos pelos sueltos
+       de otro Activo no alcanzan: el hilo 2 del camino viejo del 93150 recorre 4 de 61972 entre 49
+       y sigue ADICIONAL. No aplica al `DECLARADO` (decisión explícita del admin) ni al
+       `ETIQUETADO`.
 
     Con `declarados` vacío y todas las semillas etiquetadas da exactamente lo mismo que
     `clasificar_caminos` (regresión sobre los 77 caminos medidos).
@@ -682,7 +684,7 @@ def clasificar_con_posiciones(
         elif origen == ORIGEN_ETIQUETADO:
             rol = roles_etiquetados[i]
             roles.append(ROL_ADICIONAL if hay_vigente and rol == ROL_TRAMO else rol)
-        elif _pelos_de_tracking(camino) & de_otro_activo:
+        elif camino.pelo_n_id in caminos_ajenos:
             roles.append(ROL_RESIDUAL)
         else:
             roles.append(ROL_ADICIONAL if es_camino_completo(camino) else ROL_RESIDUAL)
@@ -1095,19 +1097,18 @@ async def trackings_del_servicio(
 
     declarados = frozenset(pelos_declarados) if aplicada else frozenset()
     etiquetados_set = frozenset(etiquetados)
-    # Una sola consulta por corrida, y sólo si hay caminos de origen POSICION: sus pelos de otro
-    # servicio Activo los bajan a RESIDUAL (el filtro de las posiciones sólo mira el pelo semilla).
-    pelos_de_posicion = frozenset().union(
-        *(
-            _pelos_de_tracking(c)
-            for c in caminos
-            if origen_del_camino(c, etiquetados=etiquetados_set, declarados=declarados)
-            == ORIGEN_POSICION
-        )
-    )
-    de_otro_activo = (
-        await pelos_de_otro_servicio_activo(sesion, servicio_id, pelos_de_posicion)
-        if pelos_de_posicion
+    # Una sola consulta por corrida, y sólo si hay caminos de origen POSICION: el que es camino de
+    # otro servicio Activo (domina su etiqueta) baja a RESIDUAL; el filtro de las posiciones sólo
+    # mira el pelo semilla. Las semillas no se repiten entre caminos (`_por_camino_en_fases`).
+    caminos_de_posicion = {
+        c.pelo_n_id: _pelos_de_tracking(c)
+        for c in caminos
+        if origen_del_camino(c, etiquetados=etiquetados_set, declarados=declarados)
+        == ORIGEN_POSICION
+    }
+    caminos_ajenos = (
+        await caminos_de_otro_servicio_activo(sesion, servicio_id, caminos_de_posicion)
+        if caminos_de_posicion
         else frozenset()
     )
     roles = clasificar_con_posiciones(
@@ -1115,7 +1116,7 @@ async def trackings_del_servicio(
         etiquetados=etiquetados_set,
         declarados=declarados,
         odfs_confirmadas=frozenset(confirmadas),
-        de_otro_activo=de_otro_activo,
+        caminos_ajenos=caminos_ajenos,
     )
     tramos: list[TrackingGenerado] = []
     adicionales: list[TrackingGenerado] = []

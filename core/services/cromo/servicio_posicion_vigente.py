@@ -16,6 +16,10 @@ Como las semillas del tracking salen de pelos etiquetados, ese camino nunca se c
   servicio Activo** (`SIN_PELO_DE_OTRO_SERVICIO_ACTIVO_SQL`). Sin el segundo, el 42352 (Edge, sin
   semillas propias) tomaba como suyos los caminos del 42351: la ingesta da por ganador al número
   mayor del conector como si fuera una renumeración, y acá son dos servicios Activos distintos.
+- **Camino ajeno** (`caminos_de_otro_servicio_activo`): el filtro anterior sólo mira el pelo semilla.
+  Un camino de posición ya resuelto es de otro servicio Activo sólo si entre sus pelos con match
+  domina (estrictamente) la etiqueta de ese otro Activo. Un pelo suelto no alcanza: el hilo 2 del
+  camino viejo del 93150 recorre 4 pelos de 61972 (Activo, mal cargados en Cromo) entre 42 de 44649.
 - **Declarar** (`declarar`): un admin elige conectores entre las posibles. Todo o nada, serializado
   por servicio con `pg_advisory_xact_lock`. Se guarda una foto (ODF, bandeja, número, pelo) y los
   pelos candidatos del conector (`pelo_n_id` más los de `tp[]`): la ingesta puede cambiar cuál
@@ -41,7 +45,8 @@ import re
 import unicodedata
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Sequence
+from collections import Counter
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,19 +70,22 @@ __all__ = [
     "SIN_PELO_DE_OTRO_SERVICIO_ACTIVO_SQL",
     "TEXTO_CALCULO_AUTOMATICO",
     "AvisoPosicion",
+    "MatchDePelo",
     "PosicionDeclarada",
     "PosicionNoValida",
     "PosicionPosible",
     "aplicar_retiros",
+    "caminos_ajenos_por_etiqueta",
+    "caminos_de_otro_servicio_activo",
     "declaradas_validas",
     "declarar",
     "decidir_retiro",
+    "domina_otro_servicio_activo",
     "es_estado_pelo_danado",
     "etiqueta_posiciones",
     "listar_declaradas",
     "par_sugerido",
     "pelo_es_de_posicion",
-    "pelos_de_otro_servicio_activo",
     "pelos_de_posiciones",
     "posiciones_posibles",
     "retirar",
@@ -248,18 +256,28 @@ _SQL_PELO_ES_DE_POSICION = text(
     """
 )
 
-# Los pelos (de un camino ya resuelto) que matchean a otro servicio Activo y no a este: el mismo
-# fragmento que filtra el pelo semilla, negado, sobre `unnest(:pelos)`. Una sola consulta por corrida.
-_SQL_PELOS_DE_OTRO_SERVICIO_ACTIVO = text(
+# El match vigente de cada pelo de los caminos ya resueltos, visto desde el Servicio: a qué servicio
+# (o etiqueta, si el match no tiene servicio), si es una identidad de este y si es Activo. Mismas
+# identidades que el resto del módulo. Un pelo sin match no sale (no cuenta). Si un pelo tuviera dos
+# matches (en dev, 0 de 209 960), gana el propio y después el Activo, como en
+# `SIN_PELO_DE_OTRO_SERVICIO_ACTIVO_SQL`. Una sola consulta por corrida; la moda va en Python.
+_SQL_MATCHES_DE_PELOS = text(
     f"""
     WITH s AS (
         SELECT id, servicio_id, numero_primer_servicio, alias_ids
         FROM app.servicios WHERE id = :servicio_id
     )
-    SELECT u.pelo_n_id
+    SELECT DISTINCT ON (u.pelo_n_id)
+           u.pelo_n_id,
+           m.servicio_id AS match_servicio_id,
+           m.servicio_numero AS match_numero,
+           COALESCE(({IDENTIDADES_DEL_SERVICIO_SQL}), false) AS propio,
+           COALESCE(so.estado_servicio ILIKE 'activo', false) AS activo
     FROM unnest(CAST(:pelos AS bigint[])) AS u(pelo_n_id)
     CROSS JOIN s
-    WHERE NOT (TRUE {SIN_PELO_DE_OTRO_SERVICIO_ACTIVO_SQL.format(pelo="u.pelo_n_id")})
+    JOIN app.v_cromo_servicio_match_vigente m ON m.pelo_n_id = u.pelo_n_id
+    LEFT JOIN app.servicios so ON so.id = m.servicio_id
+    ORDER BY u.pelo_n_id, propio DESC, activo DESC, m.servicio_id NULLS LAST
     """
 )
 
@@ -519,22 +537,99 @@ async def pelo_es_de_posicion(sesion: AsyncSession, servicio_id: int, pelo_n_id:
     return bool(resultado.scalar())
 
 
-async def pelos_de_otro_servicio_activo(
-    sesion: AsyncSession, servicio_id: int, pelos: Iterable[int]
-) -> frozenset[int]:
-    """Los `pelos` que matchean a otro servicio Activo y a ninguna identidad de este, en UNA consulta.
+# ── Camino de posición ajeno: etiqueta dominante ───────────────────────────────────────────
 
-    Mismo criterio que `SIN_PELO_DE_OTRO_SERVICIO_ACTIVO_SQL`, pero sobre los pelos de un camino ya
-    resuelto y no sólo sobre el pelo semilla: un conector resuelto a este Servicio con un pelo sin
-    etiqueta pasa el filtro de las posiciones, y su `/path` puede recorrer pelos de otro Activo.
+
+@dataclass(slots=True, frozen=True)
+class MatchDePelo:
+    """A qué servicio matchea un pelo (`app.v_cromo_servicio_match_vigente`), visto desde un
+    Servicio. `servicio` es la clave del voto: `"servicio:<app.servicios.id>"`, o
+    `"etiqueta:<número>"` si el match no tiene servicio (nunca es Activo)."""
+
+    servicio: str
+    propio: bool
+    activo: bool
+
+
+_VOTO_PROPIO = "propio"  # todas las identidades del Servicio (número, primero, alias) votan juntas
+
+
+def domina_otro_servicio_activo(matches: Iterable[Optional[MatchDePelo]]) -> bool:
+    """¿La etiqueta más frecuente entre los pelos con match es la de OTRO servicio Activo? Pura.
+
+    Cada pelo con match vota una vez por su servicio; `None` (sin match) no vota y las identidades
+    de este Servicio votan como una sola. Es ajeno sólo si el más votado es otro Activo y supera
+    estrictamente a cada uno de los demás: un empate no es ajeno. Caso real (93150, 2026-10-22):
+    el hilo 2 del camino viejo tiene 42 pelos de 44649 (Baja), 4 de 61972 (Activo) y 2 de 64586
+    (Baja): domina 44649, no es ajeno. El camino del 42351 pedido desde el 42352 sí.
     """
-    ids = sorted({int(p) for p in pelos})
-    if not ids:
-        return frozenset()
+    votos: Counter[str] = Counter()
+    activos: set[str] = set()
+    for m in matches:
+        if m is None:
+            continue
+        clave = _VOTO_PROPIO if m.propio else m.servicio
+        votos[clave] += 1
+        if m.activo and not m.propio:
+            activos.add(clave)
+    if not votos:
+        return False
+    (primero, cuenta), *resto = votos.most_common(2)
+    if resto and resto[0][1] == cuenta:
+        return False
+    return primero != _VOTO_PROPIO and primero in activos
+
+
+def caminos_ajenos_por_etiqueta(
+    caminos: Mapping[int, Iterable[int]], matches: Mapping[int, MatchDePelo]
+) -> frozenset[int]:
+    """Las semillas de `caminos` ({semilla: pelos del camino}) en los que domina la etiqueta de otro
+    servicio Activo (`domina_otro_servicio_activo`), con `matches` por pelo. Pura."""
+    return frozenset(
+        semilla
+        for semilla, pelos in caminos.items()
+        if domina_otro_servicio_activo(matches.get(int(p)) for p in set(pelos))
+    )
+
+
+def _match_de_fila(fila: Any) -> Optional[MatchDePelo]:
+    if fila.match_servicio_id is not None:
+        clave = f"servicio:{int(fila.match_servicio_id)}"
+    elif fila.match_numero:
+        clave = f"etiqueta:{fila.match_numero}"
+    else:
+        return None
+    return MatchDePelo(servicio=clave, propio=bool(fila.propio), activo=bool(fila.activo))
+
+
+async def _matches_de_pelos(
+    sesion: AsyncSession, servicio_id: int, pelos: Sequence[int]
+) -> dict[int, MatchDePelo]:
+    """El match vigente de cada pelo (los sin match no aparecen), en UNA consulta."""
     filas = (
-        await sesion.execute(_SQL_PELOS_DE_OTRO_SERVICIO_ACTIVO, {"servicio_id": servicio_id, "pelos": ids})
+        await sesion.execute(_SQL_MATCHES_DE_PELOS, {"servicio_id": servicio_id, "pelos": list(pelos)})
     ).all()
-    return frozenset(int(f[0]) for f in filas)
+    matches = {int(f.pelo_n_id): _match_de_fila(f) for f in filas}
+    return {p: m for p, m in matches.items() if m is not None}
+
+
+async def caminos_de_otro_servicio_activo(
+    sesion: AsyncSession, servicio_id: int, caminos: Mapping[int, Iterable[int]]
+) -> frozenset[int]:
+    """Las semillas de `caminos` ({pelo semilla: pelos del camino}) que son el camino de otro
+    servicio Activo: entre sus pelos con match domina estrictamente la etiqueta de ese otro Activo.
+
+    El filtro de las posiciones (`SIN_PELO_DE_OTRO_SERVICIO_ACTIVO_SQL`) sólo mira el pelo semilla:
+    un conector resuelto a este Servicio con un pelo sin etiqueta pasa, y su `/path` puede ser el
+    camino de otro Activo (42352 ↔ 42351). Por mayoría y no por "algún pelo": las etiquetas sueltas
+    mal cargadas en Cromo (4 pelos de 61972 en los 49 del hilo 2 del 93150) no hacen ajeno un
+    camino. UNA sola consulta con todos los pelos de todos los caminos.
+    """
+    caminos = {int(semilla): frozenset(int(p) for p in pelos) for semilla, pelos in caminos.items()}
+    todos = sorted(frozenset().union(*caminos.values())) if caminos else []
+    if not todos:
+        return frozenset()
+    return caminos_ajenos_por_etiqueta(caminos, await _matches_de_pelos(sesion, servicio_id, todos))
 
 
 def _numero(conector: Optional[str]) -> Optional[int]:

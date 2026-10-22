@@ -584,22 +584,22 @@ def test_clasificar_con_posiciones_sin_caminos_devuelve_lista_vacia():
     assert clasificar_con_posiciones([], etiquetados=frozenset(), declarados=frozenset()) == []
 
 
-# ── Camino de posición que recorre pelos de otro servicio Activo (hallazgo de revisión) ────────
+# ── Camino de posición ajeno: domina la etiqueta de otro servicio Activo ─────────────────────
 
 
-def test_camino_de_posicion_por_pelos_de_otro_activo_es_residual():
+def test_camino_de_posicion_ajeno_es_residual():
     """El filtro de las posiciones mira sólo el pelo semilla: un conector resuelto a este Servicio
-    con un pelo sin etiqueta pasa, pero su `/path` puede recorrer pelos de OTRO servicio Activo.
-    Ese camino de origen POSICION, aunque termine en ODF en los dos extremos, no es ADICIONAL."""
+    con un pelo sin etiqueta pasa, pero su `/path` puede ser el camino de OTRO servicio Activo
+    (caso 42352 ↔ 42351). Ese camino de origen POSICION (`caminos_ajenos`, por etiqueta
+    dominante), aunque termine en ODF en los dos extremos, no es ADICIONAL."""
     caminos = _caminos_93150()
-    ajeno = next(iter(caminos[0].pelos_camino - {caminos[0].pelo_n_id}))
     roles = _roles_por_pelo(
         caminos,
         clasificar_con_posiciones(
             caminos,
             etiquetados=_ETIQUETADOS_93150,
             declarados=frozenset(),
-            de_otro_activo=frozenset({ajeno}),
+            caminos_ajenos=frozenset({7028862}),
         ),
     )
     assert roles == {
@@ -609,18 +609,17 @@ def test_camino_de_posicion_por_pelos_de_otro_activo_es_residual():
     }
 
 
-def test_pelos_de_otro_activo_no_degradan_al_declarado_ni_al_etiquetado():
+def test_caminos_ajenos_no_degradan_al_declarado_ni_al_etiquetado():
     """El DECLARADO es una decisión explícita del admin y el ETIQUETADO lleva la etiqueta del
     Servicio: el filtro sólo aplica a los caminos de origen POSICION."""
     caminos = _caminos_93150()
-    todos = frozenset().union(*(c.pelos_camino for c in caminos))
     roles = _roles_por_pelo(
         caminos,
         clasificar_con_posiciones(
             caminos,
             etiquetados=_ETIQUETADOS_93150,
             declarados=_DECLARADOS_93150,
-            de_otro_activo=todos,
+            caminos_ajenos=frozenset(c.pelo_n_id for c in caminos),
         ),
     )
     assert roles == {
