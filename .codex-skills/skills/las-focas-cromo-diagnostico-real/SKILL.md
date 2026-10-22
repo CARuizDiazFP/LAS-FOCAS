@@ -263,6 +263,16 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    (`assert modulo.__file__.startswith("/tmp/wt")`). Si no lo verifica, puede validar la imagen
    vieja sin darse cuenta. Al terminar, `rm -rf /tmp/wt`. Es lo que mostró, antes de integrar, que el
    94673 daba 2 caminos y que 42351/93154 tenían 34/63 pelos huérfanos (2026-10-05).
+   Dos trampas reales del 2026-10-22:
+   - **Heredoc sin `-i`**: `docker exec -w /tmp/wt lasfocasdev-web python - <<'PY'` sin `-i` no
+     ejecuta nada y sale con código 0 y salida vacía (una declaración "aplicada" no existía en la
+     base). Con heredoc, siempre `docker exec -i`; si el script imprime algo, una salida vacía es un
+     fallo, no un éxito.
+   - **Un solo `asyncio.run` por script si se usa `db.session.AsyncSessionLocal`**: su pool queda
+     atado al primer event loop y un segundo `asyncio.run` revienta en el checkout
+     (`Exception terminating connection` / `different loop`). Hacer todo dentro de un único
+     `main()` o sacar los datos previos con `psql`. Las funciones que ya abren su propio engine con
+     `NullPool` (p. ej. `tracking_servicio.generar_trackings`) sí se pueden llamar en serie.
 
 14. **Toda regla que decida qué camino es tramo (`tracking_service.clasificar_caminos`) se mide
    contra los servicios testigo antes de fijarla, no después.** Esperado hoy: 102452 → 6 tramos
@@ -273,6 +283,15 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    (código del worktree en `/tmp/wt`, `trackings_del_servicio` sin auditar) e imprimir por camino:
    pelos, extremos (tipo, ODF, clase) y si tiene par. Mirar también si el servicio tiene ODF
    confirmadas (`app.servicio_odf_confirmada`): cambian el resultado.
+   Desde 2026-10-22 también siembran las posiciones de ODF del servicio (roles VIGENTE/ADICIONAL,
+   `servicio_posicion_vigente`), así que los testigos suman: **93150** (pk 4) sin declarar → 2 tramos
+   (6799280/81) + 2 adicionales completos (6822050/51, pelos con etiqueta 44649) y `full` = 4; con
+   O-1252871-1:1,2 declarada (`app.servicio_posicion_vigente`) → vigentes 7028862/63 y el camino
+   nuevo como adicional. **42352** (pk 568) → sigue sin semilla (no toma los caminos del 42351).
+   **102452** → sin adicionales (sus jumpers de 1 pelo entre racks del Nodo Dixon caen por el umbral
+   del 25 %). Antes de fijar una regla sobre caminos de posición, imprimir también la etiqueta de los
+   pelos del camino: el hilo 2 del 93150 tiene 4 de 49 pelos con etiqueta 61972 (otro servicio
+   Activo), ruido que un filtro de "cualquier pelo ajeno" convertía en falso negativo.
 
 ## Documentación relacionada
 
