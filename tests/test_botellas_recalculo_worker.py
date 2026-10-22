@@ -480,6 +480,20 @@ async def test_avisar_evaluacion_nunca_lanza(monkeypatch) -> None:
         raise RuntimeError("redis caído")
 
     monkeypatch.setattr(rc, "get_redis", _boom)
+
+    # Con `aplicadas_auto` el aviso sigue a la rama de Slack y abriría una sesión del engine async
+    # REAL (`db.session.AsyncSessionLocal`) dentro del loop de este test. Esa conexión quedaba en el
+    # pool singleton atada a un loop ya cerrado y hacía fallar, más adelante en la suite, el primer
+    # test que usa el pool desde otro loop ("attached to a different loop"). Se aíslan sesión y
+    # config: la intención (nunca lanza aunque Redis falle) no cambia.
+    from core.services.cromo import inconsistencias_reporte as rep
+    import db.session as dbs
+
+    async def _config_inactiva(sesion):
+        return [], False
+
+    monkeypatch.setattr(rep, "_leer_config_slack", _config_inactiva)
+    monkeypatch.setattr(dbs, "AsyncSessionLocal", lambda: _SesionFake())
     await aviso_mod.avisar_evaluacion(motor_mod.ResumenEvaluacion(aplicadas_auto=[1]), 5)
 
 
