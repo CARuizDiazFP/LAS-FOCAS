@@ -300,3 +300,90 @@ def test_asociar_huerfanas_registra_el_username_y_no_la_tupla(con_sesion, monkey
     ]
     assert registro.startswith("action=cromo_botellas_asociar user=pepe camara_id=2 ")
     sesion.commit.assert_called_once()
+
+
+# --- servicios externos: mensaje fijo con ref (error_servicio_externo) -------------------------------
+
+
+def _registro_unico(caplog, prefijo: str) -> str:
+    (registro,) = [r.getMessage() for r in caplog.records if r.name == "web" and r.getMessage().startswith(prefijo)]
+    return registro
+
+
+def test_visor_en_vivo_502_sin_texto_de_cromo_y_con_ref_en_el_log(con_sesion, monkeypatch, caplog):
+    import core.services.cromo.client as cromo_client_module
+    import core.services.cromo.config as cromo_config_module
+    from core.services.cromo.client import CromoClientError
+
+    class _SesionAsync:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _ClienteRoto:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            raise CromoClientError(f"Cromo respondió 500 en /api/objetos: {SECRETO}")
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _SesionAsync)
+    monkeypatch.setattr(cromo_config_module, "get_cromo_config", lambda: None)
+    monkeypatch.setattr(cromo_client_module, "CromoClient", _ClienteRoto)
+    con_sesion("user")
+    caplog.set_level(logging.INFO, logger="web")
+
+    res = _cliente().get("/api/infra/cromo/elementos/123/vivo")
+
+    assert res.status_code == 502
+    assert SECRETO not in res.text
+    assert list(res.json()) == ["error"]
+    ref = re.fullmatch(r"Cromo no respondió \(ref ([0-9a-f]{8})\)", res.json()["error"]).group(1)
+    assert _registro_unico(caplog, "action=cromo_elemento_vivo_error") == (
+        f"action=cromo_elemento_vivo_error n_id=123 error=Cromo respondió 500 en /api/objetos: {SECRETO} ref={ref}"
+    )
+
+
+def test_refrescar_prov_no_configurado_502_sin_texto_y_un_solo_log(con_sesion, monkeypatch, caplog):
+    from core.services.cromo import verificador
+    from core.services.prov import frescura
+    from core.services.prov.config import ProvConfigError
+    from web.app.routers import cromo
+
+    async def _unicos(sesion, cable_n_id):
+        return MagicMock(servicios=[MagicMock(servicio_id=7)])
+
+    async def _vencidos(sesion, ids):
+        return {7}
+
+    async def _lote(pendientes):
+        raise ProvConfigError(f"Configuración de PROV incompleta. Definir: {SECRETO}")
+
+    class _SesionAsync:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _SesionAsync)
+    monkeypatch.setattr(verificador, "servicios_unicos_por_cable", _unicos)
+    monkeypatch.setattr(frescura, "servicios_vencidos", _vencidos)
+    monkeypatch.setattr(cromo, "_ejecutar_refresco_prov_lote", _lote)
+    con_sesion("user")
+    caplog.set_level(logging.INFO, logger="web")
+
+    res = _cliente().post("/api/infra/cromo/cables/55/servicios-unicos/refrescar-prov", json={})
+
+    assert res.status_code == 502
+    assert SECRETO not in res.text
+    ref = re.fullmatch(r"PROV no está configurado \(ref ([0-9a-f]{8})\)", res.json()["error"]).group(1)
+    assert _registro_unico(caplog, "action=cromo_servicios_unicos_refrescar_prov") == (
+        "action=cromo_servicios_unicos_refrescar_prov_error evento=prov_no_configurado cable_n_id=55 "
+        f"error=Configuración de PROV incompleta. Definir: {SECRETO} ref={ref}"
+    )

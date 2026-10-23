@@ -37,7 +37,14 @@ from ..comun import (
     logger,
 )
 from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
-from ..errores import DatoInvalido, ErrorDeDominio, NoEncontrado, error_interno, nueva_ref
+from ..errores import (
+    DatoInvalido,
+    ErrorDeDominio,
+    NoEncontrado,
+    error_interno,
+    error_servicio_externo,
+    nueva_ref,
+)
 
 router = APIRouter(dependencies=[Depends(usuario_sesion)])
 
@@ -644,12 +651,13 @@ async def cromo_servicios_unicos_refrescar_prov_web(
         try:
             lote = await _ejecutar_refresco_prov_lote(pendientes)
         except ProvConfigError as exc:
-            logger.error(
-                "action=cromo_servicios_unicos_refrescar_prov evento=prov_no_configurado cable_n_id=%s error=%s",
-                cable_n_id,
+            return error_servicio_externo(
+                "cromo_servicios_unicos_refrescar_prov",
                 exc,
+                "PROV no está configurado",
+                evento="prov_no_configurado",
+                cable_n_id=cable_n_id,
             )
-            return JSONResponse({"error": f"PROV no está configurado: {exc}"}, status_code=502)
         except (HTTPException, ErrorDeDominio):
             raise
         except Exception as exc:
@@ -2041,7 +2049,7 @@ async def cromo_elemento_vivo_web(n_id: int) -> JSONResponse:
     except ObjetoNoEncontrado as exc:
         raise NoEncontrado(str(exc)) from exc
     except CromoClientError as exc:
-        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+        return error_servicio_externo("cromo_elemento_vivo", exc, "Cromo no respondió", n_id=n_id)
 
     return JSONResponse(_serializar_elemento_vivo(elemento))
 
@@ -2356,7 +2364,9 @@ async def cromo_camino_tracking_txt_web(
     except TrackingNoDisponible as exc:
         return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
     except CromoClientError as exc:
-        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+        return error_servicio_externo(
+            "cromo_camino_tracking", exc, "Cromo no respondió", user=usuario, servicio_id=servicio_id
+        )
 
     # Con un solo pelo (el caso PON) el nombre queda idéntico al de siempre; con varios se
     # intercala el n_id, porque si no los N archivos del mismo Servicio se pisan entre sí en la
@@ -2478,7 +2488,9 @@ async def cromo_camino_caminos_web(
             )
             inconsistencias = await _inconsistencias_del_servicio(sesion, servicio_id)
     except CromoClientError as exc:
-        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+        return error_servicio_externo(
+            "cromo_camino_caminos", exc, "Cromo no respondió", user=usuario, servicio_id=servicio_id
+        )
 
     logger.info(
         "action=cromo_camino_caminos user=%s servicio_id=%s tramos=%s adicionales=%s residuales=%s "
@@ -3310,7 +3322,7 @@ async def cromo_validar_datos_web(n_id: int) -> JSONResponse:
     except ObjetoNoEncontrado as exc:
         raise NoEncontrado(str(exc)) from exc
     except CromoClientError as exc:
-        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+        return error_servicio_externo("cromo_validar_datos", exc, "Cromo no respondió", n_id=n_id)
 
     return JSONResponse(_serializar_validacion_cromo(resultado))
 
@@ -3344,7 +3356,7 @@ async def cromo_botella_cables_detectados_web(n_id: int) -> JSONResponse:
     except ObjetoNoEncontrado as exc:
         raise NoEncontrado(str(exc)) from exc
     except CromoClientError as exc:
-        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+        return error_servicio_externo("cromo_botella_cables_detectados", exc, "Cromo no respondió", n_id=n_id)
 
     return JSONResponse(
         {
@@ -3392,7 +3404,7 @@ async def botella_repoblar_cables_web(
     except ObjetoNoEncontrado as exc:
         raise NoEncontrado(str(exc)) from exc
     except CromoClientError as exc:
-        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+        return error_servicio_externo("botella_repoblar_cables", exc, "Cromo no respondió", user=username, n_id=n_id)
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
@@ -3478,16 +3490,20 @@ async def botella_actualizar_nombre_web(
             except ClaseExcluidaError as exc:
                 raise ErrorDeDominio(f"n_id={n_id} no es una Botella: {exc}") from exc
             except CromoClientError as exc:
-                return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+                return error_servicio_externo(
+                    "botella_actualizar_nombre", exc, "Cromo no respondió", user=username, n_id=n_id
+                )
             except CromoConfigError as exc:
                 # Faltan credenciales/URL de Cromo: no es un 500 opaco, es "no pudimos hablar con
-                # Cromo" — mismo 502 que `CromoClientError`, con la causa real en el log.
-                logger.error(
-                    "action=botella_actualizar_nombre result=fail reason=cromo_no_configurado n_id=%s error=%s",
-                    n_id,
+                # Cromo" — mismo 502 que `CromoClientError`, con la causa real en el log (con ref).
+                return error_servicio_externo(
+                    "botella_actualizar_nombre",
                     exc,
+                    "Cromo no está configurado",
+                    result="fail",
+                    reason="cromo_no_configurado",
+                    n_id=n_id,
                 )
-                return JSONResponse({"error": f"Cromo no está configurado: {exc}"}, status_code=502)
             except (HTTPException, ErrorDeDominio):
                 raise
             except Exception as exc:
