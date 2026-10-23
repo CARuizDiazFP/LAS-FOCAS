@@ -8,7 +8,7 @@ Dos grupos:
 - Contra Postgres real (dev): los ids se eligen en tiempo de ejecución con un SELECT, porque los
   datos de dev cambian; las aserciones son de estructura y de coherencia con la base.
 - Con sesión simulada (sin base): fijan cada rama del original (puntas, fallback por regex del ODF,
-  JSON guardado, empalmes de la base, 500) con parches donde el nombre se LEE en tiempo de llamada
+  JSON guardado, empalmes de la base, 500 con ref) con parches donde el nombre se LEE en tiempo de llamada
   (`db.session.SessionLocal` y `core.parsers.tracking_parser.parse_tracking`, ambos importados
   dentro de la función).
 """
@@ -16,6 +16,7 @@ Dos grupos:
 from __future__ import annotations
 
 import json
+import re
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -31,9 +32,9 @@ CLAVES_PUNTA = {"sitio", "identificador", "conector"}
 
 
 @pytest.fixture
-def cliente():
-    with patch("web.app.routers.servicios._require_auth", return_value=("tester", "admin")):
-        yield TestClient(app)
+def cliente(con_sesion):
+    con_sesion("admin")
+    return TestClient(app)
 
 
 # --------------------------------------------------------------------------- datos reales de dev
@@ -332,7 +333,9 @@ def test_ruta_inexistente_simulada_da_404(cliente):
     assert resp.json() == {"error": "Ruta no encontrada"}
 
 
-def test_error_inesperado_da_500_con_texto(cliente):
+def test_error_inesperado_da_500_con_ref_sin_texto_interno(cliente):
     resp = _get(cliente, _ruta(servicio=None))
     assert resp.status_code == 500
-    assert resp.json()["error"].startswith("Error obteniendo tracking: ")
+    error = resp.json()["error"]
+    assert re.fullmatch(r"Error interno \(ref [0-9a-f]{8}\)", error)
+    assert "NoneType" not in error
