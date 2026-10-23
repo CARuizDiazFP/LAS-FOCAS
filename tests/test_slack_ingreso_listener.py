@@ -1534,6 +1534,47 @@ class TestFiltroAmbiguedad(unittest.TestCase):
         texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
         self.assertIn("Revalidar ingreso", texto_respuesta)
 
+    def test_listener_numero_no_coincide_sugiere_y_registra_sin_match(self) -> None:
+        """2026-10-23: número que no coincide → "No encontré X con ese número. ¿Quisiste decir…?",
+        pide reescribir la cámara en el hilo y registra el `IngresoSinMatch` como un ambiguo. Nunca
+        registra un movimiento en una de las sugeridas."""
+        from modules.slack_baneo_notifier.camara_search import NumeroNoCoincideError
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        texto_evento = "Cámara: Cra Mitre 404"
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                  return_value="Cra Mitre 404"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                  side_effect=NumeroNoCoincideError(
+                      "Cra Mitre 404", 2, ["Cra Mitre 440", "Cra Mitre 399"])),
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+        ):
+            listener._handle_message(self._make_event(text=texto_evento), client_mock)
+
+        mock_registrar.assert_not_called()
+        session_mock.add.assert_called_once()
+        caso = session_mock.add.call_args[0][0]
+        self.assertEqual(caso.texto_original, "Cra Mitre 404")
+        self.assertEqual(caso.texto_mensaje, texto_evento)
+        self.assertEqual(caso.thread_ts, "1234567890.000001")
+        self.assertEqual(caso.origen, "slack")
+        session_mock.commit.assert_called_once()
+
+        client_mock.chat_postMessage.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("No encontré *Cra Mitre 404* con ese número", texto)
+        self.assertIn("¿Quisiste decir", texto)
+        self.assertIn("• Cra Mitre 440", texto)
+        self.assertIn("• Cra Mitre 399", texto)
+        self.assertIn("Escribí la cámara correcta en este hilo", texto)
+        self.assertNotIn("ambigua", texto)
+
     def test_multibot_no_se_confunde_con_ambiguedad(self) -> None:
         """'Botella 1 y 2' es multi-bot, no ambigüedad — se procesan como dos cámaras."""
         from db.models.infra import CamaraEstado
@@ -2940,6 +2981,30 @@ class TestRevalidacionIngreso(unittest.TestCase):
             patch(
                 "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
                 side_effect=AmbiguousSearchError("e:", 0, []),
+            ),
+        ):
+            listener._handle_message(self._make_event_reply(), client_mock)
+
+        self.assertFalse(caso_mock.resuelto_via_revalidacion)
+        session_mock.commit.assert_not_called()
+        self.assertIn("sigue sin poder", client_mock.chat_postMessage.call_args.kwargs["text"])
+
+    def test_numero_no_coincide_en_revalidacion_se_trata_como_ambigua(self) -> None:
+        from modules.slack_baneo_notifier.camara_search import NumeroNoCoincideError
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        caso_mock = self._make_caso()
+        session_mock.query.side_effect = self._query_side_effect(caso_mock)
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Cra Mitre 404"),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                side_effect=NumeroNoCoincideError("Cra Mitre 404", 1, ["Cra Mitre 440"]),
             ),
         ):
             listener._handle_message(self._make_event_reply(), client_mock)

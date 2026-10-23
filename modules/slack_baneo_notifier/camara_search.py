@@ -12,6 +12,7 @@ niveles de coincidencia antes de rendirse.
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func
@@ -46,6 +47,7 @@ __all__ = [
     "extraer_tipo_movimiento",
     "extraer_slack_user_id_autorizacion",
     "AmbiguousSearchError",
+    "NumeroNoCoincideError",
 ]
 
 # ── Tabla de abreviaturas comunes usadas por técnicos ────────────────────
@@ -426,6 +428,20 @@ class AmbiguousSearchError(Exception):
         )
 
 
+class NumeroNoCoincideError(AmbiguousSearchError):
+    """El texto trae números y ninguna cámara los tiene, pero sin esos números sí hay parecidas.
+
+    Caso típico: el técnico escribió mal la altura ("Cra Mitre 404" para "Cra Mitre 440"). Las
+    candidatas son SÓLO sugerencias — nunca se asigna automáticamente una cámara parecida (decisión
+    del usuario 2026-10-23: "son pocos casos pero hay"). Es subclase de `AmbiguousSearchError` a
+    propósito: todo caller que hoy trata la ambigüedad como "no se puede resolver" (revalidación,
+    corrección, reproceso, baneo masivo) la sigue tratando igual sin cambios; sólo el listener la
+    captura antes para responder "No encontré X con ese número. ¿Quisiste decir…?".
+
+    ``cantidad`` es la cantidad de parecidas encontradas; ``candidatos`` las hasta 3 más similares.
+    """
+
+
 def buscar_camara(
     nombre_raw: str, session: Session, *, desempatar: bool = True
 ) -> tuple["Camara | None", str]:
@@ -525,20 +541,37 @@ class _CascadaBusqueda:
         return None
 
 
-def _intento_sin_numeros(cascada: _CascadaBusqueda) -> tuple["Camara | None", str]:
-    """Intento 3: repite la búsqueda sin dígitos (OMITIDO si el input tenía números).
+# Tipo de elemento y descriptores que, solos, no identifican una calle: si al quitar los números
+# del texto sólo quedan éstos ("Cra 440" → "cra"), no se buscan parecidas — serían miles.
+_TOKENS_GENERICOS = frozenset({"cra", "bot", "poste", "tza", "calle", "avenida", "pasaje", "esq"})
 
-    Si el input tiene números, no ampliar la búsqueda sin ellos para evitar emparejar
-    "Cra Mitre 440" con "Cra Mitre 399".
-    """
-    nombre_norm = cascada.nombre_norm
-    if cascada.numeros_requeridos:
-        return None, nombre_norm
-    nombre_sin_num = re.sub(r"\d+", "", nombre_norm).strip()
-    nombre_sin_num = re.sub(r"\s+", " ", nombre_sin_num).strip()
-    if nombre_sin_num and nombre_sin_num != nombre_norm:
-        return cascada.probar(nombre_sin_num), nombre_sin_num
-    return None, nombre_norm
+
+def _parecidas_sin_numeros(cascada: _CascadaBusqueda) -> list["Camara"]:
+    """Cámaras que coinciden con el texto SIN sus números (reemplaza al viejo Intento 3, que era
+    inalcanzable: sólo corría cuando el texto no tenía números, y entonces no había nada que quitar).
+
+    Sólo para un texto CON números al que los intentos 1, 2 y 4 no le encontraron nada. Se busca por
+    tokens (AND ILIKE) sobre la forma expandida y la literal, con los mismos filtros de bot y de
+    número de botella que la cascada — pero sin el de números, que es justamente el que no coincide.
+    Si sin los números quedan menos de 2 tokens significativos, o sólo tokens genéricos ("cra",
+    "calle"), no se busca nada. Devuelve las candidatas ordenadas de más a menos parecidas al texto;
+    NUNCA se usan como match (ver `NumeroNoCoincideError`)."""
+    literal = _aplicar_sinonimos(_normalizar(_limpiar_puntuacion(cascada.nombre_raw)))
+    vistas: dict[int, "Camara"] = {}
+    for texto in dict.fromkeys((cascada.nombre_norm, literal)):
+        sin_numeros = re.sub(r"\s+", " ", re.sub(r"\d+", " ", texto)).strip()
+        tokens = _tokens_significativos(sin_numeros)
+        if len(tokens) < 2 or set(tokens) <= _TOKENS_GENERICOS:
+            continue
+        candidatas = _buscar_tokens_lista(tokens, cascada.session)
+        candidatas = _filtrar_bots_secundarios(candidatas, cascada.tiene_bot)
+        for camara in _filtrar_numero_de_botella(candidatas, cascada.nombre_raw):
+            vistas.setdefault(camara.id, camara)
+
+    def _similitud(camara: "Camara") -> float:
+        return SequenceMatcher(None, cascada.nombre_norm, normalizar_candidato(camara.nombre)).ratio()
+
+    return sorted(vistas.values(), key=lambda c: (-_similitud(c), len(c.nombre or ""), c.id))
 
 
 def _intento_sin_expansion(cascada: _CascadaBusqueda) -> tuple["Camara | None", str]:
@@ -565,8 +598,8 @@ def _buscar_camara_intento(
 
     Regla de numeración:
       Si el input contiene números, solo se aceptan cámaras cuyo nombre los
-      contenga exactamente (como palabras completas).  El Intento 3 (búsqueda
-      sin números) se omite para evitar falsos positivos (ej: 440 ≠ 399).
+      contenga exactamente (como palabras completas). Una cámara con otro número
+      nunca es match (ej: 440 ≠ 399): a lo sumo es una sugerencia (Intento 3).
 
     Regla de Botella/Bot:
       Si el input NO menciona explícitamente "bot" o "botella", se excluyen
@@ -575,9 +608,13 @@ def _buscar_camara_intento(
     Estrategia en cascada:
       1. ILIKE '%nombre_norm%' en Camara.nombre y CamaraAlias.alias_nombre
       2. Todos los tokens (≥3 chars) presentes — AND ILIKE
-      3. Reintentar sin números (SOLO si el input no tenía números)
       4. Fallback con nombre raw normalizado SIN expansión (para abreviaturas
          almacenadas literalmente en DB, p.ej. "Cra")
+      3. Se evalúa al final, después del 4 (desde 2026-10-23): si el input
+         TIENE números y ningún intento encontró nada —ni siquiera un grupo
+         ambiguo—, se buscan parecidas sin esos números
+         (`_parecidas_sin_numeros`). Si hay, se lanza ``NumeroNoCoincideError``
+         con hasta 3 sugerencias; nunca se asigna una.
 
     Filtro de ambigüedad:
       - Heurística previa: si hay < 2 tokens significativos (≥3 chars) y ningún
@@ -598,6 +635,8 @@ def _buscar_camara_intento(
     Raises:
         AmbiguousSearchError: Cuando el nombre es ambiguo o insuficientemente
             específico para identificar una cámara de forma unívoca.
+        NumeroNoCoincideError: (subclase) Cuando el número del input no coincide
+            con ninguna cámara pero sin él hay parecidas (sólo sugerencias).
     """
     # ── Pre-proceso ──────────────────────────────────────────────────────
     nombre_limpio = _limpiar_puntuacion(nombre_raw)
@@ -613,16 +652,21 @@ def _buscar_camara_intento(
     resultado = cascada.probar(nombre_norm)
     if resultado:
         return resultado, nombre_norm
-    # ── Intento 3 (sin números) e intento 4 (sin expansión) ──────────────
-    for intento in (_intento_sin_numeros, _intento_sin_expansion):
-        resultado, nombre_usado = intento(cascada)
-        if resultado:
-            return resultado, nombre_usado
+    # ── Intento 4 (sin expansión) ────────────────────────────────────────
+    resultado, nombre_usado = _intento_sin_expansion(cascada)
+    if resultado:
+        return resultado, nombre_usado
 
     # ── Resolución final: múltiples candidatos sin reducir a 1 → ambiguo ─
     if cascada.ambiguos:
         nombres_candidatos = [c.nombre for c in cascada.ambiguos[:3]]
         raise AmbiguousSearchError(nombre_raw, len(cascada.ambiguos), nombres_candidatos)
+
+    # ── Intento 3: el número no coincide con ninguna → sólo sugerencias ──
+    if cascada.numeros_requeridos:
+        parecidas = _parecidas_sin_numeros(cascada)
+        if parecidas:
+            raise NumeroNoCoincideError(nombre_raw, len(parecidas), [c.nombre for c in parecidas[:3]])
     return None, nombre_norm
 
 

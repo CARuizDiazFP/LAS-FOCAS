@@ -18,7 +18,11 @@ from unittest.mock import patch
 import pytest
 
 from modules.slack_baneo_notifier import camara_search as cs
-from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError, _buscar_camara_intento
+from modules.slack_baneo_notifier.camara_search import (
+    AmbiguousSearchError,
+    NumeroNoCoincideError,
+    _buscar_camara_intento,
+)
 
 MOD = "modules.slack_baneo_notifier.camara_search"
 
@@ -181,20 +185,86 @@ def test_intento2_tokens_multiples_sin_exacta_quedan_ambiguos():
     assert exc.value.cantidad == 2
 
 
-# ── Intento 3 ────────────────────────────────────────────────────────────
+# ── Intento 3: número que no coincide → sólo sugerencias (2026-10-23) ──
 
 def test_intento3_nunca_amplia_cuando_no_hay_numeros():
-    # Sin números, quitar los dígitos deja el mismo texto: el intento 3 no agrega consultas.
+    # Sin números no hay nada que quitar: el intento 3 no agrega consultas.
     res, ilikes, tokens = _correr("Cra Mitre Norte")
     assert res == (None, "cra mitre norte")
     assert ilikes == ["cra mitre norte"]
     assert tokens == [("cra", "mitre", "norte")]
 
 
-def test_intento3_omitido_si_el_input_tiene_numeros():
-    res, ilikes, _ = _correr("Cra Mitre 440")
+def test_intento3_numero_que_no_coincide_sin_parecidas_queda_sin_match():
+    res, ilikes, tokens = _correr("Cra Mitre 440")
     assert res == (None, "cra mitre 440")
-    assert "cra mitre" not in ilikes
+    assert "cra mitre" not in ilikes  # nunca un ILIKE sin el número
+    assert tokens == [("cra", "mitre", "440"), ("cra", "mitre")]
+
+
+def test_intento3_numero_que_no_coincide_sugiere_parecidas_sin_asignar():
+    a399 = _cam(1, "Cra Mitre 399")
+    a404 = _cam(2, "Cra Mitre 404")
+    with pytest.raises(NumeroNoCoincideError) as exc:
+        _correr("Cra Mitre 440", tokens={("cra", "mitre"): [a399, a404]})
+    assert isinstance(exc.value, AmbiguousSearchError)  # subclase: los callers existentes no cambian
+    assert exc.value.nombre_raw == "Cra Mitre 440"
+    assert exc.value.cantidad == 2
+    # La más parecida primero ("404" comparte dos "4" con "440").
+    assert exc.value.candidatos == ["Cra Mitre 404", "Cra Mitre 399"]
+
+
+def test_intento3_hasta_tres_sugerencias():
+    cams = [_cam(i, f"Cra Mitre {100 + i}") for i in range(1, 6)]
+    with pytest.raises(NumeroNoCoincideError) as exc:
+        _correr("Cra Mitre 440", tokens={("cra", "mitre"): cams})
+    assert exc.value.cantidad == 5
+    assert len(exc.value.candidatos) == 3
+
+
+def test_intento3_aplica_los_filtros_de_bot_y_de_botella():
+    principal = _cam(1, "Cra Mitre 399")
+    bot2 = _cam(2, "Bot 2 Cra Mitre 399")
+    with pytest.raises(NumeroNoCoincideError) as exc:
+        _correr("Cra Mitre 440", tokens={("cra", "mitre"): [bot2, principal]})
+    assert exc.value.candidatos == ["Cra Mitre 399"]  # sin "bot" en el texto, sin botellas
+    # "Bot 3 Cra Mitre 440" pide la botella 3: una Bot 2 no se sugiere.
+    res, _, _ = _correr("Bot 3 Cra Mitre 440", tokens={("bot", "cra", "mitre"): [bot2]})
+    assert res == (None, "bot 3 cra mitre 440")
+
+
+def test_intento3_no_busca_si_sin_numeros_queda_insuficiente_o_generico():
+    # "Mitre 440" → "mitre" (1 token); "Cra 25 440" → "cra"; "Cra calle 25" → "cra calle" (sólo
+    # genéricos): nunca miles de parecidas. Las consultas de tokens son sólo las del intento 2.
+    casos = {"Mitre 440": [("mitre", "440")], "Cra 25 440": [("cra", "440")], "Cra calle 25": [("cra", "calle")]}
+    for texto, esperadas in casos.items():
+        res, _, tokens = _correr(texto)
+        assert res[0] is None
+        assert tokens == esperadas, texto
+
+
+def test_intento3_prueba_tambien_la_forma_literal():
+    # "Av" expandido a "avenida" no está en el inventario; la forma literal sí.
+    cam = _cam(1, "Cra Av Santa Fe 4200")
+    with pytest.raises(NumeroNoCoincideError) as exc:
+        _correr("Cra Av Santa Fe 4276", tokens={("cra", "santa"): [cam]})
+    assert exc.value.candidatos == ["Cra Av Santa Fe 4200"]
+
+
+def test_intento3_no_reemplaza_a_un_grupo_ambiguo():
+    # Si un intento encontró varias con el número correcto, es ambiguo común (no sugerencias).
+    a = _cam(1, "Cra Mitre 440 A")
+    b = _cam(2, "Cra Mitre 440 B")
+    with pytest.raises(AmbiguousSearchError) as exc:
+        _correr("Cra Mitre 440", ilike={"cra mitre 440": [a, b]}, tokens={("cra", "mitre"): [_cam(3, "Cra Mitre 1")]})
+    assert type(exc.value) is AmbiguousSearchError
+
+
+def test_intento3_no_corre_si_hubo_match():
+    cam = _cam(1, "Cra Mitre 440")
+    res, _, tokens = _correr("Cra Mitre 440", ilike={"cra mitre 440": [cam]})
+    assert res == (cam, "cra mitre 440")
+    assert tokens == []
 
 
 # ── Intento 4 (sin expansión) ────────────────────────────────────────────
@@ -226,7 +296,8 @@ def test_intento4_omite_tokens_si_hay_menos_de_dos():
 def test_intento4_omitido_si_raw_normalizado_coincide():
     res, ilikes, tokens = _correr("Cra Mitre 440")
     assert ilikes == ["cra mitre 440"]
-    assert tokens == [("cra", "mitre", "440")]
+    # La segunda consulta de tokens es la del intento 3 (parecidas sin el número), no la del 4.
+    assert tokens == [("cra", "mitre", "440"), ("cra", "mitre")]
 
 
 # ── Seguimiento del grupo ambiguo y resolución final ─────────────────────

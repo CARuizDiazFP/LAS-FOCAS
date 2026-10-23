@@ -96,6 +96,7 @@ from modules.slack_baneo_notifier.tracking_servicio import (
 )
 from modules.slack_baneo_notifier.camara_search import (
     AmbiguousSearchError,
+    NumeroNoCoincideError,
     detectar_multi_bot,
     extraer_nombre_camara,
     extraer_slack_user_id_autorizacion,
@@ -900,6 +901,112 @@ class IngresoListener:
         )
         return True
 
+    def _responder_numero_no_coincide(
+        self,
+        exc: NumeroNoCoincideError,
+        session: Any,
+        client: Any,
+        channel: str,
+        thread_ts: str | None,
+        texto: str,
+    ) -> None:
+        """Respuesta de `_handle_message` cuando el número escrito no coincide con ninguna cámara."""
+        # Desde 2026-10-23: el número escrito no coincide con ninguna cámara, pero sin él hay
+        # parecidas. Se registra el `IngresoSinMatch` igual que un ambiguo y las parecidas sólo
+        # se sugieren — nunca se asigna una (decisión del usuario). El técnico puede reescribir
+        # la cámara en el hilo, o el operador responder con el Fontaine ID.
+        caso = self._registrar_caso_sin_match(session, exc.nombre_raw, channel, thread_ts, texto)
+        vinetas = "\n".join(f"• {c}" for c in exc.candidatos)
+        aviso = (
+            f":warning: No encontré *{exc.nombre_raw}* con ese número. ¿Quisiste decir:\n"
+            f"{vinetas}\n"
+            "Escribí la cámara correcta en este hilo. "
+            "*Podés continuar con el ingreso con normalidad.*"
+        )
+        logger.info(
+            "Número sin coincidencia para '%s': sugerencias=%s — registrado IngresoSinMatch id=%s",
+            exc.nombre_raw,
+            exc.candidatos,
+            caso.id,
+        )
+        client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=aviso, mrkdwn=True)
+
+    def _responder_busqueda_ambigua(
+        self,
+        exc: AmbiguousSearchError,
+        session: Any,
+        client: Any,
+        channel: str,
+        thread_ts: str | None,
+        texto: str,
+    ) -> None:
+        """Respuesta de `_handle_message` ante un nombre ambiguo o demasiado genérico."""
+        # Los candidatos ya vienen fusionados (Camara + CromoBotella) y acotados a 3 desde la
+        # Tarea 1 (`AmbiguousSearchError.__init__`) — se listan como viñetas de texto plano.
+        candidatos_texto = ""
+        if exc.candidatos:
+            vinetas = "\n".join(f"• {c}" for c in exc.candidatos)
+            candidatos_texto = f"\nCandidatos:\n{vinetas}"
+
+        # Desde 2026-09-07: a diferencia del caso "sin match" (que ya crea una fila arriba en
+        # `_construir_respuesta_camara`), el caso ambiguo/genérico históricamente no persistía
+        # nada — quedaba sin ningún rastro auditable ni forma de revalidarlo más adelante (ver
+        # `docs/decisiones.md` entrada 2026-09-07). Ahora también crea un `IngresoSinMatch`,
+        # revalidable con la frase "Revalidar ingreso" en este mismo hilo.
+        caso = self._registrar_caso_sin_match(session, exc.nombre_raw, channel, thread_ts, texto)
+
+        if exc.cantidad == 0:
+            aviso = (
+                f":warning: El nombre *'{exc.nombre_raw}'* es demasiado genérico "
+                "para identificar una cámara. Por favor, especificá la dirección "
+                "completa o el número exacto. Recuerdo para accesos a Nodos anteponer la Palabra 'Nodo' (ej: 'Nodo Pilar')."
+                f"{candidatos_texto}\n"
+                "*Podés continuar con el ingreso con normalidad.* Si más adelante se corrige "
+                "el nombre en el inventario, respondé *\"Revalidar ingreso\"* en este hilo "
+                "para reintentarlo."
+            )
+        else:
+            aviso = (
+                f":warning: Tu solicitud *'{exc.nombre_raw}'* es ambigua y coincide "
+                f"con *{exc.cantidad}* cámaras en el sistema. Por favor, especificá "
+                "la dirección o el número exacto."
+                f"{candidatos_texto}\n"
+                "*Podés continuar con el ingreso con normalidad.* Si más adelante se corrige "
+                "el nombre en el inventario, respondé *\"Revalidar ingreso\"* en este hilo "
+                "para reintentarlo."
+            )
+        logger.info(
+            "Búsqueda ambigua para '%s': cantidad=%d candidatos=%s — registrado IngresoSinMatch id=%s",
+            exc.nombre_raw,
+            exc.cantidad,
+            exc.candidatos,
+            caso.id,
+        )
+        client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=aviso,
+            mrkdwn=True,
+        )
+
+    def _registrar_caso_sin_match(
+        self, session: Any, nombre_raw: str, channel: str, thread_ts: str | None, texto: str
+    ) -> Any:
+        """Persiste el `IngresoSinMatch` de un caso ambiguo (o de número que no coincide), para que
+        quede auditable y revalidable en el hilo."""
+        from db.models.infra import IngresoSinMatch
+
+        caso = IngresoSinMatch(
+            texto_original=nombre_raw,
+            origen="slack",
+            contexto=channel or None,
+            thread_ts=thread_ts,
+            texto_mensaje=texto,
+        )
+        session.add(caso)
+        session.commit()
+        return caso
+
     def _handle_message(self, event: dict[str, Any], client: Any) -> None:
         """Procesa un mensaje entrante y responde en el mismo hilo."""
         # Ignorar ediciones para no procesar dos veces el mismo ingreso
@@ -1066,64 +1173,11 @@ class IngresoListener:
                 mrkdwn=True,
             )
 
+        except NumeroNoCoincideError as exc:
+            # Antes que `AmbiguousSearchError`: es subclase y tiene respuesta propia.
+            self._responder_numero_no_coincide(exc, session, client, channel, thread_ts, texto)
         except AmbiguousSearchError as exc:
-            # Los candidatos ya vienen fusionados (Camara + CromoBotella) y acotados a 3 desde la
-            # Tarea 1 (`AmbiguousSearchError.__init__`) — se listan como viñetas de texto plano.
-            candidatos_texto = ""
-            if exc.candidatos:
-                vinetas = "\n".join(f"• {c}" for c in exc.candidatos)
-                candidatos_texto = f"\nCandidatos:\n{vinetas}"
-
-            # Desde 2026-09-07: a diferencia del caso "sin match" (que ya crea una fila arriba en
-            # `_construir_respuesta_camara`), el caso ambiguo/genérico históricamente no persistía
-            # nada — quedaba sin ningún rastro auditable ni forma de revalidarlo más adelante (ver
-            # `docs/decisiones.md` entrada 2026-09-07). Ahora también crea un `IngresoSinMatch`,
-            # revalidable con la frase "Revalidar ingreso" en este mismo hilo.
-            from db.models.infra import IngresoSinMatch
-
-            caso = IngresoSinMatch(
-                texto_original=exc.nombre_raw,
-                origen="slack",
-                contexto=channel or None,
-                thread_ts=thread_ts,
-                texto_mensaje=texto,
-            )
-            session.add(caso)
-            session.commit()
-
-            if exc.cantidad == 0:
-                aviso = (
-                    f":warning: El nombre *'{exc.nombre_raw}'* es demasiado genérico "
-                    "para identificar una cámara. Por favor, especificá la dirección "
-                    "completa o el número exacto. Recuerdo para accesos a Nodos anteponer la Palabra 'Nodo' (ej: 'Nodo Pilar')."
-                    f"{candidatos_texto}\n"
-                    "*Podés continuar con el ingreso con normalidad.* Si más adelante se corrige "
-                    "el nombre en el inventario, respondé *\"Revalidar ingreso\"* en este hilo "
-                    "para reintentarlo."
-                )
-            else:
-                aviso = (
-                    f":warning: Tu solicitud *'{exc.nombre_raw}'* es ambigua y coincide "
-                    f"con *{exc.cantidad}* cámaras en el sistema. Por favor, especificá "
-                    "la dirección o el número exacto."
-                    f"{candidatos_texto}\n"
-                    "*Podés continuar con el ingreso con normalidad.* Si más adelante se corrige "
-                    "el nombre en el inventario, respondé *\"Revalidar ingreso\"* en este hilo "
-                    "para reintentarlo."
-                )
-            logger.info(
-                "Búsqueda ambigua para '%s': cantidad=%d candidatos=%s — registrado IngresoSinMatch id=%s",
-                exc.nombre_raw,
-                exc.cantidad,
-                exc.candidatos,
-                caso.id,
-            )
-            client.chat_postMessage(
-                channel=channel,
-                thread_ts=thread_ts,
-                text=aviso,
-                mrkdwn=True,
-            )
+            self._responder_busqueda_ambigua(exc, session, client, channel, thread_ts, texto)
         except Exception as exc:
             logger.error("Error procesando mensaje de ingreso: %s", exc, exc_info=True)
         finally:

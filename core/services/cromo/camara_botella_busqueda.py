@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from modules.slack_baneo_notifier.camara_search import (
     AmbiguousSearchError,
+    NumeroNoCoincideError,
     _aplicar_sinonimos,
     _expandir_abreviaturas,
     _filtrar_bots_secundarios,
@@ -321,6 +322,13 @@ def buscar_camara_o_botella_cromo(
     variante = quitar_botella_uno(nombre)
     try:
         resultado = _buscar_extendida(nombre, session, desempatar=desempatar)
+    except NumeroNoCoincideError:
+        # Para la cascada es un "sin match" (sólo trae sugerencias): pasa por los mismos reintentos
+        # que un sin match y, si ninguno resuelve, se relanza con sus sugerencias.
+        alternativo = _reintentos_sin_match(nombre, variante, session, desempatar, tolerante)
+        if alternativo is not None:
+            return alternativo
+        raise
     except AmbiguousSearchError:
         if variante == nombre:
             raise
@@ -328,15 +336,25 @@ def buscar_camara_o_botella_cromo(
         if alternativo is not None:
             return alternativo
         raise
-    if resultado.camara is None and variante != nombre:
-        alternativo = _resultado_variante(variante, session, desempatar)
-        if alternativo is not None:
-            return alternativo
-    if resultado.camara is None and tolerante:
-        alternativo = _resultado_tolerante(nombre, session, desempatar)
+    if resultado.camara is None:
+        alternativo = _reintentos_sin_match(nombre, variante, session, desempatar, tolerante)
         if alternativo is not None:
             return alternativo
     return resultado
+
+
+def _reintentos_sin_match(
+    nombre: str, variante: str, session: Session, desempatar: bool, tolerante: bool
+) -> ResultadoBusquedaExtendida | None:
+    """Reintentos de un texto sin match, en orden: sin "Bot 1" y, si `tolerante`, sin localidad/
+    tipo. Sólo cuentan con un match único."""
+    if variante != nombre:
+        alternativo = _resultado_variante(variante, session, desempatar)
+        if alternativo is not None:
+            return alternativo
+    if tolerante:
+        return _resultado_tolerante(nombre, session, desempatar)
+    return None
 
 
 # Tipo de elemento al inicio del texto que el técnico a veces escribe distinto del inventario: "Cra
@@ -434,6 +452,9 @@ def _buscar_extendida(
          completa el resto), deduplicados por nombre normalizado. Se relanza la misma
          `AmbiguousSearchError` con la lista fusionada — el cap a 3 lo aplica el propio
          `__init__` de la excepción.
+      4. Si `buscar_camara()` lanza `NumeroNoCoincideError` (ninguna `Camara` con ese número, sólo
+         parecidas): se trata como el paso 2 — si `CromoBotella` resuelve, es match; si es ambigua,
+         `AmbiguousSearchError` con las botellas; si no, se relanza con las sugerencias.
 
     Args:
         nombre_raw: Nombre extraído del mensaje/formulario, sin normalizar.
@@ -447,9 +468,18 @@ def _buscar_extendida(
     Raises:
         AmbiguousSearchError: nombre insuficientemente específico, o múltiples candidatas sin
             reducirse a una sola entre `Camara` y `CromoBotella`.
+        NumeroNoCoincideError: (subclase) ninguna con ese número en ninguna fuente, pero hay
+            `Camara` parecidas sin él (sólo sugerencias, ver paso 4).
     """
     try:
         camara, nombre_norm = buscar_camara(nombre_raw, session, desempatar=desempatar)
+    except NumeroNoCoincideError:
+        # `Camara` no tiene ninguna con ese número (sólo parecidas): igual que un sin match, se
+        # prueba `CromoBotella`. Si tampoco resuelve, se relanza con las sugerencias de `Camara`.
+        resultado = _resultado_botella(nombre_raw, _normalizar_pipeline(nombre_raw), session, desempatar)
+        if resultado.camara is not None:
+            return resultado
+        raise
     except AmbiguousSearchError as exc:
         candidatos_botella = _cascada_botella(nombre_raw, session, desempatar=desempatar)
         nombres_botella = [b.nombre for b in candidatos_botella]
@@ -466,7 +496,13 @@ def _buscar_extendida(
         return ResultadoBusquedaExtendida(
             camara=camara, nombre_norm=nombre_norm, fuente="camara", botella=None
         )
+    return _resultado_botella(nombre_raw, nombre_norm, session, desempatar)
 
+
+def _resultado_botella(
+    nombre_raw: str, nombre_norm: str, session: Session, desempatar: bool
+) -> ResultadoBusquedaExtendida:
+    """Paso 2 de `_buscar_extendida`: `Camara` no matcheó nada, se prueba `CromoBotella`."""
     candidatos_botella = _cascada_botella(nombre_raw, session, desempatar=desempatar)
 
     if len(candidatos_botella) == 1:

@@ -477,3 +477,56 @@ def test_tolerante_false_no_reintenta():
     with patch(f"{MODULE_CB}._buscar_extendida", return_value=_res()) as cascada:
         cb.buscar_camara_o_botella_cromo("Poste colectora km 31.500 EL TALAR", MagicMock(), tolerante=False)
     cascada.assert_called_once()
+
+
+# ── Número que no coincide → sugerencias (2026-10-23) ──────────────────────────────────────────
+
+
+def _numero_no_coincide() -> cs.NumeroNoCoincideError:
+    return cs.NumeroNoCoincideError("Cra Mitre 404", 2, ["Cra Mitre 440", "Cra Mitre 399"])
+
+
+def test_numero_no_coincide_en_camara_pero_cromo_botella_resuelve():
+    botella = _bot(100, "Bot 2 Cra Mitre 404", 9)
+    with patch(f"{MODULE_CB}.buscar_camara", side_effect=_numero_no_coincide()), patch(
+        f"{MODULE_CB}._cascada_botella", return_value=[botella]
+    ):
+        r = cb._buscar_extendida("Cra Mitre 404", MagicMock())
+    assert r.botella is botella and r.fuente == "cromo_botella"
+
+
+def test_numero_no_coincide_sin_cromo_botella_relanza_las_sugerencias():
+    with patch(f"{MODULE_CB}.buscar_camara", side_effect=_numero_no_coincide()), patch(
+        f"{MODULE_CB}._cascada_botella", return_value=[]
+    ), pytest.raises(cs.NumeroNoCoincideError) as exc:
+        cb._buscar_extendida("Cra Mitre 404", MagicMock())
+    assert exc.value.candidatos == ["Cra Mitre 440", "Cra Mitre 399"]
+
+
+def test_numero_no_coincide_con_cromo_botella_ambigua_es_ambiguo_comun():
+    botellas = [_bot(1, "Bot 2 Cra Mitre 404", 9), _bot(2, "Bot 3 Cra Mitre 404", 9)]
+    with patch(f"{MODULE_CB}.buscar_camara", side_effect=_numero_no_coincide()), patch(
+        f"{MODULE_CB}._cascada_botella", return_value=botellas
+    ), pytest.raises(cs.AmbiguousSearchError) as exc:
+        cb._buscar_extendida("Cra Mitre 404", MagicMock())
+    assert type(exc.value) is cs.AmbiguousSearchError
+
+
+def test_numero_no_coincide_pasa_por_los_reintentos_tolerantes():
+    # "Cra" escrito para un "Poste": la cascada no lo encuentra con el número pero sí parecidas; el
+    # reintento sin tipo lo resuelve igual que en un sin match.
+    poste = _cam(28956, "Poste Colectora Oeste Panamericana Km. 31.500")
+    with patch("core.services.localidades_catalogo.localidades", return_value=_CATALOGO), patch(
+        f"{MODULE_CB}._buscar_extendida",
+        side_effect=[_numero_no_coincide(), _res(), _res(poste, "camara")],
+    ):
+        r = cb.buscar_camara_o_botella_cromo("Cra colectora oeste panamericana 31.500 EL TALAR", MagicMock())
+    assert r.camara is poste
+
+
+def test_numero_no_coincide_sin_reintento_que_resuelva_se_relanza():
+    with patch(f"{MODULE_CB}._buscar_extendida", side_effect=_numero_no_coincide()) as cascada, pytest.raises(
+        cs.NumeroNoCoincideError
+    ):
+        cb.buscar_camara_o_botella_cromo("Cra Mitre 404", MagicMock(), tolerante=False)
+    cascada.assert_called_once()
