@@ -266,6 +266,14 @@ los `COPY` del Dockerfile del servicio; **después del rebuild**, esperar `healt
 `Started`) y mirar `docker logs --tail 30` antes de dar el rebuild por bueno. Hallazgo real
 (2026-10-14, FO Monitor, ver `docs/cierres/2026-10-17.md`): el web de dev estuvo caído unos minutos.
 
+**La variante inversa también rompe el contenedor:** un módulo suelto de `web/` (`fo_monitor_routes.py`,
+`chat_ws.py`, `admin_ws.py`) que importa `web.app...`. En la imagen, `web/app` se copia como `app`,
+así que `web.app` no existe y el web no arranca (`ModuleNotFoundError: No module named 'web.app'`),
+aunque la suite completa pase. Usar `try: from web.app.x import ... except ModuleNotFoundError:
+from app.x import ...`. Lo vigila `tests/test_web_imports_layout_contenedor.py`. Real (2026-10-23,
+ver `docs/cierres/2026-10-23.md`): el web de dev estuvo caído unos minutos después de un rebuild con
+la suite en verde (4482 passed).
+
 ## Antes de una verificación E2E real de cierre: reconstruir, no asumir que el contenedor está al día
 
 Un `curl`/prueba real de cierre contra un contenedor ya corriendo puede fallar (o peor, "funcionar"

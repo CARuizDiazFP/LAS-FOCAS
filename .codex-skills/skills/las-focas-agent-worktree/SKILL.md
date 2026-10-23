@@ -205,6 +205,20 @@ desarrollando**: lo único serializado es la escritura sobre `dev`.
 Si `dev` avanzó, el push es rechazado por Git y el comando lo informa: volver a `sync` y
 reintentar. En el cierre de sesión, este paso lo ejecuta `cierre-sesion`.
 
+**`integrate` deja al agente en `finished`.** Para un plan de varias tareas que se integran de a una,
+hace falta **un agente y un worktree por bloque** (`start` → `ready` → `integrate` → `cleanup`). No
+se puede seguir en el mismo worktree después de integrar. Los leases **no** se liberan solos al pasar
+a `finished` (`refactor:web-app-main` quedó a nombre de un agente terminado): al cambiar de bloque,
+hay que hacer `release` con el agente viejo y `acquire` con el nuevo. Los archivos SDD (briefs y
+ledger) conviene guardarlos en el scratchpad y no en `.superpowers/` del worktree, que bloquea
+`cleanup`. Real (2026-10-23, plan de 16 tareas, ver `docs/cierres/2026-10-23.md`).
+
+**Varios bloques en paralelo que editan la misma estructura** (por ejemplo, un set de rutas
+pendientes en un test compartido, del que cada rama saca sus entradas): el `sync` del segundo choca
+siempre. Si cada rama sólo quitó entradas, la resolución correcta es la **intersección** de los dos
+lados. Validarla con el test que consume el set, nunca a ojo. Real (2026-10-23, cinco merges
+de `PENDIENTES_DEPENDS`).
+
 **Ejecutar `ready` e `integrate` en comandos separados, nunca encadenados.** Real (2026-09-21): un
 `ready ... ; integrate ...` en una sola invocación de shell fue denegado por el clasificador de
 permisos de Auto Mode con `[Modify Shared Resources]`, sin llegar a correr ninguno de los dos.
