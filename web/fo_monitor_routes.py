@@ -29,7 +29,12 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from core.services.fo_monitor import consultas_web
-from web.app.dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+# En el repo y en los tests el paquete es `web.app`; en la imagen de web, `web/app` se copia como `app`
+# (web/Dockerfile: COPY web/app /app/app). Sin el fallback, el contenedor no arranca (real 2026-10-23).
+try:
+    from web.app.dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+except ModuleNotFoundError:  # pragma: no cover - layout del contenedor
+    from app.dependencias import UsuarioSesion, usuario_admin, usuario_sesion  # type: ignore[no-redef]
 
 logger = logging.getLogger("web.fo_monitor")
 
