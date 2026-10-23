@@ -121,3 +121,36 @@ class TestEmailService(unittest.TestCase):
         self.assertIsNone(msg["To"])
         body_payload = msg.get_payload()[0].get_payload(decode=True).decode("utf-8")
         self.assertIn("Se informa baneo de cámaras", body_payload)
+
+import logging
+import re
+import smtplib
+
+import pytest
+
+_SECRETO_SMTP = "535 relay interno smtp-int.metrotel.local user=svc_mail"
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        smtplib.SMTPException(_SECRETO_SMTP),
+        smtplib.SMTPRecipientsRefused({"a@b.c": (550, _SECRETO_SMTP.encode())}),
+        RuntimeError(_SECRETO_SMTP),
+    ],
+)
+def test_send_email_error_sin_texto_interno_y_con_ref_en_log(monkeypatch, caplog, exc):
+    servicio = EmailService()
+    monkeypatch.setattr(EmailService, "is_configured", lambda self: True)
+
+    def _smtp_roto(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(smtplib, "SMTP", _smtp_roto)
+    with caplog.at_level(logging.ERROR):
+        res = servicio.send_email(["a@b.c"], "s", "b")
+
+    assert res.success is False
+    assert "smtp-int" not in (res.error or "") and "svc_mail" not in (res.error or "")
+    ref = re.search(r"ref ([0-9a-f]{8})", res.error).group(1)
+    assert f"ref={ref}" in caplog.text
