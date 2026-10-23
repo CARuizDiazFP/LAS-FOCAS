@@ -2758,9 +2758,14 @@ async def huerfanos_auditoria_global_iniciar_web(
             )
             response.raise_for_status()
     except Exception as exc:
-        logger.error("action=cromo_huerfanos_auditoria_global_error corrida_id=%s error=%s", corrida_id, exc)
+        # El texto de la excepción (puede traer la URL interna del worker) va sólo al log; el evento
+        # ERROR de la corrida, que ve la UI de admin, lleva un motivo fijo con la misma ref.
+        ref = nueva_ref()
+        logger.error(
+            "action=cromo_huerfanos_auditoria_global_error corrida_id=%s error=%s ref=%s", corrida_id, exc, ref
+        )
         await _marcar_corrida_fallida(
-            corrida_id, f"No se pudo delegar la auditoría al worker de Cromo: {exc}"
+            corrida_id, f"No se pudo delegar la auditoría al worker de Cromo (ref {ref})"
         )
         return JSONResponse(
             {"error": "El worker de Cromo no está disponible. Intentá nuevamente en unos segundos."},
@@ -3021,9 +3026,14 @@ async def inconsistencias_cromo_deteccion_iniciar_web(
             )
             response.raise_for_status()
     except Exception as exc:
-        logger.error("action=cromo_inconsistencias_deteccion_error corrida_id=%s error=%s", corrida_id, exc)
+        # El texto de la excepción (puede traer la URL interna del worker) va sólo al log; el evento
+        # ERROR de la corrida, que ve la UI de admin, lleva un motivo fijo con la misma ref.
+        ref = nueva_ref()
+        logger.error(
+            "action=cromo_inconsistencias_deteccion_error corrida_id=%s error=%s ref=%s", corrida_id, exc, ref
+        )
         await _marcar_corrida_fallida(
-            corrida_id, f"No se pudo delegar la detección al worker de Cromo: {exc}"
+            corrida_id, f"No se pudo delegar la detección al worker de Cromo (ref {ref})"
         )
         return JSONResponse(
             {"error": "El worker de Cromo no está disponible. Intentá nuevamente en unos segundos."},

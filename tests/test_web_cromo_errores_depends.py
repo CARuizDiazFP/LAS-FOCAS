@@ -12,7 +12,10 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.test_web_rutas_contrato import muestra_de_ruta
+from web.app.dependencias import usuario_admin
 from web.app.main import app
+from web.app.routers import cromo
 
 REF = re.compile(r"^Error interno \(ref ([0-9a-f]{8})\)$")
 SECRETO = "secreto-interno-xyz"
@@ -42,6 +45,38 @@ def _session_local_roto(monkeypatch) -> None:
 def _request(metodo: str, path: str, cuerpo: Any):
     kwargs = {"json": cuerpo} if cuerpo is not None else {}
     return _cliente().request(metodo, path, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _modo_test(monkeypatch):
+    # Los POST/PATCH validan CSRF salvo con TESTING=true; no depender del entorno del que corre pytest.
+    monkeypatch.setenv("TESTING", "true")
+
+
+def _llama_a(dependant, objetivo) -> bool:
+    return any(d.call is objetivo or _llama_a(d, objetivo) for d in dependant.dependencies)
+
+
+_RUTAS_ADMIN = sorted(
+    (metodo, ruta.path)
+    for ruta in cromo.router.routes
+    if _llama_a(ruta.dependant, usuario_admin)
+    for metodo in ruta.methods - {"HEAD", "OPTIONS"}
+)
+
+
+def test_hay_rutas_admin_detectadas():
+    assert len(_RUTAS_ADMIN) >= 33
+
+
+@pytest.mark.parametrize(("metodo", "plantilla"), _RUTAS_ADMIN)
+def test_toda_ruta_admin_da_403_a_un_usuario_comun(con_sesion, metodo, plantilla):
+    # Introspección: cualquier ruta que dependa de usuario_admin, aunque no tenga test propio.
+    con_sesion("user")
+    kwargs = {"json": {}} if metodo in {"POST", "PUT", "PATCH", "DELETE"} else {}
+    res = _cliente().request(metodo, muestra_de_ruta(plantilla), **kwargs)
+    assert res.status_code == 403, f"{metodo} {plantilla} respondió {res.status_code}"
+    assert res.json() == {"detail": "Permisos insuficientes"}
 
 
 # --- sesión vía Depends ------------------------------------------------------------------------------
@@ -153,7 +188,6 @@ def test_estado_masivo_500_loguea_el_usuario(con_sesion, monkeypatch, caplog):
 def test_refrescar_prov_500_loguea_cable_n_id(con_sesion, monkeypatch, caplog):
     from core.services.cromo import verificador
     from core.services.prov import frescura
-    from web.app.routers import cromo
 
     servicio = MagicMock(servicio_id=7)
 
@@ -353,7 +387,6 @@ def test_refrescar_prov_no_configurado_502_sin_texto_y_un_solo_log(con_sesion, m
     from core.services.cromo import verificador
     from core.services.prov import frescura
     from core.services.prov.config import ProvConfigError
-    from web.app.routers import cromo
 
     async def _unicos(sesion, cable_n_id):
         return MagicMock(servicios=[MagicMock(servicio_id=7)])
@@ -387,3 +420,76 @@ def test_refrescar_prov_no_configurado_502_sin_texto_y_un_solo_log(con_sesion, m
         "action=cromo_servicios_unicos_refrescar_prov_error evento=prov_no_configurado cable_n_id=55 "
         f"error=Configuración de PROV incompleta. Definir: {SECRETO} ref={ref}"
     )
+
+
+# --- corridas delegadas al worker: el evento ERROR no lleva el texto de la excepción -----------------
+
+
+@pytest.mark.parametrize(
+    ("path", "modulo", "accion", "motivo"),
+    [
+        (
+            "/api/admin/infra/inconsistencias-cromo/deteccion",
+            "core.services.cromo.inconsistencias_cromo",
+            "cromo_inconsistencias_deteccion",
+            "No se pudo delegar la detección al worker de Cromo",
+        ),
+        (
+            "/api/admin/infra/huerfanos/auditoria-global",
+            "core.services.cromo.auditoria_huerfanos_global",
+            "cromo_huerfanos_auditoria_global",
+            "No se pudo delegar la auditoría al worker de Cromo",
+        ),
+    ],
+)
+def test_worker_caido_marca_la_corrida_con_motivo_fijo_y_ref(
+    con_sesion, monkeypatch, caplog, path, modulo, accion, motivo
+):
+    import httpx
+
+    class _SesionAsync:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    async def _iniciar(sesion, **kwargs):
+        return MagicMock(id=41), None
+
+    class _ClienteHttpRoto:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json):
+            raise httpx.ConnectError(f"All connection attempts failed: http://cromo_worker:8096/run {SECRETO}")
+
+    marcadas: list[tuple[int, str]] = []
+
+    async def _marcar(corrida_id, texto):
+        marcadas.append((corrida_id, texto))
+
+    monkeypatch.setattr("db.session.AsyncSessionLocal", _SesionAsync)
+    monkeypatch.setattr(f"{modulo}.iniciar_si_no_hay_otra", _iniciar)
+    monkeypatch.setattr(cromo.httpx, "AsyncClient", _ClienteHttpRoto)
+    monkeypatch.setattr(cromo, "_marcar_corrida_fallida", _marcar)
+    con_sesion("admin")
+    caplog.set_level(logging.INFO, logger="web")
+
+    res = _cliente().post(path, json={})
+
+    assert res.status_code == 503
+    assert SECRETO not in res.text
+    ((corrida_id, texto),) = marcadas
+    assert corrida_id == 41
+    assert SECRETO not in texto and "cromo_worker" not in texto
+    ref = re.fullmatch(re.escape(motivo) + r" \(ref ([0-9a-f]{8})\)", texto).group(1)
+    registro = _registro_unico(caplog, f"action={accion}_error")
+    assert registro.startswith(f"action={accion}_error corrida_id=41 error=All connection attempts failed")
+    assert SECRETO in registro and registro.endswith(f" ref={ref}")
