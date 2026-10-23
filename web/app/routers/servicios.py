@@ -10,7 +10,7 @@ import re
 from typing import Any, Literal, Optional
 
 import httpx
-from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -18,16 +18,16 @@ from ..comun import (
     INTERNAL_API_BASE_URL,
     _encolar_arbitro,
     _internal_api_auth_headers,
-    _require_admin,
-    _require_auth,
     _serializar_pelo_semilla,
     _serialize_camara_ingreso,
     _servicio_existe,
     _validar_csrf,
     logger,
 )
+from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+from ..errores import Conflicto, ErrorDeDominio, NoEncontrado, error_interno
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(usuario_sesion)])
 
 
 def _find_servicio_por_identificador_web(session: Any, servicio_id: str) -> Optional[Any]:
@@ -54,12 +54,12 @@ def _find_servicio_por_identificador_web(session: Any, servicio_id: str) -> Opti
 
 @router.get("/api/infra/servicios/{servicio_id}/rutas")
 async def get_servicio_rutas_web(
-    request: Request,
     servicio_id: str,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Obtiene las rutas de un servicio para el wizard de baneo."""
 
-    username, _ = _require_auth(request)
+    username, _ = usuario
 
     try:
         from db.session import SessionLocal
@@ -102,18 +102,16 @@ async def get_servicio_rutas_web(
                 "total_rutas": len(rutas_info),
             })
             
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=get_servicio_rutas_error user=%s servicio_id=%s error=%s", username, servicio_id, exc)
-        return JSONResponse(
-            {"error": f"Error obteniendo rutas: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("get_servicio_rutas", exc, user=username, servicio_id=servicio_id)
 
 
 @router.get("/api/infra/servicios/{servicio_id}/odfs")
 async def get_servicio_odfs(
-    request: Request,
     servicio_id: str,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Obtiene las ODFs/empalmes de tracking de todas las rutas de un servicio, para
     la vista de Detalle de Servicio.
@@ -133,7 +131,7 @@ async def get_servicio_odfs(
     es seguro usarla para enriquecer cada empalme con nombre/estado de cámara.
     """
 
-    username, _ = _require_auth(request)
+    username, _ = usuario
 
     try:
         from core.parsers.tracking_parser import parse_tracking
@@ -277,18 +275,16 @@ async def get_servicio_odfs(
                 }
             )
 
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=get_servicio_odfs_error user=%s servicio_id=%s error=%s", username, servicio_id, exc)
-        return JSONResponse(
-            {"error": f"Error obteniendo ODFs: {exc!s}"},
-            status_code=500,
-        )
+        return error_interno("get_servicio_odfs", exc, user=username, servicio_id=servicio_id)
 
 
 @router.get("/api/infra/servicios/{servicio_id}/ingresos")
 async def get_servicio_ingresos_web(
-    request: Request,
     servicio_id: str,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Obtiene los registros de ingreso de técnico (Slack) a las cámaras que atraviesa un
     servicio, para la vista de Detalle de Servicio.
@@ -298,7 +294,7 @@ async def get_servicio_ingresos_web(
     no reimplementar esa resolución acá.
     """
 
-    username, _ = _require_auth(request)
+    username, _ = usuario
 
     try:
         from core.services.protection_service import ProtectionService
@@ -353,12 +349,10 @@ async def get_servicio_ingresos_web(
                 }
             )
 
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=get_servicio_ingresos_error user=%s servicio_id=%s error=%s", username, servicio_id, exc)
-        return JSONResponse(
-            {"error": f"Error obteniendo ingresos: {exc!s}"},
-            status_code=500,
-        )
+        return error_interno("get_servicio_ingresos", exc, user=username, servicio_id=servicio_id)
 
 
 _PATRON_ODF_EN_LINEA = re.compile(r"(O-[\w-]+):\s*(\d+)")
@@ -497,12 +491,9 @@ def _armar_tracking_de_ruta(ruta: Any) -> dict[str, Any]:
 
 @router.get("/api/infra/rutas/{ruta_id}/tracking")
 async def get_ruta_tracking(
-    request: Request,
     ruta_id: int,
 ) -> JSONResponse:
     """Obtiene el tracking completo de una ruta (secuencia cámara-cable-cámara)."""
-
-    username, _ = _require_auth(request)
 
     try:
         from db.models.infra import RutaServicio
@@ -524,22 +515,20 @@ async def get_ruta_tracking(
                 **datos,
             })
 
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=get_ruta_tracking_error ruta_id=%d error=%s", ruta_id, exc)
-        return JSONResponse(
-            {"error": f"Error obteniendo tracking: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("get_ruta_tracking", exc, ruta_id=ruta_id)
 
 
 @router.get("/api/infra/rutas/{ruta_id}/download")
 async def download_ruta_tracking(
-    request: Request,
     ruta_id: int,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> Response:
     """Descarga el tracking de una ruta como archivo TXT."""
     
-    username, _ = _require_auth(request)
+    username, _ = usuario
     
     try:
         from db.models.infra import RutaServicio
@@ -598,22 +587,17 @@ async def download_ruta_tracking(
                 }
             )
             
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=download_tracking_error ruta_id=%d error=%s", ruta_id, exc)
-        return JSONResponse(
-            {"error": f"Error descargando tracking: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("download_tracking", exc, ruta_id=ruta_id)
 
 
 @router.get("/api/infra/tracking/{ruta_id}/download")
 async def download_tracking_alias(
-    request: Request,
     ruta_id: int,
 ) -> Response:
     """Alias de /api/infra/rutas/{ruta_id}/download para compatibilidad."""
-    
-    username, _ = _require_auth(request)
     
     try:
         from db.models.infra import RutaServicio
@@ -643,12 +627,10 @@ async def download_tracking_alias(
                 status_code=404
             )
             
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=download_tracking_alias_error ruta_id=%d error=%s", ruta_id, exc)
-        return JSONResponse(
-            {"error": f"Error descargando tracking: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("download_tracking_alias", exc, ruta_id=ruta_id)
 
 
 @router.post("/api/servicios/ingest")
@@ -656,10 +638,12 @@ async def servicios_ingest_web(
     request: Request,
     file: UploadFile = File(...),
     csrf_token: str = Form(...),
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Ingesta de servicios SLA (solo admin) delegada a la API interna."""
 
-    username, role = _require_auth(request)
+    # "Solo admin" con su propio 403 (no `usuario_admin`): el mensaje no cambia.
+    username, role = usuario
     if role != "admin":
         return JSONResponse({"error": "Solo admin"}, status_code=403)
     if csrf_token != request.session.get("csrf"):
@@ -692,11 +676,10 @@ async def servicios_ingest_web(
             response.status_code,
         )
         return JSONResponse(payload, status_code=response.status_code)
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=servicios_ingest_proxy_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": f"Error en ingesta de servicios: {exc!s}"}, status_code=500)
+        return error_interno("servicios_ingest_proxy", exc, user=username)
 
 
 def _serializar_extremos_sin_odf(extremos: Any) -> list[dict[str, Any]]:
@@ -790,9 +773,8 @@ async def _existe_odf(sesion: Any, odf_n_id: int) -> bool:
     return fila is not None
 
 
-@router.get("/api/admin/infra/servicios-odf/listado")
+@router.get("/api/admin/infra/servicios-odf/listado", dependencies=[Depends(usuario_admin)])
 async def servicios_sin_odf_listado_web(
-    request: Request,
     categoria: Optional[str] = None,
     q: Optional[str] = None,
     limit: int = 50,
@@ -813,8 +795,6 @@ async def servicios_sin_odf_listado_web(
     from core.services.cromo.servicios_sin_odf import listar_servicios_sin_odf
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
-
     try:
         async with AsyncSessionLocal() as sesion:
             resultado = await listar_servicios_sin_odf(
@@ -826,7 +806,8 @@ async def servicios_sin_odf_listado_web(
                 sesion, [item.id for item in resultado.items]
             )
     except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
+        # Mensaje de validación armado por el servicio (categoría/offset/limit): misma respuesta 400.
+        raise ErrorDeDominio(str(exc)) from exc
 
     return JSONResponse(
         {
@@ -858,8 +839,8 @@ async def servicios_sin_odf_listado_web(
     )
 
 
-@router.get("/api/admin/infra/servicios-odf/{servicio_id}/sugerencia")
-async def servicios_sin_odf_sugerencia_web(request: Request, servicio_id: int) -> JSONResponse:
+@router.get("/api/admin/infra/servicios-odf/{servicio_id}/sugerencia", dependencies=[Depends(usuario_admin)])
+async def servicios_sin_odf_sugerencia_web(servicio_id: int) -> JSONResponse:
     """Detalle de causa + sugerencia de ODF para UN Servicio sin ODF: categoría/subcategoría
     completas (incluida la cascada `subcategoria_sin_senal_prov` on-demand), AMBOS extremos de
     última milla + el índice del que ganó la categorización, dirección PROV cruda del Servicio, y —
@@ -867,7 +848,7 @@ async def servicios_sin_odf_sugerencia_web(request: Request, servicio_id: int) -
     `senal_direccion` calculada contra esa ODF sugerida. Sólo lectura e informativo: NADA se
     auto-aplica acá, el operador confirma vía `POST .../asociar`. 404 si `servicio_id` no existe.
 
-    `_require_admin`, igual que los otros 3 endpoints del gestor. Antes era `_require_auth` "porque
+    Admin (`usuario_admin`), igual que los otros 3 endpoints del gestor. Antes era `_require_auth` "porque
     es consulta", citando `odfs/{id}/conectores` como precedente, y eso era un guard más ancho que
     no habilitaba ningún caso de uso: la única ruta de UI que lo consume
     (`/admin/servicios/viewer/ServiciosSinOdf`) es `meta: { requiresAdmin: true }`, así que sólo
@@ -882,8 +863,6 @@ async def servicios_sin_odf_sugerencia_web(request: Request, servicio_id: int) -
         sugerencia_odf_para_servicio,
     )
     from db.session import AsyncSessionLocal
-
-    _require_admin(request)
 
     async with AsyncSessionLocal() as sesion:
         detalle = await _obtener_servicio_categorizado(sesion, servicio_id)
@@ -923,10 +902,10 @@ async def servicios_sin_odf_sugerencia_web(request: Request, servicio_id: int) -
     )
 
 
-@router.get("/api/admin/infra/servicios-odf/{servicio_id}/senal-direccion")
-async def servicios_sin_odf_senal_direccion_web(
-    request: Request, servicio_id: int, odf_n_id: Optional[int] = None
-) -> JSONResponse:
+@router.get(
+    "/api/admin/infra/servicios-odf/{servicio_id}/senal-direccion", dependencies=[Depends(usuario_admin)]
+)
+async def servicios_sin_odf_senal_direccion_web(servicio_id: int, odf_n_id: Optional[int] = None) -> JSONResponse:
     """Preview de `senal_direccion` (Task 2) para una ODF que el operador eligió A MANO en el
     buscador del modal, ANTES de confirmar — puro read-only, nunca persiste nada. Fix round 1 de
     Task 6: `GET .../sugerencia` sólo calcula esta señal contra la ODF que la propia API sugirió, y
@@ -941,7 +920,7 @@ async def servicios_sin_odf_senal_direccion_web(
     (misma fuente de la dirección PROV cruda del Servicio) y `_senal_direccion_contra_odf` (wiring
     sobre `core/services/cromo/direccion_comparacion.py`) — cero lógica de comparación nueva acá.
 
-    `_require_admin`, mismo criterio que los otros 3 endpoints del gestor (ver la justificación en
+    Admin (`usuario_admin`), mismo criterio que los otros 3 endpoints del gestor (ver la justificación en
     `/sugerencia`: el guard `_require_auth` que tenían los dos GET no habilitaba ningún caso de uso
     — la ruta de UI que los consume ya exige admin — y sólo ampliaba la superficie). 400 si falta
     `odf_n_id` (un tipo inválido, ej. `odf_n_id=abc`, ya lo rechaza la validación automática de
@@ -951,8 +930,6 @@ async def servicios_sin_odf_senal_direccion_web(
     "ODF sin dirección cargada" con "ODF que no existe" (ver `_existe_odf`, mismo criterio ESTRICTO
     que ya exige `crear_override`)."""
     from db.session import AsyncSessionLocal
-
-    _require_admin(request)
 
     if odf_n_id is None:
         return JSONResponse({"error": "odf_n_id es requerido"}, status_code=400)
@@ -982,7 +959,10 @@ class ServicioOdfAsociarRequestModel(BaseModel):
 
 @router.post("/api/admin/infra/servicios-odf/{servicio_id}/asociar")
 async def servicios_sin_odf_asociar_web(
-    request: Request, servicio_id: int, body: ServicioOdfAsociarRequestModel
+    request: Request,
+    servicio_id: int,
+    body: ServicioOdfAsociarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Confirma la asociación manual Servicio→ODF que el operador eligió (la sugerida, u otra que
     haya buscado a mano). Recalcula `senal_direccion` (Task 2) en el backend contra la ODF
@@ -996,7 +976,7 @@ async def servicios_sin_odf_asociar_web(
     from core.services.cromo.servicio_odf_override_service import ObjetoNoEncontrado, crear_override
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -1025,7 +1005,8 @@ async def servicios_sin_odf_asociar_web(
                     senal_direccion=senal,
                 )
             except ObjetoNoEncontrado as exc:
-                return JSONResponse({"error": str(exc)}, status_code=404)
+                # Mensaje armado por `crear_override` para el usuario: misma respuesta 404.
+                raise NoEncontrado(str(exc)) from exc
 
             await _encolar_arbitro("SERVICIOS", [servicio_id], f"asociar-odf servicio={servicio_id}")
             logger.info(
@@ -1040,16 +1021,10 @@ async def servicios_sin_odf_asociar_web(
             return JSONResponse(
                 {"ok": True, "categoria_causa": detalle["categoria_causa"], "senal_direccion": senal.value}
             )
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception(
-            "action=servicios_sin_odf_asociar_error user=%s servicio_id=%s error=%s",
-            username,
-            servicio_id,
-            exc,
-        )
-        return JSONResponse({"error": "No se pudo asociar el Servicio a la ODF"}, status_code=500)
+        return error_interno("servicios_sin_odf_asociar", exc, user=username, servicio_id=servicio_id)
 
 
 def _serializar_vinculo_local(vinculo: Any) -> Optional[dict[str, Any]]:
@@ -1204,7 +1179,7 @@ def _serializar_camino_optico(camino: Any, semillas: list[Any]) -> dict[str, Any
 
 
 @router.get("/api/servicios/{servicio_id}/baneos")
-async def servicio_baneos_web(request: Request, servicio_id: int, limite: int = 50) -> JSONResponse:
+async def servicio_baneos_web(servicio_id: int, limite: int = 50) -> JSONResponse:
     """Eventos de baneo en los que participa un Servicio, como protegido o como afectado.
 
     `app.incidentes_baneo` guarda los dos extremos como **texto** (`varchar(64)`), no como FK, así
@@ -1221,7 +1196,6 @@ async def servicio_baneos_web(request: Request, servicio_id: int, limite: int = 
 
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     limite = max(1, min(limite, 200))
 
     consulta = _sql(
@@ -1303,7 +1277,10 @@ class PeloRestaurarRequestModel(BaseModel):
 
 @router.post("/api/admin/infra/servicios-odf/{servicio_id}/pelos-excluidos")
 async def servicios_pelo_excluir_web(
-    request: Request, servicio_id: int, body: PelosExcluirRequestModel
+    request: Request,
+    servicio_id: int,
+    body: PelosExcluirRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Saca pelos del Servicio en local: dejan de ser semilla, de contar y de pesar en los caminos
     esperados, aunque Cromo conserve la etiqueta. Es para los huérfanos que quedaron con la
@@ -1312,7 +1289,7 @@ async def servicios_pelo_excluir_web(
     from core.services.cromo.pelos_excluidos import PeloNoPerteneceAlServicio, excluir_pelos
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "cromo_pelo_excluir", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -1324,19 +1301,23 @@ async def servicios_pelo_excluir_web(
                 sesion, servicio_id, body.pelos_n_id, usuario=username, motivo=body.motivo
             )
         except PeloNoPerteneceAlServicio as exc:
-            return JSONResponse({"error": str(exc)}, status_code=409)
+            # Mensaje armado por el servicio para el usuario: misma respuesta 409.
+            raise Conflicto(str(exc)) from exc
     return JSONResponse({"ok": True, "excluidos": excluidos, "ajenos": ajenos})
 
 
 @router.post("/api/admin/infra/servicios-odf/{servicio_id}/pelos-excluidos/restaurar")
 async def servicios_pelo_restaurar_web(
-    request: Request, servicio_id: int, body: PeloRestaurarRequestModel
+    request: Request,
+    servicio_id: int,
+    body: PeloRestaurarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Devuelve al Servicio un pelo excluido. Admin."""
     from core.services.cromo.pelos_excluidos import restaurar_pelo
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "cromo_pelo_restaurar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -1380,13 +1361,12 @@ class TrackingsEsperadosRequestModel(BaseModel):
     csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
-@router.get("/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas")
-async def servicios_odf_confirmadas_listar_web(request: Request, servicio_id: int) -> JSONResponse:
+@router.get("/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas", dependencies=[Depends(usuario_admin)])
+async def servicios_odf_confirmadas_listar_web(servicio_id: int) -> JSONResponse:
     """ODF confirmadas vigentes del Servicio y los trackings que se esperan. Admin."""
     from core.services.cromo.servicio_odf_confirmacion import declaraciones_del_servicio
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     async with AsyncSessionLocal() as sesion:
         if not await _servicio_existe(sesion, servicio_id):
             return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
@@ -1398,7 +1378,10 @@ async def servicios_odf_confirmadas_listar_web(request: Request, servicio_id: in
 
 @router.post("/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas")
 async def servicios_odf_confirmar_web(
-    request: Request, servicio_id: int, body: OdfConfirmarRequestModel
+    request: Request,
+    servicio_id: int,
+    body: OdfConfirmarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Confirma ODF del Servicio en lote (todo o nada). Un camino que toca una ODF confirmada es
     siempre TRAMO. Idempotente. 404 si alguna ODF no existe en el inventario. Admin."""
@@ -1406,7 +1389,7 @@ async def servicios_odf_confirmar_web(
     from core.services.cromo.verificador import ObjetoNoEncontrado
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "cromo_odf_confirmar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -1418,20 +1401,24 @@ async def servicios_odf_confirmar_web(
                 sesion, servicio_id, [(o.odf_n_id, o.rol) for o in body.odfs], usuario=username
             )
         except ObjetoNoEncontrado as exc:
-            return JSONResponse({"error": str(exc)}, status_code=404)
+            # Mensaje armado por el servicio para el usuario: misma respuesta 404.
+            raise NoEncontrado(str(exc)) from exc
     await _encolar_arbitro("SERVICIOS", [servicio_id], f"odf-confirmar servicio={servicio_id}")
     return JSONResponse({"ok": True, "odf_confirmadas": lista})
 
 
 @router.post("/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas/desconfirmar")
 async def servicios_odf_desconfirmar_web(
-    request: Request, servicio_id: int, body: OdfDesconfirmarRequestModel
+    request: Request,
+    servicio_id: int,
+    body: OdfDesconfirmarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Quita la confirmación de una ODF (queda el historial). Admin."""
     from core.services.cromo.servicio_odf_confirmacion import desconfirmar, listar
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "cromo_odf_desconfirmar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -1450,13 +1437,16 @@ async def servicios_odf_desconfirmar_web(
 
 @router.post("/api/admin/infra/servicios-odf/{servicio_id}/trackings-esperados")
 async def servicios_trackings_esperados_web(
-    request: Request, servicio_id: int, body: TrackingsEsperadosRequestModel
+    request: Request,
+    servicio_id: int,
+    body: TrackingsEsperadosRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Declara cuántos trackings espera el Servicio; `cantidad: null` borra la declaración. Admin."""
     from core.services.cromo.servicio_odf_confirmacion import declarar_trackings_esperados
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "cromo_trackings_esperados", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -1551,14 +1541,13 @@ def _serializar_declaradas(declaradas: Any) -> list[dict[str, Any]]:
     return [_serializar_posicion_declarada(d, avisos.get(d.id)) for d in declaradas]
 
 
-@router.get("/api/admin/infra/servicios-odf/{servicio_id}/posicion-vigente")
-async def servicios_posicion_vigente_listar_web(request: Request, servicio_id: int) -> JSONResponse:
+@router.get("/api/admin/infra/servicios-odf/{servicio_id}/posicion-vigente", dependencies=[Depends(usuario_admin)])
+async def servicios_posicion_vigente_listar_web(servicio_id: int) -> JSONResponse:
     """Posiciones vigentes declaradas del Servicio y las posibles para el selector. Sólo informa:
     no retira nada (retirar es efecto de la corrida de tracking). Admin."""
     from core.services.cromo import servicio_posicion_vigente as pv
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     async with AsyncSessionLocal() as sesion:
         if not await _servicio_existe(sesion, servicio_id):
             return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
@@ -1575,7 +1564,10 @@ async def servicios_posicion_vigente_listar_web(request: Request, servicio_id: i
 
 @router.post("/api/admin/infra/servicios-odf/{servicio_id}/posicion-vigente")
 async def servicios_posicion_vigente_declarar_web(
-    request: Request, servicio_id: int, body: PosicionVigenteDeclararRequestModel
+    request: Request,
+    servicio_id: int,
+    body: PosicionVigenteDeclararRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Declara conectores como posición vigente del Servicio (todo o nada; los ya vigentes quedan).
     El tracking sale de ahí: sus caminos son VIGENTE y los tramos calculados pasan a ADICIONAL.
@@ -1583,7 +1575,7 @@ async def servicios_posicion_vigente_declarar_web(
     from core.services.cromo import servicio_posicion_vigente as pv
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "cromo_posicion_vigente_declarar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -1595,7 +1587,8 @@ async def servicios_posicion_vigente_declarar_web(
                 sesion, servicio_id, body.conectores_n_id, usuario=username
             )
         except pv.PosicionNoValida as exc:
-            return JSONResponse({"error": str(exc)}, status_code=409)
+            # Mensaje armado por el servicio para el usuario: misma respuesta 409.
+            raise Conflicto(str(exc)) from exc
     logger.info(
         "action=cromo_posicion_vigente evento=declarar user=%s servicio_id=%s conectores=%s",
         username,
@@ -1607,14 +1600,17 @@ async def servicios_posicion_vigente_declarar_web(
 
 @router.post("/api/admin/infra/servicios-odf/{servicio_id}/posicion-vigente/retirar")
 async def servicios_posicion_vigente_retirar_web(
-    request: Request, servicio_id: int, body: PosicionVigenteRetirarRequestModel
+    request: Request,
+    servicio_id: int,
+    body: PosicionVigenteRetirarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Retira a mano (`MANUAL`) la posición vigente de un conector; queda el historial. 404 si el
     conector no tenía declaración vigente. Admin."""
     from core.services.cromo import servicio_posicion_vigente as pv
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "cromo_posicion_vigente_retirar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -1664,7 +1660,10 @@ class CaminoRelevarOdfRequestModel(BaseModel):
 
 @router.post("/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/normalizar")
 async def servicios_sin_odf_camino_normalizar_web(
-    request: Request, servicio_id: int, body: CaminoNormalizarRequestModel
+    request: Request,
+    servicio_id: int,
+    body: CaminoNormalizarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Normaliza las discrepancias de la tabla "Consistencia con lo ingerido", tomando Cromo como
     referencia.
@@ -1684,7 +1683,7 @@ async def servicios_sin_odf_camino_normalizar_web(
     )
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "camino_normalizar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -1704,13 +1703,10 @@ async def servicios_sin_odf_camino_normalizar_web(
         return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
     except CromoClientError as exc:
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "action=camino_normalizar_error user=%s servicio_id=%s error=%s", username, servicio_id, exc
-        )
-        return JSONResponse({"error": "No se pudo normalizar la consistencia"}, status_code=500)
+        return error_interno("camino_normalizar", exc, user=username, servicio_id=servicio_id)
 
     return JSONResponse(
         {
@@ -1733,7 +1729,10 @@ async def servicios_sin_odf_camino_normalizar_web(
 
 @router.post("/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/relevar-odf")
 async def servicios_sin_odf_camino_relevar_odf_web(
-    request: Request, servicio_id: int, body: CaminoRelevarOdfRequestModel
+    request: Request,
+    servicio_id: int,
+    body: CaminoRelevarOdfRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Releva las ODFs que atraviesa el camino, para poblar sus posiciones de patchera.
 
@@ -1750,7 +1749,7 @@ async def servicios_sin_odf_camino_relevar_odf_web(
     )
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "camino_relevar_odf", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -1770,13 +1769,10 @@ async def servicios_sin_odf_camino_relevar_odf_web(
         return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
     except CromoClientError as exc:
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "action=camino_relevar_odf_error user=%s servicio_id=%s error=%s", username, servicio_id, exc
-        )
-        return JSONResponse({"error": "No se pudo relevar la ODF"}, status_code=500)
+        return error_interno("camino_relevar_odf", exc, user=username, servicio_id=servicio_id)
 
     return JSONResponse(
         {
@@ -1794,11 +1790,14 @@ async def servicios_sin_odf_camino_relevar_odf_web(
 
 @router.get("/api/admin/infra/servicios-odf/{servicio_id}/camino-optico")
 async def servicios_sin_odf_camino_optico_web(
-    request: Request, servicio_id: int, pelo_n_id: Optional[int] = None, raw: bool = False
+    servicio_id: int,
+    pelo_n_id: Optional[int] = None,
+    raw: bool = False,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Camino óptico completo de un Servicio, con su auditoría de consistencia.
 
-    `_require_admin` por el mismo criterio ya escrito para `/sugerencia`: devuelve MÁS topología
+    Admin (`usuario_admin`) por el mismo criterio ya escrito para `/sugerencia`: devuelve MÁS topología
     que aquél (el recorrido entero, cable por cable) y además gasta recursos del proveedor en cada
     request. La única UI que lo consume es `/admin/servicios/viewer/ServiciosSinOdf`, que ya es
     `requiresAdmin`.
@@ -1819,7 +1818,7 @@ async def servicios_sin_odf_camino_optico_web(
     from core.services.cromo.config import get_cromo_config
     from db.session import AsyncSessionLocal
 
-    usuario = _require_admin(request)
+    username = usuario.username
 
     try:
         async with AsyncSessionLocal() as sesion:
@@ -1854,14 +1853,15 @@ async def servicios_sin_odf_camino_optico_web(
                         exc_info=True,
                     )
     except PeloAjenoAlServicio as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
+        # Mensaje armado por el servicio para el usuario: misma respuesta 400.
+        raise ErrorDeDominio(str(exc)) from exc
     except CromoClientError as exc:
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
 
     logger.info(
         "action=cromo_camino_optico user=%s servicio_id=%s estado=%s pelo_n_id=%s "
         "nodos=%s discrepa=%s no_ingerido=%s duracion_ms=%s",
-        usuario,
+        username,
         servicio_id,
         camino.estado,
         camino.pelo_n_id,
@@ -1875,7 +1875,6 @@ async def servicios_sin_odf_camino_optico_web(
 
 @router.get("/api/servicios/search")
 async def servicios_search_web(
-    request: Request,
     q: str | None = None,
     numero_primer_servicio: str | None = None,
     cliente: str | None = None,
@@ -1885,10 +1884,11 @@ async def servicios_search_web(
     categoria: str | None = None,
     limit: int = 30,
     offset: int = 0,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Búsqueda paginada de servicios para usuarios autenticados."""
 
-    username, _ = _require_auth(request)
+    username, _ = usuario
     params = {
         "q": q,
         "numero_primer_servicio": numero_primer_servicio,
@@ -1925,21 +1925,20 @@ async def servicios_search_web(
             response.status_code,
         )
         return JSONResponse(payload, status_code=response.status_code)
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=servicios_search_proxy_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": f"Error buscando servicios: {exc!s}"}, status_code=500)
+        return error_interno("servicios_search_proxy", exc, user=username)
 
 
 @router.get("/api/servicios/detail")
 async def servicios_detail_web(
-    request: Request,
     id: str,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Detalle de servicio por ID (origen o línea), con resolución a ID canónico."""
 
-    username, _ = _require_auth(request)
+    username, _ = usuario
     id_consultado = (id or "").strip()
     if not id_consultado:
         return JSONResponse({"error": "ID requerido"}, status_code=400)
@@ -1965,11 +1964,10 @@ async def servicios_detail_web(
             response.status_code,
         )
         return JSONResponse(payload, status_code=response.status_code)
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=servicios_detail_proxy_error user=%s id=%s error=%s", username, id_consultado, exc)
-        return JSONResponse({"error": f"Error consultando detalle de servicio: {exc!s}"}, status_code=500)
+        return error_interno("servicios_detail_proxy", exc, user=username, id=id_consultado)
 
 
 class ServicioCategoriaUpdateRequestModel(BaseModel):
@@ -1978,10 +1976,15 @@ class ServicioCategoriaUpdateRequestModel(BaseModel):
 
 
 @router.patch("/api/servicios/{id}/categoria")
-async def servicio_categoria_web(request: Request, id: int, body: ServicioCategoriaUpdateRequestModel) -> JSONResponse:
+async def servicio_categoria_web(
+    request: Request,
+    id: int,
+    body: ServicioCategoriaUpdateRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Cambia la categoría (C0-C6) de un Servicio individual — sólo admin. Proxya al endpoint
     interno, mismo patrón que `servicios_search_web`/`servicios_detail_web`."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -2010,11 +2013,10 @@ async def servicio_categoria_web(request: Request, id: int, body: ServicioCatego
             response.status_code,
         )
         return JSONResponse(payload, status_code=response.status_code)
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=servicio_categoria_error user=%s id=%s error=%s", username, id, exc)
-        return JSONResponse({"error": f"Error actualizando categoría: {exc!s}"}, status_code=500)
+        return error_interno("servicio_categoria", exc, user=username, id=id)
 
 
 class ServicioCategoriaHeredarRequestModel(BaseModel):
@@ -2023,11 +2025,14 @@ class ServicioCategoriaHeredarRequestModel(BaseModel):
 
 @router.patch("/api/servicios/{id}/categoria/heredar")
 async def servicio_categoria_heredar_web(
-    request: Request, id: int, body: ServicioCategoriaHeredarRequestModel
+    request: Request,
+    id: int,
+    body: ServicioCategoriaHeredarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Quita la excepción de categoría de un Servicio para que vuelva a heredar la de su cliente —
     sólo admin. Proxya al endpoint interno, mismo patrón que `servicio_categoria_web`."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -2054,11 +2059,10 @@ async def servicio_categoria_heredar_web(
             response.status_code,
         )
         return JSONResponse(payload, status_code=response.status_code)
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=servicio_categoria_heredar_error user=%s id=%s error=%s", username, id, exc)
-        return JSONResponse({"error": f"Error restaurando la categoría heredada: {exc!s}"}, status_code=500)
+        return error_interno("servicio_categoria_heredar", exc, user=username, id=id)
 
 
 class ServicioVerificableUpdateRequestModel(BaseModel):
@@ -2067,10 +2071,15 @@ class ServicioVerificableUpdateRequestModel(BaseModel):
 
 
 @router.patch("/api/servicios/{id}/verificable")
-async def servicio_verificable_web(request: Request, id: int, body: ServicioVerificableUpdateRequestModel) -> JSONResponse:
+async def servicio_verificable_web(
+    request: Request,
+    id: int,
+    body: ServicioVerificableUpdateRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Fija el override de verificabilidad de un Servicio individual — sólo admin. Proxya al
     endpoint interno, mismo patrón que `servicio_categoria_web`."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -2099,11 +2108,10 @@ async def servicio_verificable_web(request: Request, id: int, body: ServicioVeri
             response.status_code,
         )
         return JSONResponse(payload, status_code=response.status_code)
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=servicio_verificable_error user=%s id=%s error=%s", username, id, exc)
-        return JSONResponse({"error": f"Error actualizando verificabilidad: {exc!s}"}, status_code=500)
+        return error_interno("servicio_verificable", exc, user=username, id=id)
 
 
 class ServicioProvRefrescarRequestModel(BaseModel):
@@ -2115,12 +2123,13 @@ async def servicio_prov_refrescar_web(
     request: Request,
     id: str,
     body: ServicioProvRefrescarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Dispara el refresco on-demand de un Servicio contra PROV. Proxya al endpoint interno, mismo
     patrón que `servicios_detail_web`/`servicio_categoria_web` — visible a cualquier usuario
     autenticado (no sólo admin), igual que el botón en `ServicioDetalleView.vue` (Task 10), que no
     está condicionado a `isAdmin`."""
-    username, _ = _require_auth(request)
+    username, _ = usuario
     id_consultado = (id or "").strip()
     if not id_consultado:
         return JSONResponse({"error": "ID requerido"}, status_code=400)
@@ -2156,11 +2165,10 @@ async def servicio_prov_refrescar_web(
             response.status_code,
         )
         return JSONResponse(payload, status_code=response.status_code)
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=servicio_prov_refrescar_error user=%s id=%s error=%s", username, id_consultado, exc)
-        return JSONResponse({"error": f"Error refrescando servicio desde PROV: {exc!s}"}, status_code=500)
+        return error_interno("servicio_prov_refrescar", exc, user=username, id=id_consultado)
 
 
 class ServiciosCategoriaMasivaRequestModel(BaseModel):
@@ -2170,9 +2178,13 @@ class ServiciosCategoriaMasivaRequestModel(BaseModel):
 
 
 @router.patch("/api/servicios/bulk-categoria")
-async def servicios_categoria_masiva_web(request: Request, body: ServiciosCategoriaMasivaRequestModel) -> JSONResponse:
+async def servicios_categoria_masiva_web(
+    request: Request,
+    body: ServiciosCategoriaMasivaRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Cambia la categoría (C0-C6) de un lote de Servicios — sólo admin. Proxya al endpoint interno."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -2204,21 +2216,20 @@ async def servicios_categoria_masiva_web(request: Request, body: ServiciosCatego
             response.status_code,
         )
         return JSONResponse(payload, status_code=response.status_code)
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=servicios_categoria_masiva_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": f"Error actualizando categoría: {exc!s}"}, status_code=500)
+        return error_interno("servicios_categoria_masiva", exc, user=username)
 
 
 @router.post("/api/infra/upload_tracking")
 async def upload_tracking_web(
-    request: Request,
     file: UploadFile = File(...),
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Procesa un archivo de tracking de fibra óptica."""
 
-    username, _ = _require_auth(request)
+    username, _ = usuario
 
     # Validar extensión
     if not file.filename or not file.filename.lower().endswith(".txt"):
@@ -2336,17 +2347,10 @@ async def upload_tracking_web(
                 "mensaje": f"Tracking del servicio {result.servicio_id} procesado correctamente",
             })
 
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception(
-            "action=upload_tracking_error user=%s filename=%s error=%s",
-            username,
-            file.filename,
-            exc,
-        )
-        return JSONResponse(
-            {"error": f"Error procesando el archivo: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("upload_tracking", exc, user=username, filename=file.filename)
 
 
 class TrackingResolveRequestModel(BaseModel):
@@ -2364,14 +2368,14 @@ class TrackingResolveRequestModel(BaseModel):
 
 @router.post("/api/infra/trackings/analyze")
 async def analyze_tracking_web(
-    request: Request,
     file: UploadFile = File(...),
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Analiza un archivo de tracking (Fase 1 del Portero).
     
     Detecta si el servicio es nuevo, idéntico o hay conflicto.
     """
-    username, _ = _require_auth(request)
+    username, _ = usuario
     
     # Leer contenido del archivo
     raw_bytes = await file.read()
@@ -2433,29 +2437,22 @@ async def analyze_tracking_web(
                 "punta_b_sitio": result.punta_b_sitio,
             })
             
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception(
-            "action=analyze_tracking_error user=%s filename=%s error=%s",
-            username,
-            filename_used,
-            exc,
-        )
-        return JSONResponse(
-            {"error": f"Error analizando el archivo: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("analyze_tracking", exc, user=username, filename=filename_used)
 
 
 @router.post("/api/infra/trackings/resolve")
 async def resolve_tracking_web(
-    request: Request,
     body: TrackingResolveRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Resuelve un tracking ejecutando la acción (Fase 2 del Portero).
     
     Acciones: CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH, ADD_STRAND, SKIP
     """
-    username, _ = _require_auth(request)
+    username, _ = usuario
     
     # Validar acción
     valid_actions = ["CREATE_NEW", "MERGE_APPEND", "REPLACE", "BRANCH", "ADD_STRAND", "SKIP", "CONFIRM_UPGRADE"]
@@ -2514,17 +2511,10 @@ async def resolve_tracking_web(
                 
                 return JSONResponse(result)
                 
+        except (HTTPException, ErrorDeDominio):
+            raise
         except Exception as exc:
-            logger.exception(
-                "action=confirm_upgrade_error user=%s old_id=%s error=%s",
-                username,
-                body.old_service_id,
-                exc,
-            )
-            return JSONResponse(
-                {"error": f"Error ejecutando upgrade: {exc!s}"},
-                status_code=500
-            )
+            return error_interno("confirm_upgrade", exc, user=username, old_id=body.old_service_id)
     
     try:
         from core.services.infra_service import InfraService, ResolveAction, RutaTipo
@@ -2576,29 +2566,22 @@ async def resolve_tracking_web(
                 "error": result.error,
             })
             
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception(
-            "action=resolve_tracking_error user=%s action=%s error=%s",
-            username,
-            body.action,
-            exc,
-        )
-        return JSONResponse(
-            {"error": f"Error resolviendo el tracking: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("resolve_tracking", exc, user=username, action=body.action)
 
 
 @router.delete("/api/infra/servicios/{servicio_id}/empalmes")
 async def delete_servicio_empalmes_web(
-    request: Request,
     servicio_id: str,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Elimina todas las asociaciones de empalmes de un servicio.
     
     ⚠️ PRECAUCIÓN: Operación destructiva.
     """
-    username, _ = _require_auth(request)
+    username, _ = usuario
     
     try:
         from db.models.infra import Servicio
@@ -2644,14 +2627,7 @@ async def delete_servicio_empalmes_web(
                 "rutas_eliminadas": rutas_count,
             })
             
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception(
-            "action=delete_servicio_empalmes_error user=%s servicio_id=%s error=%s",
-            username,
-            servicio_id,
-            exc,
-        )
-        return JSONResponse(
-            {"error": f"Error eliminando asociaciones: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("delete_servicio_empalmes", exc, user=username, servicio_id=servicio_id)
