@@ -244,6 +244,29 @@ def test_parsear_alarmas_ciena_vacio(csv_vacio: bytes):
         parsear_alarmas_ciena(csv_vacio)
 
 
+def test_parser_no_expone_texto_de_pandas_y_loguea_ref(monkeypatch, caplog, csv_sitemanager: bytes):
+    """Un fallo interno de pandas se reemplaza por un mensaje propio con ref; el detalle va al log."""
+    import re
+
+    import core.parsers.alarmas_ciena as parser
+
+    interno = "Error tokenizing data. C error: /srv/interno/pandas.py line 42"
+
+    def _roto(*_a, **_k):
+        raise RuntimeError(interno)
+
+    monkeypatch.setattr(parser.pd, "read_csv", _roto)
+    with caplog.at_level("ERROR"):
+        with pytest.raises(ValueError) as info:
+            parsear_alarmas_ciena(csv_sitemanager)
+    mensaje = str(info.value)
+    assert interno not in mensaje and "pandas" not in mensaje
+    assert "CSV válido de alarmas Ciena" in mensaje
+    ref = re.search(r"ref ([0-9a-f]{8})", mensaje).group(1)
+    assert f"ref={ref}" in caplog.text and interno in caplog.text
+    assert isinstance(info.value.__cause__, RuntimeError)
+
+
 # ===== Tests de generación de Excel =====
 
 def test_dataframe_to_excel_estructura(csv_sitemanager: bytes):

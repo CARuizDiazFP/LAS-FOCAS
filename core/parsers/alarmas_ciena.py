@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import logging
+import secrets
 from enum import Enum
 
 import pandas as pd
@@ -134,8 +135,11 @@ def parsear_sitemanager(content: bytes) -> pd.DataFrame:
         return df
         
     except Exception as e:
-        logger.error("action=parsear_sitemanager error=%s", e, exc_info=True)
-        raise ValueError(f"Error al parsear CSV de SiteManager: {e}") from e
+        ref = secrets.token_hex(4)
+        logger.error("action=parsear_sitemanager error=%s ref=%s", e, ref, exc_info=True)
+        raise ValueError(
+            f"El archivo no es un CSV válido de alarmas Ciena (SiteManager) (ref {ref})"
+        ) from e
 
 
 def parsear_mcp(content: bytes) -> pd.DataFrame:
@@ -180,8 +184,11 @@ def parsear_mcp(content: bytes) -> pd.DataFrame:
         return df
         
     except Exception as e:
-        logger.error("action=parsear_mcp error=%s", e, exc_info=True)
-        raise ValueError(f"Error al parsear CSV de MCP: {e}") from e
+        ref = secrets.token_hex(4)
+        logger.error("action=parsear_mcp error=%s ref=%s", e, ref, exc_info=True)
+        raise ValueError(
+            f"El archivo no es un CSV válido de alarmas Ciena (MCP) (ref {ref})"
+        ) from e
 
 
 def parsear_alarmas_ciena(content: bytes) -> tuple[pd.DataFrame, FormatoAlarma]:
@@ -255,5 +262,6 @@ def dataframe_to_excel(df: pd.DataFrame) -> bytes:
         return excel_content
         
     except Exception as e:
-        logger.error("action=dataframe_to_excel error=%s", e, exc_info=True)
-        raise ValueError(f"Error al generar archivo Excel: {e}") from e
+        ref = secrets.token_hex(4)
+        logger.error("action=dataframe_to_excel error=%s ref=%s", e, ref, exc_info=True)
+        raise ValueError(f"No se pudo generar el archivo Excel (ref {ref})") from e

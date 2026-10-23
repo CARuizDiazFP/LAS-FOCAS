@@ -295,6 +295,23 @@ def test_alarmas_ciena_value_error_conserva_415_con_su_mensaje(monkeypatch):
     assert res.json() == {"error": "Formato de CSV no reconocido"}
 
 
+def test_alarmas_ciena_415_no_expone_texto_de_pandas(monkeypatch):
+    import core.parsers.alarmas_ciena as parser
+
+    interno = "Error tokenizing data. C error: /srv/interno/pandas.py line 42"
+
+    def _roto(*_a, **_k):
+        raise RuntimeError(interno)
+
+    client, csrf = _login(monkeypatch)
+    monkeypatch.setattr(parser.pd, "read_csv", _roto)
+    contenido = b'"Unit","Class","Severity","Service"\n"a","b","c","d"\n'
+    res = client.post("/api/tools/alarmas-ciena", data={"csrf_token": csrf}, files=_csv(contenido))
+    assert res.status_code == 415
+    assert interno not in res.text and "pandas" not in res.text
+    assert "CSV válido de alarmas Ciena" in res.json()["error"]
+
+
 def test_flow_sla_500_con_ref(monkeypatch, caplog):
     client, csrf = _login(monkeypatch)
     monkeypatch.setattr(informes.sla_service, "compute_from_db", _roto)
