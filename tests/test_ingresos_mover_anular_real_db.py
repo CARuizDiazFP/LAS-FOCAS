@@ -117,6 +117,7 @@ def _ingreso(s: Session, camara: Camara, *, botella_n_id: int | None = None) -> 
 def _intervencion(s: Session, camara: Camara, ingresos: list[Ingreso], *, estado: str) -> FomonIntervencion:
     interv = FomonIntervencion(
         origen="INGRESO", camara_id=camara.id, botella_objetivo_n_id=None, botella_1_inferida=True,
+        sin_linea_base=False, aviso_ts="1799999998.000399", aviso_canal="CTEST",
         tecnico=TECNICO, estado=estado, fecha_ingreso=AHORA - timedelta(hours=1), proximo_evento_en=AHORA,
         cerrada_at=AHORA if estado == "CERRADA" else None,
     )
@@ -176,6 +177,8 @@ def test_mover_persiste_cambio_auditoria_y_fo_monitor(session, estado, se_actual
     if se_actualiza:
         assert (interv.camara_id, interv.botella_objetivo_n_id) == (destino.id, botella.n_id)
         assert _cables_congelados(session, interv.id) == esperado, "alcance recalculado para el destino"
+        # Después de la PRE: la PRE del alcance nuevo nunca se midió y el hilo viejo no se usa más.
+        assert interv.sin_linea_base is True and interv.aviso_ts is None
         assert resultado.intervenciones_fomon == [interv.id]
     else:
         assert (interv.camara_id, interv.botella_objetivo_n_id) == (origen.id, None)
@@ -345,3 +348,53 @@ def test_anular_intervencion_con_dos_ingresos_se_cancela_recien_con_el_ultimo(se
     session.expire_all()
     assert r2.intervenciones_fomon == [interv.id]
     assert session.get(FomonIntervencion, interv.id).estado == "CANCELADA"
+
+
+# ── Ronda de revisión ──────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("operacion", ["mover", "anular"])
+def test_si_falla_la_auditoria_no_queda_el_cambio(session, monkeypatch, operacion):
+    """Cambio y auditoría en un solo commit: forzando el fallo del INSERT de auditoría (CHECK de
+    `origen`), la excepción se propaga y ni el ingreso ni FO Monitor quedan modificados."""
+    botella = _botella_vigente_con_camara(session)
+    destino = session.get(Camara, botella.camara_id)
+    origen = _camara_origen(session, excluir=destino.id)
+    ing = _ingreso(session, origen)
+    interv = _intervencion(session, origen, [ing], estado="EN_CURSO")
+    session.commit()
+    monkeypatch.setattr(ics, "ORIGEN_WEB", "zz-invalido")
+
+    with pytest.raises(Exception):
+        if operacion == "mover":
+            ics.mover_ingreso_web(session, ingreso_id=ing.id, camara_destino_id=destino.id,
+                                  cromo_botella_destino_n_id=None, motivo="prueba", usuario=USUARIO)
+        else:
+            ics.anular_ingreso_web(session, ingreso_id=ing.id, motivo="prueba", usuario=USUARIO)
+
+    session.expire_all()
+    ing = session.get(Ingreso, ing.id)
+    assert (ing.camara_id, ing.anulado_at) == (origen.id, None)
+    interv = session.get(FomonIntervencion, interv.id)
+    assert (interv.camara_id, interv.estado) == (origen.id, "EN_CURSO")
+    assert _cables_congelados(session, interv.id) == {CABLE_VIEJO}
+    comando = ics.COMANDO_MOVER_INGRESO if operacion == "mover" else ics.COMANDO_ANULAR_INGRESO
+    assert _auditoria(session, ing.id, comando) == []
+
+
+def test_mover_rechaza_destino_que_no_es_camara_raiz(session):
+    hija_id = session.execute(text("SELECT id FROM app.camaras WHERE camara_padre_id IS NOT NULL ORDER BY id LIMIT 1")).scalar()
+    if hija_id is None:
+        pytest.skip("dev no tiene cámaras con camara_padre_id")
+    origen = _camara_origen(session, excluir=hija_id)
+    ing = _ingreso(session, origen)
+    session.commit()
+
+    resultado = ics.mover_ingreso_web(session, ingreso_id=ing.id, camara_destino_id=hija_id,
+                                      cromo_botella_destino_n_id=None, motivo="prueba", usuario=USUARIO)
+
+    assert resultado.resultado == ics.RESULTADO_DESTINO_NO_RAIZ
+    session.expire_all()
+    assert session.get(Ingreso, ing.id).camara_id == origen.id
+    (fila,) = _auditoria(session, ing.id, ics.COMANDO_MOVER_INGRESO)
+    assert fila.resultado == ics.RESULTADO_DESTINO_NO_RAIZ

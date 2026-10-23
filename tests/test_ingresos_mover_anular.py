@@ -23,6 +23,7 @@ from core.services.ingreso_correccion_service import (
     ORIGEN_WEB,
     RESULTADO_BOTELLA_INVALIDA,
     RESULTADO_CAMARA_NO_ENCONTRADA,
+    RESULTADO_DESTINO_NO_RAIZ,
     RESULTADO_INGRESO_ANULADO,
     RESULTADO_INGRESO_NO_ENCONTRADO,
     RESULTADO_MISMO_DESTINO,
@@ -83,8 +84,9 @@ def _auditoria(session: MagicMock) -> IngresoCorreccion:
     return filas[0]
 
 
-def _alcance(camara_id: int, botella_n_id: int | None) -> AlcanceIntervencion:
-    """Alcance falso de la cámara destino: un cable con un servicio y otro sin servicios."""
+def _alcance(camara_id: int, botella_n_id: int | None, *, con_servicios: bool = True) -> AlcanceIntervencion:
+    """Alcance falso de la cámara destino: un cable con un servicio (o sin, si `con_servicios=False`)
+    y otro sin servicios."""
     servicio = MagicMock(servicio_id=77, servicio_id_externo="SRV-77", tipo_servicio="L2", categoria=1,
                          nombre_cliente="Cliente", cliente=None)
     return AlcanceIntervencion(
@@ -93,7 +95,8 @@ def _alcance(camara_id: int, botella_n_id: int | None) -> AlcanceIntervencion:
         botella_1_inferida=botella_n_id is None,
         botellas={},
         cables=[
-            CableAlcance(n_id=801, nombre="CABLE NUEVO", clase=51, botella_n_id=6999, es_objetivo=True, servicios=[servicio]),
+            CableAlcance(n_id=801, nombre="CABLE NUEVO", clase=51, botella_n_id=6999, es_objetivo=True,
+                         servicios=[servicio] if con_servicios else []),
             CableAlcance(n_id=802, nombre="CABLE SIN SERV", clase=51, botella_n_id=6999, es_objetivo=False),
         ],
     )
@@ -103,10 +106,14 @@ def _alcance(camara_id: int, botella_n_id: int | None) -> AlcanceIntervencion:
 def fomon(monkeypatch):
     """Parchea las consultas de FO Monitor del módulo y `resolver_alcance` (donde se leen). `abiertas`,
     `otros` y `enviadas` (por intervención) y `otras_en_destino` se cargan desde cada test."""
-    estado = {"abiertas": [], "otros": {}, "enviadas": set(), "otras_en_destino": []}
+    estado = {"abiertas": [], "otros": {}, "enviadas": set(), "otras_en_destino": [], "con_servicios": True}
     abiertas = MagicMock(side_effect=lambda session, ingreso_id: list(estado["abiertas"]))
     otros = MagicMock(side_effect=lambda session, intervencion_id, ingreso_id: list(estado["otros"].get(intervencion_id, [])))
-    resolver = MagicMock(side_effect=lambda session, camara_id, botella_n_id: _alcance(camara_id, botella_n_id))
+    resolver = MagicMock(
+        side_effect=lambda session, camara_id, botella_n_id: _alcance(
+            camara_id, botella_n_id, con_servicios=estado["con_servicios"]
+        )
+    )
     monkeypatch.setattr(ics, "_intervenciones_abiertas_vinculadas", abiertas)
     monkeypatch.setattr(ics, "_otros_vinculados_vigentes", otros)
     monkeypatch.setattr(ics, "_consultas_ya_enviadas", lambda session, intervencion_id: intervencion_id in estado["enviadas"])
@@ -136,7 +143,7 @@ def _interv(id_: int, estado: str = "EN_CURSO") -> FomonIntervencion:
     return FomonIntervencion(
         id=id_, origen="INGRESO", camara_id=ORIGEN, botella_objetivo_n_id=BOTELLA_ORIGEN,
         botella_1_inferida=True, estado=estado, proximo_evento_en=None, aviso_ts="111.222",
-        aviso_canal="CFOMON", atribucion_compartida=False,
+        aviso_canal="CFOMON", atribucion_compartida=False, sin_linea_base=False,
     )
 
 
@@ -164,7 +171,7 @@ def test_mover_sin_botella_cambia_camara_deja_botella_null_y_audita(fomon):
     assert fila.camara_id_resuelta == DESTINO and fila.cromo_botella_id_resuelta is None
     assert fila.camara_id_anterior == ORIGEN and fila.cromo_botella_id_anterior == BOTELLA_ORIGEN
     assert fila.motivo == "Fontaine mal tipeado"
-    assert session.commit.call_count == 2  # el cambio y la auditoría
+    session.commit.assert_called_once()  # el cambio y la auditoría, en un solo commit
 
 
 def test_mover_con_botella_vigente_del_destino(fomon):
@@ -345,10 +352,10 @@ def test_mover_sin_botella_toma_la_botella_1_del_destino(fomon):
 
 
 @pytest.mark.parametrize(
-    ("estado", "estado_final", "limpia_aviso"),
-    [("PRE_EN_CURSO", "PRE_PENDIENTE", True), ("POST_EN_CURSO", "POST_PENDIENTE", False)],
+    ("estado", "estado_final"),
+    [("PRE_EN_CURSO", "PRE_PENDIENTE"), ("POST_EN_CURSO", "POST_PENDIENTE")],
 )
-def test_mover_cancela_consultas_pendientes_y_vuelve_a_planificar(fomon, estado, estado_final, limpia_aviso):
+def test_mover_cancela_consultas_pendientes_y_vuelve_a_planificar(fomon, estado, estado_final):
     """Las PENDIENTE se armaron con el alcance viejo: se cancelan, y la intervención vuelve a la fase
     pendiente para que `planificar_consultas` cree las del alcance nuevo en el próximo tick."""
     interv = _interv(301, estado=estado)
@@ -360,7 +367,7 @@ def test_mover_cancela_consultas_pendientes_y_vuelve_a_planificar(fomon, estado,
 
     assert pendiente.estado == "CANCELADA" and pendiente.error == "alcance_recalculado"
     assert interv.estado == estado_final and interv.proximo_evento_en == AHORA
-    assert (interv.aviso_ts is None) is limpia_aviso
+    assert interv.aviso_ts is None and interv.aviso_canal is None
     assert resultado.intervenciones_fomon == [301]
 
 
@@ -448,7 +455,7 @@ def test_anular_setea_la_baja_logica_y_audita(fomon):
     assert fila.motivo == "nunca ocurrió"
     assert fila.momento_efectivo == AHORA
     assert fila.camara_id_anterior is None and fila.cromo_botella_id_anterior is None
-    assert session.commit.call_count == 2
+    session.commit.assert_called_once()  # la baja lógica y la auditoría, en un solo commit
 
 
 def test_anular_no_reabre_ni_consulta_el_caso_sin_match(fomon):
@@ -558,3 +565,90 @@ def test_anular_no_cancela_la_intervencion_si_le_quedan_otros_ingresos_vigentes(
     assert resultado.intervenciones_fomon == []
     assert resultado.intervenciones_fomon_omitidas == [IntervencionFomonOmitida(301, OMISION_OTROS_INGRESOS_VIGENTES)]
     assert resultado.resultado == RESULTADO_OK_INGRESO_ANULADO
+
+
+# ── Ronda de revisión: atomicidad, destino no raíz, FO Monitor después de la PRE ───────────────
+
+
+@pytest.mark.parametrize("operacion", ["mover", "anular"])
+def test_si_falla_el_commit_unico_hace_rollback_y_propaga(fomon, operacion):
+    """El cambio y la auditoría van en un solo commit: si falla, no se devuelve un OK sin rastro."""
+    session = _session(_ingreso(), destino=_destino())
+    session.commit.side_effect = RuntimeError("INSERT de auditoría rechazado")
+
+    with pytest.raises(RuntimeError):
+        _mover(session) if operacion == "mover" else _anular(session)
+
+    session.commit.assert_called_once()
+    session.rollback.assert_called_once()
+
+
+def test_un_rechazo_con_fallo_de_auditoria_sigue_sin_propagar(fomon):
+    """Los rechazos no cambian nada: conservan el comportamiento anterior (se loguea y se responde)."""
+    session = _session(None)
+    session.commit.side_effect = RuntimeError("caída")
+
+    resultado = _mover(session)
+
+    assert resultado.resultado == RESULTADO_INGRESO_NO_ENCONTRADO and resultado.auditoria is None
+
+
+def test_mover_rechaza_destino_que_no_es_camara_raiz(fomon):
+    objetivo = _ingreso()
+    destino = _destino()
+    destino.camara_padre_id = 3
+    session = _session(objetivo, destino=destino)
+
+    resultado = _mover(session)
+
+    assert resultado.resultado == RESULTADO_DESTINO_NO_RAIZ
+    assert "cámara raíz" in resultado.respuesta and "administrador" not in resultado.respuesta
+    assert objetivo.camara_id == ORIGEN
+    fila = _auditoria(session)
+    assert fila.resultado == RESULTADO_DESTINO_NO_RAIZ and fila.camara_id_resuelta == DESTINO
+    session.commit.assert_called_once()
+    fomon["mock_abiertas"].assert_not_called()
+
+
+def test_mover_permite_destino_pendiente_de_revision(fomon):
+    destino = _destino()
+    destino.estado = CamaraEstado.PENDIENTE_REVISION
+    session = _session(_ingreso(), destino=destino)
+
+    assert _mover(session).resultado == RESULTADO_OK_INGRESO_MOVIDO
+
+
+@pytest.mark.parametrize("estado", ["EN_CURSO", "SIN_EGRESO", "POST_PENDIENTE", "POST_EN_CURSO"])
+def test_mover_despues_de_la_pre_marca_sin_linea_base_y_limpia_el_aviso(fomon, estado):
+    interv = _interv(301, estado=estado)
+    fomon["abiertas"] = [interv]
+    session = _session(_ingreso(), destino=_destino())
+
+    _mover(session)
+
+    assert interv.sin_linea_base is True
+    assert interv.aviso_ts is None and interv.aviso_canal is None
+
+
+def test_mover_despues_de_la_pre_sin_servicios_no_marca_sin_linea_base(fomon):
+    interv = _interv(301, estado="EN_CURSO")
+    fomon["abiertas"] = [interv]
+    fomon["con_servicios"] = False
+    session = _session(_ingreso(), destino=_destino())
+
+    _mover(session)
+
+    assert interv.sin_linea_base is False
+    assert interv.aviso_ts is None
+
+
+@pytest.mark.parametrize("estado", ["PRE_PENDIENTE", "PRE_EN_CURSO"])
+def test_mover_antes_de_la_pre_no_marca_sin_linea_base(fomon, estado):
+    """La PRE todavía se mide, con el alcance nuevo."""
+    interv = _interv(301, estado=estado)
+    fomon["abiertas"] = [interv]
+    session = _session(_ingreso(), destino=_destino())
+
+    _mover(session)
+
+    assert interv.sin_linea_base is False

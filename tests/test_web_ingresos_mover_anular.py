@@ -172,6 +172,7 @@ def test_mover_sin_botella_manda_none(con_sesion, monkeypatch):
         (ics.RESULTADO_CAMARA_NO_ENCONTRADA, 404),
         (ics.RESULTADO_MOTIVO_INVALIDO, 422),
         (ics.RESULTADO_BOTELLA_INVALIDA, 422),
+        (ics.RESULTADO_DESTINO_NO_RAIZ, 422),
         (ics.RESULTADO_INGRESO_ANULADO, 409),
         (ics.RESULTADO_MISMO_DESTINO, 409),
     ],

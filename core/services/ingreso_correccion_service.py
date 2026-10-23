@@ -178,6 +178,8 @@ RESULTADO_OK_INGRESO_ANULADO = "OK_INGRESO_ANULADO"
 RESULTADO_BOTELLA_INVALIDA = "BOTELLA_INVALIDA"
 RESULTADO_MISMO_DESTINO = "MISMO_DESTINO"
 RESULTADO_MOTIVO_INVALIDO = "MOTIVO_INVALIDO"
+# El destino es una fila con `camara_padre_id` (Botella legado dentro de otra Cámara), no una Cámara raíz.
+RESULTADO_DESTINO_NO_RAIZ = "DESTINO_NO_RAIZ"
 
 # Pedido de fecha: NO es un rechazo terminal, es un **estado pendiente**. La Task 6 busca
 # exactamente esta fila (`resultado='PENDIENTE_FECHA'`, mismo `thread_ts`, menos de 30 minutos) para
@@ -486,6 +488,7 @@ def _finalizar(
     error_detalle: str | None = None,
     camara_id_anterior: int | None = None,
     cromo_botella_id_anterior: int | None = None,
+    atomico: bool = False,
 ) -> ResultadoCorreccion:
     """Escribe la fila de auditoría y arma el `ResultadoCorreccion`. **Todo** camino de retorno de
     `procesar_comando_correccion` pasa por acá — incluidos los rechazos: un rechazo sin rastro es un
@@ -494,7 +497,12 @@ def _finalizar(
     Si la escritura de auditoría falla, se loguea como error y se hace `rollback()` (la sesión es
     compartida con el resto del handler de Slack: sin el rollback, cualquier operación posterior
     relanza `PendingRollbackError`), pero la respuesta al operador se devuelve igual — el movimiento
-    ya se registró y no tiene sentido ocultárselo."""
+    ya se registró y no tiene sentido ocultárselo.
+
+    `atomico=True` (mover/anular desde el portal): el caller deja su cambio **sin confirmar** y este
+    `commit()` es el único — cambio y auditoría entran juntos o no entra ninguno. Si falla, se hace
+    `rollback()` (que también deshace el cambio) y la excepción se propaga: el endpoint la convierte
+    en `error_interno`. Un cambio sin su fila de auditoría no puede quedar persistido."""
     fila = IngresoCorreccion(
         comando=inv.comando,
         origen=inv.origen,
@@ -533,6 +541,8 @@ def _finalizar(
             exc,
             exc_info=True,
         )
+        if atomico:
+            raise
         return ResultadoCorreccion(
             resultado=resultado, respuesta=respuesta, comando=inv.comando, ingreso=ingreso
         )
@@ -1336,9 +1346,9 @@ def registrar_egreso_web(
 # ── Mover / anular un ingreso desde el portal (admin) ──────────────────────────────────────────
 #
 # Plan `docs/superpowers/plans/2026-10-23-correccion-ingresos-portal.md`, decisiones 3 a 5. Mismo
-# contrato que `registrar_egreso_web`: el operador elige la fila exacta, el cambio se confirma con su
-# propio `commit()` y después `_finalizar` escribe **una** fila de auditoría (`origen='web'`) por
-# invocación, incluidos los rechazos. Ninguna de las dos toca `Camara.estado` persistido (el estado
+# contrato que `registrar_egreso_web` (el operador elige la fila exacta; **una** fila de auditoría
+# `origen='web'` por invocación, incluidos los rechazos), con una diferencia: el cambio y su auditoría
+# se confirman en un **único** `commit()` (`_finalizar(atomico=True)`); si falla, no queda ninguno. Ninguna de las dos toca `Camara.estado` persistido (el estado
 # derivado se corrige solo por el filtro `Ingreso.vigente()`) ni reabre el `IngresoSinMatch` que
 # hubiera resuelto el ingreso: si el ingreso nunca ocurrió, no hay caso que reabrir.
 
@@ -1455,6 +1465,8 @@ def _cancelar_intervencion_fomon(session: Session, interv: FomonIntervencion, ah
 # `PRE_PENDIENTE`/`POST_PENDIENTE`. Sin esta vuelta atrás, una `PRE_EN_CURSO` con sus consultas
 # canceladas pasaría en el próximo tick a `EN_CURSO` sin línea base.
 _VOLVER_A_PENDIENTE = {"PRE_EN_CURSO": "PRE_PENDIENTE", "POST_EN_CURSO": "POST_PENDIENTE"}
+# Estados en los que la PRE todavía se va a medir con el alcance nuevo.
+_ESTADOS_PRE = ("PRE_PENDIENTE", "PRE_EN_CURSO")
 
 
 def _reubicar_intervencion_fomon(
@@ -1473,8 +1485,15 @@ def _reubicar_intervencion_fomon(
       `motor.planificar_consultas` en el próximo tick, porque la intervención vuelve a
       `PRE_PENDIENTE`/`POST_PENDIENTE` (los demás estados abiertos no tienen consultas en vuelo y
       el motor planifica la fase siguiente con el alcance nuevo).
-    - Al volver a `PRE_PENDIENTE` se limpia `aviso_ts`, así el próximo tick publica un aviso raíz
-      nuevo con la cámara correcta (el viejo queda en Slack: no se edita desde acá).
+    - Siempre se limpia `aviso_ts`/`aviso_canal`, para que nada más salga en el hilo de la cámara
+      vieja (ese aviso queda en Slack: no se edita desde acá). En `PRE_PENDIENTE`, el próximo tick
+      publica un aviso raíz nuevo con la cámara correcta (`planificar_consultas`). Después de la PRE
+      (`EN_CURSO`, `SIN_EGRESO`, `POST_*`) el motor sólo publica la raíz en fase PRE y `_avisar` no
+      hace nada sin `aviso_ts`: esa intervención ya no avisa por Slack; sus resultados siguen en el
+      panel de FO Monitor.
+    - Después de la PRE, si el alcance nuevo tiene servicios, `sin_linea_base=True`: nunca se midió
+      la PRE de esos servicios (sin consultas enviadas), igual que el motor cuando la PRE no da
+      mediciones válidas.
     - La botella objetivo sale de `resolver_alcance`: la elegida si es vigente del destino; si no se
       eligió ninguna, la Botella 1 (`botella_1_inferida` según corresponda), igual que al crearla.
     - `atribucion_compartida` se marca como en `crear_intervencion` si el destino ya tiene otra
@@ -1488,13 +1507,14 @@ def _reubicar_intervencion_fomon(
     interv.botella_objetivo_n_id = alcance.botella_objetivo_n_id
     interv.botella_1_inferida = alcance.botella_1_inferida
     congelar_alcance(session, interv, alcance)
+    if interv.estado not in _ESTADOS_PRE and alcance.servicios_unicos():
+        interv.sin_linea_base = True
+    interv.aviso_ts = None
+    interv.aviso_canal = None
     nuevo_estado = _VOLVER_A_PENDIENTE.get(interv.estado)
     if nuevo_estado is not None:
         interv.estado = nuevo_estado
         interv.proximo_evento_en = ahora
-        if nuevo_estado == "PRE_PENDIENTE":
-            interv.aviso_ts = None
-            interv.aviso_canal = None
     otras = _otras_abiertas_en_camara(session, camara_id, interv.id)
     interv.atribucion_compartida = bool(otras)
     for otra in otras:
@@ -1591,6 +1611,21 @@ def mover_ingreso_web(
             **anterior,
             **comunes,
         )
+    if destino.camara_padre_id is not None:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_DESTINO_NO_RAIZ,
+            respuesta=(
+                f"La cámara destino #{destino.id} es una botella dentro de la cámara "
+                f"#{destino.camara_padre_id}; elegí la cámara raíz."
+            ),
+            camara=destino,
+            ingreso=objetivo,
+            error_detalle=f"Camara id={destino.id} tiene camara_padre_id={destino.camara_padre_id}",
+            **anterior,
+            **comunes,
+        )
 
     botella: CromoBotella | None = None
     if cromo_botella_destino_n_id is not None:
@@ -1649,15 +1684,8 @@ def mover_ingreso_web(
             session, interv, camara_id=destino.id, botella_n_id=nuevo_botella_n_id, ahora=ahora_utc
         )
         actualizadas.append(interv.id)
-    session.commit()
-    if actualizadas or omitidas:
-        logger.info(
-            "Mover ingreso #%s: intervenciones FO Monitor actualizadas=%s omitidas=%s",
-            objetivo.id,
-            actualizadas,
-            omitidas,
-        )
 
+    # Un único commit: el cambio (ingreso + FO Monitor) y su auditoría, juntos.
     resultado = _finalizar(
         session,
         inv,
@@ -1666,9 +1694,17 @@ def mover_ingreso_web(
         camara=destino,
         botella=botella,
         ingreso=objetivo,
+        atomico=True,
         **anterior,
         **comunes,
     )
+    if actualizadas or omitidas:
+        logger.info(
+            "Mover ingreso #%s: intervenciones FO Monitor actualizadas=%s omitidas=%s",
+            objetivo.id,
+            actualizadas,
+            omitidas,
+        )
     resultado.intervenciones_fomon = actualizadas
     resultado.intervenciones_fomon_omitidas = omitidas
     return resultado
@@ -1747,15 +1783,8 @@ def anular_ingreso_web(
             continue
         _cancelar_intervencion_fomon(session, interv, ahora_utc)
         canceladas.append(interv.id)
-    session.commit()
-    if canceladas or omitidas:
-        logger.info(
-            "Anular ingreso #%s: intervenciones FO Monitor canceladas=%s omitidas=%s",
-            objetivo.id,
-            canceladas,
-            omitidas,
-        )
 
+    # Un único commit: la baja lógica (+ FO Monitor) y su auditoría, juntas.
     resultado = _finalizar(
         session,
         inv,
@@ -1765,8 +1794,16 @@ def anular_ingreso_web(
         botella=botella,
         momento_efectivo=ahora_utc,
         ingreso=objetivo,
+        atomico=True,
         **comunes,
     )
+    if canceladas or omitidas:
+        logger.info(
+            "Anular ingreso #%s: intervenciones FO Monitor canceladas=%s omitidas=%s",
+            objetivo.id,
+            canceladas,
+            omitidas,
+        )
     resultado.intervenciones_fomon = canceladas
     resultado.intervenciones_fomon_omitidas = omitidas
     return resultado
@@ -1792,6 +1829,7 @@ __all__ = [
     "RESULTADO_BOTELLA_INVALIDA",
     "RESULTADO_CAMARA_AMBIGUA",
     "RESULTADO_CAMARA_NO_ENCONTRADA",
+    "RESULTADO_DESTINO_NO_RAIZ",
     "RESULTADO_EGRESO_ANTERIOR_AL_INGRESO",
     "RESULTADO_ERROR_INTERNO",
     "RESULTADO_HILO_SIN_FORMULARIO",

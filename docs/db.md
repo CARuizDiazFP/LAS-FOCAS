@@ -435,8 +435,12 @@ también bloquea el borrado: es historial) ni la marca de agua de FO Monitor (`c
 
 **Mover / anular desde el portal** (`ingreso_correccion_service.mover_ingreso_web` /
 `anular_ingreso_web`, admin): una fila de auditoría por invocación (`origen='web'`), incluidos los
-rechazos. Mover cambia `camara_id` y deja `cromo_botella_id` en NULL salvo una `CromoBotella` vigente
-del destino; no mueve un anulado ni al mismo par cámara/botella; un ingreso abierto se mueve abierto.
+rechazos. En el camino exitoso el cambio (ingreso + FO Monitor) y su fila de auditoría se confirman en
+un **único** `commit()`: si la auditoría falla, se revierte todo y la excepción llega al endpoint
+(500 con ref). Mover cambia `camara_id` y deja `cromo_botella_id` en NULL salvo una `CromoBotella`
+vigente del destino; el destino tiene que ser una Cámara raíz (`camara_padre_id IS NULL`; si no,
+`DESTINO_NO_RAIZ`; una `PENDIENTE_REVISION` se acepta); no mueve un anulado ni al mismo par
+cámara/botella; un ingreso abierto se mueve abierto.
 Anular exige motivo (3 a 500 caracteres) y no re-anula. Ninguna de las dos escribe `Camara.estado` ni
 reabre el `IngresoSinMatch` que hubiera resuelto el ingreso. FO Monitor: las intervenciones vinculadas
 en un estado abierto (`motor.ESTADOS_ABIERTOS`) siguen el cambio, salvo que tengan otros ingresos
@@ -447,8 +451,11 @@ vigentes vinculados que no acompañan el cambio ("Botella 1 y 2" del mismo hilo;
   (sólo DB, sin red) y reemplazando `fomon_intervencion_servicios` (vía `motor.congelar_alcance`); la
   botella objetivo es la elegida o la Botella 1 del destino. Las consultas `PENDIENTE` se cancelan
   (`error='alcance_recalculado'`) y `PRE_EN_CURSO`/`POST_EN_CURSO` vuelven a `PRE_PENDIENTE`/`POST_PENDIENTE`
-  para que `planificar_consultas` cree las del alcance nuevo en el próximo tick; al volver a
-  `PRE_PENDIENTE` se limpia `aviso_ts` y se publica un aviso raíz nuevo (el viejo queda en Slack). Si la
+  para que `planificar_consultas` cree las del alcance nuevo en el próximo tick. Siempre se limpia
+  `aviso_ts` (nada más sale en el hilo de la cámara vieja, que queda en Slack): antes de la PRE el
+  próximo tick publica un aviso raíz nuevo; después de la PRE (`EN_CURSO`, `SIN_EGRESO`, `POST_*`) el
+  motor no republica la raíz y la intervención deja de avisar por Slack (sus resultados siguen en el
+  panel), y si el alcance nuevo tiene servicios se marca `sin_linea_base=True`. Si la
   intervención ya tiene alguna consulta `ENVIADA`, `RESPONDIDA` o `TIMEOUT` (ya hubo comunicación con
   burritoIA sobre el alcance viejo) **no** se recalcula: queda como está, con motivo
   `CONSULTAS_YA_ENVIADAS` (el ingreso se mueve igual).
@@ -483,7 +490,7 @@ inmutable. Ver `docs/decisiones.md`, entrada 2026-09-23, para el razonamiento co
 | `ingreso_id` | Integer, nullable, index — sin FK desde `20261023_01` (antes FK → `app.ingresos.id`) | Sólo se completa si la corrección terminó creando/cerrando un `Ingreso` real. Id histórico. |
 | `camara_id_anterior` | Integer, nullable, sin FK | Desde `20261023_01`: cámara de origen de un `MOVER_INGRESO` (portal). El destino va en `camara_id_resuelta`. Id histórico. |
 | `cromo_botella_id_anterior` | BigInteger, nullable, sin FK | Desde `20261023_01`: botella de origen de un `MOVER_INGRESO`. Id histórico. |
-| `resultado` | `String(64)`, `NOT NULL` | Uno de 20 valores (`OK_INGRESO`, `OK_EGRESO_CERRADO`, `OK_EGRESO_ASENTADO`, `CAMARA_AMBIGUA`, `CAMARA_NO_ENCONTRADA`, `VARIOS_INGRESOS_ABIERTOS`, `SIN_INGRESO_ABIERTO`, `EGRESO_ANTERIOR_AL_INGRESO`, `INGRESO_YA_CERRADO`, `INGRESO_ANULADO` (desde 2026-10-23), `INGRESO_NO_ENCONTRADO`, `HILO_SIN_FORMULARIO`, `MOMENTO_INVALIDO`, `ERROR_INTERNO`, `PENDIENTE_FECHA`; desde 2026-10-23, para `MOVER_INGRESO`/`ANULAR_INGRESO`: `OK_INGRESO_MOVIDO`, `OK_INGRESO_ANULADO`, `BOTELLA_INVALIDA`, `MISMO_DESTINO`, `MOTIVO_INVALIDO`) — constantes `RESULTADO_*` de `core/services/ingreso_correccion_service.py`. `PENDIENTE_FECHA` es un **estado pendiente, no un rechazo**: habilita que el operador conteste en el mismo hilo sólo con `DD-MM-AAAA HH:MM` y el comando se re-ejecute (escribiendo una fila NUEVA — la tabla es append-only). |
+| `resultado` | `String(64)`, `NOT NULL` | Uno de 21 valores (`OK_INGRESO`, `OK_EGRESO_CERRADO`, `OK_EGRESO_ASENTADO`, `CAMARA_AMBIGUA`, `CAMARA_NO_ENCONTRADA`, `VARIOS_INGRESOS_ABIERTOS`, `SIN_INGRESO_ABIERTO`, `EGRESO_ANTERIOR_AL_INGRESO`, `INGRESO_YA_CERRADO`, `INGRESO_ANULADO` (desde 2026-10-23), `INGRESO_NO_ENCONTRADO`, `HILO_SIN_FORMULARIO`, `MOMENTO_INVALIDO`, `ERROR_INTERNO`, `PENDIENTE_FECHA`; desde 2026-10-23, para `MOVER_INGRESO`/`ANULAR_INGRESO`: `OK_INGRESO_MOVIDO`, `OK_INGRESO_ANULADO`, `BOTELLA_INVALIDA`, `DESTINO_NO_RAIZ`, `MISMO_DESTINO`, `MOTIVO_INVALIDO`) — constantes `RESULTADO_*` de `core/services/ingreso_correccion_service.py`. `PENDIENTE_FECHA` es un **estado pendiente, no un rechazo**: habilita que el operador conteste en el mismo hilo sólo con `DD-MM-AAAA HH:MM` y el comando se re-ejecute (escribiendo una fila NUEVA — la tabla es append-only). |
 | `error_detalle` | `Text`, nullable | Detalle del rechazo/error, si lo hubo. |
 | `created_at` | DateTime(tz), `NOT NULL`, index | — |
 

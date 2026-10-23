@@ -1782,6 +1782,7 @@ def _error_correccion_ingreso(resultado: Any) -> ErrorDeDominio:
         ics.RESULTADO_CAMARA_NO_ENCONTRADA: NoEncontrado,
         ics.RESULTADO_MOTIVO_INVALIDO: DatoInvalido,
         ics.RESULTADO_BOTELLA_INVALIDA: DatoInvalido,
+        ics.RESULTADO_DESTINO_NO_RAIZ: DatoInvalido,
         ics.RESULTADO_INGRESO_ANULADO: Conflicto,
         ics.RESULTADO_MISMO_DESTINO: Conflicto,
     }
@@ -1821,7 +1822,8 @@ async def admin_mover_ingreso_web(
 ) -> JSONResponse:
     """Mueve un ingreso a otra Cámara (y opcionalmente a una `CromoBotella` vigente del destino).
     Delegado en `ingreso_correccion_service.mover_ingreso_web`; 404 ingreso/cámara inexistente,
-    409 ingreso anulado o mismo destino, 422 motivo o botella inválidos."""
+    409 ingreso anulado o mismo destino, 422 motivo o botella inválidos o destino que no es una
+    cámara raíz (`camara_padre_id` seteado)."""
     username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "admin_mover_ingreso", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
