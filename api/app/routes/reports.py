@@ -25,6 +25,7 @@ from modules.informes_repetitividad import report as report  # type: ignore
 from modules.informes_repetitividad import processor as processor  # type: ignore
 from core.services.repetitividad import db_to_processor_frame, reclamos_from_db
 from core.services import sla as sla_service
+from api.app.errores import error_interno
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -75,12 +76,7 @@ async def generar_informe_repetitividad(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "action=reports.repetitividad stage=excel_error periodo=%s error=%s",
-                periodo_titulo,
-                exc,
-            )
-            raise HTTPException(status_code=500, detail="No se pudo generar el informe") from exc
+            return error_interno("reports.repetitividad stage=excel", exc, periodo=periodo_titulo)
 
         map_images = result.map_images
         response_headers = {
@@ -143,12 +139,7 @@ async def generar_informe_repetitividad(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "action=reports.repetitividad stage=db_error periodo=%s error=%s",
-            periodo_titulo,
-            exc,
-        )
-        raise HTTPException(status_code=500, detail="No se pudo generar el informe desde DB") from exc
+        return error_interno("reports.repetitividad stage=db", exc, periodo=periodo_titulo)
 
     map_images = result.map_images
     headers = {
@@ -257,14 +248,9 @@ async def generar_informe_sla(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "action=reports.sla stage=error mes=%s anio=%s usar_db=%s error=%s",
-            periodo_mes,
-            periodo_anio,
-            usar_db,
-            exc,
+        return error_interno(
+            "reports.sla", exc, mes=periodo_mes, anio=periodo_anio, usar_db=usar_db
         )
-        raise HTTPException(status_code=500, detail="No se pudo generar el informe SLA") from exc
 
     payload = {
         "docx": str(resultado.docx),
@@ -304,13 +290,7 @@ async def obtener_preview_sla(
             sla_service.compute_from_db, mes=periodo_mes, anio=periodo_anio
         )
     except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "action=reports.sla.preview stage=db_error mes=%s anio=%s error=%s",
-            periodo_mes,
-            periodo_anio,
-            exc,
-        )
-        raise HTTPException(status_code=500, detail="No se pudo obtener el preview SLA") from exc
+        return error_interno("reports.sla.preview stage=db", exc, mes=periodo_mes, anio=periodo_anio)
 
     vista = await asyncio.to_thread(
         sla_service.build_preview_from_computation,

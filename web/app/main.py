@@ -28,6 +28,7 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOGS_ROOT = Path(os.getenv("LOGS_DIR", str(Path(__file__).resolve().parents[2] / "Logs")))
 logger = setup_logging("web", LOG_LEVEL, enable_file=True, logs_dir=LOGS_ROOT, filename="web.log")
 
+from .errores import ErrorDeDominio, manejar_error_de_dominio, manejar_error_no_controlado
 from .routers import admin_datos, camaras, chat, cromo, servicios, sesion
 from .comun import (
     BASE_DIR,
@@ -62,6 +63,13 @@ def _session_middleware_options() -> dict[str, Any]:
     }
 
 app = FastAPI(title="LAS-FOCAS Web UI", version=BUILD_VERSION)
+
+# Errores (ver web/app/errores.py). HTTPException y RequestValidationError conservan los handlers de
+# FastAPI. El de `Exception` lo ejecuta ServerErrorMiddleware (fuera de los middlewares de usuario):
+# responde 500 con ref y Starlette re-lanza igual la excepción (uvicorn la loguea; TestClient con
+# raise_server_exceptions=True la sigue propagando al test).
+app.add_exception_handler(ErrorDeDominio, manejar_error_de_dominio)  # type: ignore[arg-type]
+app.add_exception_handler(Exception, manejar_error_no_controlado)
 app.add_middleware(
     SessionMiddleware,
     **_session_middleware_options(),

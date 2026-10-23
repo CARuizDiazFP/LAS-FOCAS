@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.app.errores import ErrorDeDominio, manejar_error_de_dominio, manejar_error_no_controlado
 from api.app.routes.health import router as health_router
 from api.app.routes.reports import router as reports_router
 from api.app.routes.ingest import router as ingest_router, alias_router as ingest_alias_router
@@ -33,6 +34,12 @@ def create_app() -> FastAPI:
         await cerrar_prov_client()
 
     app = FastAPI(title="LAS-FOCAS API", version="0.1.0", lifespan=lifespan)
+
+    # Errores (ver api/app/errores.py): formato `{"detail": ...}` de la API interna. HTTPException y
+    # RequestValidationError conservan los handlers de FastAPI; en /api/v1/ el 500 no controlado
+    # responde igual que antes (text/plain). Starlette re-lanza la excepción tras el handler.
+    app.add_exception_handler(ErrorDeDominio, manejar_error_de_dominio)  # type: ignore[arg-type]
+    app.add_exception_handler(Exception, manejar_error_no_controlado)
 
     # CORS: permitir llamadas desde el frontend (8080) y cualquier origen configurado
     default_origins = [

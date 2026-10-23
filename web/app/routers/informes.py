@@ -277,13 +277,9 @@ async def _leer_excels_sla(archivos: List[UploadFile], on_error: Any) -> tuple[b
                 return _rechazo_sla(on_error, 422, "Se recibió más de un Excel de reclamos")
             reclamos_bytes = contenido
 
-    if servicios_bytes is None or reclamos_bytes is None:
-        logger.warning(
-            "action=sla_web_report stage=validation error=missing_files servicios=%s reclamos=%s",
-            servicios_bytes is not None,
-            reclamos_bytes is not None,
-        )
-        return _rechazo_sla(on_error, 400, "Adjuntá los archivos de servicios y reclamos")
+    # Invariante: el llamador exige exactamente dos archivos y un tipo repetido ya se rechazó arriba,
+    # así que acá hay uno de cada tipo (el chequeo `missing_files` era inalcanzable y se quitó).
+    assert servicios_bytes is not None and reclamos_bytes is not None
     return servicios_bytes, reclamos_bytes
 
 

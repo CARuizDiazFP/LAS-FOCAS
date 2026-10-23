@@ -11,6 +11,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import pytest
+
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:  # pragma: no cover - inicialización
     sys.path.insert(0, str(ROOT_DIR))
@@ -70,3 +72,16 @@ def pytest_sessionfinish(session, exitstatus) -> None:
     shutil.rmtree(_METRICAS_TMP_DIR, ignore_errors=True)
     if nuevos or cambios:
         session.exitstatus = 1
+
+
+@pytest.fixture
+def con_sesion():
+    """Sesión simulada de la SPA vía `app.dependency_overrides`; ver `tests/soporte_sesion.py`.
+
+    `con_sesion("admin")`, `con_sesion("user", username="pepe")` o `con_sesion(None)` (sin sesión).
+    Los overrides se restauran al terminar el test, aunque falle.
+    """
+    from tests.soporte_sesion import sesion_simulada
+
+    with sesion_simulada() as activar:
+        yield activar
