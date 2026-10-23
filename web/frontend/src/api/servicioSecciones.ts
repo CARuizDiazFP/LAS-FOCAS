@@ -162,20 +162,34 @@ export interface InfraServicioIngreso {
   tipo: string;
   camara_id: number;
   camara_nombre: string | null;
+  /** Baja lógica: sólo llegan anulados si un admin los pide (`incluirAnulados`). */
+  anulado: boolean;
+  anulado_at: string | null;
+  anulado_por: string | null;
+  anulado_motivo: string | null;
 }
 
 export interface InfraServicioIngresosResponse {
   status: string;
   servicio_id: string;
+  /** Cuenta SIEMPRE sólo los vigentes, también cuando se incluyen anulados. */
   total: number;
+  /** Presente sólo si se pidieron (y se devolvieron) anulados. */
+  total_anulados?: number;
   ingresos: InfraServicioIngreso[];
 }
 
+/**
+ * `incluirAnulados` sólo tiene efecto para un admin: a un usuario común el backend lo ignora y
+ * devuelve sólo los vigentes.
+ */
 export async function getIngresosServicio(
   idOrigen: string,
+  incluirAnulados = false,
 ): Promise<InfraServicioIngresosResponse> {
+  const qs = incluirAnulados ? '?incluir_anulados=1' : '';
   return requestJson<InfraServicioIngresosResponse>(
-    `/api/infra/servicios/${encodeURIComponent(idOrigen)}/ingresos`,
+    `/api/infra/servicios/${encodeURIComponent(idOrigen)}/ingresos${qs}`,
   );
 }
 
@@ -199,6 +213,90 @@ export async function registrarEgresoIngreso(
   return requestJson<RegistrarEgresoResponse>(`/api/infra/ingresos/${ingresoId}/egreso`, {
     method: 'POST',
     json: { momento: momentoIso, motivo },
+    csrf: true,
+  });
+}
+
+// ── Corrección de ingresos (admin): mover y anular ───────────────────────
+
+/**
+ * Lo mínimo que necesitan los modales de mover/anular de un ingreso. Lo arman tanto la vista de
+ * Servicio (`InfraServicioIngreso` ya trae la cámara) como `ModalRegistros` (la cámara es la del
+ * detalle abierto).
+ */
+export interface IngresoCorregible {
+  id: number;
+  fecha_inicio: string | null;
+  fecha_fin: string | null;
+  tecnico_id: string | null;
+  cromo_botella_id: number | null;
+  botella_label: string;
+  tipo: string;
+  camara_id: number | null;
+  camara_nombre: string | null;
+}
+
+/** Límites del motivo que valida el backend (tras `strip`). */
+export const MOTIVO_CORRECCION_MIN = 3;
+export const MOTIVO_CORRECCION_MAX = 500;
+
+/**
+ * Intervención de FO Monitor vinculada que el backend dejó como estaba:
+ * `OTROS_INGRESOS_VIGENTES` (tiene otros ingresos vigentes en otra cámara) o
+ * `CONSULTAS_YA_ENVIADAS` (ya consultó con el alcance anterior; sólo al mover).
+ */
+export interface IntervencionFomonOmitida {
+  intervencion_id: number;
+  motivo: string;
+}
+
+export interface CorreccionIngresoResponse {
+  ok: boolean;
+  resultado: 'OK_INGRESO_MOVIDO' | 'OK_INGRESO_ANULADO';
+  mensaje: string;
+  /** El ingreso ya corregido, serializado como en los listados, con su cámara (la de destino al mover). */
+  ingreso: InfraServicioIngreso;
+  /** Intervenciones abiertas que se reubicaron (mover) o se cancelaron (anular). */
+  intervenciones_fomon: number[];
+  intervenciones_fomon_omitidas: IntervencionFomonOmitida[];
+}
+
+/**
+ * Mueve un ingreso a otra Cámara raíz (`POST /api/admin/infra/ingresos/{id}/mover`), sólo admin.
+ * `cromoBotellaNId` es el `n_id` de una CromoBotella vigente del destino; `null` lo deja sin botella.
+ * Los rechazos llegan como `ApiError` con el texto del backend (`{"error": ...}`): 404 ingreso o
+ * cámara inexistente, 409 ingreso anulado o mismo destino, 422 motivo/botella inválidos o destino
+ * que no es una cámara raíz.
+ */
+export async function moverIngreso(
+  ingresoId: number,
+  camaraDestinoId: number,
+  cromoBotellaNId: number | null,
+  motivo: string,
+): Promise<CorreccionIngresoResponse> {
+  return requestJson<CorreccionIngresoResponse>(`/api/admin/infra/ingresos/${ingresoId}/mover`, {
+    method: 'POST',
+    json: {
+      camara_destino_id: camaraDestinoId,
+      cromo_botella_destino_n_id: cromoBotellaNId,
+      motivo,
+    },
+    csrf: true,
+  });
+}
+
+/**
+ * Anula un ingreso que nunca ocurrió (`POST /api/admin/infra/ingresos/{id}/anular`), sólo admin.
+ * Baja lógica auditada: deja de contar para el estado de la cámara y de listarse. 409 si ya estaba
+ * anulado, 422 si el motivo no tiene entre 3 y 500 caracteres.
+ */
+export async function anularIngreso(
+  ingresoId: number,
+  motivo: string,
+): Promise<CorreccionIngresoResponse> {
+  return requestJson<CorreccionIngresoResponse>(`/api/admin/infra/ingresos/${ingresoId}/anular`, {
+    method: 'POST',
+    json: { motivo },
     csrf: true,
   });
 }

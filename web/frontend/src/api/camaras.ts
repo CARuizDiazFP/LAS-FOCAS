@@ -218,3 +218,56 @@ export async function asociarSinMatchCamaras(
     csrf: true,
   });
 }
+
+// ── Selectores livianos de destino (mover un ingreso a otra Cámara) ──────────
+
+export interface CamaraCandidata {
+  id: number;
+  nombre: string;
+  direccion: string | null;
+  estado: string;
+  botellas_count: number;
+  cables_count: number;
+}
+
+/**
+ * Búsqueda liviana de Cámaras **raíz** por nombre (`GET /api/infra/camaras/buscar`, `solo_raiz`
+ * explícito aunque es el default del backend). `signal` permite descartar una búsqueda vieja cuando
+ * el usuario sigue tipeando.
+ */
+export async function buscarCamarasRaiz(
+  q: string,
+  options: { limit?: number; excluirId?: number | null; signal?: AbortSignal } = {},
+): Promise<CamaraCandidata[]> {
+  const params = new URLSearchParams({ q, limit: String(options.limit ?? 10), solo_raiz: 'true' });
+  if (options.excluirId != null) params.set('excluir_id', String(options.excluirId));
+  const data = await requestJson<{ camaras?: CamaraCandidata[] }>(`/api/infra/camaras/buscar?${params}`, {
+    signal: options.signal,
+  });
+  return data.camaras ?? [];
+}
+
+export interface BotellaCromoHija {
+  origen: 'cromo';
+  /** `n_id` de la CromoBotella. */
+  id: number;
+  nombre: string | null;
+  estado: string | null;
+}
+
+/**
+ * Botellas Cromo (vigentes: el backend ya filtra `vigente`) que cuelgan de una Cámara
+ * (`GET /api/infra/camaras/{id}/botellas`, que también trae las legado: se descartan acá).
+ */
+export async function getBotellasCromoDeCamara(
+  camaraId: number,
+  signal?: AbortSignal,
+): Promise<BotellaCromoHija[]> {
+  const data = await requestJson<{ botellas?: Array<{ origen: string; id: number; nombre: string | null; estado: string | null }> }>(
+    `/api/infra/camaras/${camaraId}/botellas`,
+    { signal },
+  );
+  return (data.botellas ?? [])
+    .filter((botella) => botella.origen === 'cromo')
+    .map((botella) => ({ origen: 'cromo' as const, id: botella.id, nombre: botella.nombre, estado: botella.estado }));
+}
