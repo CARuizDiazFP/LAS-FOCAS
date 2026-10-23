@@ -97,12 +97,12 @@ from modules.slack_baneo_notifier.tracking_servicio import (
 from modules.slack_baneo_notifier.camara_search import (
     AmbiguousSearchError,
     NumeroNoCoincideError,
-    _pocos_tokens_significativos,
     detectar_multi_bot,
     extraer_nombre_camara,
     extraer_slack_user_id_autorizacion,
     extraer_tipo_movimiento,
     limpiar_ruido_operativo,
+    normalizar_candidato,
 )
 from modules.slack_baneo_notifier.correccion_ingreso import (
     MomentoInvalidoError,
@@ -132,7 +132,16 @@ _CANAL_ID_DEFAULT = ""  # Se completa desde config_servicios en DB
 # ID: "id: 1228619", "id 1228619", "ingreso ok, id: 1228619" (sin distinguir mayúsculas). El número
 # se prueba primero como Fontaine ID y después como ID de empalme (`_procesar_seguimiento_empalme`).
 _RE_SEGUIMIENTO_EMPALME = re.compile(
-    r"^\s*(?:ingreso\s+ok\s*[,.;:]?\s*)?(?:(?:empalme|id)\s*:?\s*)?#?(\d{3,})\s*$", re.IGNORECASE
+    r"^\s*(?:(?:in|e)greso\s+ok\s*[,.;:]?\s*)?(?:(?:empalme|id)\s*:?\s*)?#?(\d{3,})\s*$", re.IGNORECASE
+)
+# Forma con que el operador da el Fontaine ID ("id: N", "ingreso ok, id: N", "egreso ok, id: N").
+# Si ese número no resuelve, el caso NO se cierra (ver `_procesar_seguimiento_empalme`).
+_RE_FORMA_FONTAINE = re.compile(r"(?i)^\s*(?:(?:in|e)greso\s+ok\b|id\b)")
+
+# Pedido común de los avisos de sin match / ambiguo (decisión del usuario 2026-10-23: "informa y
+# solicita escribir la cámara dentro del mismo hilo").
+_PEDIDO_REESCRIBIR = (
+    "Escribí la cámara correcta en este hilo (o el operador puede responder con el Fontaine ID)."
 )
 
 # Detecta el trigger "Revalidar ingreso" como respuesta en el hilo de un caso `IngresoSinMatch`
@@ -146,8 +155,36 @@ _RE_REVALIDAR_INGRESO = re.compile(r"^\s*revalidar\s+ingreso\s*$", re.IGNORECASE
 # (ver `_procesar_reescritura_camara`): una mención al bot (comandos de Cables/track vía
 # `app_mention`), "Forzar …", "Revalidar …" y los comandos de Cables/Servicios sin mención.
 _RE_COMANDO_CONOCIDO = re.compile(
-    r"(?i)^\s*(?:<@|forzar\b|revalidar\b|track\b|info\s+cable\b|verificar\s+cable\b|servicios\b)"
+    r"(?i)^\s*(?:<[@!]|forzar\b|revalidar\b|track\b|info\s+cable\b|verificar\s+cable\b|servicios\b)"
 )
+
+# Heurística de "esto parece un nombre de Cámara" para la reescritura en el hilo (fix de la revisión
+# 2026-10-23: con la heurística anterior, 13 de 22 respuestas humanas reales de 6 hilos de prod —
+# "ingreso ok, abriendo puerta", "Listo gracias", ":+1:"— habrían recibido "sigue sin match").
+# Se quitan emojis/entidades de Slack y el prefijo con que el operador valida ("ingreso ok, sin id,
+# nombre: …"); queda un nombre si tiene 2+ tokens significativos (3+ caracteres o un número de 2+
+# dígitos) que no sean el tipo, y además un número de 2+ dígitos o empieza con un tipo de elemento.
+# Medido contra `app.camaras` de dev: acepta el 94% de los nombres; "sala 1" y "Poste 1 frente"
+# (falsos positivos reales de la heurística anterior) quedan afuera.
+_RE_EMOJI_O_ENTIDAD = re.compile(r":[\w+\-]+:|<[^>]*>")
+_RE_PREFIJO_VALIDACION = re.compile(
+    r"(?i)^\s*(?:in|e)greso\s+ok\b[\s,.;:]*(?:sin\s+id\b[\s,.;:]*)?(?:nombre\s*:\s*)?"
+)
+_TIPOS_ELEMENTO = ("cra", "camara", "bot", "botella", "poste", "tza", "nodo", "empalme", "odf", "pon")
+_RE_EMPIEZA_CON_TIPO = re.compile(rf"(?i)^\s*(?:c[aá]mara|{'|'.join(_TIPOS_ELEMENTO)})\b")
+
+
+def nombre_reescrito(texto: str) -> str | None:
+    """El nombre de Cámara que una persona escribió en el hilo, o `None` si es charla."""
+    limpio = _RE_PREFIJO_VALIDACION.sub("", _RE_EMOJI_O_ENTIDAD.sub(" ", texto or ""))
+    limpio = limpiar_ruido_operativo(re.sub(r"\s+", " ", limpio).strip())
+    norm = normalizar_candidato(limpio)
+    tokens = [t for t in norm.split() if (len(t) >= 3 or re.fullmatch(r"\d{2,}", t)) and t not in _TIPOS_ELEMENTO]
+    if len(tokens) < 2:
+        return None
+    if re.search(r"\d{2,}", norm) or _RE_EMPIEZA_CON_TIPO.match(limpio):
+        return limpio
+    return None
 
 # Ventana de vigencia de una fila `PENDIENTE_FECHA` (`core/services/ingreso_correccion_service.py`,
 # Task 5) para que una respuesta de seguimiento con sólo `DD-MM-AAAA HH:MM` se interprete como la
@@ -309,6 +346,7 @@ class IngresoListener:
                 "⚠️ No pude confirmar automáticamente la cámara *{}* contra el inventario — "
                 "quedó registrada para revisión manual (puede ser un error de tipeo o una "
                 "diferencia de formato). *Podés continuar con el ingreso con normalidad.* "
+                f"{_PEDIDO_REESCRIBIR} "
                 "Si conocés el ID de empalme más cercano, respondé en este mismo hilo sólo "
                 "con el número. Si más adelante se corrige el nombre en el inventario, "
                 "respondé *\"Revalidar ingreso\"* en este hilo para reintentarlo."
@@ -536,7 +574,10 @@ class IngresoListener:
         Desde 2026-10-23 el número se prueba primero como Fontaine ID (`buscar_por_id_legacy`) y,
         si no existe, como ID de empalme. Lo que resuelve cierra el caso igual que antes
         (`resuelto_via_empalme`) y la respuesta dice por cuál de los dos IDs. Un Fontaine ID
-        repetido nunca elige: responde y deja el caso pendiente.
+        repetido en Cámaras distintas nunca elige: responde y deja el caso pendiente. Si no
+        resuelve por ninguno: con la forma del Fontaine ID ("id: N", "ingreso ok, id: N") el caso
+        queda pendiente (se puede reescribir la Cámara); con un número suelto o "empalme N", se
+        marca como antes de 2026-10-23.
 
         Devuelve `True` cuando el mensaje fue tratado como intento de seguimiento (el caller debe
         cortar ahí, no seguir al flujo normal) y `False` cuando no aplica: el texto no matchea el
@@ -555,6 +596,7 @@ class IngresoListener:
             .filter(
                 IngresoSinMatch.thread_ts == thread_ts_evento,
                 IngresoSinMatch.resuelto_via_empalme == False,  # noqa: E712
+                IngresoSinMatch.resuelto_via_revalidacion == False,  # noqa: E712
             )
             .order_by(IngresoSinMatch.id.desc())
             .first()
@@ -608,7 +650,28 @@ class IngresoListener:
             )
             resultado_acceso = self._evaluar_estado_acceso_camara(camara, session)
             respuesta = f"Resuelto por {via}.\n{resultado_acceso.texto}"
+        elif _RE_FORMA_FONTAINE.match(texto):
+            # Fontaine ID que no resuelve (ni como empalme): el caso queda pendiente, así se puede
+            # reescribir la Cámara o reintentar con otro ID en el mismo hilo.
+            logger.info(
+                "Fontaine ID %s no resolvió (tampoco como empalme) — caso id=%s sigue pendiente",
+                numero,
+                caso.id,
+            )
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts_evento,
+                text=(
+                    f"⚠️ No encontré el Fontaine ID *{numero}* (tampoco es un ID de empalme). "
+                    "El ingreso sigue sin match: escribí la cámara correcta en este hilo o "
+                    "revisá el ID. *Podés continuar con el ingreso con normalidad.*"
+                ),
+                mrkdwn=True,
+            )
+            return True
         else:
+            # Número suelto o "empalme N" que no resuelve: mismo comportamiento que antes de
+            # 2026-10-23 (se marca el caso como atendido por empalme).
             logger.info(
                 "Número %s no resolvió como Fontaine ID ni como empalme con cámara asociada (caso id=%s)",
                 numero,
@@ -784,23 +847,32 @@ class IngresoListener:
         client: Any,
         channel: str,
         actor_slack_user_id: str | None,
+        event: dict[str, Any] | None = None,
     ) -> bool:
         """Una persona reescribe la Cámara en el hilo de un `IngresoSinMatch` pendiente (2026-10-23,
         decisión del usuario: "si la escriben correctamente hace match, si no la escriben queda sin
         match"). Último eslabón de la cadena de respuestas en hilo: después del seguimiento de
         empalme, la revalidación y la corrección.
 
-        Devuelve `False` (sigue el flujo) si el autor no es una persona, el texto es un comando
-        conocido o no hay caso pendiente en el hilo. Con caso pendiente:
+        Devuelve `False` (sigue el flujo) si el autor no es una persona (sin `user`, con `bot_id`, o
+        con un `subtype` que no sea `thread_broadcast` — evita loops entre bots), el texto es un
+        comando conocido o no hay caso pendiente en el hilo. Con caso pendiente:
 
-        - texto que no parece un nombre (menos de 2 tokens significativos y ningún número, la misma
-          heurística de la búsqueda): charla del hilo, se ignora en silencio (`True`, sin responder);
+        - texto que no parece un nombre (`nombre_reescrito`) o que es un Nodo (`corresponde_a_nodo`,
+          mismo criterio que el flujo normal): charla del hilo, se ignora en silencio (`True`);
         - match único: cierra el caso por el mismo camino que "Revalidar ingreso" y confirma;
         - sin match o ambiguo: responde que sigue sin match y deja el caso como está.
 
         Nunca asigna una cámara parecida. Sin migración: el texto reescrito queda en el log
         `action=ingreso_reescritura_camara`."""
-        if not actor_slack_user_id or _RE_COMANDO_CONOCIDO.match(texto) or self._es_fecha_suelta(texto):
+        event = event or {}
+        if (
+            not actor_slack_user_id
+            or event.get("bot_id")
+            or event.get("subtype") not in (None, "thread_broadcast")
+            or _RE_COMANDO_CONOCIDO.match(texto)
+            or self._es_fecha_suelta(texto)
+        ):
             return False
 
         from db.models.infra import IngresoSinMatch
@@ -818,9 +890,9 @@ class IngresoListener:
         if caso is None:
             return False
 
-        nombre = limpiar_ruido_operativo(texto.strip())
-        if _pocos_tokens_significativos(nombre):
-            logger.debug("Respuesta en hilo %s ignorada (no parece una cámara): %r", thread_ts_evento, texto)
+        nombre = nombre_reescrito(texto)
+        if nombre is None or corresponde_a_nodo(nombre, session):
+            logger.debug("Respuesta en hilo %s ignorada (no es una cámara): %r", thread_ts_evento, texto)
             return True
 
         candidatos: list[str] = []
@@ -1062,7 +1134,7 @@ class IngresoListener:
         aviso = (
             f":warning: No encontré *{exc.nombre_raw}* con ese número. ¿Quisiste decir:\n"
             f"{vinetas}\n"
-            "Escribí la cámara correcta en este hilo. "
+            f"{_PEDIDO_REESCRIBIR} "
             "*Podés continuar con el ingreso con normalidad.*"
         )
         logger.info(
@@ -1103,6 +1175,7 @@ class IngresoListener:
                 "para identificar una cámara. Por favor, especificá la dirección "
                 "completa o el número exacto. Recuerdo para accesos a Nodos anteponer la Palabra 'Nodo' (ej: 'Nodo Pilar')."
                 f"{candidatos_texto}\n"
+                f"{_PEDIDO_REESCRIBIR} "
                 "*Podés continuar con el ingreso con normalidad.* Si más adelante se corrige "
                 "el nombre en el inventario, respondé *\"Revalidar ingreso\"* en este hilo "
                 "para reintentarlo."
@@ -1113,6 +1186,7 @@ class IngresoListener:
                 f"con *{exc.cantidad}* cámaras en el sistema. Por favor, especificá "
                 "la dirección o el número exacto."
                 f"{candidatos_texto}\n"
+                f"{_PEDIDO_REESCRIBIR} "
                 "*Podés continuar con el ingreso con normalidad.* Si más adelante se corrige "
                 "el nombre en el inventario, respondé *\"Revalidar ingreso\"* en este hilo "
                 "para reintentarlo."
@@ -1255,7 +1329,7 @@ class IngresoListener:
                 # Último (2026-10-23): una persona reescribe la Cámara en el hilo de un caso sin
                 # match — ninguno de los anteriores lo reconoció como suyo.
                 if self._procesar_reescritura_camara(
-                    texto, event_thread_ts, session, client, channel, actor_slack_user_id
+                    texto, event_thread_ts, session, client, channel, actor_slack_user_id, event
                 ):
                     return
 

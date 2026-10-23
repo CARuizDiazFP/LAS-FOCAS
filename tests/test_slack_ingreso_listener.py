@@ -557,6 +557,11 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
         # Invitación al seguimiento por ID de empalme (Tarea 2, 2026-08-23).
         self.assertIn("ID de empalme", texto_respuesta)
         self.assertNotIn("bajo revisión", texto_respuesta)
+        # 2026-10-23: "informa y solicita escribir la cámara dentro del mismo hilo".
+        self.assertIn(
+            "Escribí la cámara correcta en este hilo (o el operador puede responder con el Fontaine ID).",
+            texto_respuesta,
+        )
 
     def test_responde_camara_libre(self) -> None:
         from db.models.infra import CamaraEstado
@@ -1476,6 +1481,7 @@ class TestFiltroAmbiguedad(unittest.TestCase):
         self.assertIn("• Cra A Vicente Lopez", texto)
         self.assertIn("• Cra B Vicente Lopez", texto)
         self.assertIn("Podés continuar con el ingreso con normalidad", texto)
+        self.assertIn("Escribí la cámara correcta en este hilo (o el operador puede responder con el Fontaine ID)", texto)
 
     def test_listener_nombre_generico_tambien_dice_puede_continuar(self) -> None:
         """La rama cantidad==0 (nombre demasiado genérico) también debe agregar la frase 'Podés
@@ -1497,6 +1503,7 @@ class TestFiltroAmbiguedad(unittest.TestCase):
 
         texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
         self.assertIn("Podés continuar con el ingreso con normalidad", texto)
+        self.assertIn("Escribí la cámara correcta en este hilo (o el operador puede responder con el Fontaine ID)", texto)
 
     def test_listener_registra_ingreso_sin_match_en_ambiguedad(self) -> None:
         """Regresión (2026-09-07, revierte el comportamiento anterior deliberadamente — ver
@@ -1572,7 +1579,7 @@ class TestFiltroAmbiguedad(unittest.TestCase):
         self.assertIn("¿Quisiste decir", texto)
         self.assertIn("• Cra Mitre 440", texto)
         self.assertIn("• Cra Mitre 399", texto)
-        self.assertIn("Escribí la cámara correcta en este hilo", texto)
+        self.assertIn("Escribí la cámara correcta en este hilo (o el operador puede responder con el Fontaine ID)", texto)
         self.assertNotIn("ambigua", texto)
 
     def test_multibot_no_se_confunde_con_ambiguedad(self) -> None:
@@ -2590,14 +2597,22 @@ class TestRegexSeguimientoEmpalme(unittest.TestCase):
             "INGRESO OK, ID: 1228619",
             "Ingreso ok id 1228619",
             "  ingreso ok,id:1228619  ",
+            "egreso ok, id: 1228619",
         ):
             m = self.regex.match(texto)
             self.assertIsNotNone(m, texto)
             self.assertEqual(m.group(1), "1228619", texto)
 
+    def test_matchea_egreso_ok_id(self) -> None:
+        """Fix de la revisión: el operador también valida el egreso con "egreso ok, id: N"."""
+        for texto in ("egreso ok, id: 1228619", "EGRESO OK id 1228619"):
+            m = self.regex.match(texto)
+            self.assertIsNotNone(m, texto)
+            self.assertEqual(m.group(1), "1228619")
+
     def test_no_matchea_otras_frases_con_id(self) -> None:
         self.assertIsNone(self.regex.match("ingreso ok"))
-        self.assertIsNone(self.regex.match("egreso ok, id: 1228619"))
+        self.assertIsNone(self.regex.match("reingreso ok, id: 1228619"))
         self.assertIsNone(self.regex.match("el id es 1228619"))
 
 
@@ -2960,6 +2975,36 @@ class TestSeguimientoFontaineId(unittest.TestCase):
         self.assertIn("No pude ubicar una botella asociada al ID de empalme *999999*", texto)
         self.assertIn("Fontaine", texto)
         self.assertIn("Podés continuar con el ingreso con normalidad", texto)
+
+    def test_fontaine_id_que_no_resuelve_no_cierra_el_caso(self) -> None:
+        """Fix de la revisión: con la forma del Fontaine ID ("id: N"), un número que no resuelve
+        por ninguno de los dos caminos NO marca `resuelto_via_empalme` (la reescritura de la
+        Cámara sigue disponible en el hilo). El número suelto conserva el cierre de antes
+        (`test_ni_fontaine_ni_empalme_mantiene_la_respuesta_de_hoy`)."""
+        for texto in ("id: 1999999", "ingreso ok, id: 1999999", "egreso ok, id: 1999999"):
+            with self.subTest(texto=texto):
+                client_mock, session_mock, caso, _, fusion, _ = self._correr(texto, fontaine=None, fusion=None)
+                fusion.assert_called_once()
+                self.assertFalse(caso.resuelto_via_empalme)
+                session_mock.commit.assert_not_called()
+                respuesta = client_mock.chat_postMessage.call_args.kwargs["text"]
+                self.assertIn("No encontré el Fontaine ID *1999999*", respuesta)
+                self.assertIn("escribí la cámara correcta en este hilo", respuesta)
+
+    def test_caso_pendiente_excluye_los_resueltos_por_revalidacion(self) -> None:
+        from modules.slack_baneo_notifier.listener import IngresoListener
+
+        listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+        session_mock = MagicMock()
+        q = session_mock.query.return_value
+        q.filter.return_value.order_by.return_value.first.return_value = None
+
+        self.assertFalse(
+            listener._procesar_seguimiento_empalme("1228619", "1111.000001", session_mock, MagicMock(), "C123")
+        )
+        filtros = [str(arg) for arg in q.filter.call_args.args]
+        self.assertTrue(any("resuelto_via_revalidacion" in f for f in filtros), filtros)
+        self.assertTrue(any("resuelto_via_empalme" in f for f in filtros), filtros)
 
     def test_fontaine_id_repetido_nunca_elige_y_deja_el_caso_pendiente(self) -> None:
         from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
@@ -3392,10 +3437,11 @@ class TestReescrituraCamara(unittest.TestCase):
         from modules.slack_baneo_notifier.listener import IngresoListener
         return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
 
-    def _event(self, text: str, user: str | None = "U0TECNICO") -> dict:
+    def _event(self, text: str, user: str | None = "U0TECNICO", **extra: Any) -> dict:
         event = {"text": text, "channel": "C123", "ts": "2222.000002", "thread_ts": "1111.000001"}
         if user:
             event["user"] = user
+        event.update(extra)
         return event
 
     def _caso(self) -> Any:
@@ -3428,7 +3474,8 @@ class TestReescrituraCamara(unittest.TestCase):
         session_mock.query.side_effect = _side_effect
         return session_mock
 
-    def _correr(self, text: str, caso: Any, *, buscar: Any = None, user: str | None = "U0TECNICO"):
+    def _correr(self, text: str, caso: Any, *, buscar: Any = None, user: str | None = "U0TECNICO",
+                es_nodo: bool = False, **extra: Any):
         from db.models.infra import CamaraEstado
         from core.services.camara_estado_service import CamaraEstadoContexto
 
@@ -3453,8 +3500,9 @@ class TestReescrituraCamara(unittest.TestCase):
                 "modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso", return_value=ingreso
             ) as mock_registrar,
             patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="") as mock_extraer,
+            patch("modules.slack_baneo_notifier.listener.corresponde_a_nodo", return_value=es_nodo),
         ):
-            listener._handle_message(self._event(text, user), client_mock)
+            listener._handle_message(self._event(text, user, **extra), client_mock)
         return client_mock, session_mock, mock_registrar, mock_extraer
 
     def test_reescritura_que_matchea_cierra_el_caso_con_el_horario_original(self) -> None:
@@ -3520,6 +3568,63 @@ class TestReescrituraCamara(unittest.TestCase):
             client_mock.chat_postMessage.assert_not_called()
             mock_extraer.assert_not_called()  # no cae al flujo normal como un ingreso nuevo
             self.assertFalse(caso.resuelto_via_revalidacion)
+
+    def test_ruido_real_de_hilos_de_prod_se_ignora(self) -> None:
+        """Respuestas humanas reales de 6 hilos de prod (revisión 2026-10-23): con la heurística
+        anterior 13 de 22 recibían "sigue sin match". Ahora ninguna se busca ni se responde."""
+        caso = self._caso()
+        ruido = [
+            "verificando", "gracias", "ingreso ok", "ingreso para Sergio de T Y C", "GRACIAS", ":+1:",
+            "ingreso ok, abriendo puerta", "Ahí abrio", "Buenas", "Hola, va a pedir el egreso?", "Si",
+            "egreso ok, requiere apertura?", "No gracias", "ingreso ok, abriendo", "Listo gracias",
+            "egreso ok", "Perdón Lomas de Zamora", "Bueno, ahí abro", "dale ya lo cargo",
+            "<!subteam^S056XUXU5FD> me podrán abrir un momentito la puerta por favor",
+            # Falsos positivos de la heurística anterior: texto corto con un número de 1 dígito.
+            "sala 1", "Poste 1 frente",
+        ]
+        for texto in ruido:
+            with self.subTest(texto=texto):
+                buscar = MagicMock()
+                client_mock, _, _, _ = self._correr(texto, caso, buscar=buscar)
+                buscar.assert_not_called()
+                client_mock.chat_postMessage.assert_not_called()
+
+    def test_nombres_reales_se_buscan(self) -> None:
+        caso = self._caso()
+        nombres = {
+            "ingreso ok, sin id, nombre: BOT INTERNA NICARAGUA 2853 NAVE D6": "BOT INTERNA NICARAGUA 2853 NAVE D6",
+            "Cra Mitre 440": "Cra Mitre 440",
+            "Cra 25 de Mayo 302": "Cra 25 de Mayo 302",
+            "Cra camacua 80": "Cra camacua 80",
+            "Poste Colectora Oeste Panamericana": "Poste Colectora Oeste Panamericana",
+            "egreso ok, nombre: Tza Florida 142 :+1:": "Tza Florida 142",
+        }
+        for texto, esperado in nombres.items():
+            with self.subTest(texto=texto):
+                buscar = MagicMock(return_value=_resultado_camara(None, "x"))
+                self._correr(texto, caso, buscar=buscar)
+                buscar.assert_called_once()
+                self.assertEqual(buscar.call_args.args[0], esperado)
+
+    def test_nodo_reescrito_se_ignora(self) -> None:
+        caso = self._caso()
+        buscar = MagicMock()
+        client_mock, _, _, _ = self._correr("Nodo Pilar Centro 120", caso, buscar=buscar, es_nodo=True)
+        buscar.assert_not_called()
+        client_mock.chat_postMessage.assert_not_called()
+
+    def test_evento_de_bot_no_reescribe_aunque_traiga_user(self) -> None:
+        """Guard contra loops entre bots: un evento con `user` Y `bot_id`, o con un `subtype` que no
+        sea `thread_broadcast`, nunca dispara la reescritura."""
+        caso = self._caso()
+        for extra in ({"bot_id": "B0OTRO"}, {"subtype": "bot_message"}):
+            with self.subTest(extra=extra):
+                buscar = MagicMock()
+                self._correr("Cra Mitre 440", caso, buscar=buscar, **extra)
+                buscar.assert_not_called()
+        buscar = MagicMock(return_value=_resultado_camara(None, "x"))
+        self._correr("Cra Mitre 440", caso, buscar=buscar, subtype="thread_broadcast")
+        buscar.assert_called_once()
 
     def test_sin_caso_pendiente_sigue_el_flujo_normal(self) -> None:
         buscar = MagicMock()
