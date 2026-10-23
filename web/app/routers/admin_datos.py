@@ -12,7 +12,7 @@ from typing import Annotated, Any, List, Literal, Optional
 
 import httpx
 import psycopg
-from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -27,14 +27,17 @@ from ..comun import (
     _es_destino_slack_valido,
     _internal_api_auth_headers,
     _marcar_corrida_fallida,
-    _require_admin,
-    _require_auth,
     _serializar_cromo_corrida,
     _validar_csrf,
     logger,
 )
+from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+from ..errores import ErrorDeDominio, error_interno, error_servicio_externo, nueva_ref
 
-router = APIRouter()
+# Todo el router exige sesión; las rutas admin agregan `usuario_admin`. Tres rutas (config de baneos,
+# health del worker e ingesta de Cámaras) conservan su chequeo de rol propio para seguir respondiendo
+# 403 `{"error": "Solo admin"}` en lugar del `{"detail": "Permisos insuficientes"}` de `usuario_admin`.
+router = APIRouter(dependencies=[Depends(usuario_sesion)])
 
 
 # ── Servicios Baneos (admin) ────────────────────────────────────
@@ -69,10 +72,9 @@ async def _reload_slack_worker_config() -> None:
         logger.warning("No se pudo recargar la config del slack worker: %s", exc)
 
 
-@router.get("/api/admin/servicios/baneos/config")
-async def servicios_baneos_config_json(request: Request) -> JSONResponse:
+@router.get("/api/admin/servicios/baneos/config", dependencies=[Depends(usuario_admin)])
+async def servicios_baneos_config_json() -> JSONResponse:
     """Devuelve la configuración del worker de baneos como JSON. Usado por el SPA Vue."""
-    _require_admin(request)
     config_data: dict[str, Any] = {
         "intervalo_horas": 4,
         "slack_channels": "",
@@ -112,9 +114,10 @@ async def servicios_baneos_update(
     activo: str = Form("off"),
     hora_inicio: str = Form(""),
     csrf_token: str = Form(...),
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ):
     """Actualiza la configuración del worker de notificaciones de baneos."""
-    _, role = _require_auth(request)
+    _, role = usuario
     if role != "admin":
         return JSONResponse({"error": "Solo admin"}, status_code=403)
     if csrf_token != request.session.get("csrf"):
@@ -172,18 +175,16 @@ async def servicios_baneos_update(
                     )
                 conn.commit()
     except Exception as exc:
-        logger.error("Error actualizando config_servicios: %s", exc)
-        return JSONResponse({"error": "Error actualizando configuración"}, status_code=500)
+        return error_interno("servicios_baneos_config_update", exc)
 
     await _reload_slack_worker_config()
 
     return RedirectResponse(url="/admin/Servicios/Baneos", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/api/admin/servicios/baneos/worker/start")
+@router.post("/api/admin/servicios/baneos/worker/start", dependencies=[Depends(usuario_admin)])
 async def servicios_baneos_worker_start(request: Request):
     """Inicia el contenedor del worker de baneos si está detenido."""
-    _require_admin(request)
     body = await request.form()
     if body.get("csrf_token") != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
@@ -204,14 +205,12 @@ async def servicios_baneos_worker_start(request: Request):
                 status_code=404,
             )
     except Exception as exc:
-        logger.error("Error iniciando worker de baneos: %s", exc)
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return error_interno("servicios_baneos_worker_start", exc)
 
 
-@router.post("/api/admin/servicios/baneos/trigger")
+@router.post("/api/admin/servicios/baneos/trigger", dependencies=[Depends(usuario_admin)])
 async def servicios_baneos_trigger(request: Request):
     """Dispara una ejecución manual inmediata del worker de baneos."""
-    _require_admin(request)
     body = await request.form()
     if body.get("csrf_token") != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
@@ -226,14 +225,13 @@ async def servicios_baneos_trigger(request: Request):
             status_code=503,
         )
     except Exception as exc:
-        logger.error("Error disparando ejecución manual del worker: %s", exc)
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return error_interno("servicios_baneos_trigger", exc)
 
 
 @router.get("/api/admin/servicios/baneos/health")
-async def servicios_baneos_health(request: Request):
+async def servicios_baneos_health(usuario: UsuarioSesion = Depends(usuario_sesion)):
     """Proxy al health check del worker de notificaciones de baneos."""
-    _, role = _require_auth(request)
+    _, role = usuario
     if role != "admin":
         return JSONResponse({"error": "Solo admin"}, status_code=403)
 
@@ -259,11 +257,9 @@ async def servicios_baneos_health(request: Request):
 _LISTENER_SERVICIO = "slack_ingreso_listener"
 
 
-@router.get("/api/admin/servicios/baneos/listener")
-async def listener_config_get(request: Request) -> JSONResponse:
+@router.get("/api/admin/servicios/baneos/listener", dependencies=[Depends(usuario_admin)])
+async def listener_config_get() -> JSONResponse:
     """Devuelve la configuración actual del listener de ingresos."""
-    _require_admin(request)
-
     try:
         with psycopg.connect(DB_DSN) as conn:
             with conn.cursor() as cur:
@@ -275,8 +271,7 @@ async def listener_config_get(request: Request) -> JSONResponse:
                 )
                 row = cur.fetchone()
     except Exception as exc:
-        logger.error("Error leyendo config listener: %s", exc)
-        return JSONResponse({"error": "Error de base de datos"}, status_code=500)
+        return error_interno("listener_config_get", exc)
 
     if row is None:
         return JSONResponse({"activo": False, "canal_id": "", "ultimo_error": None, "workflow_ids": "", "solo_workflows": False})
@@ -292,7 +287,7 @@ async def listener_config_get(request: Request) -> JSONResponse:
     )
 
 
-@router.post("/api/admin/servicios/baneos/listener")
+@router.post("/api/admin/servicios/baneos/listener", dependencies=[Depends(usuario_admin)])
 async def listener_config_post(
     request: Request,
     activo: str = Form("off"),
@@ -302,8 +297,6 @@ async def listener_config_post(
     csrf_token: str = Form(...),
 ) -> JSONResponse:
     """Actualiza la configuración del listener de ingresos y recarga el worker."""
-    _require_admin(request)
-
     if csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -333,8 +326,7 @@ async def listener_config_post(
                     )
                 conn.commit()
     except Exception as exc:
-        logger.error("Error actualizando config listener: %s", exc)
-        return JSONResponse({"error": "Error actualizando configuración"}, status_code=500)
+        return error_interno("listener_config_update", exc)
 
     await _reload_slack_worker_config()
 
@@ -353,10 +345,11 @@ async def camaras_ingest_web(
     file: UploadFile = File(...),
     csrf_token: str = Form(...),
     motivo_baneo: str = Form(...),
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Ingesta masiva de cámaras desde Excel con baneo administrativo (solo admin)."""
 
-    username, role = _require_auth(request)
+    username, role = usuario
     if role != "admin":
         return JSONResponse({"error": "Solo admin"}, status_code=403)
     if csrf_token != request.session.get("csrf"):
@@ -399,11 +392,12 @@ async def camaras_ingest_web(
             response.status_code,
         )
         return JSONResponse(payload, status_code=response.status_code)
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=camaras_ingest_proxy_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": f"Error en ingesta de cámaras: {exc!s}"}, status_code=500)
+        return error_servicio_externo(
+            "camaras_ingest_proxy", exc, "Error en ingesta de cámaras", status_code=500, user=username
+        )
 
 
 class AsociarSinMatchCamarasRequestModel(BaseModel):
@@ -416,11 +410,15 @@ class AsociarSinMatchCamarasRequestModel(BaseModel):
 
 
 @router.post("/api/admin/ingesta/camaras/asociar")
-async def ingesta_camaras_asociar_web(request: Request, body: AsociarSinMatchCamarasRequestModel) -> JSONResponse:
+async def ingesta_camaras_asociar_web(
+    request: Request,
+    body: AsociarSinMatchCamarasRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Resuelve a mano uno o más nombres del Excel de ingesta que no matchearon (`IngresoSinMatch`,
     origen='excel_camaras') hacia una Cámara/Botella existente: crea un alias por cada uno (para que
     futuros Excel con el mismo texto matcheen solos) y banea el grupo destino una sola vez."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -463,11 +461,10 @@ async def ingesta_camaras_asociar_web(request: Request, body: AsociarSinMatchCam
                 ],
                 "error": resultado.error,
             })
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=ingesta_camaras_asociar_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudo completar la asociación"}, status_code=500)
+        return error_interno("ingesta_camaras_asociar", exc, user=username)
 
 
 # ── Endpoints admin: ingesta de inventario FO desde Cromo Red (Etapa 4) ──────
@@ -531,14 +528,16 @@ async def _reload_cromo_worker_config() -> None:
 
 
 @router.post("/api/admin/ingesta/cromo")
-async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarRequest) -> JSONResponse:
+async def cromo_ingesta_iniciar_web(
+    request: Request, body: CromoIngestaIniciarRequest, usuario: UsuarioSesion = Depends(usuario_admin)
+) -> JSONResponse:
     """Dispara una corrida de ingesta desde Cromo Red (sólo admin). Crea la corrida acá (para devolver
     el `corrida_id` de inmediato) y delega su ejecución al worker dedicado (Etapa 7)."""
     from core.services.cromo.config import CromoConfigError, PSIZE_PERMITIDOS, get_cromo_config
     from core.services.cromo.ingesta import CLASES_BOTELLA, MODOS_INGESTA, iniciar_corrida
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if body.csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -555,7 +554,10 @@ async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarR
     try:
         cromo_config = get_cromo_config()
     except CromoConfigError as exc:
-        return JSONResponse({"error": f"Cromo no está configurado: {exc}"}, status_code=503)
+        # El detalle (variables faltantes, valores recibidos) va sólo al log, con la misma ref.
+        return error_servicio_externo(
+            "cromo_ingesta_iniciar", exc, "Cromo no está configurado", status_code=503, user=username
+        )
 
     psize_final = body.psize if body.psize is not None else cromo_config.psize_default
     clases_final = tuple(body.clases) if body.clases else CLASES_BOTELLA
@@ -580,8 +582,11 @@ async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarR
             response = await client.post(_CROMO_WORKER_RUN_URL, json={"corrida_id": corrida_id, "usuario": username})
             response.raise_for_status()
     except Exception as exc:
-        motivo = f"No se pudo delegar la corrida al worker de ingesta: {exc}"
-        logger.error("action=cromo_ingesta_iniciar_error corrida_id=%s error=%s", corrida_id, exc)
+        # El motivo queda como evento ERROR de la corrida y llega a la UI (detalle y SSE): mensaje fijo
+        # con ref; el texto de la excepción va sólo al log, con la misma ref.
+        ref = nueva_ref()
+        motivo = f"No se pudo delegar la corrida al worker de ingesta (ref {ref})"
+        logger.error("action=cromo_ingesta_iniciar_error corrida_id=%s error=%s ref=%s", corrida_id, exc, ref)
         await _marcar_corrida_fallida(corrida_id, motivo)
         return JSONResponse(
             {"error": "El worker de ingesta no está disponible. Intentá nuevamente en unos segundos."},
@@ -592,13 +597,12 @@ async def cromo_ingesta_iniciar_web(request: Request, body: CromoIngestaIniciarR
     return JSONResponse({"corrida_id": corrida_id}, status_code=202)
 
 
-@router.get("/api/admin/ingesta/cromo/config")
-async def cromo_scheduler_config_obtener_web(request: Request) -> JSONResponse:
+@router.get("/api/admin/ingesta/cromo/config", dependencies=[Depends(usuario_admin)])
+async def cromo_scheduler_config_obtener_web() -> JSONResponse:
     """Devuelve la configuración persistida del scheduler del worker de ingesta Cromo."""
     from db.models.cromo import CromoIngestaConfig
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     async with AsyncSessionLocal() as sesion:
         config = await sesion.get(CromoIngestaConfig, 1)
     if config is None:
@@ -618,14 +622,13 @@ async def cromo_scheduler_config_obtener_web(request: Request) -> JSONResponse:
     )
 
 
-@router.post("/api/admin/ingesta/cromo/config")
+@router.post("/api/admin/ingesta/cromo/config", dependencies=[Depends(usuario_admin)])
 async def cromo_scheduler_config_guardar_web(request: Request, body: CromoSchedulerConfigRequest) -> JSONResponse:
     """Actualiza la configuración del scheduler y le pide al worker que la relea (best-effort)."""
     from core.services.cromo.config import PSIZE_PERMITIDOS
     from db.models.cromo import CromoIngestaConfig
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     if body.csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -656,10 +659,9 @@ async def cromo_scheduler_config_guardar_web(request: Request, body: CromoSchedu
     return JSONResponse({"ok": True})
 
 
-@router.get("/api/admin/ingesta/cromo/config/health")
-async def cromo_scheduler_health_web(request: Request) -> JSONResponse:
+@router.get("/api/admin/ingesta/cromo/config/health", dependencies=[Depends(usuario_admin)])
+async def cromo_scheduler_health_web() -> JSONResponse:
     """Proxy al health check del worker dedicado de ingesta Cromo."""
-    _require_admin(request)
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(_CROMO_WORKER_HEALTH_URL)
@@ -674,9 +676,11 @@ async def cromo_scheduler_health_web(request: Request) -> JSONResponse:
 
 
 @router.post("/api/admin/ingesta/cromo/config/trigger")
-async def cromo_scheduler_trigger_web(request: Request, body: CromoIngestaCancelarRequest) -> JSONResponse:
+async def cromo_scheduler_trigger_web(
+    request: Request, body: CromoIngestaCancelarRequest, usuario: UsuarioSesion = Depends(usuario_admin)
+) -> JSONResponse:
     """Dispara una ejecución manual inmediata usando la configuración guardada ("Ejecutar ahora")."""
-    username = _require_admin(request)
+    username = usuario.username
     if body.csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -687,8 +691,7 @@ async def cromo_scheduler_trigger_web(request: Request, body: CromoIngestaCancel
     except httpx.ConnectError:
         return JSONResponse({"error": "Worker no accesible. Verificá que esté corriendo."}, status_code=503)
     except Exception as exc:
-        logger.error("Error disparando ejecución manual del worker de Cromo: %s", exc)
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return error_interno("cromo_scheduler_trigger", exc, user=username)
 
 
 _CROMO_ACCION_A_EVENTO_SSE = {
@@ -755,7 +758,7 @@ async def _cromo_eventos_a_sse(corrida_id: int, ultimo_id: int):
             await asyncio.sleep(1.0)
 
 
-@router.get("/api/admin/ingesta/cromo/corridas/{corrida_id}/stream")
+@router.get("/api/admin/ingesta/cromo/corridas/{corrida_id}/stream", dependencies=[Depends(usuario_admin)])
 async def cromo_ingesta_stream_web(
     request: Request, corrida_id: int, desde: Optional[int] = Query(default=None, ge=0)
 ) -> StreamingResponse:
@@ -767,8 +770,6 @@ async def cromo_ingesta_stream_web(
     manual del cliente) no puede mandar `Last-Event-ID`, así que lo pasa en la URL para no
     repetir eventos. Si vienen los dos, gana el mayor.
     """
-    _require_admin(request)
-
     ultimo_id = desde or 0
     last_event_id = request.headers.get("last-event-id")
     if last_event_id and last_event_id.isdigit():
@@ -781,15 +782,14 @@ async def cromo_ingesta_stream_web(
     )
 
 
-@router.get("/api/admin/ingesta/cromo/corridas")
-async def cromo_ingesta_historico_web(request: Request, limit: int = 20, offset: int = 0) -> JSONResponse:
+@router.get("/api/admin/ingesta/cromo/corridas", dependencies=[Depends(usuario_admin)])
+async def cromo_ingesta_historico_web(limit: int = 20, offset: int = 0) -> JSONResponse:
     """Histórico paginado de corridas, más recientes primero."""
     from sqlalchemy import func, select
 
     from db.models.cromo import CromoIngestaCorrida
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
@@ -806,15 +806,14 @@ async def cromo_ingesta_historico_web(request: Request, limit: int = 20, offset:
     )
 
 
-@router.get("/api/admin/ingesta/cromo/corridas/{corrida_id}")
-async def cromo_ingesta_detalle_web(request: Request, corrida_id: int, limit: int = 200) -> JSONResponse:
+@router.get("/api/admin/ingesta/cromo/corridas/{corrida_id}", dependencies=[Depends(usuario_admin)])
+async def cromo_ingesta_detalle_web(corrida_id: int, limit: int = 200) -> JSONResponse:
     """Detalle de una corrida con sus últimos eventos (más recientes primero)."""
     from sqlalchemy import text
 
     from db.models.cromo import CromoIngestaCorrida
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     limit = max(1, min(limit, 1000))
 
     async with AsyncSessionLocal() as sesion:
@@ -851,7 +850,10 @@ async def cromo_ingesta_detalle_web(request: Request, corrida_id: int, limit: in
 
 @router.post("/api/admin/ingesta/cromo/corridas/{corrida_id}/cancelar")
 async def cromo_ingesta_cancelar_web(
-    request: Request, corrida_id: int, body: CromoIngestaCancelarRequest
+    request: Request,
+    corrida_id: int,
+    body: CromoIngestaCancelarRequest,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Marca la corrida para detenerse: el chequeo cooperativo entre páginas la corta y la cierra
     como CANCELADA al terminar la página en curso — no la interrumpe a mitad de una página.
@@ -859,7 +861,7 @@ async def cromo_ingesta_cancelar_web(
     from db.models.cromo import CromoIngestaCorrida
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if body.csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -918,11 +920,12 @@ async def _proxy_clientes(
 
         logger.info("action=%s user=%s ruta=%s status=%s", accion, username, ruta, response.status_code)
         return JSONResponse(payload, status_code=response.status_code)
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=%s_error user=%s ruta=%s error=%s", accion, username, ruta, exc)
-        return JSONResponse({"error": f"Error en clientes por categoría: {exc!s}"}, status_code=500)
+        return error_servicio_externo(
+            accion, exc, "Error en clientes por categoría", status_code=500, user=username, ruta=ruta
+        )
 
 
 # Mismos límites que `api/app/routes/clientes.py` (lista oficial y alias de cliente).
@@ -958,16 +961,18 @@ class ClientesAliasRequestModel(_ClientesCsrfModel):
 
 
 @router.get("/api/admin/clientes/por-categoria")
-async def clientes_por_categoria_web(request: Request) -> JSONResponse:
+async def clientes_por_categoria_web(usuario: UsuarioSesion = Depends(usuario_admin)) -> JSONResponse:
     """Clientes agrupados por categoría — sólo admin, lectura (sin CSRF)."""
-    username = _require_admin(request)
+    username = usuario.username
     return await _proxy_clientes("GET", "/por-categoria", username, "clientes_por_categoria")
 
 
 @router.patch("/api/admin/clientes/categoria")
-async def clientes_categoria_web(request: Request, body: ClientesCategoriaRequestModel) -> JSONResponse:
+async def clientes_categoria_web(
+    request: Request, body: ClientesCategoriaRequestModel, usuario: UsuarioSesion = Depends(usuario_admin)
+) -> JSONResponse:
     """Cambia la categoría de uno o varios clientes (`null` = sin categorizar, `automatico`)."""
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "clientes_categoria", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     return await _proxy_clientes(
@@ -975,9 +980,11 @@ async def clientes_categoria_web(request: Request, body: ClientesCategoriaReques
     )
 
 
-async def _proxy_lista_clientes(request: Request, operacion: str) -> JSONResponse:
-    """Previsualizar/aplicar la lista oficial, desde archivo (multipart) o JSON."""
-    username = _require_admin(request)
+async def _proxy_lista_clientes(request: Request, operacion: str, username: str) -> JSONResponse:
+    """Previsualizar/aplicar la lista oficial, desde archivo (multipart) o JSON.
+
+    La sesión admin ya la validó `Depends(usuario_admin)` en la ruta, antes de leer el cuerpo.
+    """
     accion = f"clientes_lista_{operacion}"
     ruta = f"/lista/{operacion}"
     content_type = request.headers.get("content-type", "").lower()
@@ -1029,21 +1036,25 @@ async def _proxy_lista_clientes(request: Request, operacion: str) -> JSONRespons
 
 
 @router.post("/api/admin/clientes/lista/previsualizar")
-async def clientes_lista_previsualizar_web(request: Request) -> JSONResponse:
+async def clientes_lista_previsualizar_web(
+    request: Request, usuario: UsuarioSesion = Depends(usuario_admin)
+) -> JSONResponse:
     """Diff de aplicar una lista oficial de clientes (no escribe)."""
-    return await _proxy_lista_clientes(request, "previsualizar")
+    return await _proxy_lista_clientes(request, "previsualizar", usuario.username)
 
 
 @router.post("/api/admin/clientes/lista/aplicar")
-async def clientes_lista_aplicar_web(request: Request) -> JSONResponse:
+async def clientes_lista_aplicar_web(request: Request, usuario: UsuarioSesion = Depends(usuario_admin)) -> JSONResponse:
     """Aplica una lista oficial de clientes (el API interno la vuelve a resolver)."""
-    return await _proxy_lista_clientes(request, "aplicar")
+    return await _proxy_lista_clientes(request, "aplicar", usuario.username)
 
 
 @router.post("/api/admin/clientes/fusionar")
-async def clientes_fusionar_web(request: Request, body: ClientesFusionarRequestModel) -> JSONResponse:
+async def clientes_fusionar_web(
+    request: Request, body: ClientesFusionarRequestModel, usuario: UsuarioSesion = Depends(usuario_admin)
+) -> JSONResponse:
     """Fusiona clientes: mueve los alias de `origen_ids` al destino."""
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "clientes_fusionar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     return await _proxy_clientes(
@@ -1053,10 +1064,13 @@ async def clientes_fusionar_web(request: Request, body: ClientesFusionarRequestM
 
 @router.post("/api/admin/clientes/{cliente_id}/alias")
 async def clientes_agregar_alias_web(
-    request: Request, cliente_id: int, body: ClientesAliasRequestModel
+    request: Request,
+    cliente_id: int,
+    body: ClientesAliasRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Agrega un alias (nombre alternativo) a un cliente."""
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "clientes_alias_agregar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     return await _proxy_clientes(
@@ -1065,18 +1079,22 @@ async def clientes_agregar_alias_web(
 
 
 @router.delete("/api/admin/clientes/alias/{alias_id}")
-async def clientes_quitar_alias_web(request: Request, alias_id: int, body: _ClientesCsrfModel) -> JSONResponse:
+async def clientes_quitar_alias_web(
+    request: Request, alias_id: int, body: _ClientesCsrfModel, usuario: UsuarioSesion = Depends(usuario_admin)
+) -> JSONResponse:
     """Quita un alias de cliente (el CSRF viaja en el cuerpo JSON del DELETE)."""
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "clientes_alias_quitar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     return await _proxy_clientes("DELETE", f"/alias/{alias_id}", username, "clientes_alias_quitar")
 
 
 @router.post("/api/admin/clientes/sincronizar")
-async def clientes_sincronizar_web(request: Request, body: _ClientesCsrfModel) -> JSONResponse:
+async def clientes_sincronizar_web(
+    request: Request, body: _ClientesCsrfModel, usuario: UsuarioSesion = Depends(usuario_admin)
+) -> JSONResponse:
     """Sincronización global de categorías de clientes → servicios."""
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "clientes_sincronizar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     return await _proxy_clientes("POST", "/sincronizar", username, "clientes_sincronizar")
