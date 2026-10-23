@@ -151,9 +151,14 @@ _RE_BOTELLA_UNO = re.compile(r"(?i)\bbot(?:ella)?\.?\s*1(?!\d)\.?")
 
 
 # "Empalme 10245762: Cra 25 de Mayo 302" (caso real, 2026-10-23): el técnico antepone el `n_id` de
-# Cromo de la Botella (8 dígitos) — "empalme" es como llaman a la Botella en la calle. Sólo al
-# principio del texto y seguido de ":"/"-" o del fin del texto.
-_RE_PREFIJO_EMPALME = re.compile(r"(?i)^\s*empalme\s*#?\s*(\d{8})\s*(?:[:\-–]\s*|$)")
+# Cromo de la Botella — "empalme" es como llaman a la Botella en la calle. 7 u 8 dígitos (prefijos
+# reales de prod: 9429606, 9404415, 9542798, 9472462, 10245762; el `n_id` mínimo es 6.630.905, sin
+# choque con el Fontaine ID, que llega a 1.274.823). Sólo al principio del texto: con la palabra
+# "Empalme", seguido de ":"/"-" o del fin del texto; sin ella ("6635973: Cra …", también real),
+# sólo seguido de ":"/"-". Siempre se corrobora contra el resto (`resto_corrobora_botella`).
+_RE_PREFIJO_EMPALME = re.compile(
+    r"(?i)^\s*(?:empalme\s*#?\s*(\d{7,8})\s*(?:[:\-–]\s*|$)|#?(\d{7,8})\s*[:\-–]\s*)"
+)
 
 
 def separar_prefijo_empalme(texto: str) -> tuple[int | None, str]:
@@ -162,7 +167,7 @@ def separar_prefijo_empalme(texto: str) -> tuple[int | None, str]:
     match = _RE_PREFIJO_EMPALME.match(texto or "")
     if not match:
         return None, texto
-    return int(match.group(1)), texto[match.end():].strip()
+    return int(match.group(1) or match.group(2)), texto[match.end():].strip()
 
 
 def botella_cromo_por_n_id(n_id: int, session: Session) -> "CromoBotella | None":
@@ -176,17 +181,30 @@ def botella_cromo_por_n_id(n_id: int, session: Session) -> "CromoBotella | None"
     return botella
 
 
+# Umbral de `SequenceMatcher` entre el resto del texto y el nombre de la Botella. Medido en la
+# revisión (2026-10-23) contra todos los `n_id` de dev con un dígito mal tipeado o dos transpuestos
+# que existen y son de OTRA cámara: con sólo "comparte una palabra o un número" el 4,6% de esos
+# typos resolvía a la cámara equivocada; con números contenidos + ratio ≥ 0,8, el 0,09%. Los 6
+# prefijos reales de prod dan ratio 1,0.
+_UMBRAL_CORROBORACION = 0.8
+
+
+def _para_corroborar(texto: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", normalizar_candidato(texto))).strip()
+
+
 def resto_corrobora_botella(botella: "CromoBotella", resto: str) -> bool:
-    """El texto que acompaña a un ID explícito no contradice a la Botella: vacío, o comparte con su
-    nombre un número o una palabra de 4+ letras. Un ID mal tipeado que exista no puede resolver a
-    una cámara que el resto del texto contradice (hallazgo de la revisión de 2026-09-28)."""
-    resto = _normalizar(resto or "")
-    resto = re.sub(r"\b(?:id|de|botella|bot|n[°ºo]?)\b", " ", resto)
-    senales = set(re.findall(r"\d+", resto)) | set(re.findall(r"[a-z]{4,}", resto))
-    if not senales:
+    """El texto que acompaña a un ID explícito describe a ESA Botella: vacío, o todos sus números
+    de 2+ dígitos están en el nombre y el parecido (`SequenceMatcher`) es ≥ 0,8. Un ID mal tipeado
+    que exista no puede resolver a una cámara que el resto del texto no describe (revisiones del
+    2026-09-28 y 2026-10-23)."""
+    resto_norm = _para_corroborar(resto or "")
+    if not resto_norm:
         return True
-    nombre_botella = _normalizar(botella.nombre or "")
-    return any(re.search(rf"(?<![a-z0-9]){re.escape(x)}(?![a-z0-9])", nombre_botella) for x in senales)
+    nombre_norm = _para_corroborar(botella.nombre or "")
+    if not set(re.findall(r"\d{2,}", resto_norm)) <= set(re.findall(r"\d{2,}", nombre_norm)):
+        return False
+    return SequenceMatcher(None, resto_norm, nombre_norm).ratio() >= _UMBRAL_CORROBORACION
 
 
 def camara_por_prefijo_empalme(texto: str, session: Session) -> tuple["CromoBotella | None", str]:

@@ -560,11 +560,22 @@ def test_buscar_por_id_legacy_sin_camara_devuelve_none():
     assert cb.buscar_por_id_legacy("1228619", _session_id_legacy([_bot(1, "Cra X 1", None)])) is None
 
 
-def test_buscar_por_id_legacy_duplicado_es_ambiguo_y_nunca_elige():
-    dup = [_bot(6635924, "Poste Paunero 1543 SAN MIGUEL", 28942), _bot(10055506, "Poste Paunero 1543 SAN MIGUEL", 28942)]
+def test_buscar_por_id_legacy_duplicado_misma_camara_resuelve_con_la_vigente():
+    # Caso real 1256524: la versión vieja (no vigente) y la nueva, ambas de la Cámara 28942.
+    vieja = _bot(6635924, "Poste Paunero 1543 SAN MIGUEL", 28942)
+    vieja.vigente = False
+    nueva = _bot(10055506, "Poste Paunero 1543 SAN MIGUEL", 28942)
+    nueva.vigente = True
+    r = cb.buscar_por_id_legacy("1256524", _session_id_legacy([vieja, nueva]))
+    assert r.botella is nueva and r.camara is nueva.camara
+
+
+def test_buscar_por_id_legacy_duplicado_en_camaras_distintas_es_ambiguo_y_nunca_elige():
+    dup = [_bot(1, "Cra X 1", 10), _bot(2, "Cra Y 2", 20)]
     with pytest.raises(cs.AmbiguousSearchError) as exc:
         cb.buscar_por_id_legacy("1256524", _session_id_legacy(dup))
     assert exc.value.cantidad == 2
+    assert exc.value.candidatos == ["Cra X 1", "Cra Y 2"]
 
 
 def test_prefijo_empalme_en_la_busqueda_extendida_devuelve_la_botella():
@@ -609,6 +620,20 @@ def test_fontaine_id_y_empalme_reales_resuelven_a_la_camara_33978():
         r = cb.buscar_camara_o_botella_cromo("Empalme 10245762: Cra 25 de Mayo 302", session)
         assert r.camara is not None and r.camara.id == 33978
         assert r.botella is not None and r.botella.n_id == 10245762
+
+        # Prefijo real de 7 dígitos (revisión 2026-10-23): Botella 9472462 "Cra 25 de Mayo 300".
+        r = cb.buscar_camara_o_botella_cromo("Empalme 9472462: Cra 25 de Mayo 300", session)
+        assert r.botella is not None and r.botella.n_id == 9472462
+
+        # n_id existente pero de OTRA Botella (la 302) con el texto de la 300: no corrobora, cae a
+        # la búsqueda por nombre y nunca resuelve a la Cámara 33978 del n_id.
+        r = cb.buscar_camara_o_botella_cromo("Empalme 10245762: Cra 25 de Mayo 300", session)
+        assert r.camara is not None and r.camara.id != 33978
+        assert r.botella is None or r.botella.n_id != 10245762
+
+        # Fontaine ID repetido en la misma Cámara (1256524 → 28942): resuelve con la vigente.
+        r = cb.buscar_por_id_legacy("1256524", session)
+        assert r is not None and r.camara.id == 28942 and r.botella.vigente
     finally:
         session.rollback()
         session.close()

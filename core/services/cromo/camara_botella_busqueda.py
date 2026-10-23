@@ -287,7 +287,9 @@ def buscar_por_id_legacy(id_legacy: str, session: Session) -> ResultadoBusquedaE
     Devuelve ``None`` si ninguna Botella tiene ese `id_legacy` o si la que lo tiene no está
     vinculada a una Cámara. Se consideran también las Botellas no vigentes: el `id_legacy` sigue
     identificando el lugar físico aunque Cromo haya reemplazado la versión. Si el `id_legacy` está
-    en más de una Botella (hay 1 caso en dev y prod), lanza `AmbiguousSearchError` y nunca elige.
+    en más de una Botella (hay 1 caso en dev y prod: 1256524, vigente y no vigente de la misma
+    Cámara 28942), resuelve sólo si TODAS cuelgan de la misma Cámara —informando la Botella
+    vigente— y si no lanza `AmbiguousSearchError`: nunca elige entre Cámaras distintas.
     No es `app.camaras.fontine_id` (vacía en dev y prod)."""
     from db.models.cromo import CromoBotella
 
@@ -299,9 +301,11 @@ def buscar_por_id_legacy(id_legacy: str, session: Session) -> ResultadoBusquedaE
     )
     if not botellas:
         return None
-    if len(botellas) > 1:
+    camaras = {b.camara_id for b in botellas}
+    if len(camaras) > 1:
         raise AmbiguousSearchError(valor, len(botellas), [b.nombre for b in botellas])
-    botella = botellas[0]
+    # Una sola Cámara (o ninguna): la vigente primero para informar; a igual vigencia, menor n_id.
+    botella = sorted(botellas, key=lambda b: (not b.vigente, b.n_id))[0]
     if botella.camara_id is None or botella.camara is None:
         return None
     return ResultadoBusquedaExtendida(

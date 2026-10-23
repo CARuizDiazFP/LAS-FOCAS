@@ -392,7 +392,11 @@ class _Sesion:
         ("EMPALME #10245762:Cra X 1", (10245762, "Cra X 1")),
         ("Empalme 10245762", (10245762, "")),
         ("Cra 25 de Mayo 302", (None, "Cra 25 de Mayo 302")),
-        ("Empalme 1024576: Cra X 1", (None, "Empalme 1024576: Cra X 1")),  # 7 dígitos: no es n_id
+        ("Empalme 9472462: Cra 25 de Mayo 300", (9472462, "Cra 25 de Mayo 300")),  # 7 dígitos, real
+        ("6635973: Cra Av. Santa Fe 1498 Bot 2 CF", (6635973, "Cra Av. Santa Fe 1498 Bot 2 CF")),  # sin "Empalme"
+        ("6635973 Cra X 1", (None, "6635973 Cra X 1")),  # sin "Empalme" exige separador
+        ("6635973", (None, "6635973")),
+        ("Empalme 123456: Cra X 1", (None, "Empalme 123456: Cra X 1")),  # 6 dígitos: no es n_id
         ("Empalme 10245762 Cra X 1", (None, "Empalme 10245762 Cra X 1")),  # sin separador
         ("Cra Empalme 10245762: X", (None, "Cra Empalme 10245762: X")),  # sólo al principio
     ],
@@ -456,3 +460,30 @@ def _correr_buscar_camara(nombre_raw, sesion, ilike=None, tokens=None):
     ):
         res = cs.buscar_camara(nombre_raw, sesion)
     return res, llamadas, None
+
+
+def test_prefijo_empalme_n_id_mal_tipeado_de_otra_camara_no_resuelve():
+    # Un dígito mal tipeado que cae en otra Botella real: el resto comparte palabras ("Cra",
+    # "Mayo") pero no describe a ESA Botella (número distinto, parecido < 0,8) → búsqueda por nombre.
+    otra = _cam(1, "Cra 25 de Mayo 1100")
+    buena = _cam(32623, "Cra 25 de Mayo 300")
+    sesion = _Sesion({9472463: _botella(9472463, "Cra 25 de Mayo 1100", otra)})
+    res, _, _ = _correr_buscar_camara("Empalme 9472463: Cra 25 de Mayo 300", sesion,
+                                      ilike={"cra 25 de mayo 300": [buena]})
+    assert res[0] is buena
+
+
+@pytest.mark.parametrize(
+    ("nombre", "resto", "esperado"),
+    [
+        ("Cra 25 de Mayo 300", "Cra 25 de Mayo 300", True),
+        ("Cra 25 de Mayo 302 CF", "Cra 25 de Mayo 302", True),
+        ("Tza. Florida 142 C.F.", " ( TZA. FLORIDA 142)", True),
+        ("Cra Maipu 301 Bot 2", "", True),
+        ("Cra 25 de Mayo 302 CF", "Cra 25 de Mayo 300", False),  # número que no está en el nombre
+        ("Cra Mitre 440", "Cra 25 de Mayo 302", False),
+        ("Cra Mayo 25 Lomas Sur Esquina Norte 302", "Cra 25 de Mayo 302", False),  # parecido < 0,8
+    ],
+)
+def test_resto_corrobora_botella(nombre, resto, esperado):
+    assert cs.resto_corrobora_botella(SimpleNamespace(nombre=nombre), resto) is esperado
