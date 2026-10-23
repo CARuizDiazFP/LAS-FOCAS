@@ -16,6 +16,7 @@ from core.services.ingreso_correccion_service import (
     FUENTE_MOMENTO_EXPLICITO,
     ORIGEN_WEB,
     RESULTADO_EGRESO_ANTERIOR_AL_INGRESO,
+    RESULTADO_INGRESO_ANULADO,
     RESULTADO_INGRESO_NO_ENCONTRADO,
     RESULTADO_INGRESO_YA_CERRADO,
     RESULTADO_MOMENTO_INVALIDO,
@@ -104,6 +105,26 @@ def test_rechaza_inexistente_o_intento_bloqueado(objetivo):
 
     assert resultado.resultado == RESULTADO_INGRESO_NO_ENCONTRADO
     assert _auditoria(session).resultado == RESULTADO_INGRESO_NO_ENCONTRADO
+
+
+@pytest.mark.parametrize("fecha_fin", [None, datetime(2026, 9, 10, 15, 0, tzinfo=timezone.utc)])
+def test_rechaza_ingreso_anulado_sin_tocarlo(fecha_fin):
+    """Un ingreso anulado desde el portal nunca ocurrió: no se cierra. Si además estaba cerrado,
+    el motivo que se informa es la anulación, no el cierre."""
+    objetivo = _ingreso(fecha_fin=fecha_fin)
+    objetivo.anulado_at = AHORA
+    objetivo.anulado_por = "admin1"
+    objetivo.anulado_motivo = "nunca ocurrió"
+    session = _session(objetivo)
+
+    resultado = _llamar(session)
+
+    assert resultado.resultado == RESULTADO_INGRESO_ANULADO
+    assert resultado.respuesta == "El ingreso #42 está anulado; no se puede cerrar."
+    assert objetivo.fecha_fin == fecha_fin
+    fila = _auditoria(session)
+    assert fila.resultado == RESULTADO_INGRESO_ANULADO and fila.ingreso_id == 42
+    session.commit.assert_called_once()  # sólo la auditoría
 
 
 def test_rechaza_ingreso_ya_cerrado_sin_pisar_la_fecha():
@@ -195,6 +216,7 @@ def test_endpoint_ok_delega_con_el_usuario_de_la_sesion(monkeypatch):
     [
         (RESULTADO_INGRESO_NO_ENCONTRADO, 404),
         (RESULTADO_INGRESO_YA_CERRADO, 409),
+        (RESULTADO_INGRESO_ANULADO, 409),
         (RESULTADO_EGRESO_ANTERIOR_AL_INGRESO, 422),
         (RESULTADO_MOMENTO_INVALIDO, 422),
     ],

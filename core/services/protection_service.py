@@ -737,6 +737,7 @@ class ProtectionService:
             Ingreso.camara_id == camara.id,
             Ingreso.tipo == IngresoTipo.INGRESO,
             Ingreso.fecha_fin == None,  # noqa: E711
+            Ingreso.vigente(),
         ).first()
 
         if ingreso_activo:

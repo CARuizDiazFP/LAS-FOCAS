@@ -307,6 +307,7 @@ def detectar_ingresos(session: Session, cfg: Config, slack: SlackGateway, ahora:
     candidatos = [
         i for i in nuevos
         if i.tipo == IngresoTipo.INGRESO and i.fecha_inicio is not None
+        and i.anulado_at is None  # mismo criterio que `Ingreso.vigente()`; la marca de agua sí cuenta todos
         and (not permitidos or i.canal_id in permitidos)
     ]
     creadas = 0
@@ -390,6 +391,8 @@ def detectar_egresos(session: Session, cfg: Config, slack: SlackGateway, ahora: 
             .filter(FomonIntervencionIngreso.intervencion_id == interv.id)
             .all()
         )
+        # Un vinculado anulado desde el portal nunca ocurrió: no bloquea el paso a POST.
+        ingresos = [i for i in ingresos if i.anulado_at is None]
         cerrados = [i for i in ingresos if i.fecha_fin is not None]
         if ingresos and len(cerrados) == len(ingresos):
             _pasar_a_post(interv, max(i.fecha_fin for i in cerrados), ahora, inferido=False)
@@ -397,7 +400,8 @@ def detectar_egresos(session: Session, cfg: Config, slack: SlackGateway, ahora: 
         huerfano = (
             session.query(Ingreso)
             .filter(Ingreso.tipo == IngresoTipo.EGRESO, Ingreso.camara_id == interv.camara_id,
-                    Ingreso.fecha_fin.isnot(None), Ingreso.fecha_fin > interv.fecha_ingreso)
+                    Ingreso.fecha_fin.isnot(None), Ingreso.fecha_fin > interv.fecha_ingreso,
+                    Ingreso.vigente())
             .order_by(Ingreso.fecha_fin)
             .first()
             if interv.fecha_ingreso

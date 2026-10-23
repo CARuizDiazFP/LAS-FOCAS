@@ -16,9 +16,9 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from core.services.fo_monitor import motor
-from core.services.ingreso_service import registrar_movimiento_ingreso
+from core.services.ingreso_service import cerrar_ingreso_forzado, registrar_movimiento_ingreso
 from db.models.fo_monitor import FomonConfig, FomonConsulta, FomonIntervencion, FomonResultado
-from db.models.infra import Camara
+from db.models.infra import Camara, Ingreso
 from db.models.servicios import ConfigServicios
 from tests.soporte_postgres_real import requiere_postgres_real
 
@@ -295,3 +295,79 @@ def test_verificacion_manual_por_camara_cierra_tras_pre(session):
     session.refresh(interv)
     assert interv.estado == "CERRADA"
     assert "PRE completo" in slack.avisos()[-1]["texto"]
+
+
+# --------------------------------------------------------------------------------------------------
+# Ingresos anulados desde el portal (baja lógica, 2026-10-23): nunca ocurrieron
+# --------------------------------------------------------------------------------------------------
+
+
+def _anular(s: Session, ingreso: Ingreso) -> None:
+    ingreso.anulado_at = datetime.now(timezone.utc)
+    ingreso.anulado_por = "admin-test"
+    ingreso.anulado_motivo = "nunca ocurrió (test)"
+    s.commit()
+
+
+def _intervencion_en_curso(s: Session, slack: FakeSlack, reloj: Reloj, camara: Camara, n: int = 1):
+    ingresos = [_ingreso(s, camara, momento=reloj()) for _ in range(n)]  # mismo hilo: una intervención
+    motor.tick(s, slack, reloj)
+    interv = _interv(s)
+    slack.responder_todas(reloj.avanzar(seconds=40))
+    motor.tick(s, slack, reloj)
+    s.refresh(interv)
+    assert interv.estado == "EN_CURSO"
+    return interv, ingresos
+
+
+@pytest.mark.parametrize("anulado", [False, True])
+def test_ingreso_anulado_no_crea_intervencion(session, anulado):
+    slack, reloj = FakeSlack(), Reloj()
+    _activar(session)
+    camara = _camara_con_servicios(session)
+    antes = session.query(FomonIntervencion).count()
+    ingreso = _ingreso(session, camara, momento=reloj())
+    if anulado:
+        _anular(session, ingreso)
+    motor.tick(session, slack, reloj)
+    assert session.query(FomonIntervencion).count() == antes + (0 if anulado else 1)
+    assert session.get(FomonConfig, 1).ultimo_ingreso_id_procesado >= ingreso.id  # la marca cuenta todos
+
+
+@pytest.mark.parametrize("anulado", [False, True])
+def test_vinculado_anulado_no_bloquea_el_paso_a_post(session, anulado):
+    slack, reloj = FakeSlack(), Reloj()
+    _activar(session)
+    camara = _camara_con_servicios(session)
+    interv, (primero, segundo) = _intervencion_en_curso(session, slack, reloj, camara, n=2)
+    cerrar_ingreso_forzado(session, ingreso=primero, momento=reloj.avanzar(minutes=30))
+    if anulado:
+        _anular(session, segundo)
+    motor.tick(session, slack, reloj)
+    session.refresh(interv)
+    if anulado:
+        assert interv.estado.startswith("POST_") and interv.fecha_egreso == primero.fecha_fin
+        assert not interv.egreso_inferido
+    else:
+        assert interv.estado == "EN_CURSO"  # el segundo vinculado sigue adentro
+
+
+@pytest.mark.parametrize("anulado", [False, True])
+def test_egreso_huerfano_anulado_no_infiere_egreso(session, anulado):
+    slack, reloj = FakeSlack(), Reloj()
+    _activar(session)
+    camara = _camara_con_servicios(session)
+    interv, _ = _intervencion_en_curso(session, slack, reloj, camara)
+    huerfano = registrar_movimiento_ingreso(
+        session, camara=camara, botella=None, tipo_movimiento="Egreso", tecnico_nombre="TEST-FOMON-OTRO",
+        momento=reloj.avanzar(minutes=30), thread_ts="1799999999.000200", canal_id=CANAL_PRUEBA,
+    )
+    assert huerfano.fecha_inicio is None  # EGRESO huérfano: el técnico no tenía ingreso abierto
+    if anulado:
+        _anular(session, huerfano)
+    motor.tick(session, slack, reloj)
+    session.refresh(interv)
+    if anulado:
+        assert interv.estado == "EN_CURSO" and interv.fecha_egreso is None
+    else:
+        assert interv.estado.startswith("POST_") and interv.egreso_inferido

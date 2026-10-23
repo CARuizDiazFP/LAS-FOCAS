@@ -418,6 +418,20 @@ Ejecuta la acción elegida por el usuario:
 | `fecha_fin`        | DateTime(tz)   | Fecha/hora de fin. `null` tanto en un `INGRESO` real "en curso" como en un `INTENTO_BLOQUEADO` (nunca se cierra con un Egreso, por diseño) — no alcanza con mirar sólo esta columna para saber si el movimiento sigue "abierto", hay que mirar `tipo`. |
 | `thread_ts`        | `VARCHAR(32)`, nullable, index (2026-09-23, migración `20260923_01`) | `ts` del hilo de Slack donde se originó el movimiento. Hasta esta migración `app.ingresos` no guardaba nada del hilo — sólo `ingresos_sin_match` lo hacía, y sólo para los casos que no matchearon. Filas anteriores a esta fecha quedan con `NULL`; se resuelven por los niveles 2 y 3 de la cascada de `core/services/ingreso_correccion_service.py::resolver_contexto_hilo` (ver más abajo). En el camino "Egreso" que **cierra** una fila `Ingreso` existente, este campo **no se pisa** — conserva el del ingreso original. |
 | `canal_id`         | `VARCHAR(32)`, nullable (2026-09-23) | Canal de Slack del movimiento. Mismo criterio de no-pisado en el camino de cierre. |
+| `anulado_at` / `anulado_por` / `anulado_motivo` | `TIMESTAMPTZ` / `VARCHAR(128)` / `TEXT`, nullable (2026-10-23, migración `20261023_01`) | Baja lógica desde el portal (admin) de un ingreso que nunca ocurrió. La fila se conserva. CHECK `ck_ingresos_anulado_coherente`: si `anulado_at` no es NULL, autor y motivo son obligatorios. |
+
+**Ingreso vigente** (desde 2026-10-23): toda query que decide estado a partir de esta tabla filtra,
+además de `tipo`, `Ingreso.vigente()` (`anulado_at IS NULL`). "Ingreso activo" es entonces
+`tipo = 'INGRESO' AND fecha_fin IS NULL AND anulado_at IS NULL`. Lectores filtrados:
+`camara_estado_service.get_camara_estado_contexto`, `protection_service._determinar_estado_restauracion`,
+`ingreso_service.registrar_movimiento_ingreso` (camino Egreso) y `registrar_egreso_historico`,
+`ingreso_correccion_service.resolver_contexto_hilo` (nivel 1) y `_ingresos_abiertos`,
+`ingreso_reproceso_service._ya_registrado` y `fo_monitor/motor.py` (`detectar_ingresos`,
+`detectar_egresos`). `Forzar egreso #<id>` y el egreso web rechazan un anulado con
+`resultado='INGRESO_ANULADO'`, y `cerrar_ingreso_forzado` lo rechaza como defensa en profundidad. **No**
+filtran: los merges de Cámara/Botella (reasignan todas las filas, anuladas incluidas),
+`camara_botella_delete_service._bloqueo_camara` y el `DELETE` de cámara pendiente (una fila anulada
+también bloquea el borrado: es historial) ni la marca de agua de FO Monitor (`cargar_config`).
 
 ### Tabla `ingresos_correcciones` (2026-09-23) — auditoría append-only de `Forzar ingreso`/`Forzar egreso`
 
@@ -431,7 +445,7 @@ inmutable. Ver `docs/decisiones.md`, entrada 2026-09-23, para el razonamiento co
 | Columna | Tipo | Descripción |
 |---|---|---|
 | `id` (PK) | Integer | — |
-| `comando` | `String(32)`, `NOT NULL` | `FORZAR_INGRESO` \| `FORZAR_EGRESO`. `String`, no enum de Postgres — sus valores previstos crecen sin exigir `ALTER TYPE`. |
+| `comando` | `String(32)`, `NOT NULL` | `FORZAR_INGRESO` \| `FORZAR_EGRESO`; desde 2026-10-23 también `MOVER_INGRESO` \| `ANULAR_INGRESO` (portal, `origen='web'`). `String`, no enum de Postgres — sus valores previstos crecen sin exigir `ALTER TYPE`. |
 | `origen` | `String(16)`, `NOT NULL`, default `'slack'` | Desde `20260928_01`: `slack` (comandos del canal) \| `web` (botón "Registrar egreso" de la vista Ingresos del Servicio). |
 | `actor_web_usuario` | `String(64)`, nullable | Desde `20260928_01`: usuario del panel que ejecutó la acción; obligatorio si `origen='web'` (CHECK). |
 | `actor_slack_user_id` | `String(32)`, nullable desde `20260928_01` | Quién ejecutó el comando de Slack — siempre se conoce, no hay allowlist que lo condicione (ver `docs/decisiones.md`). Obligatorio si `origen='slack'` (CHECK). |
@@ -447,7 +461,9 @@ inmutable. Ver `docs/decisiones.md`, entrada 2026-09-23, para el razonamiento co
 | `momento_solicitado` / `momento_efectivo` | DateTime(tz), nullable | `NULL` en el estado `PENDIENTE_FECHA` — todavía no hay una fecha resuelta. |
 | `fuente_momento` | `String(16)`, nullable | `hilo` \| `explicito`. |
 | `ingreso_id` | FK → `app.ingresos.id`, `ON DELETE SET NULL`, nullable, index | Sólo se completa si la corrección terminó creando/cerrando un `Ingreso` real. |
-| `resultado` | `String(64)`, `NOT NULL` | Uno de 14 valores (`OK_INGRESO`, `OK_EGRESO_CERRADO`, `OK_EGRESO_ASENTADO`, `CAMARA_AMBIGUA`, `CAMARA_NO_ENCONTRADA`, `VARIOS_INGRESOS_ABIERTOS`, `SIN_INGRESO_ABIERTO`, `EGRESO_ANTERIOR_AL_INGRESO`, `INGRESO_YA_CERRADO`, `INGRESO_NO_ENCONTRADO`, `HILO_SIN_FORMULARIO`, `MOMENTO_INVALIDO`, `ERROR_INTERNO`, `PENDIENTE_FECHA`) — constantes `RESULTADO_*` de `core/services/ingreso_correccion_service.py`. `PENDIENTE_FECHA` es un **estado pendiente, no un rechazo**: habilita que el operador conteste en el mismo hilo sólo con `DD-MM-AAAA HH:MM` y el comando se re-ejecute (escribiendo una fila NUEVA — la tabla es append-only). |
+| `camara_id_anterior` | FK → `app.camaras.id`, `ON DELETE SET NULL`, nullable | Desde `20261023_01`: cámara de origen de un `MOVER_INGRESO` (portal). El destino va en `camara_id_resuelta`. |
+| `cromo_botella_id_anterior` | BigInteger, nullable, sin FK | Desde `20261023_01`: botella de origen de un `MOVER_INGRESO`. Sin FK: es histórico y la botella puede desaparecer en una reingesta. |
+| `resultado` | `String(64)`, `NOT NULL` | Uno de 15 valores (`OK_INGRESO`, `OK_EGRESO_CERRADO`, `OK_EGRESO_ASENTADO`, `CAMARA_AMBIGUA`, `CAMARA_NO_ENCONTRADA`, `VARIOS_INGRESOS_ABIERTOS`, `SIN_INGRESO_ABIERTO`, `EGRESO_ANTERIOR_AL_INGRESO`, `INGRESO_YA_CERRADO`, `INGRESO_ANULADO` (desde 2026-10-23), `INGRESO_NO_ENCONTRADO`, `HILO_SIN_FORMULARIO`, `MOMENTO_INVALIDO`, `ERROR_INTERNO`, `PENDIENTE_FECHA`) — constantes `RESULTADO_*` de `core/services/ingreso_correccion_service.py`. `PENDIENTE_FECHA` es un **estado pendiente, no un rechazo**: habilita que el operador conteste en el mismo hilo sólo con `DD-MM-AAAA HH:MM` y el comando se re-ejecute (escribiendo una fila NUEVA — la tabla es append-only). |
 | `error_detalle` | `Text`, nullable | Detalle del rechazo/error, si lo hubo. |
 | `created_at` | DateTime(tz), `NOT NULL`, index | — |
 
@@ -1245,6 +1261,7 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20261017_03` | `20261017_03_cromo_servicio_match_vigente.py` | Vista `app.v_cromo_servicio_match_vigente`: `cromo_servicio_match` sin los pelos de casos en `CUARENTENA` |
 | `20261017_04` | `20261017_04_config_cromo_inconsistencias.py` | Fila `Cromo Inconsistencias` en `app.config_servicios` (inactiva, sin canales, idempotente); el downgrade la borra |
 | `20261020_01` | `20261020_01_cromo_arbitro.py` | Árbitro de Cromo: tablas `app.cromo_regla_correccion` (sembrada con 5 reglas en SOMBRA), `app.cromo_propuesta` (índice único parcial de abiertas), `app.cromo_evidencia_camino` y `app.cromo_arbitro_evaluacion`; columnas `origen`/`propuesta_id` y categoría `EVIDENCIA_CAMINO` en `cromo_servicio_odf_override` |
+| `20261023_01` | `20261023_01_ingresos_anulacion_y_mover.py` | Baja lógica de `app.ingresos` (`anulado_at`/`anulado_por`/`anulado_motivo` + CHECK `ck_ingresos_anulado_coherente`) y origen del movimiento en `app.ingresos_correcciones` (`camara_id_anterior` FK SET NULL, `cromo_botella_id_anterior` sin FK). `ADD COLUMN` sin default: no dispara el trigger append-only. El `downgrade()` aborta si hay ingresos anulados o correcciones con origen. Upgrade→downgrade→upgrade verificado en dev |
 
 *(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
 migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta

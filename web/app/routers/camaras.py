@@ -26,7 +26,7 @@ from ..comun import (
     logger,
 )
 from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
-from ..errores import ErrorDeDominio, error_interno, nueva_ref
+from ..errores import Conflicto, ErrorDeDominio, error_interno, nueva_ref
 
 router = APIRouter(dependencies=[Depends(usuario_sesion)])
 
@@ -1670,6 +1670,7 @@ _EGRESO_WEB_STATUS = {
     "OK_EGRESO_CERRADO": 200,
     "INGRESO_NO_ENCONTRADO": 404,
     "INGRESO_YA_CERRADO": 409,
+    "INGRESO_ANULADO": 409,
     "MOMENTO_INVALIDO": 422,
     "EGRESO_ANTERIOR_AL_INGRESO": 422,
 }
@@ -2051,9 +2052,13 @@ async def admin_eliminar_camara_pendiente(
     Solo se permite eliminar cámaras que estén en estado ``PENDIENTE_REVISION``.
     Para proteger contra borrados accidentales, registros en otros estados
     deben gestionarse por otros medios.
+
+    Desde 2026-10-23 bloquea (409) si la cámara tiene ingresos, incluidos los anulados: la cascada
+    del ORM (``Camara.ingresos``, ``delete-orphan``) los borraba físicamente. Mismo criterio que
+    ``camara_botella_delete_service._bloqueo_camara``.
     """
     try:
-        from db.models.infra import Camara, CamaraEstado
+        from db.models.infra import Camara, CamaraEstado, Ingreso
         from db.session import SessionLocal
 
         with SessionLocal() as session:
@@ -2070,6 +2075,8 @@ async def admin_eliminar_camara_pendiente(
                     },
                     status_code=409,
                 )
+            if session.query(Ingreso.id).filter(Ingreso.camara_id == camara_id).first() is not None:
+                raise Conflicto("No se puede eliminar: la cámara tiene ingresos asociados.")
             nombre_eliminado = camara.nombre
             session.delete(camara)
             session.commit()

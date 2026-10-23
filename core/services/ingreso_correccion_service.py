@@ -108,6 +108,7 @@ from modules.slack_baneo_notifier.correccion_ingreso import (
     construir_respuesta_egreso_anterior_al_ingreso,
     construir_respuesta_falta_fecha,
     construir_respuesta_hilo_sin_formulario,
+    construir_respuesta_ingreso_anulado,
     construir_respuesta_ingreso_no_encontrado,
     construir_respuesta_ingreso_ya_cerrado,
     construir_respuesta_momento_invalido,
@@ -151,6 +152,8 @@ RESULTADO_VARIOS_INGRESOS_ABIERTOS = "VARIOS_INGRESOS_ABIERTOS"
 RESULTADO_SIN_INGRESO_ABIERTO = "SIN_INGRESO_ABIERTO"
 RESULTADO_EGRESO_ANTERIOR_AL_INGRESO = "EGRESO_ANTERIOR_AL_INGRESO"
 RESULTADO_INGRESO_YA_CERRADO = "INGRESO_YA_CERRADO"
+# Desde 2026-10-23: `#<id>` (Slack o web) apunta a un ingreso anulado desde el portal.
+RESULTADO_INGRESO_ANULADO = "INGRESO_ANULADO"
 RESULTADO_INGRESO_NO_ENCONTRADO = "INGRESO_NO_ENCONTRADO"
 RESULTADO_HILO_SIN_FORMULARIO = "HILO_SIN_FORMULARIO"
 RESULTADO_MOMENTO_INVALIDO = "MOMENTO_INVALIDO"
@@ -324,9 +327,11 @@ def resolver_contexto_hilo(
     )
 
     # ── Nivel 1: el `Ingreso` real del hilo, sin llamadas de red ──────────────────────────────
+    # Sólo vigentes: un ingreso anulado desde el portal nunca ocurrió, así que no define la cámara
+    # ni el tipo del hilo (si todos están anulados, la cascada sigue por los niveles 2 y 3).
     ingresos = (
         session.query(Ingreso)
-        .filter(Ingreso.thread_ts == thread_ts)
+        .filter(Ingreso.thread_ts == thread_ts, Ingreso.vigente())
         .order_by(Ingreso.id.asc())
         .all()
     )
@@ -689,7 +694,7 @@ def _resolver_momento(
 
 def _ingresos_abiertos(session: Session, camara: Camara) -> list[Ingreso]:
     """Ingresos abiertos de la cámara: `tipo=INGRESO` (un `INTENTO_BLOQUEADO` también tiene
-    `fecha_fin IS NULL` y nunca fue un ingreso real) y `fecha_fin IS NULL`.
+    `fecha_fin IS NULL` y nunca fue un ingreso real), `fecha_fin IS NULL` y vigentes (no anulados).
 
     El alcance es la cámara entera, sin filtrar por `cromo_botella_id`: `Ingreso.camara_id` siempre
     apunta a la cámara raíz (tanto el flujo en vivo como la búsqueda de Cromo resuelven a la raíz),
@@ -703,6 +708,7 @@ def _ingresos_abiertos(session: Session, camara: Camara) -> list[Ingreso]:
             Ingreso.camara_id == camara.id,
             Ingreso.tipo == IngresoTipo.INGRESO,
             Ingreso.fecha_fin.is_(None),
+            Ingreso.vigente(),
         )
         .order_by(Ingreso.fecha_inicio.desc())
         .all()
@@ -955,6 +961,19 @@ def _procesar_forzar_egreso(
                     else f"Ingreso id={cmd.ingreso_id} es de tipo {objetivo.tipo}"
                 ),
             )
+        if objetivo.anulado_at is not None:
+            return _finalizar(
+                session,
+                inv,
+                resultado=RESULTADO_INGRESO_ANULADO,
+                respuesta=construir_respuesta_ingreso_anulado(objetivo.id),
+                camara_texto_solicitado=camara_texto_solicitado,
+                motivo=cmd.motivo,
+                camara=objetivo.camara,
+                momento_solicitado=momento_solicitado,
+                ingreso=objetivo,
+                error_detalle=f"anulado el {objetivo.anulado_at} por {objetivo.anulado_por}",
+            )
         if objetivo.fecha_fin is not None:
             return _finalizar(
                 session,
@@ -1205,6 +1224,18 @@ def registrar_egreso_web(
         )
     camara = objetivo.camara
     botella = objetivo.cromo_botella
+    if objetivo.anulado_at is not None:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_INGRESO_ANULADO,
+            respuesta=f"El ingreso #{objetivo.id} está anulado; no se puede cerrar.",
+            camara=camara,
+            botella=botella,
+            ingreso=objetivo,
+            error_detalle=f"anulado el {objetivo.anulado_at} por {objetivo.anulado_por}",
+            **comunes,
+        )
     if objetivo.fecha_fin is not None:
         return _finalizar(
             session,
@@ -1273,6 +1304,7 @@ __all__ = [
     "RESULTADO_EGRESO_ANTERIOR_AL_INGRESO",
     "RESULTADO_ERROR_INTERNO",
     "RESULTADO_HILO_SIN_FORMULARIO",
+    "RESULTADO_INGRESO_ANULADO",
     "RESULTADO_INGRESO_NO_ENCONTRADO",
     "RESULTADO_INGRESO_YA_CERRADO",
     "RESULTADO_MOMENTO_INVALIDO",

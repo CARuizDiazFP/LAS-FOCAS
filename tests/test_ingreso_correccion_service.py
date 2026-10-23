@@ -25,6 +25,7 @@ from core.services.ingreso_correccion_service import (
     RESULTADO_EGRESO_ANTERIOR_AL_INGRESO,
     RESULTADO_ERROR_INTERNO,
     RESULTADO_HILO_SIN_FORMULARIO,
+    RESULTADO_INGRESO_ANULADO,
     RESULTADO_INGRESO_NO_ENCONTRADO,
     RESULTADO_INGRESO_YA_CERRADO,
     RESULTADO_MOMENTO_INVALIDO,
@@ -39,7 +40,11 @@ from core.services.ingreso_correccion_service import (
 from db.models.cromo import CromoBotella
 from db.models.infra import Camara, Ingreso, IngresoCorreccion, IngresoSinMatch, IngresoTipo
 from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
-from tests.test_ingreso_service import _assert_filtro_igualdad, _assert_filtro_null_safe
+from tests.test_ingreso_service import (
+    _assert_filtro_igualdad,
+    _assert_filtro_null_safe,
+    _assert_filtro_vigente,
+)
 
 _MODULO = "core.services.ingreso_correccion_service"
 
@@ -697,6 +702,32 @@ class TestFormasDeForzarEgreso:
         assert "904" in resultado.respuesta
         assert cerrado.fecha_fin == datetime(2026, 9, 19, 16, 0, tzinfo=timezone.utc)
 
+    @pytest.mark.parametrize("fecha_fin", [None, datetime(2026, 9, 19, 16, 0, tzinfo=timezone.utc)])
+    def test_forma_por_id_anulado_se_rechaza_con_texto_propio(self, fecha_fin) -> None:
+        """Un ingreso anulado desde el portal nunca ocurrió: no se cierra, y el hilo recibe un texto
+        concreto — nunca una derivación a terceros ("avisá a un administrador")."""
+        camara = _camara()
+        anulado = _ingreso(
+            904,
+            camara=camara,
+            fecha_inicio=datetime(2026, 9, 19, 12, 0, tzinfo=timezone.utc),
+            fecha_fin=fecha_fin,
+        )
+        anulado.anulado_at = datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc)
+        anulado.anulado_por = "admin1"
+        anulado.anulado_motivo = "nunca ocurrió"
+        session = _session(ingresos_hilo=[], ingreso_por_id=anulado)
+        with _entorno():
+            resultado = _ejecutar("Forzar egreso #904", session, _client())
+
+        assert resultado.resultado == RESULTADO_INGRESO_ANULADO
+        assert "El ingreso *#904* está anulado; no se puede cerrar." in resultado.respuesta
+        assert "administrador" not in resultado.respuesta.lower()
+        assert anulado.fecha_fin == fecha_fin
+        fila = _auditoria(session)
+        assert fila.resultado == RESULTADO_INGRESO_ANULADO and fila.ingreso_id == 904
+        assert _ingresos_escritos(session) == []
+
 
 class TestResolucionDelEgresoSinFallbackImplicito:
     def test_sin_ingresos_abiertos_las_formas_implicitas_no_crean_huerfana(self) -> None:
@@ -843,6 +874,8 @@ class TestFiltrosSQLDeIngresosAbiertos:
         _assert_filtro_igualdad(filtros, "camara_id", camara.id)
         _assert_filtro_igualdad(filtros, "tipo", IngresoTipo.INGRESO)
         _assert_filtro_null_safe(filtros, "fecha_fin", None)
+        # Los candidatos se toman del ÚLTIMO `.filter()` sobre `Ingreso` (el primero es el nivel 1).
+        _assert_filtro_vigente(session.query(Ingreso).filtros[-1])
 
     def test_nivel_1_de_la_cascada_filtra_por_thread_ts_exacto(self) -> None:
         camara = _camara()
@@ -855,6 +888,7 @@ class TestFiltrosSQLDeIngresosAbiertos:
 
         filtros = self._filtros_planos(session)
         _assert_filtro_igualdad(filtros, "thread_ts", THREAD_TS)
+        _assert_filtro_vigente(session.query(Ingreso).filtros[0])
 
 
 # ── Step 2 y Step 5: técnico, baneo y marcado del caso pendiente ────────────────────────────────

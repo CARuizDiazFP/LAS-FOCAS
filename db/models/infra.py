@@ -761,9 +761,25 @@ class Ingreso(Base):
     # cascada de búsqueda (Task 5), no por esta columna.
     thread_ts = Column(String(32), nullable=True, index=True)
     canal_id = Column(String(32), nullable=True)
+    # Desde 2026-10-23 (migración `20261023_01`): baja lógica desde el portal (admin) para un ingreso
+    # que nunca ocurrió. La fila se conserva; todo lector que decide estado (ingreso activo, egreso a
+    # cerrar, FO Monitor, reproceso) filtra con `Ingreso.vigente()`. Un CHECK
+    # (`ck_ingresos_anulado_coherente`) exige autor y motivo si `anulado_at` no es NULL.
+    anulado_at = Column(DateTime(timezone=True), nullable=True)
+    anulado_por = Column(String(128), nullable=True)
+    anulado_motivo = Column(Text, nullable=True)
 
     camara = relationship("Camara", back_populates="ingresos")
     cromo_botella = relationship("CromoBotella", foreign_keys=[cromo_botella_id])
+
+    @classmethod
+    def vigente(cls):
+        """Condición SQL de "no anulado" — la única definición de vigencia; no repetirla a mano."""
+        return cls.anulado_at.is_(None)
+
+    @property
+    def anulado(self) -> bool:
+        return self.anulado_at is not None
 
     def __repr__(self) -> str:
         return f"<Ingreso id={self.id} camara_id={self.camara_id} tipo={self.tipo.value if self.tipo else '?'}>"
@@ -864,7 +880,9 @@ class IngresoCorreccion(Base):
     __table_args__ = {"schema": "app"}
 
     id = Column(Integer, primary_key=True)
-    comando = Column(String(32), nullable=False)  # "FORZAR_INGRESO" | "FORZAR_EGRESO"
+    # "FORZAR_INGRESO" | "FORZAR_EGRESO" (Slack y egreso web) y, desde 2026-10-23,
+    # "MOVER_INGRESO" | "ANULAR_INGRESO" (portal, `origen='web'`).
+    comando = Column(String(32), nullable=False)
     # Desde la migración `20260928_01`: "slack" (comandos del canal) | "web" (botón "Registrar
     # egreso" del panel). Las columnas de Slack de abajo pasan a nullable, pero un CHECK de Postgres
     # (`ck_ingresos_correcciones_origen_actor`) las sigue exigiendo para `origen='slack'` y exige
@@ -904,6 +922,15 @@ class IngresoCorreccion(Base):
     )
     resultado = Column(String(64), nullable=False)
     error_detalle = Column(Text, nullable=True)
+    # Desde 2026-10-23 (migración `20261023_01`): origen de un `MOVER_INGRESO` desde el portal. La
+    # cámara destino va en `camara_id_resuelta`/`cromo_botella_id_resuelta`. La botella anterior no
+    # lleva FK: es histórico y la botella puede desaparecer en una reingesta de Cromo.
+    camara_id_anterior = Column(
+        Integer,
+        ForeignKey("app.camaras.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    cromo_botella_id_anterior = Column(BigInteger(), nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,

@@ -123,6 +123,7 @@ def registrar_movimiento_ingreso(
             _null_safe(Ingreso.cromo_botella_id, cromo_botella_id),
             Ingreso.tipo == IngresoTipo.INGRESO,
             Ingreso.fecha_fin.is_(None),
+            Ingreso.vigente(),
         )
         .order_by(Ingreso.fecha_inicio.desc())
         .first()
@@ -172,13 +173,15 @@ def cerrar_ingreso_forzado(session: Session, *, ingreso: Ingreso, momento: datet
     `registrar_movimiento_ingreso` (ver su docstring).
 
     Raises:
-        ValueError: si `ingreso` no es de tipo `INGRESO` o ya tiene `fecha_fin` — condiciones que el
+        ValueError: si `ingreso` no es de tipo `INGRESO`, ya tiene `fecha_fin` o está anulado — condiciones que el
             caller ya verificó; el guard es defensa en profundidad para cualquier caller futuro.
     """
     if ingreso.tipo != IngresoTipo.INGRESO:
         raise ValueError(f"Ingreso id={ingreso.id} no es de tipo INGRESO (tipo={ingreso.tipo})")
     if ingreso.fecha_fin is not None:
         raise ValueError(f"Ingreso id={ingreso.id} ya tiene fecha_fin={ingreso.fecha_fin}")
+    if ingreso.anulado_at is not None:
+        raise ValueError(f"Ingreso id={ingreso.id} está anulado")
     ingreso.fecha_fin = momento
     session.commit()
     return ingreso
@@ -214,6 +217,7 @@ def registrar_egreso_historico(
             _null_safe(Ingreso.cromo_botella_id, cromo_botella_id),
             Ingreso.tipo == IngresoTipo.INGRESO,
             Ingreso.fecha_fin.is_(None),
+            Ingreso.vigente(),
             Ingreso.fecha_inicio < momento,
         )
         .order_by(Ingreso.fecha_inicio.desc())

@@ -411,6 +411,12 @@ def construir_respuesta_egreso_anterior_al_ingreso(momento_egreso_utc: datetime,
     )
 
 
+def construir_respuesta_ingreso_anulado(ingreso_id: int) -> str:
+    """"Forzar egreso #<id>" sobre un ingreso anulado desde el portal (nunca ocurrió). Texto concreto:
+    en los hilos el bot no deriva a terceros."""
+    return f":warning: El ingreso *#{ingreso_id}* está anulado; no se puede cerrar."
+
+
 def construir_respuesta_ingreso_ya_cerrado(ingreso_id: int, fecha_fin_utc: datetime) -> str:
     return (
         f":warning: El ingreso *#{ingreso_id}* ya tiene un egreso registrado "
@@ -452,6 +458,7 @@ __all__ = [
     "construir_respuesta_egreso_anterior_al_ingreso",
     "construir_respuesta_falta_fecha",
     "construir_respuesta_hilo_sin_formulario",
+    "construir_respuesta_ingreso_anulado",
     "construir_respuesta_ingreso_no_encontrado",
     "construir_respuesta_ingreso_ya_cerrado",
     "construir_respuesta_momento_invalido",
