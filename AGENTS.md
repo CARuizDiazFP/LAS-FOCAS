@@ -75,8 +75,8 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
   `except Exception` → errores tipados y `_require_auth` →
   `Depends` quedan fuera hasta decisión explícita (cambian respuestas).
   Código inalcanzable conservado a propósito, hasta decisión del usuario: el "Intento 3" (sin
-  números) de `_buscar_camara_intento` en `modules/slack_baneo_notifier/camara_search.py` y la rama
-  `missing_files` de `generar_informe_sla_web` en `web/app/routers/informes.py`.
+  números) de `_buscar_camara_intento` en `modules/slack_baneo_notifier/camara_search.py`. La rama
+  `missing_files` del informe SLA se quitó el 2026-10-23 por decisión del usuario.
 - Migraciones: `ALEMBIC_URL="..." alembic upgrade head`
 
 ## Gotchas
