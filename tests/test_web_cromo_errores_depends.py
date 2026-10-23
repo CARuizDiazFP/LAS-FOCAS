@@ -268,3 +268,35 @@ def test_cable_inexistente_sigue_dando_404_con_su_mensaje(con_sesion, monkeypatc
 
     assert res.status_code == 404
     assert res.json() == {"error": "Cable n_id=99 no encontrado"}
+
+
+def test_asociar_huerfanas_registra_el_username_y_no_la_tupla(con_sesion, monkeypatch, caplog):
+    """Bug previo a la Task 11: `username = _require_auth(request)` guardaba la tupla (usuario, rol)
+    en el log y en la auditoría (`asociar_huerfanas(usuario=...)`). Ahora es el string."""
+    from core.services.cromo import orfanas_service
+    from db import session as db_session
+
+    sesion = MagicMock()
+    sesion.__enter__.return_value = sesion
+    sesion.__exit__.return_value = False
+    monkeypatch.setattr(db_session, "SessionLocal", lambda: sesion)
+
+    recibido: dict[str, Any] = {}
+
+    def _asociar(session, *, n_ids, camara_id, nombre_nueva_camara, usuario):
+        recibido["usuario"] = usuario
+        return MagicMock(camara_id=2, camara_creada=False, botellas_vinculadas=1, estado_asignado="LIBRE")
+
+    monkeypatch.setattr(orfanas_service, "asociar_huerfanas", _asociar)
+    con_sesion("user", username="pepe")
+    caplog.set_level(logging.INFO, logger="web")
+
+    res = _cliente().post("/api/infra/cromo-botellas/asociar", json={"n_ids": [1], "camara_id": 2})
+
+    assert res.status_code == 200
+    assert recibido["usuario"] == "pepe"
+    (registro,) = [
+        r.getMessage() for r in caplog.records if r.name == "web" and r.getMessage().startswith("action=cromo_botellas_asociar ")
+    ]
+    assert registro.startswith("action=cromo_botellas_asociar user=pepe camara_id=2 ")
+    sesion.commit.assert_called_once()

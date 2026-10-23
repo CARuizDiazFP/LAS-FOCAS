@@ -1877,9 +1877,7 @@ async def cromo_botellas_asociar_web(
 ) -> JSONResponse:
     """Asocia una o más Botellas Cromo huérfanas a una Cámara existente o recién creada — resolución
     manual individual o masiva (Caso 1, huérfanas). Ver `core/services/cromo/orfanas_service.py`."""
-    # Comportamiento previo preservado: `username` es la tupla (usuario, rol), no el
-    # string (bug latente anterior a la Task 11, ver su reporte).
-    username = tuple(usuario)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
