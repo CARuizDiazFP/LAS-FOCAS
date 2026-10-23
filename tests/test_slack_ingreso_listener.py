@@ -2967,7 +2967,7 @@ class TestSeguimientoFontaineId(unittest.TestCase):
         texto = client_mock.chat_postMessage.call_args.kwargs["text"]
         self.assertIn(
             "✅ Registré el ingreso en *Cra 25 de Mayo 302 CF* (Fontaine ID 1228619). "
-            "Si no es esa cámara, avisá en este hilo.",
+            "Si no es esa cámara, avisá a un administrador para corregir el registro.",
             texto,
         )
 
@@ -2990,6 +2990,30 @@ class TestSeguimientoFontaineId(unittest.TestCase):
         self.mock_registrar.assert_called_once()
         self.assertTrue(caso.resuelto_via_revalidacion)
         self.assertIn("Fontaine ID 1228619", client_mock.chat_postMessage.call_args.kwargs["text"])
+
+    def test_formas_del_operador_con_texto_alrededor(self) -> None:
+        """Ronda 3: "Ingreso ok, ID 1228619." (punto final) e "ingreso ok, id: 1228619 abriendo
+        puerta" (texto después) también son el Fontaine ID."""
+        for texto in ("Ingreso ok, ID 1228619.", "ingreso ok, id: 1228619 abriendo puerta"):
+            with self.subTest(texto=texto):
+                client_mock, session_mock, caso, fontaine, _, _ = self._correr(
+                    texto, fontaine=self._fontaine(self._camara())
+                )
+                fontaine.assert_called_once_with("1228619", session_mock)
+                self.mock_registrar.assert_called_once()
+                self.assertTrue(caso.resuelto_via_revalidacion)
+
+    def test_id_corto_suelto_no_se_prueba_como_fontaine(self) -> None:
+        """Ronda 3: hay `id_legacy` cortos (túneles, 7274-7330): "7300" suelto va sólo al empalme,
+        como antes; con la forma explícita "id: 7300" sí se prueba como Fontaine ID."""
+        _, _, _, fontaine, fusion, _ = self._correr("7300", fontaine=self._fontaine(self._camara()))
+        fontaine.assert_not_called()
+        fusion.assert_called_once()
+        self.mock_registrar.assert_not_called()
+
+        _, session_mock, _, fontaine, fusion, _ = self._correr("id: 7300", fontaine=self._fontaine(self._camara()))
+        fontaine.assert_called_once_with("7300", session_mock)
+        fusion.assert_not_called()
 
     def test_fontaine_id_que_resuelve_a_un_nodo_se_ignora(self) -> None:
         client_mock, session_mock, caso, _, fusion, _ = self._correr(
@@ -3636,6 +3660,8 @@ class TestReescrituraCamara(unittest.TestCase):
             "<!subteam^S056XUXU5FD> me podrán abrir un momentito la puerta por favor",
             # Falsos positivos de la heurística anterior: texto corto con un número de 1 dígito.
             "sala 1", "Poste 1 frente",
+            # Ronda 3: charla con números de 2 dígitos (no son una altura).
+            "llego en 20 minutos", "en 10 minutos salgo", "son las 14 30 ya termine",
         ]
         for texto in ruido:
             with self.subTest(texto=texto):

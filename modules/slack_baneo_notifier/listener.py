@@ -137,6 +137,26 @@ _RE_SEGUIMIENTO_EMPALME = re.compile(
 # Forma con que el operador da el Fontaine ID ("id: N", "ingreso ok, id: N", "egreso ok, id: N").
 # Si ese número no resuelve, el caso NO se cierra (ver `_procesar_seguimiento_empalme`).
 _RE_FORMA_FONTAINE = re.compile(r"(?i)^\s*(?:(?:in|e)greso\s+ok\b|id\b)")
+# Validación del operador con texto alrededor ("Ingreso ok, ID 1228619.", "ingreso ok, id: 1228619
+# abriendo puerta"): si el mensaje empieza con "(in|e)greso ok", el ID se busca en cualquier parte.
+_RE_VALIDACION_OPERADOR = re.compile(r"(?i)^\s*(?:in|e)greso\s+ok\b")
+_RE_ID_EN_TEXTO = re.compile(r"(?i)\bid\s*:?\s*(\d{4,7})\b")
+# Hay `id_legacy` cortos (13 en dev: 7274-7330 y 138453-138458, todos túneles): un número SUELTO
+# sólo se prueba como Fontaine ID con los 7 dígitos del formato real; los cortos, sólo con la forma
+# explícita ("id: N", "(in|e)greso ok, id: N").
+_DIGITOS_FONTAINE_SUELTO = 7
+
+
+def _numero_de_seguimiento(texto: str) -> tuple[str | None, bool]:
+    """``(número, forma_fontaine)`` de una respuesta de seguimiento en hilo, o ``(None, False)``."""
+    if _RE_VALIDACION_OPERADOR.match(texto):
+        match = _RE_ID_EN_TEXTO.search(texto)
+        if match:
+            return match.group(1), True
+    match = _RE_SEGUIMIENTO_EMPALME.match(texto)
+    if not match:
+        return None, False
+    return match.group(1), bool(_RE_FORMA_FONTAINE.match(texto))
 
 # Pedido común de los avisos de sin match / ambiguo (decisión del usuario 2026-10-23: "informa y
 # solicita escribir la cámara dentro del mismo hilo").
@@ -163,9 +183,9 @@ _RE_COMANDO_CONOCIDO = re.compile(
 # "ingreso ok, abriendo puerta", "Listo gracias", ":+1:"— habrían recibido "sigue sin match").
 # Se quitan emojis/entidades de Slack y el prefijo con que el operador valida ("ingreso ok, sin id,
 # nombre: …"); queda un nombre si tiene 2+ tokens significativos (3+ caracteres o un número de 2+
-# dígitos) que no sean el tipo, y además un número de 2+ dígitos o empieza con un tipo de elemento.
-# Medido contra `app.camaras` de dev: acepta el 94% de los nombres; "sala 1" y "Poste 1 frente"
-# (falsos positivos reales de la heurística anterior) quedan afuera.
+# dígitos) que no sean el tipo, y además un número de 3+ dígitos (una altura; "llego en 20 minutos"
+# no lo es) o empieza con un tipo de elemento ("Cra camacua 80"). Medido contra `app.camaras` de
+# dev: acepta el 93% de los nombres; "sala 1" y "Poste 1 frente" quedan afuera.
 _RE_EMOJI_O_ENTIDAD = re.compile(r":[\w+\-]+:|<[^>]*>")
 _RE_PREFIJO_VALIDACION = re.compile(
     r"(?i)^\s*(?:in|e)greso\s+ok\b[\s,.;:]*(?:sin\s+id\b[\s,.;:]*)?(?:nombre\s*:\s*)?"
@@ -182,7 +202,7 @@ def nombre_reescrito(texto: str) -> str | None:
     tokens = [t for t in norm.split() if (len(t) >= 3 or re.fullmatch(r"\d{2,}", t)) and t not in _TIPOS_ELEMENTO]
     if len(tokens) < 2:
         return None
-    if re.search(r"\d{2,}", norm) or _RE_EMPIEZA_CON_TIPO.match(limpio):
+    if re.search(r"\d{3,}", norm) or _RE_EMPIEZA_CON_TIPO.match(limpio):
         return limpio
     return None
 
@@ -586,8 +606,8 @@ class IngresoListener:
         (puede ser cualquier otro mensaje numérico del canal sin relación — no se trata como un
         intento de empalme fallido).
         """
-        match = _RE_SEGUIMIENTO_EMPALME.match(texto)
-        if not match:
+        numero, forma_fontaine = _numero_de_seguimiento(texto)
+        if numero is None:
             return False
 
         from db.models.infra import IngresoSinMatch
@@ -605,7 +625,6 @@ class IngresoListener:
         if caso is None:
             return False
 
-        numero = match.group(1)
         fusion_n_id = int(numero)
         logger.info(
             "Seguimiento de empalme detectado en hilo %s: numero=%s (caso IngresoSinMatch id=%s)",
@@ -615,8 +634,9 @@ class IngresoListener:
         )
 
         # Primero como Fontaine ID (`cromo_botellas.id_legacy`), después como ID de empalme.
+        prueba_fontaine = forma_fontaine or len(numero) == _DIGITOS_FONTAINE_SUELTO
         try:
-            por_fontaine = buscar_por_id_legacy(numero, session)
+            por_fontaine = buscar_por_id_legacy(numero, session) if prueba_fontaine else None
         except AmbiguousSearchError as exc:
             # `id_legacy` repetido: nunca se elige. El caso queda pendiente (sin marcar) para que
             # se pueda reescribir la Cámara o revalidar.
@@ -652,7 +672,7 @@ class IngresoListener:
             )
             resultado_acceso = self._evaluar_estado_acceso_camara(camara, session)
             respuesta = f"Resuelto por ID de empalme *{numero}*.\n{resultado_acceso.texto}"
-        elif _RE_FORMA_FONTAINE.match(texto):
+        elif forma_fontaine:
             # Fontaine ID que no resuelve (ni como empalme): el caso queda pendiente, así se puede
             # reescribir la Cámara o reintentar con otro ID en el mismo hilo.
             logger.info(
@@ -726,7 +746,10 @@ class IngresoListener:
             camara.id,
             getattr(ingreso, "id", None),
         )
-        aviso = "Si no es esa cámara, avisá en este hilo."
+        # Ningún comando del bot corrige un movimiento ya registrado en otra cámara: "Forzar ingreso"
+        # siempre crea una fila nueva y "Forzar egreso #id" sólo cierra la abierta (no la anula ni la
+        # mueve); el panel web tampoco. No se promete un mecanismo que no existe.
+        aviso = "Si no es esa cámara, avisá a un administrador para corregir el registro."
         if ingreso is None:
             respuesta = (
                 f"✅ *{camara.nombre}* (Fontaine ID {numero}), pero el mensaje original no traía el "
