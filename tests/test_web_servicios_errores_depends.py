@@ -10,6 +10,8 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.test_web_rutas_contrato import muestra_de_ruta
+from web.app.dependencias import usuario_admin
 from web.app.main import app
 from web.app.routers import servicios
 
@@ -30,6 +32,37 @@ def _registro(caplog, accion: str) -> str:
 
 def _roto(*_args, **_kwargs):
     raise RuntimeError(SECRETO)
+
+
+@pytest.fixture(autouse=True)
+def _modo_test(monkeypatch):
+    # Los POST/PATCH validan CSRF salvo con TESTING=true; no depender del entorno del que corre pytest.
+    monkeypatch.setenv("TESTING", "true")
+
+
+def _llama_a(dependant, objetivo) -> bool:
+    return any(d.call is objetivo or _llama_a(d, objetivo) for d in dependant.dependencies)
+
+
+_RUTAS_ADMIN = sorted(
+    (metodo, ruta.path)
+    for ruta in servicios.router.routes
+    if _llama_a(ruta.dependant, usuario_admin)
+    for metodo in ruta.methods - {"HEAD", "OPTIONS"}
+)
+
+
+def test_hay_rutas_admin_detectadas():
+    assert len(_RUTAS_ADMIN) >= 17
+
+
+@pytest.mark.parametrize(("metodo", "plantilla"), _RUTAS_ADMIN)
+def test_toda_ruta_admin_da_403_a_un_usuario_comun(con_sesion, metodo, plantilla):
+    # Introspección: cualquier ruta que dependa de usuario_admin, aunque no tenga test propio.
+    con_sesion("user")
+    kwargs = {"json": {}} if metodo in {"POST", "PUT", "PATCH", "DELETE"} else {}
+    res = _cliente().request(metodo, muestra_de_ruta(plantilla), **kwargs)
+    assert res.status_code == 403, f"{metodo} {plantilla} respondió {res.status_code}"
 
 
 # --- sesión vía Depends ------------------------------------------------------------------------------
