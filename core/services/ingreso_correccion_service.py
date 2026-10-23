@@ -88,10 +88,17 @@ from sqlalchemy.orm import Session
 
 from core.services.camara_estado_service import get_camara_estado_contexto
 from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo
+from core.services.fo_monitor.alcance import resolver_alcance
 from core.services.fo_monitor.motor import ESTADOS_ABIERTOS as FOMON_ESTADOS_ABIERTOS
+from core.services.fo_monitor.motor import congelar_alcance
 from core.services.ingreso_service import cerrar_ingreso_forzado, registrar_movimiento_ingreso
 from db.models.cromo import CromoBotella
-from db.models.fo_monitor import FomonConsulta, FomonIntervencion, FomonIntervencionIngreso
+from db.models.fo_monitor import (
+    FomonConsulta,
+    FomonIntervencion,
+    FomonIntervencionIngreso,
+    FomonIntervencionServicio,
+)
 from db.models.infra import Camara, Ingreso, IngresoCorreccion, IngresoSinMatch, IngresoTipo
 from modules.slack_baneo_notifier.camara_search import (
     AmbiguousSearchError,
@@ -192,6 +199,21 @@ _LARGO_ACTOR_NOMBRE = 255
 
 TipoFormulario = Literal["Ingreso", "Egreso"]
 
+# Por qué mover/anular dejó una intervención de FO Monitor abierta como estaba.
+# - OTROS_INGRESOS_VIGENTES: le quedan otros ingresos vigentes vinculados que no acompañan el cambio
+#   ("Botella 1 y 2" del mismo hilo) — mover y anular.
+# - CONSULTAS_YA_ENVIADAS: ya se le mandó a burritoIA al menos una consulta (ENVIADA, RESPONDIDA o
+#   TIMEOUT) con el alcance de la cámara vieja; recalcularlo en silencio mezclaría mediciones de dos
+#   cámaras — sólo mover.
+OMISION_OTROS_INGRESOS_VIGENTES = "OTROS_INGRESOS_VIGENTES"
+OMISION_CONSULTAS_YA_ENVIADAS = "CONSULTAS_YA_ENVIADAS"
+
+
+@dataclass(slots=True, frozen=True)
+class IntervencionFomonOmitida:
+    intervencion_id: int
+    motivo: str
+
 
 @dataclass(slots=True)
 class ResultadoCorreccion:
@@ -205,10 +227,10 @@ class ResultadoCorreccion:
     ingreso: Ingreso | None = None
     auditoria: IngresoCorreccion | None = None
     # Sólo mover/anular desde el portal: ids de las intervenciones de FO Monitor abiertas vinculadas
-    # al ingreso que se actualizaron/cancelaron, y las que se dejaron como estaban porque siguen
-    # teniendo otros ingresos vigentes que no acompañan el cambio.
+    # al ingreso que se reubicaron/cancelaron, y las que se dejaron como estaban (con el motivo,
+    # `OMISION_*`).
     intervenciones_fomon: list[int] = field(default_factory=list)
-    intervenciones_fomon_omitidas: list[int] = field(default_factory=list)
+    intervenciones_fomon_omitidas: list[IntervencionFomonOmitida] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -1376,23 +1398,107 @@ def _otros_vinculados_vigentes(session: Session, intervencion_id: int, ingreso_i
     )
 
 
-def _cancelar_intervencion_fomon(session: Session, interv: FomonIntervencion, ahora: datetime) -> None:
-    """Pasa la intervención a `CANCELADA` (estado final que el motor nunca vuelve a levantar: ningún
-    paso del `tick` filtra por él) con `cerrada_at`, como `CERRADA`, y cancela sus consultas a
-    burritoIA todavía `PENDIENTE` para que `enviar_consultas` no las mande — mismo patrón que
-    `motor._cancelar_pre_vencidas`. Las `ENVIADA` siguen su curso: su respuesta se guarda como
-    cualquier otra, pero `avanzar_intervenciones` ya no la procesa."""
-    interv.estado = "CANCELADA"
-    interv.cerrada_at = ahora
-    interv.proximo_evento_en = None
+# Una consulta en estos estados ya salió hacia burritoIA (TIMEOUT = se envió y no contestó a tiempo).
+# ERROR no cuenta: `enviar_consultas` lo pone cuando la publicación falló.
+_ESTADOS_CONSULTA_ENVIADA = ("ENVIADA", "RESPONDIDA", "TIMEOUT")
+
+
+def _consultas_ya_enviadas(session: Session, intervencion_id: int) -> bool:
+    return (
+        session.query(FomonConsulta.id)
+        .filter(
+            FomonConsulta.intervencion_id == intervencion_id,
+            FomonConsulta.estado.in_(_ESTADOS_CONSULTA_ENVIADA),
+        )
+        .first()
+        is not None
+    )
+
+
+def _cancelar_consultas_pendientes(session: Session, intervencion_id: int, motivo: str) -> None:
+    """Las consultas `PENDIENTE` todavía no salieron: se cancelan para que `enviar_consultas` no las
+    mande — mismo patrón que `motor._cancelar_pre_vencidas`."""
     pendientes = (
         session.query(FomonConsulta)
-        .filter(FomonConsulta.intervencion_id == interv.id, FomonConsulta.estado == "PENDIENTE")
+        .filter(FomonConsulta.intervencion_id == intervencion_id, FomonConsulta.estado == "PENDIENTE")
         .all()
     )
     for consulta in pendientes:
         consulta.estado = "CANCELADA"
-        consulta.error = "ingreso_anulado"
+        consulta.error = motivo
+
+
+def _otras_abiertas_en_camara(session: Session, camara_id: int, intervencion_id: int) -> list[FomonIntervencion]:
+    return (
+        session.query(FomonIntervencion)
+        .filter(
+            FomonIntervencion.camara_id == camara_id,
+            FomonIntervencion.id != intervencion_id,
+            FomonIntervencion.estado.in_(FOMON_ESTADOS_ABIERTOS),
+        )
+        .all()
+    )
+
+
+def _cancelar_intervencion_fomon(session: Session, interv: FomonIntervencion, ahora: datetime) -> None:
+    """Pasa la intervención a `CANCELADA` (estado final que el motor nunca vuelve a levantar: ningún
+    paso del `tick` filtra por él) con `cerrada_at`, como `CERRADA`, y cancela sus consultas
+    `PENDIENTE`. Las `ENVIADA` siguen su curso: su respuesta se guarda como cualquier otra, pero
+    `avanzar_intervenciones` ya no la procesa."""
+    interv.estado = "CANCELADA"
+    interv.cerrada_at = ahora
+    interv.proximo_evento_en = None
+    _cancelar_consultas_pendientes(session, interv.id, "ingreso_anulado")
+
+
+# Estado "en curso" → "pendiente" de la misma fase: `planificar_consultas` sólo crea consultas para
+# `PRE_PENDIENTE`/`POST_PENDIENTE`. Sin esta vuelta atrás, una `PRE_EN_CURSO` con sus consultas
+# canceladas pasaría en el próximo tick a `EN_CURSO` sin línea base.
+_VOLVER_A_PENDIENTE = {"PRE_EN_CURSO": "PRE_PENDIENTE", "POST_EN_CURSO": "POST_PENDIENTE"}
+
+
+def _reubicar_intervencion_fomon(
+    session: Session,
+    interv: FomonIntervencion,
+    *,
+    camara_id: int,
+    botella_n_id: int | None,
+    ahora: datetime,
+) -> None:
+    """Lleva una intervención abierta (sin consultas ya enviadas) a la cámara destino recalculando su
+    alcance con la misma función que la etapa PRE (`fo_monitor.alcance.resolver_alcance`, sólo
+    consultas a la DB, sin red) y reemplazando la lista congelada de cables/servicios.
+
+    - Las consultas `PENDIENTE` (armadas con el alcance viejo) se cancelan; las nuevas las crea
+      `motor.planificar_consultas` en el próximo tick, porque la intervención vuelve a
+      `PRE_PENDIENTE`/`POST_PENDIENTE` (los demás estados abiertos no tienen consultas en vuelo y
+      el motor planifica la fase siguiente con el alcance nuevo).
+    - Al volver a `PRE_PENDIENTE` se limpia `aviso_ts`, así el próximo tick publica un aviso raíz
+      nuevo con la cámara correcta (el viejo queda en Slack: no se edita desde acá).
+    - La botella objetivo sale de `resolver_alcance`: la elegida si es vigente del destino; si no se
+      eligió ninguna, la Botella 1 (`botella_1_inferida` según corresponda), igual que al crearla.
+    - `atribucion_compartida` se marca como en `crear_intervencion` si el destino ya tiene otra
+      intervención abierta."""
+    _cancelar_consultas_pendientes(session, interv.id, "alcance_recalculado")
+    session.query(FomonIntervencionServicio).filter(
+        FomonIntervencionServicio.intervencion_id == interv.id
+    ).delete(synchronize_session=False)
+    alcance = resolver_alcance(session, camara_id, botella_n_id)
+    interv.camara_id = camara_id
+    interv.botella_objetivo_n_id = alcance.botella_objetivo_n_id
+    interv.botella_1_inferida = alcance.botella_1_inferida
+    congelar_alcance(session, interv, alcance)
+    nuevo_estado = _VOLVER_A_PENDIENTE.get(interv.estado)
+    if nuevo_estado is not None:
+        interv.estado = nuevo_estado
+        interv.proximo_evento_en = ahora
+        if nuevo_estado == "PRE_PENDIENTE":
+            interv.aviso_ts = None
+            interv.aviso_canal = None
+    otras = _otras_abiertas_en_camara(session, camara_id, interv.id)
+    interv.atribucion_compartida = bool(otras)
+    for otra in otras:
+        otra.atribucion_compartida = True
 
 
 def mover_ingreso_web(
@@ -1403,6 +1509,7 @@ def mover_ingreso_web(
     cromo_botella_destino_n_id: int | None,
     motivo: str,
     usuario: str,
+    ahora: datetime | None = None,
 ) -> ResultadoCorreccion:
     """Mueve un `Ingreso` (cualquier `tipo`) a otra Cámara: el movimiento existió, pero quedó
     registrado en la cámara equivocada (Fontaine ID mal tipeado, reescritura en el hilo, "Forzar
@@ -1412,13 +1519,16 @@ def mover_ingreso_web(
       `camara_id` sea el destino.
     - No se mueve un ingreso anulado ni a la misma cámara con la misma botella.
     - Un ingreso abierto se mueve abierto: `fecha_inicio`/`fecha_fin` no cambian.
-    - FO Monitor: cada intervención abierta vinculada pasa a la cámara/botella destino, salvo que
-      tenga otros ingresos vigentes que sigan en otra cámara (queda en
-      `intervenciones_fomon_omitidas`; moverlos también la actualiza). El alcance ya congelado
-      (`fomon_intervencion_servicios`) no se recalcula.
+    - FO Monitor: cada intervención abierta vinculada se reubica en el destino con el alcance
+      recalculado (`_reubicar_intervencion_fomon`), salvo que tenga otros ingresos vigentes que
+      sigan en otra cámara (`OTROS_INGRESOS_VIGENTES`; mover también esos la reubica) o que ya
+      haya consultado a burritoIA con el alcance viejo (`CONSULTAS_YA_ENVIADAS`): ésas quedan como
+      están y vuelven en `intervenciones_fomon_omitidas`.
 
     La auditoría guarda el destino en `camara_id_resuelta`/`cromo_botella_id_resuelta` y el origen
-    en `camara_id_anterior`/`cromo_botella_id_anterior`."""
+    en `camara_id_anterior`/`cromo_botella_id_anterior`. `ahora` es inyectable para tests."""
+    ahora_utc = _como_utc(ahora if ahora is not None else datetime.now(timezone.utc))
+    assert ahora_utc is not None
     sufijo_botella = f" botella {cromo_botella_destino_n_id}" if cromo_botella_destino_n_id is not None else ""
     inv = _invocacion_web(
         COMANDO_MOVER_INGRESO,
@@ -1526,15 +1636,18 @@ def mover_ingreso_web(
     objetivo.cromo_botella_id = nuevo_botella_n_id
 
     actualizadas: list[int] = []
-    omitidas: list[int] = []
+    omitidas: list[IntervencionFomonOmitida] = []
     for interv in _intervenciones_abiertas_vinculadas(session, objetivo.id):
         otros = _otros_vinculados_vigentes(session, interv.id, objetivo.id)
         if any(o.camara_id != destino.id for o in otros):
-            omitidas.append(interv.id)
+            omitidas.append(IntervencionFomonOmitida(interv.id, OMISION_OTROS_INGRESOS_VIGENTES))
             continue
-        interv.camara_id = destino.id
-        interv.botella_objetivo_n_id = nuevo_botella_n_id
-        interv.botella_1_inferida = False  # la botella ya no sale de inferir la "Botella 1"
+        if _consultas_ya_enviadas(session, interv.id):
+            omitidas.append(IntervencionFomonOmitida(interv.id, OMISION_CONSULTAS_YA_ENVIADAS))
+            continue
+        _reubicar_intervencion_fomon(
+            session, interv, camara_id=destino.id, botella_n_id=nuevo_botella_n_id, ahora=ahora_utc
+        )
         actualizadas.append(interv.id)
     session.commit()
     if actualizadas or omitidas:
@@ -1575,7 +1688,7 @@ def anular_ingreso_web(
 
     FO Monitor: cada intervención abierta vinculada pasa a `CANCELADA` (ver
     `_cancelar_intervencion_fomon`), salvo que le queden otros ingresos vigentes — esos sí
-    ocurrieron y se siguen verificando (queda en `intervenciones_fomon_omitidas`).
+    ocurrieron y se siguen verificando (`OTROS_INGRESOS_VIGENTES` en `intervenciones_fomon_omitidas`).
 
     `ahora` es inyectable para tests."""
     ahora_utc = _como_utc(ahora if ahora is not None else datetime.now(timezone.utc))
@@ -1627,10 +1740,10 @@ def anular_ingreso_web(
     objetivo.anulado_motivo = motivo_limpio
 
     canceladas: list[int] = []
-    omitidas: list[int] = []
+    omitidas: list[IntervencionFomonOmitida] = []
     for interv in _intervenciones_abiertas_vinculadas(session, objetivo.id):
         if _otros_vinculados_vigentes(session, interv.id, objetivo.id):
-            omitidas.append(interv.id)
+            omitidas.append(IntervencionFomonOmitida(interv.id, OMISION_OTROS_INGRESOS_VIGENTES))
             continue
         _cancelar_intervencion_fomon(session, interv, ahora_utc)
         canceladas.append(interv.id)
@@ -1669,8 +1782,11 @@ __all__ = [
     "ContextoHilo",
     "FUENTE_MOMENTO_EXPLICITO",
     "FUENTE_MOMENTO_HILO",
+    "IntervencionFomonOmitida",
     "MOTIVO_MAX",
     "MOTIVO_MIN",
+    "OMISION_CONSULTAS_YA_ENVIADAS",
+    "OMISION_OTROS_INGRESOS_VIGENTES",
     "ORIGEN_SLACK",
     "ORIGEN_WEB",
     "RESULTADO_BOTELLA_INVALIDA",

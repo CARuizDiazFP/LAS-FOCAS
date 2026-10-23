@@ -14,9 +14,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.services import ingreso_correccion_service as ics
+from core.services.fo_monitor.alcance import AlcanceIntervencion, CableAlcance
 from core.services.ingreso_correccion_service import (
     COMANDO_ANULAR_INGRESO,
     COMANDO_MOVER_INGRESO,
+    OMISION_CONSULTAS_YA_ENVIADAS,
+    OMISION_OTROS_INGRESOS_VIGENTES,
     ORIGEN_WEB,
     RESULTADO_BOTELLA_INVALIDA,
     RESULTADO_CAMARA_NO_ENCONTRADA,
@@ -26,12 +29,13 @@ from core.services.ingreso_correccion_service import (
     RESULTADO_MOTIVO_INVALIDO,
     RESULTADO_OK_INGRESO_ANULADO,
     RESULTADO_OK_INGRESO_MOVIDO,
+    IntervencionFomonOmitida,
     ResultadoCorreccion,
     anular_ingreso_web,
     mover_ingreso_web,
 )
 from db.models.cromo import CromoBotella
-from db.models.fo_monitor import FomonConsulta, FomonIntervencion
+from db.models.fo_monitor import FomonConsulta, FomonIntervencion, FomonIntervencionServicio
 from db.models.infra import Camara, CamaraEstado, Ingreso, IngresoCorreccion, IngresoTipo
 
 AHORA = datetime(2026, 10, 23, 15, 0, tzinfo=timezone.utc)
@@ -79,23 +83,48 @@ def _auditoria(session: MagicMock) -> IngresoCorreccion:
     return filas[0]
 
 
+def _alcance(camara_id: int, botella_n_id: int | None) -> AlcanceIntervencion:
+    """Alcance falso de la cámara destino: un cable con un servicio y otro sin servicios."""
+    servicio = MagicMock(servicio_id=77, servicio_id_externo="SRV-77", tipo_servicio="L2", categoria=1,
+                         nombre_cliente="Cliente", cliente=None)
+    return AlcanceIntervencion(
+        camara_id=camara_id,
+        botella_objetivo_n_id=botella_n_id if botella_n_id is not None else 6999,
+        botella_1_inferida=botella_n_id is None,
+        botellas={},
+        cables=[
+            CableAlcance(n_id=801, nombre="CABLE NUEVO", clase=51, botella_n_id=6999, es_objetivo=True, servicios=[servicio]),
+            CableAlcance(n_id=802, nombre="CABLE SIN SERV", clase=51, botella_n_id=6999, es_objetivo=False),
+        ],
+    )
+
+
 @pytest.fixture
 def fomon(monkeypatch):
-    """Parchea las dos consultas de FO Monitor del módulo. `abiertas` y `otros` (por intervención)
-    se cargan desde cada test."""
-    estado = {"abiertas": [], "otros": {}}
+    """Parchea las consultas de FO Monitor del módulo y `resolver_alcance` (donde se leen). `abiertas`,
+    `otros` y `enviadas` (por intervención) y `otras_en_destino` se cargan desde cada test."""
+    estado = {"abiertas": [], "otros": {}, "enviadas": set(), "otras_en_destino": []}
     abiertas = MagicMock(side_effect=lambda session, ingreso_id: list(estado["abiertas"]))
     otros = MagicMock(side_effect=lambda session, intervencion_id, ingreso_id: list(estado["otros"].get(intervencion_id, [])))
+    resolver = MagicMock(side_effect=lambda session, camara_id, botella_n_id: _alcance(camara_id, botella_n_id))
     monkeypatch.setattr(ics, "_intervenciones_abiertas_vinculadas", abiertas)
     monkeypatch.setattr(ics, "_otros_vinculados_vigentes", otros)
+    monkeypatch.setattr(ics, "_consultas_ya_enviadas", lambda session, intervencion_id: intervencion_id in estado["enviadas"])
+    monkeypatch.setattr(ics, "_otras_abiertas_en_camara", lambda session, camara_id, intervencion_id: list(estado["otras_en_destino"]))
+    monkeypatch.setattr(ics, "resolver_alcance", resolver)
     estado["mock_abiertas"] = abiertas
+    estado["mock_resolver"] = resolver
     return estado
+
+
+def _servicios_congelados(session: MagicMock) -> list[FomonIntervencionServicio]:
+    return [c.args[0] for c in session.add.call_args_list if isinstance(c.args[0], FomonIntervencionServicio)]
 
 
 def _mover(session: MagicMock, *, botella: int | None = None, motivo: str = "  Fontaine mal tipeado  ", destino: int = DESTINO) -> ResultadoCorreccion:
     return mover_ingreso_web(
         session, ingreso_id=42, camara_destino_id=destino, cromo_botella_destino_n_id=botella,
-        motivo=motivo, usuario="admin2",
+        motivo=motivo, usuario="admin2", ahora=AHORA,
     )
 
 
@@ -106,7 +135,8 @@ def _anular(session: MagicMock, *, motivo: str = "  nunca ocurrió  ", usuario: 
 def _interv(id_: int, estado: str = "EN_CURSO") -> FomonIntervencion:
     return FomonIntervencion(
         id=id_, origen="INGRESO", camara_id=ORIGEN, botella_objetivo_n_id=BOTELLA_ORIGEN,
-        botella_1_inferida=True, estado=estado, proximo_evento_en=AHORA,
+        botella_1_inferida=True, estado=estado, proximo_evento_en=None, aviso_ts="111.222",
+        aviso_canal="CFOMON", atribucion_compartida=False,
     )
 
 
@@ -281,27 +311,75 @@ def test_mover_misma_camara_y_misma_botella(fomon, botella):
 # ── Mover: FO Monitor ──────────────────────────────────────────────────────────────────────────
 
 
-def test_mover_actualiza_la_intervencion_abierta_vinculada(fomon):
+def test_mover_recalcula_el_alcance_de_la_intervencion_para_el_destino(fomon):
     interv = _interv(301)
     fomon["abiertas"] = [interv]
     session = _session(_ingreso(), destino=_destino(), botellas=[_botella()])
 
     resultado = _mover(session, botella=BOTELLA_DESTINO)
 
+    fomon["mock_resolver"].assert_called_once_with(session, DESTINO, BOTELLA_DESTINO)
     assert interv.camara_id == DESTINO and interv.botella_objetivo_n_id == BOTELLA_DESTINO
     assert interv.botella_1_inferida is False
-    assert interv.estado == "EN_CURSO"
+    # La lista congelada vieja se borra y se escribe la del destino.
+    modelos = [c.args[0] for c in session.query.call_args_list]
+    assert FomonIntervencionServicio in modelos
+    session.query.return_value.filter.return_value.delete.assert_called_once_with(synchronize_session=False)
+    congelados = _servicios_congelados(session)
+    assert {(f.cable_n_id, f.servicio_pk) for f in congelados} == {(801, 77), (802, None)}
+    assert all(f.intervencion_id == 301 for f in congelados)
+    assert interv.estado == "EN_CURSO", "sin consultas en vuelo, el estado no cambia"
     assert resultado.intervenciones_fomon == [301] and resultado.intervenciones_fomon_omitidas == []
 
 
-def test_mover_sin_botella_deja_la_botella_objetivo_null(fomon):
+def test_mover_sin_botella_toma_la_botella_1_del_destino(fomon):
     interv = _interv(301)
     fomon["abiertas"] = [interv]
     session = _session(_ingreso(), destino=_destino())
 
     _mover(session)
 
-    assert interv.camara_id == DESTINO and interv.botella_objetivo_n_id is None
+    fomon["mock_resolver"].assert_called_once_with(session, DESTINO, None)
+    assert interv.camara_id == DESTINO
+    assert interv.botella_objetivo_n_id == 6999 and interv.botella_1_inferida is True
+
+
+@pytest.mark.parametrize(
+    ("estado", "estado_final", "limpia_aviso"),
+    [("PRE_EN_CURSO", "PRE_PENDIENTE", True), ("POST_EN_CURSO", "POST_PENDIENTE", False)],
+)
+def test_mover_cancela_consultas_pendientes_y_vuelve_a_planificar(fomon, estado, estado_final, limpia_aviso):
+    """Las PENDIENTE se armaron con el alcance viejo: se cancelan, y la intervención vuelve a la fase
+    pendiente para que `planificar_consultas` cree las del alcance nuevo en el próximo tick."""
+    interv = _interv(301, estado=estado)
+    fomon["abiertas"] = [interv]
+    pendiente = FomonConsulta(id=1, intervencion_id=301, fase="PRE", estado="PENDIENTE")
+    session = _session(_ingreso(), destino=_destino(), consultas=[pendiente])
+
+    resultado = _mover(session)
+
+    assert pendiente.estado == "CANCELADA" and pendiente.error == "alcance_recalculado"
+    assert interv.estado == estado_final and interv.proximo_evento_en == AHORA
+    assert (interv.aviso_ts is None) is limpia_aviso
+    assert resultado.intervenciones_fomon == [301]
+
+
+def test_mover_omite_la_intervencion_que_ya_consulto_a_burrito(fomon):
+    interv = _interv(301, estado="EN_CURSO")
+    fomon["abiertas"] = [interv]
+    fomon["enviadas"] = {301}
+    pendiente = FomonConsulta(id=1, intervencion_id=301, fase="POST", estado="PENDIENTE")
+    session = _session(_ingreso(), destino=_destino(), consultas=[pendiente])
+
+    resultado = _mover(session)
+
+    assert resultado.resultado == RESULTADO_OK_INGRESO_MOVIDO
+    assert resultado.intervenciones_fomon == []
+    assert resultado.intervenciones_fomon_omitidas == [IntervencionFomonOmitida(301, OMISION_CONSULTAS_YA_ENVIADAS)]
+    assert (interv.camara_id, interv.botella_objetivo_n_id, interv.estado) == (ORIGEN, BOTELLA_ORIGEN, "EN_CURSO")
+    assert pendiente.estado == "PENDIENTE"
+    fomon["mock_resolver"].assert_not_called()
+    assert _servicios_congelados(session) == []
 
 
 def test_mover_omite_intervencion_con_otro_ingreso_vigente_en_otra_camara(fomon):
@@ -315,8 +393,10 @@ def test_mover_omite_intervencion_con_otro_ingreso_vigente_en_otra_camara(fomon)
     resultado = _mover(session)
 
     assert interv.camara_id == ORIGEN and interv.botella_objetivo_n_id == BOTELLA_ORIGEN
-    assert resultado.intervenciones_fomon == [] and resultado.intervenciones_fomon_omitidas == [301]
+    assert resultado.intervenciones_fomon == []
+    assert resultado.intervenciones_fomon_omitidas == [IntervencionFomonOmitida(301, OMISION_OTROS_INGRESOS_VIGENTES)]
     assert resultado.resultado == RESULTADO_OK_INGRESO_MOVIDO
+    fomon["mock_resolver"].assert_not_called()
 
 
 def test_mover_actualiza_si_los_otros_ingresos_ya_estan_en_el_destino(fomon):
@@ -329,6 +409,19 @@ def test_mover_actualiza_si_los_otros_ingresos_ya_estan_en_el_destino(fomon):
 
     assert interv.camara_id == DESTINO
     assert resultado.intervenciones_fomon == [301]
+
+
+def test_mover_marca_atribucion_compartida_si_el_destino_tiene_otra_abierta(fomon):
+    interv = _interv(301)
+    otra = _interv(302)
+    otra.camara_id = DESTINO
+    fomon["abiertas"] = [interv]
+    fomon["otras_en_destino"] = [otra]
+    session = _session(_ingreso(), destino=_destino())
+
+    _mover(session)
+
+    assert interv.atribucion_compartida is True and otra.atribucion_compartida is True
 
 
 # ── Anular: camino feliz ───────────────────────────────────────────────────────────────────────
@@ -439,6 +532,7 @@ def test_anular_motivo_invalido(fomon, motivo):
 
 def test_anular_cancela_la_intervencion_abierta_y_sus_consultas_pendientes(fomon):
     interv = _interv(301, estado="PRE_EN_CURSO")
+    interv.proximo_evento_en = AHORA
     fomon["abiertas"] = [interv]
     pendiente = FomonConsulta(id=1, intervencion_id=301, fase="PRE", estado="PENDIENTE")
     session = _session(_ingreso(), consultas=[pendiente])
@@ -461,5 +555,6 @@ def test_anular_no_cancela_la_intervencion_si_le_quedan_otros_ingresos_vigentes(
     resultado = _anular(session)
 
     assert interv.estado == "EN_CURSO" and interv.cerrada_at is None
-    assert resultado.intervenciones_fomon == [] and resultado.intervenciones_fomon_omitidas == [301]
+    assert resultado.intervenciones_fomon == []
+    assert resultado.intervenciones_fomon_omitidas == [IntervencionFomonOmitida(301, OMISION_OTROS_INGRESOS_VIGENTES)]
     assert resultado.resultado == RESULTADO_OK_INGRESO_ANULADO

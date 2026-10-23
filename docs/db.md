@@ -439,11 +439,19 @@ rechazos. Mover cambia `camara_id` y deja `cromo_botella_id` en NULL salvo una `
 del destino; no mueve un anulado ni al mismo par cámara/botella; un ingreso abierto se mueve abierto.
 Anular exige motivo (3 a 500 caracteres) y no re-anula. Ninguna de las dos escribe `Camara.estado` ni
 reabre el `IngresoSinMatch` que hubiera resuelto el ingreso. FO Monitor: las intervenciones vinculadas
-en un estado abierto (`motor.ESTADOS_ABIERTOS`) siguen el cambio — al mover toman la cámara/botella
-destino, al anular pasan a `CANCELADA` (con `cerrada_at`, y sus consultas `PENDIENTE` también pasan a
-`CANCELADA`) — salvo que tengan otros ingresos vigentes vinculados que no acompañan el cambio
-("Botella 1 y 2" del mismo hilo), en cuyo caso se dejan como están. El alcance congelado de la
-intervención (`fomon_intervencion_servicios`) no se recalcula al mover.
+en un estado abierto (`motor.ESTADOS_ABIERTOS`) siguen el cambio, salvo que tengan otros ingresos
+vigentes vinculados que no acompañan el cambio ("Botella 1 y 2" del mismo hilo; motivo
+`OTROS_INGRESOS_VIGENTES`), en cuyo caso se dejan como están:
+- **Anular:** pasan a `CANCELADA` con `cerrada_at`; sus consultas `PENDIENTE` también pasan a `CANCELADA`.
+- **Mover:** se reubican en el destino recalculando el alcance con `fo_monitor.alcance.resolver_alcance`
+  (sólo DB, sin red) y reemplazando `fomon_intervencion_servicios` (vía `motor.congelar_alcance`); la
+  botella objetivo es la elegida o la Botella 1 del destino. Las consultas `PENDIENTE` se cancelan
+  (`error='alcance_recalculado'`) y `PRE_EN_CURSO`/`POST_EN_CURSO` vuelven a `PRE_PENDIENTE`/`POST_PENDIENTE`
+  para que `planificar_consultas` cree las del alcance nuevo en el próximo tick; al volver a
+  `PRE_PENDIENTE` se limpia `aviso_ts` y se publica un aviso raíz nuevo (el viejo queda en Slack). Si la
+  intervención ya tiene alguna consulta `ENVIADA`, `RESPONDIDA` o `TIMEOUT` (ya hubo comunicación con
+  burritoIA sobre el alcance viejo) **no** se recalcula: queda como está, con motivo
+  `CONSULTAS_YA_ENVIADAS` (el ingreso se mueve igual).
 
 ### Tabla `ingresos_correcciones` (2026-09-23) — auditoría append-only de `Forzar ingreso`/`Forzar egreso`
 

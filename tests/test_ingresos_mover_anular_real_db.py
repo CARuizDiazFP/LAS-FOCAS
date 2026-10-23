@@ -20,8 +20,17 @@ from sqlalchemy.orm import Session
 
 from core.services import ingreso_correccion_service as ics
 from core.services.camara_estado_service import get_camara_estado_contexto
+from core.services.cromo.camino_optico_service import CLASES_CABLE
+from core.services.fo_monitor import motor
+from core.services.fo_monitor.alcance import resolver_alcance
 from db.models.cromo import CromoBotella
-from db.models.fo_monitor import FomonConsulta, FomonIntervencion, FomonIntervencionIngreso
+from db.models.fo_monitor import (
+    FomonConfig,
+    FomonConsulta,
+    FomonIntervencion,
+    FomonIntervencionIngreso,
+    FomonIntervencionServicio,
+)
 from db.models.infra import Camara, Ingreso, IngresoCorreccion, IngresoSinMatch, IngresoTipo
 from tests.soporte_postgres_real import requiere_postgres_real
 
@@ -31,6 +40,7 @@ TECNICO = "TEST-MOVER-ANULAR"
 USUARIO = "test-mover-anular"
 HILO = "1799999998.000300"
 AHORA = datetime.now(timezone.utc)
+CABLE_VIEJO = 999_999_999_901
 
 
 @pytest.fixture
@@ -68,16 +78,21 @@ def _camara_origen(s: Session, excluir: int) -> Camara:
 
 
 def _botella_vigente_con_camara(s: Session) -> CromoBotella:
+    """Botella vigente con cámara padre sin ingresos y con al menos un cable verificable (clases de
+    `CLASES_CABLE`), para que el alcance recalculado no sea vacío."""
     n_id = s.execute(
         text(
             """
-            SELECT b.n_id FROM app.cromo_botellas b
-            WHERE b.vigente AND b.camara_id IS NOT NULL
+            SELECT b.n_id FROM app.cromo_cables c
+            JOIN app.cromo_botellas b ON b.n_id = c.extremo_a_n_id
+            WHERE c.vigente AND c.clase = ANY(:clases ::smallint[])
+              AND b.vigente AND b.camara_id IS NOT NULL
               AND NOT EXISTS (SELECT 1 FROM app.ingresos i WHERE i.camara_id = b.camara_id)
-            ORDER BY b.n_id
+            ORDER BY c.n_id
             LIMIT 1
             """
-        )
+        ),
+        {"clases": sorted(CLASES_CABLE)},
     ).scalar()
     assert n_id is not None, "dev necesita una CromoBotella vigente con cámara padre"
     return s.get(CromoBotella, n_id)
@@ -109,8 +124,18 @@ def _intervencion(s: Session, camara: Camara, ingresos: list[Ingreso], *, estado
     s.flush()
     for ing in ingresos:
         s.add(FomonIntervencionIngreso(intervencion_id=interv.id, ingreso_id=ing.id))
+    # Alcance "viejo" congelado: un cable inexistente, para distinguirlo del recalculado.
+    s.add(FomonIntervencionServicio(intervencion_id=interv.id, cable_n_id=CABLE_VIEJO, cable_nombre="VIEJO",
+                                    cable_clase=51, botella_n_id=None, es_objetivo=True))
     s.flush()
     return interv
+
+
+def _cables_congelados(s: Session, intervencion_id: int) -> set[int]:
+    return {
+        f.cable_n_id
+        for f in s.query(FomonIntervencionServicio).filter(FomonIntervencionServicio.intervencion_id == intervencion_id)
+    }
 
 
 def _auditoria(s: Session, ingreso_id: int, comando: str) -> list[IngresoCorreccion]:
@@ -131,6 +156,8 @@ def test_mover_persiste_cambio_auditoria_y_fo_monitor(session, estado, se_actual
     ing = _ingreso(session, origen)
     interv = _intervencion(session, origen, [ing], estado=estado)
     session.commit()
+    esperado = {c.n_id for c in resolver_alcance(session, destino.id, botella.n_id).cables}
+    assert esperado, "la botella elegida tiene cables: el recálculo no puede pasar por vacío"
 
     resultado = ics.mover_ingreso_web(
         session, ingreso_id=ing.id, camara_destino_id=destino.id, cromo_botella_destino_n_id=botella.n_id,
@@ -148,15 +175,86 @@ def test_mover_persiste_cambio_auditoria_y_fo_monitor(session, estado, se_actual
     interv = session.get(FomonIntervencion, interv.id)
     if se_actualiza:
         assert (interv.camara_id, interv.botella_objetivo_n_id) == (destino.id, botella.n_id)
+        assert _cables_congelados(session, interv.id) == esperado, "alcance recalculado para el destino"
         assert resultado.intervenciones_fomon == [interv.id]
     else:
         assert (interv.camara_id, interv.botella_objetivo_n_id) == (origen.id, None)
+        assert _cables_congelados(session, interv.id) == {CABLE_VIEJO}
         assert resultado.intervenciones_fomon == []
     assert interv.estado == estado
     assert (session.get(Camara, origen.id).estado, session.get(Camara, destino.id).estado) == estados_antes
     # El estado derivado sigue al ingreso: ahora está activo en el destino y no en el origen.
     assert get_camara_estado_contexto(session, destino.id).tiene_ingreso_activo is True
     assert get_camara_estado_contexto(session, origen.id).tiene_ingreso_activo is False
+
+
+def test_mover_pre_en_curso_cancela_pendientes_y_el_motor_replanifica_con_el_alcance_nuevo(session):
+    botella = _botella_vigente_con_camara(session)
+    destino = session.get(Camara, botella.camara_id)
+    origen = _camara_origen(session, excluir=destino.id)
+    ing = _ingreso(session, origen)
+    interv = _intervencion(session, origen, [ing], estado="PRE_EN_CURSO")
+    interv.aviso_ts, interv.aviso_canal = "1799999998.000301", "CTEST"
+    vieja = FomonConsulta(intervencion_id=interv.id, fase="PRE", estado="PENDIENTE", servicios_pk=[1], ids_solicitados=["VIEJO"])
+    session.add(vieja)
+    session.commit()
+
+    resultado = ics.mover_ingreso_web(
+        session, ingreso_id=ing.id, camara_destino_id=destino.id, cromo_botella_destino_n_id=None,
+        motivo="cámara equivocada", usuario=USUARIO,
+    )
+
+    assert resultado.intervenciones_fomon == [interv.id]
+    session.expire_all()
+    interv = session.get(FomonIntervencion, interv.id)
+    assert interv.estado == "PRE_PENDIENTE" and interv.aviso_ts is None
+    assert session.get(FomonConsulta, vieja.id).estado == "CANCELADA"
+    alcance = resolver_alcance(session, destino.id, None)
+    assert interv.botella_objetivo_n_id == alcance.botella_objetivo_n_id
+
+    # Próximo ciclo del motor (sin canal: no publica nada en Slack).
+    cfg = motor.Config(fila=session.get(FomonConfig, 1) or FomonConfig(max_ids_por_mensaje=10, prompt_version="v4"),
+                       activo=False, canal="", en_ventana=False)
+    motor.planificar_consultas(session, cfg, slack=None, ahora=AHORA)
+    session.flush()
+    nuevas = (
+        session.query(FomonConsulta)
+        .filter(FomonConsulta.intervencion_id == interv.id, FomonConsulta.id != vieja.id)
+        .all()
+    )
+    assert nuevas, "el alcance del destino tiene servicios: el motor tiene que crear consultas"
+    assert session.get(FomonIntervencion, interv.id).estado == "PRE_EN_CURSO"
+    assert {pk for c in nuevas for pk in c.servicios_pk} == {s.servicio_id for s in alcance.servicios_unicos()}
+    assert all(c.fase == "PRE" and c.estado == "PENDIENTE" for c in nuevas)
+
+
+@pytest.mark.parametrize("estado_consulta", ["ENVIADA", "RESPONDIDA", "TIMEOUT"])
+def test_mover_omite_la_intervencion_que_ya_consulto_a_burrito(session, estado_consulta):
+    botella = _botella_vigente_con_camara(session)
+    destino = session.get(Camara, botella.camara_id)
+    origen = _camara_origen(session, excluir=destino.id)
+    ing = _ingreso(session, origen)
+    interv = _intervencion(session, origen, [ing], estado="POST_EN_CURSO")
+    enviada = FomonConsulta(intervencion_id=interv.id, fase="PRE", estado=estado_consulta, servicios_pk=[1], ids_solicitados=["X1"])
+    pendiente = FomonConsulta(intervencion_id=interv.id, fase="POST", estado="PENDIENTE", servicios_pk=[1], ids_solicitados=["X1"])
+    session.add_all([enviada, pendiente])
+    session.commit()
+
+    resultado = ics.mover_ingreso_web(
+        session, ingreso_id=ing.id, camara_destino_id=destino.id, cromo_botella_destino_n_id=botella.n_id,
+        motivo="cámara equivocada", usuario=USUARIO,
+    )
+
+    assert resultado.resultado == ics.RESULTADO_OK_INGRESO_MOVIDO
+    assert resultado.intervenciones_fomon_omitidas == [
+        ics.IntervencionFomonOmitida(interv.id, ics.OMISION_CONSULTAS_YA_ENVIADAS)
+    ]
+    session.expire_all()
+    interv = session.get(FomonIntervencion, interv.id)
+    assert (interv.camara_id, interv.estado) == (origen.id, "POST_EN_CURSO")
+    assert _cables_congelados(session, interv.id) == {CABLE_VIEJO}
+    assert session.get(FomonConsulta, pendiente.id).estado == "PENDIENTE"
+    assert session.get(Ingreso, ing.id).camara_id == destino.id, "el ingreso se mueve igual"
 
 
 def test_mover_rechazo_persiste_una_fila_y_no_cambia_nada(session):
@@ -238,7 +336,9 @@ def test_anular_intervencion_con_dos_ingresos_se_cancela_recien_con_el_ultimo(se
 
     r1 = ics.anular_ingreso_web(session, ingreso_id=primero.id, motivo="duplicado", usuario=USUARIO)
     session.expire_all()
-    assert r1.intervenciones_fomon_omitidas == [interv.id]
+    assert r1.intervenciones_fomon_omitidas == [
+        ics.IntervencionFomonOmitida(interv.id, ics.OMISION_OTROS_INGRESOS_VIGENTES)
+    ]
     assert session.get(FomonIntervencion, interv.id).estado == "EN_CURSO"
 
     r2 = ics.anular_ingreso_web(session, ingreso_id=segundo.id, motivo="duplicado", usuario=USUARIO)

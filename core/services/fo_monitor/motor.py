@@ -34,7 +34,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from core.services.fo_monitor import avisos
-from core.services.fo_monitor.alcance import resolver_alcance
+from core.services.fo_monitor.alcance import AlcanceIntervencion, resolver_alcance
 from core.services.fo_monitor.estado import (
     PRE_VALIDO_DESPUES,
     estado_intervencion,
@@ -195,7 +195,17 @@ def crear_intervencion(
         otra.atribucion_compartida = True
     for ingreso_id in ingreso_ids:
         session.add(FomonIntervencionIngreso(intervencion_id=interv.id, ingreso_id=ingreso_id))
-    for cable in alcance.cables if alcance else []:
+    if alcance:
+        congelar_alcance(session, interv, alcance)
+    session.flush()
+    return interv
+
+
+def congelar_alcance(session: Session, interv: FomonIntervencion, alcance: AlcanceIntervencion) -> None:
+    """Escribe la lista congelada de cables/servicios (`fomon_intervencion_servicios`) de la
+    intervención. La usan `crear_intervencion` y el mover de ingresos desde el portal
+    (`ingreso_correccion_service.mover_ingreso_web`), que antes borra la lista vieja."""
+    for cable in alcance.cables:
         if not cable.servicios:
             session.add(FomonIntervencionServicio(
                 intervencion_id=interv.id, cable_n_id=cable.n_id, cable_nombre=cable.nombre,
@@ -208,8 +218,6 @@ def crear_intervencion(
                 servicio_pk=s.servicio_id, servicio_id_externo=s.servicio_id_externo,
                 tipo_servicio=s.tipo_servicio, categoria=s.categoria, cliente=s.nombre_cliente or s.cliente,
             ))
-    session.flush()
-    return interv
 
 
 def crear_intervencion_manual(
