@@ -224,13 +224,45 @@ def _correr(solo: str | None) -> dict[str, str]:
     from web.app.main import app
 
     resultados: dict[str, str] = {}
-    with patch("web.app.routers.camaras._require_auth", return_value=("linea-base", "admin")):
+    with _sesion_linea_base(app):
         cliente = TestClient(app)
         if solo in (None, "smart"):
             _correr_smart(cliente, resultados)
         if solo in (None, "export"):
             _correr_export(cliente, resultados)
     return resultados
+
+
+@contextlib.contextmanager
+def _sesion_linea_base(app):
+    """Sesión admin simulada que sirve para las dos versiones del router de Cámaras: la que toma la
+    sesión con `Depends(usuario_sesion)` (override en `app.dependency_overrides`) y la anterior, que
+    llamaba a `_require_auth(request)` importado en el router (parche sobre ese nombre). Así se puede
+    grabar la línea base con el código anterior y comparar con el nuevo usando este mismo script."""
+    from web.app.routers import camaras
+
+    with contextlib.ExitStack() as pila:
+        if hasattr(camaras, "_require_auth"):
+            pila.enter_context(patch.object(camaras, "_require_auth", return_value=("linea-base", "admin")))
+        try:
+            from web.app.dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+        except ImportError:
+            pass
+        else:
+            usuario = UsuarioSesion("linea-base", "admin")
+            previos = {dep: app.dependency_overrides.get(dep) for dep in (usuario_sesion, usuario_admin)}
+            for dep in previos:
+                app.dependency_overrides[dep] = lambda: usuario
+
+            def _restaurar() -> None:
+                for dep, previo in previos.items():
+                    if previo is None:
+                        app.dependency_overrides.pop(dep, None)
+                    else:
+                        app.dependency_overrides[dep] = previo
+
+            pila.callback(_restaurar)
+        yield
 
 
 def _grabar(salida: Path, solo: str | None) -> int:
