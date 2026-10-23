@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -19,10 +20,12 @@ from tests.test_web_sla_flow import (  # noqa: F401  (fixture autouse reutilizad
     _servicios_excel_bytes,
     _excel_bytes,
 )
+from web.app.dependencias import UsuarioSesion
 from web.app.main import app  # type: ignore
 from web.app.routers import informes as web_informes  # type: ignore
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+REF = re.compile(r"^Error interno \(ref ([0-9a-f]{8})\)$")
 
 
 @pytest.fixture()
@@ -243,26 +246,38 @@ def test_excel_generador_value_error_422(monkeypatch, cliente, historia) -> None
     _error_registrado(historia, "HTTP_422", "datos inconsistentes")
 
 
-def test_excel_generador_error_inesperado_500(monkeypatch, cliente, historia) -> None:  # noqa: ANN001
+def test_excel_generador_error_inesperado_500_con_ref_sin_texto_interno(
+    monkeypatch, cliente, historia, caplog  # noqa: ANN001
+) -> None:
     def falso(*a, **k):  # noqa: ANN002, ANN003
-        raise RuntimeError("boom")
+        raise RuntimeError("boom-secreto")
 
     monkeypatch.setattr(web_informes.sla_service, "generate_report_from_excel_pair", falso)
-    r = _post(cliente, files=[_f("s.xlsx", _servicios_excel_bytes()), _f("r.xlsx", _reclamos_excel_bytes())])
+    with caplog.at_level(logging.ERROR, logger="web"):
+        r = _post(cliente, files=[_f("s.xlsx", _servicios_excel_bytes()), _f("r.xlsx", _reclamos_excel_bytes())])
     assert r.status_code == 500
-    msg = "No se pudo generar el informe SLA: boom"
-    assert r.json() == {"ok": False, "error": msg}
-    _error_registrado(historia, "HTTP_500", msg)
+    body = r.json()
+    assert body["ok"] is False
+    ref = REF.match(body["error"]).group(1)
+    assert "boom-secreto" not in r.text
+    # El historial registra el mismo mensaje que la respuesta (sin el texto de la excepción).
+    _error_registrado(historia, "HTTP_500", body["error"])
+    # El log conserva su texto `action=` con el detalle y la misma ref.
+    (registro,) = [x.getMessage() for x in caplog.records if "stage=unexpected" in x.getMessage()]
+    assert registro == (
+        "action=sla_web_report stage=unexpected user=user source=excel-legacy mes=10 anio=2025 "
+        f"error=boom-secreto ref={ref}"
+    )
 
 
-def test_error_inesperado_sin_mensaje_usa_nombre_de_clase(monkeypatch, cliente, historia) -> None:  # noqa: ANN001
+def test_error_inesperado_sin_mensaje_tambien_da_ref(monkeypatch, cliente, historia) -> None:  # noqa: ANN001
     def falso(*a, **k):  # noqa: ANN002, ANN003
         raise KeyError()
 
     monkeypatch.setattr(web_informes.sla_service, "generate_report_from_excel_pair", falso)
     r = _post(cliente, files=[_f("s.xlsx", _servicios_excel_bytes()), _f("r.xlsx", _reclamos_excel_bytes())])
     assert r.status_code == 500
-    assert r.json()["error"] == "No se pudo generar el informe SLA: KeyError"
+    assert REF.match(r.json()["error"])
 
 
 def test_db_ignora_archivos_y_registra_source_db(monkeypatch, cliente, historia, tmp_path) -> None:  # noqa: ANN001
@@ -306,7 +321,9 @@ def test_db_error_inesperado_500_source_db(monkeypatch, cliente, historia) -> No
     monkeypatch.setattr(web_informes.sla_service, "compute_from_db", falso)
     r = _post(cliente, use_db="true")
     assert r.status_code == 500
-    _error_registrado(historia, "HTTP_500", "No se pudo generar el informe SLA: db caída", source="db")
+    assert REF.match(r.json()["error"])
+    assert "db caída" not in r.text
+    _error_registrado(historia, "HTTP_500", r.json()["error"], source="db")
 
 
 def test_logs_de_validacion_y_error(monkeypatch, cliente, caplog) -> None:  # noqa: ANN001
@@ -379,6 +396,7 @@ async def _handler(monkeypatch: pytest.MonkeyPatch, files, *, csrf="tok", testin
     args = dict(
         mes="10", anio="2025", periodo_mes=None, periodo_anio=None,
         pdf_enabled=False, use_db=False, csrf_token=csrf, files=files,
+        usuario=UsuarioSesion("user", "user"),  # el handler se llama directo: la sesión (Depends) va explícita
     )
     args.update(extra)
     return await web_informes.generar_informe_sla_web(request, **args)

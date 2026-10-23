@@ -251,7 +251,9 @@ def test_flow_repetitividad_error_generico(monkeypatch: pytest.MonkeyPatch, tmp_
     resp = client.post("/api/flows/repetitividad", data=data, files=files)
 
     assert resp.status_code == 500
-    assert "No se pudo generar" in resp.json()["error"]
+    # 500 con ref (contrato de errores de la web); el texto de la excepción queda sólo en el log.
+    assert resp.json()["error"].startswith("Error interno (ref ")
+    assert "boom" not in resp.text
 
 
 def test_flow_repetitividad_rechaza_archivo_no_xlsx(monkeypatch: pytest.MonkeyPatch) -> None:

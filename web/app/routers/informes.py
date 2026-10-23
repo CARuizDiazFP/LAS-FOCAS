@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -34,11 +34,13 @@ from ..comun import (
     REPORT_HISTORY,
     REPORTS_DIR,
     UPLOADS_DIR,
-    _require_auth,
-    get_current_user,
     logger,
 )
+from ..dependencias import UsuarioSesion, usuario_sesion
+from ..errores import DatoInvalido, ErrorDeDominio, error_interno, nueva_ref
 
+# Sin dependencia a nivel router: `/reports/index` es pública (redirect). Cada endpoint pide la sesión
+# con Depends, en la firma si usa el usuario o en el decorador si no.
 router = APIRouter()
 
 REPORT_SERVICE_CONFIG = ReportConfig.from_settings()
@@ -60,10 +62,12 @@ async def reports_index_redirect() -> RedirectResponse:
     return RedirectResponse(url="/reports-history", status_code=status.HTTP_302_FOUND)
 
 
-@router.api_route("/reports/{ruta:path}", methods=["GET", "HEAD"])
-async def descargar_informe(ruta: str, request: Request) -> FileResponse:
-    """Sirve un informe generado (antes era un mount estático sin sesión). Exige sesión y no sale de la base."""
-    _require_auth(request)
+@router.api_route("/reports/{ruta:path}", methods=["GET", "HEAD"], dependencies=[Depends(usuario_sesion)])
+async def descargar_informe(ruta: str) -> FileResponse:
+    """Sirve un informe generado (antes era un mount estático sin sesión). Exige sesión y no sale de la base.
+
+    La sesión se resuelve como dependencia: sin ella responde 401 antes de tocar el filesystem.
+    """
     base = Path(_mount_reports).resolve()
     try:
         destino = (base / ruta).resolve()
@@ -74,9 +78,8 @@ async def descargar_informe(ruta: str, request: Request) -> FileResponse:
     return FileResponse(destino)
 
 
-@router.get("/api/reports/history")
+@router.get("/api/reports/history", dependencies=[Depends(usuario_sesion)])
 async def api_reports_history(
-    request: Request,
     type: str | None = None,  # noqa: A002 - nombre público del filtro
     status: str | None = None,
     username: str | None = None,
@@ -87,7 +90,6 @@ async def api_reports_history(
 ) -> JSONResponse:
     """Devuelve el histórico persistente de reportes generados."""
 
-    _require_auth(request)
     clean_limit = max(1, min(limit, 200))
     clean_offset = max(0, offset)
     records = REPORT_HISTORY.list_records(
@@ -371,8 +373,9 @@ async def generar_informe_sla_web(
     use_db: bool = Form(False),
     csrf_token: str | None = Form(None),
     files: List[UploadFile] = File(default=[]),
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ):
-    username, _ = _require_auth(request)
+    username = usuario.username
     error_csrf = await _validar_csrf_sla(request, csrf_token, files)
     if error_csrf is not None:
         return error_csrf
@@ -412,17 +415,22 @@ async def generar_informe_sla_web(
             exc,
         )
         return _rechazo_sla(_history_error, 422, str(exc))
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:  # noqa: BLE001
+        # `action=sla_web_report stage=unexpected` se conserva (no termina en `_error`) y gana la ref; el
+        # historial registra el mismo mensaje que la respuesta, sin el texto de la excepción.
+        ref = nueva_ref()
         logger.exception(
-            "action=sla_web_report stage=unexpected user=%s source=%s mes=%s anio=%s error=%s",
+            "action=sla_web_report stage=unexpected user=%s source=%s mes=%s anio=%s error=%s ref=%s",
             username,
             source,
             mes_num,
             anio_num,
             exc,
+            ref,
         )
-        detalle = str(exc) or exc.__class__.__name__
-        return _rechazo_sla(_history_error, 500, f"No se pudo generar el informe SLA: {detalle}")
+        return _rechazo_sla(_history_error, 500, f"Error interno (ref {ref})")
 
     if isinstance(salida, JSONResponse):
         return salida
@@ -436,8 +444,9 @@ async def generar_informe_sla_consumo_web(
     pdf_enabled: bool = Form(False),
     csrf_token: str | None = Form(None),
     files: List[UploadFile] = File(default=[]),
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ):
-    username, _ = _require_auth(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     if expected_csrf and os.getenv("TESTING", "false").lower() != "true" and csrf_token != expected_csrf:
         for a_ in files:
@@ -487,9 +496,13 @@ async def generar_informe_sla_consumo_web(
         )
     except ValueError as exc:
         return _error(422, str(exc))
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("action=sla_consumo_web stage=unexpected user=%s", username)
-        return _error(500, f"No se pudo generar el informe de SLA consumido: {str(exc) or exc.__class__.__name__}")
+    except (HTTPException, ErrorDeDominio):
+        raise
+    except Exception:  # noqa: BLE001
+        # `action=sla_consumo_web stage=unexpected` se conserva y gana la ref (el traceback ya va en el log).
+        ref = nueva_ref()
+        logger.exception("action=sla_consumo_web stage=unexpected user=%s ref=%s", username, ref)
+        return _error(500, f"Error interno (ref {ref})")
 
     report_paths = {"xlsx": _report_href(informe.xlsx), "docx_ejecutivo": _report_href(informe.docx_ejecutivo),
                     "docx_exhaustivo": _report_href(informe.docx_exhaustivo)}
@@ -519,7 +532,7 @@ def _save_upload(file: UploadFile) -> Path:
     return dest
 
 
-@router.post("/api/flows/sla")
+@router.post("/api/flows/sla", dependencies=[Depends(usuario_sesion)])
 async def flow_sla(
     request: Request,
     file: UploadFile | None = File(None),
@@ -532,8 +545,7 @@ async def flow_sla(
     propuesta: str = Form(""),
     csrf_token: str = Form(...),
 ):
-    # Autenticación + CSRF
-    _require_auth(request)
+    # Autenticación (Depends en el decorador) + CSRF
     if csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -579,16 +591,21 @@ async def flow_sla(
             anio,
             exc,
         )
-        return JSONResponse({"error": str(exc)}, status_code=422)
+        raise DatoInvalido(str(exc)) from exc
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:  # noqa: BLE001
+        # `action=sla_flow stage=unexpected` se conserva y gana la ref.
+        ref = nueva_ref()
         logger.exception(
-            "action=sla_flow stage=unexpected source=%s mes=%s anio=%s error=%s",
+            "action=sla_flow stage=unexpected source=%s mes=%s anio=%s error=%s ref=%s",
             source,
             mes,
             anio,
             exc,
+            ref,
         )
-        return JSONResponse({"error": "No se pudo generar el informe SLA"}, status_code=500)
+        return JSONResponse({"error": f"Error interno (ref {ref})"}, status_code=500)
 
     report_links = {"docx": _report_href(resultado.docx)}
     if resultado.pdf:
@@ -637,10 +654,11 @@ async def flow_repetitividad(
     csrf_token: str = Form(...),
     with_geo: bool = Form(False),
     use_db: bool = Form(False),
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ):
     """Genera el informe de Repetitividad desde Excel o DB según los parámetros."""
 
-    username, _ = _require_auth(request)
+    username = usuario.username
     if csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
@@ -743,15 +761,22 @@ async def flow_repetitividad(
             "action=flow_repetitividad stage=validation error=%s periodo=%s", exc, periodo_titulo
         )
         _history_error("HTTP_422", str(exc))
-        return JSONResponse({"error": str(exc)}, status_code=422)
+        raise DatoInvalido(str(exc)) from exc
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:  # noqa: BLE001
+        # `action=flow_repetitividad stage=unexpected` se conserva y gana la ref; el historial registra
+        # el mismo mensaje que la respuesta.
+        ref = nueva_ref()
         logger.exception(
-            "action=flow_repetitividad stage=unexpected periodo=%s error=%s",
+            "action=flow_repetitividad stage=unexpected periodo=%s error=%s ref=%s",
             periodo_titulo,
             exc,
+            ref,
         )
-        _history_error("HTTP_500", "No se pudo generar el informe")
-        return JSONResponse({"error": "No se pudo generar el informe"}, status_code=500)
+        mensaje = f"Error interno (ref {ref})"
+        _history_error("HTTP_500", mensaje)
+        return JSONResponse({"error": mensaje}, status_code=500)
 
     # Los PNG viven en subcarpetas (maps_YYYYMM/): la URL debe incluirlas.
     image_maps = [_report_href(m) for m in result.map_images]
@@ -806,9 +831,8 @@ async def flow_repetitividad(
     return JSONResponse(payload)
 
 
-@router.post("/api/flows/comparador-fo")
-async def flow_comparador_fo(request: Request):
-    _require_auth(request)
+@router.post("/api/flows/comparador-fo", dependencies=[Depends(usuario_sesion)])
+async def flow_comparador_fo():
     return JSONResponse({"error": "Comparador FO no implementado aún"}, status_code=501)
 
 
@@ -817,6 +841,7 @@ async def tool_alarmas_ciena(
     request: Request,
     file: UploadFile = File(...),
     csrf_token: str = Form(...),
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ):
     """
     Endpoint para procesar archivos CSV de alarmas Ciena (SiteManager o MCP).
@@ -833,8 +858,8 @@ async def tool_alarmas_ciena(
     """
     from core.parsers.alarmas_ciena import parsear_alarmas_ciena, dataframe_to_excel
     
-    # Autenticación y CSRF
-    _require_auth(request)
+    # Autenticación (Depends) y CSRF
+    username = usuario.username
     if csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     
@@ -842,7 +867,7 @@ async def tool_alarmas_ciena(
     if not file.filename or not file.filename.lower().endswith(".csv"):
         logger.warning(
             "action=alarmas_ciena_upload_invalid user=%s filename=%s",
-            get_current_user(request),
+            username,
             file.filename
         )
         return JSONResponse(
@@ -854,12 +879,8 @@ async def tool_alarmas_ciena(
     try:
         content = await file.read()
         await file.close()
-    except Exception as e:
-        logger.error("action=alarmas_ciena_read_error error=%s", e, exc_info=True)
-        return JSONResponse(
-            {"error": "Error al leer el archivo"},
-            status_code=500
-        )
+    except Exception as e:  # noqa: BLE001
+        return error_interno("alarmas_ciena_read", e)
     
     if not content:
         return JSONResponse(
@@ -872,7 +893,7 @@ async def tool_alarmas_ciena(
     if len(content) > MAX_CSV_SIZE:
         logger.warning(
             "action=alarmas_ciena_size_exceeded user=%s size=%d",
-            get_current_user(request),
+            username,
             len(content)
         )
         return JSONResponse(
@@ -881,7 +902,6 @@ async def tool_alarmas_ciena(
         )
     
     # Procesar archivo
-    username = get_current_user(request)
     start_time = time.time()
     
     try:
@@ -940,30 +960,23 @@ async def tool_alarmas_ciena(
             username,
             str(e)
         )
-        return JSONResponse(
-            {"error": str(e)},
-            status_code=415  # Unsupported Media Type
-        )
-        
-    except Exception as e:
+        # 415 (Unsupported Media Type) con el mensaje que arma el parser para el usuario.
+        raise ErrorDeDominio(str(e), status_code=415) from e
+
+    except (HTTPException, ErrorDeDominio):
+        raise
+    except Exception as e:  # noqa: BLE001
         # Errores inesperados
-        logger.error(
-            "action=alarmas_ciena_error user=%s error=%s",
-            username,
-            str(e),
-            exc_info=True
-        )
-        return JSONResponse(
-            {"error": f"Error al procesar el archivo: {str(e)}"},
-            status_code=500
-        )
+        return error_interno("alarmas_ciena", e, user=username)
 
 
 @router.post("/api/tools/compare-vlans")
-async def tool_compare_vlans(request: Request, payload: VLANCompareRequest) -> JSONResponse:
+async def tool_compare_vlans(
+    request: Request, payload: VLANCompareRequest, usuario: UsuarioSesion = Depends(usuario_sesion)
+) -> JSONResponse:
     """Compara las VLANs permitidas entre dos interfaces Cisco."""
 
-    username, _ = _require_auth(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not payload.csrf_token or payload.csrf_token != expected_csrf):

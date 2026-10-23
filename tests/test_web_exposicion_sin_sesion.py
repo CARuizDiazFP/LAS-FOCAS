@@ -76,11 +76,6 @@ PENDIENTES_DEPENDS: set[tuple[str, str]] = {
     ("POST", "/api/admin/ingesta/cromo/corridas/{corrida_id}/cancelar"),
     ("POST", "/api/admin/servicios/baneos"),
     ("POST", "/api/admin/servicios/baneos/listener"),
-    ("POST", "/api/admin/users"),
-    ("POST", "/api/chat/message"),
-    ("POST", "/api/chat/uploads"),
-    ("POST", "/api/flows/repetitividad"),
-    ("POST", "/api/flows/sla"),
     ("POST", "/api/fo-monitor/intervenciones/{intervencion_id}/reconocimientos"),
     ("POST", "/api/infra/botellas/apropiar"),
     ("POST", "/api/infra/botellas/consolidar"),
@@ -89,10 +84,6 @@ PENDIENTES_DEPENDS: set[tuple[str, str]] = {
     ("POST", "/api/infra/botellas/{n_id}/separar-padre"),
     ("POST", "/api/infra/cromo-botellas/asociar"),
     ("POST", "/api/infra/cromo/cables/{cable_n_id}/servicios-unicos/refrescar-prov"),
-    ("POST", "/api/tools/alarmas-ciena"),
-    ("POST", "/api/tools/compare-vlans"),
-    ("POST", "/api/users/change-password"),
-    ("POST", "/mcp/invoke"),
     ("PUT", "/api/infra/botellas/estado"),
 }
 
@@ -202,12 +193,11 @@ def test_reports_index_sigue_redirigiendo():
 def test_reports_traversal_con_barra_literal_404(informes_tmp, monkeypatch):
     """httpx normaliza `../`; se invoca la ruta con el path crudo (como llega desde el servidor ASGI)."""
     import asyncio
-    from types import SimpleNamespace
 
     from fastapi import HTTPException
 
-    request = SimpleNamespace(session={"username": "admin", "role": "admin"})
+    # La sesión es una dependencia de la ruta (se resuelve antes): acá se prueba sólo la resolución del path.
     for ruta in ("../secreto.txt", "sub/../../secreto.txt", "/etc/passwd", "sub/../../../etc/passwd"):
         with pytest.raises(HTTPException) as exc:
-            asyncio.run(informes.descargar_informe(ruta, request))
+            asyncio.run(informes.descargar_informe(ruta))
         assert exc.value.status_code == 404, ruta

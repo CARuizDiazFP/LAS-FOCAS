@@ -16,7 +16,7 @@ from typing import Any, Dict, List
 
 import httpx
 import psycopg
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -25,8 +25,24 @@ from core.repositories.conversations import get_or_create_conversation_for_web_u
 from core.repositories.messages import get_last_messages, insert_message
 
 from ..comun import DATA_DIR, DB_DSN, UPLOADS_DIR, get_current_user, logger
+from ..dependencias import UsuarioSesion
+from ..errores import ErrorDeDominio, error_interno, nueva_ref
 
-router = APIRouter()
+
+async def usuario_chat(request: Request) -> UsuarioSesion:
+    """Sesión del chat; 401 `{"error": "No autenticado"}` (el cuerpo que el chat respondía y la SPA muestra).
+
+    Misma regla que `usuario_sesion` (clave `username` de la sesión), pero vía `ErrorDeDominio` para
+    conservar la clave `error` en lugar del `detail` de `HTTPException`.
+    """
+    username = get_current_user(request)
+    if not username:
+        raise ErrorDeDominio("No autenticado", status_code=401)
+    return UsuarioSesion(username, request.session.get("role", "user"))
+
+
+# Ninguna ruta del chat es pública (el WebSocket vive aparte, en web/chat_ws.py).
+router = APIRouter(dependencies=[Depends(usuario_chat)])
 
 NLP_INTENT_URL = os.getenv("NLP_INTENT_URL", "http://nlp_intent:8100")
 LOG_RAW_TEXT = os.getenv("LOG_RAW_TEXT", "false").lower() == "true"
@@ -91,17 +107,21 @@ class MCPInvokeRequest(BaseModel):
 
 
 @router.post("/api/chat/message")
-async def chat_message(request: Request, text: str = Form(...), csrf_token: str | None = Form(None)) -> JSONResponse:
+async def chat_message(
+    request: Request,
+    text: str = Form(...),
+    csrf_token: str | None = Form(None),
+    usuario: UsuarioSesion = Depends(usuario_chat),
+) -> JSONResponse:
     """
     Recibe un mensaje del usuario (form-data o x-www-form-urlencoded) y
     devuelve intención y una respuesta simple.
     """
-    # CSRF: si hay sesión, exigir token válido
-    if get_current_user(request):
-        if os.getenv("TESTING", "false").lower() != "true":
-            sess_token = request.session.get("csrf")
-            if not sess_token or csrf_token != sess_token:
-                return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+    # CSRF: con sesión (siempre, vía Depends), exigir token válido
+    if os.getenv("TESTING", "false").lower() != "true":
+        sess_token = request.session.get("csrf")
+        if not sess_token or csrf_token != sess_token:
+            return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     # Rate limit simple del chat: 30 req/min por sesión
     rl = request.session.get("rl_chat", {"count": 0, "ts": now()})
@@ -149,41 +169,40 @@ async def chat_message(request: Request, text: str = Form(...), csrf_token: str 
     payload = {"reply": reply, **data}
 
     # Persistencia de memoria conversacional
-    user = get_current_user(request)
-    if user:
-        try:
-            with psycopg.connect(DB_DSN) as conn:
-                conv_id = get_or_create_conversation_for_web_user(conn, user)
-                payload["conversation_id"] = conv_id
-                # Guardar mensaje usuario
-                insert_message(
-                    conn,
-                    conv_id,
-                    0,  # pseudo user id ya almacenado en conversation; aquí no crítico
-                    "user",
-                    text,
-                    data.get("normalized_text", text),
-                    data.get("intention_raw", data.get("intention", "Otros")),
-                    data.get("confidence", 0.0),
-                    data.get("provider", "none"),
-                )
-                # Guardar respuesta asistente (sin volver a clasificar)
-                insert_message(
-                    conn,
-                    conv_id,
-                    0,
-                    "assistant",
-                    reply,
-                    reply.lower(),
-                    data.get("intention_raw", data.get("intention", "Otros")),
-                    data.get("confidence", 0.0),
-                    data.get("provider", "none"),
-                )
-                # Adjuntar últimos mensajes para el cliente (opcional)
-                history = get_last_messages(conn, conv_id, limit=6)
-                payload["history"] = history
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("action=chat_persist error=%s", exc)
+    user = usuario.username
+    try:
+        with psycopg.connect(DB_DSN) as conn:
+            conv_id = get_or_create_conversation_for_web_user(conn, user)
+            payload["conversation_id"] = conv_id
+            # Guardar mensaje usuario
+            insert_message(
+                conn,
+                conv_id,
+                0,  # pseudo user id ya almacenado en conversation; aquí no crítico
+                "user",
+                text,
+                data.get("normalized_text", text),
+                data.get("intention_raw", data.get("intention", "Otros")),
+                data.get("confidence", 0.0),
+                data.get("provider", "none"),
+            )
+            # Guardar respuesta asistente (sin volver a clasificar)
+            insert_message(
+                conn,
+                conv_id,
+                0,
+                "assistant",
+                reply,
+                reply.lower(),
+                data.get("intention_raw", data.get("intention", "Otros")),
+                data.get("confidence", 0.0),
+                data.get("provider", "none"),
+            )
+            # Adjuntar últimos mensajes para el cliente (opcional)
+            history = get_last_messages(conn, conv_id, limit=6)
+            payload["history"] = history
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("action=chat_persist error=%s", exc)
     # Métricas
     mapped = data.get("intention") or data.get("intent")
     if mapped in INTENT_COUNTER:
@@ -197,10 +216,8 @@ async def chat_message(request: Request, text: str = Form(...), csrf_token: str 
 
 
 @router.get("/api/chat/history")
-async def chat_history(request: Request, limit: int = 20) -> JSONResponse:
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse({"error": "No autenticado"}, status_code=401)
+async def chat_history(limit: int = 20, usuario: UsuarioSesion = Depends(usuario_chat)) -> JSONResponse:
+    user = usuario.username
     if limit > 100:
         limit = 100
     try:
@@ -208,9 +225,13 @@ async def chat_history(request: Request, limit: int = 20) -> JSONResponse:
             conv_id = get_or_create_conversation_for_web_user(conn, user)
             history = get_last_messages(conn, conv_id, limit=limit)
             return JSONResponse({"conversation_id": conv_id, "messages": history})
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:  # noqa: BLE001
-        logger.warning("action=chat_history error=%s", exc)
-        return JSONResponse({"error": "Fallo al recuperar historial"}, status_code=500)
+        # El texto `action=chat_history` no termina en `_error`: se conserva y gana la ref.
+        ref = nueva_ref()
+        logger.warning("action=chat_history error=%s ref=%s", exc, ref)
+        return JSONResponse({"error": f"Error interno (ref {ref})"}, status_code=500)
 
 
 @router.post("/api/chat/uploads")
@@ -218,10 +239,9 @@ async def chat_upload_attachment(
     request: Request,
     file: UploadFile = File(...),
     csrf_token: str | None = Form(None),
+    usuario: UsuarioSesion = Depends(usuario_chat),
 ) -> JSONResponse:
-    username = get_current_user(request)
-    if not username:
-        return JSONResponse({"error": "No autenticado"}, status_code=401)
+    username = usuario.username
     session_token = request.session.get("csrf")
     if session_token and csrf_token != session_token and os.getenv("TESTING", "false").lower() != "true":
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
@@ -284,18 +304,15 @@ async def chat_upload_attachment(
 
 
 @router.get("/api/chat/metrics")
-async def chat_metrics(request: Request) -> JSONResponse:
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse({"error": "No autenticado"}, status_code=401)
+async def chat_metrics() -> JSONResponse:
     return JSONResponse({"intent_counts": INTENT_COUNTER})
 
 
 @router.get("/api/chat/ws-history")
-async def chat_ws_history(request: Request, limit: int = 40) -> JSONResponse:
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse({"error": "No autenticado"}, status_code=401)
+async def chat_ws_history(
+    request: Request, limit: int = 40, usuario: UsuarioSesion = Depends(usuario_chat)
+) -> JSONResponse:
+    user = usuario.username
     orchestrator = getattr(request.app.state, "chat_orchestrator", None)
     if orchestrator is None:
         return JSONResponse({"error": "Chat no disponible"}, status_code=503)
@@ -307,14 +324,13 @@ async def chat_ws_history(request: Request, limit: int = 40) -> JSONResponse:
 
 
 @router.post("/mcp/invoke")
-async def mcp_invoke(request: Request, payload: MCPInvokeRequest) -> JSONResponse:
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse({"error": "No autenticado"}, status_code=401)
+async def mcp_invoke(
+    request: Request, payload: MCPInvokeRequest, usuario: UsuarioSesion = Depends(usuario_chat)
+) -> JSONResponse:
+    user, role = usuario
     orchestrator = getattr(request.app.state, "chat_orchestrator", None)
     if orchestrator is None:
         return JSONResponse({"error": "Chat no disponible"}, status_code=503)
-    role = request.session.get("role", "user")
     session_id = await orchestrator.ensure_session(user)
     events: List[Dict[str, Any]] = []
     logger.info(
@@ -339,19 +355,15 @@ async def mcp_invoke(request: Request, payload: MCPInvokeRequest) -> JSONRespons
             user_role=role,
         ):
             events.append(event.to_json())
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "action=mcp_http_invoke_error user=%s session_id=%s tool=%s error=%s",
-            user,
-            session_id,
-            payload.tool,
+        return error_interno(
+            "mcp_http_invoke",
             exc,
-        )
-        return JSONResponse(
-            {
-                "status": "error",
-                "message": "Fallo ejecutando la herramienta",
-            },
-            status_code=500,
+            cuerpo={"status": "error", "message": "Fallo ejecutando la herramienta"},
+            user=user,
+            session_id=session_id,
+            tool=payload.tool,
         )
     return JSONResponse({"status": "ok", "events": events})

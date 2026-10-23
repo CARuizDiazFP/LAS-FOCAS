@@ -17,7 +17,11 @@ from starlette.datastructures import Headers, UploadFile
 from core.services.report_history import InMemoryReportHistory
 from modules.informes_repetitividad.service import ReportConfig, ReportResult
 from web.app import main as web_main
+from web.app.dependencias import UsuarioSesion
 from web.app.routers import informes as web_informes
+
+# Los handlers se llaman directo: la sesión (Depends) se pasa explícita.
+USUARIO = UsuarioSesion("user", "user")
 
 
 def _fake_request(csrf: str = "csrf-test") -> SimpleNamespace:
@@ -71,7 +75,6 @@ def test_reports_history_endpoint_devuelve_items_autenticado(monkeypatch: pytest
 
     response = asyncio.run(
         web_informes.api_reports_history(
-            _fake_request(),
             type="repetitividad",
             status="error",
         )
@@ -98,6 +101,7 @@ def test_sla_missing_files_registra_error(monkeypatch: pytest.MonkeyPatch) -> No
             use_db=False,
             csrf_token=csrf,
             files=[],
+            usuario=USUARIO,
         )
     )
 
@@ -147,6 +151,7 @@ def test_repetitividad_success_registra_salidas(monkeypatch: pytest.MonkeyPatch,
             csrf_token=csrf,
             with_geo=False,
             use_db=False,
+            usuario=USUARIO,
         )
     )
 

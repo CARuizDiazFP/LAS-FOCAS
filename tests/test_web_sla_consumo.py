@@ -111,9 +111,9 @@ def test_sla_consumo_pasa_history_id_y_reporta_pdf_omitido(monkeypatch, tmp_path
     assert resp.json()["reclamos_sin_cambios"] == 0
 
 
-def test_sla_consumo_error_inesperado_sin_mensaje_usa_nombre_de_clase(monkeypatch):
+def test_sla_consumo_error_inesperado_da_500_con_ref_sin_texto_interno(monkeypatch):
     def falso(*_a, **_kw):
-        raise RuntimeError()
+        raise RuntimeError("secreto-interno")
 
     monkeypatch.setattr(web_informes.sla_consumo_service, "generar_informe_sla_consumo", falso)
     monkeypatch.setenv("TESTING", "true")
@@ -124,7 +124,9 @@ def test_sla_consumo_error_inesperado_sin_mensaje_usa_nombre_de_clase(monkeypatc
         ("files", ("reclamos.xlsx", io.BytesIO(_reclamos_excel_bytes()))),
     ])
     assert resp.status_code == 500
-    assert "RuntimeError" in resp.json()["error"]
+    assert resp.json()["ok"] is False
+    assert resp.json()["error"].startswith("Error interno (ref ")
+    assert "secreto-interno" not in resp.text
 
 
 def test_sla_consumo_un_solo_archivo_400(monkeypatch):

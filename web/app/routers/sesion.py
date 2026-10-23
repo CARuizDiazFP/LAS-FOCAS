@@ -10,7 +10,7 @@ from time import time as now
 from typing import Any, Dict
 
 import psycopg
-from fastapi import APIRouter, Form, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from core.password import hash_password, verify_password
@@ -19,11 +19,13 @@ from ..comun import (
     BUILD_VERSION,
     DB_DSN,
     _env_int,
-    _require_admin,
-    _require_auth,
     logger,
 )
+from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+from ..errores import ErrorDeDominio, error_interno, nueva_ref
 
+# Sin dependencia a nivel router: health, auth/session, auth/login, auth/logout y logout son públicas.
+# Las demás piden sesión con Depends en su firma.
 router = APIRouter()
 
 WEB_LOGIN_RATE_LIMIT_MAX = _env_int("WEB_LOGIN_RATE_LIMIT_MAX", 5)
@@ -117,8 +119,12 @@ async def api_auth_login(request: Request) -> JSONResponse:
                     logger.warning("action=api_login result=fail username=%s ip=%s", username, ip)
                     return JSONResponse({"ok": False, "error": "Credenciales inválidas"}, status_code=401)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=api_login result=error username=%s ip=%s error=%s", username, ip, exc)
-        return JSONResponse({"ok": False, "error": "Error de autenticación"}, status_code=500)
+        # El texto `action=api_login result=error` no termina en `_error`: se conserva y gana la ref.
+        ref = nueva_ref()
+        logger.exception(
+            "action=api_login result=error username=%s ip=%s error=%s ref=%s", username, ip, exc, ref
+        )
+        return JSONResponse({"ok": False, "error": f"Error interno (ref {ref})"}, status_code=500)
 
     csrf_token = secrets.token_urlsafe(32)
     request.session["username"] = username
@@ -144,10 +150,9 @@ async def logout(request: Request) -> RedirectResponse:
 
 
 @router.get("/api/admin/me")
-async def admin_me(request: Request) -> JSONResponse:
+async def admin_me(usuario: UsuarioSesion = Depends(usuario_admin)) -> JSONResponse:
     """Devuelve datos del usuario admin autenticado. Usado por el SPA Vue para validar sesión."""
-    username = _require_admin(request)  # lanza 403 si no es admin
-    return JSONResponse({"username": username, "role": "admin"})
+    return JSONResponse({"username": usuario.username, "role": "admin"})
 
 
 @router.post("/api/users/change-password")
@@ -156,9 +161,10 @@ async def change_password(
     current_password: str = Form(...),
     new_password: str = Form(...),
     csrf_token: str = Form(...),
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ):
-    # Autenticado + CSRF
-    user, _ = _require_auth(request)
+    # Autenticado (Depends) + CSRF
+    user = usuario.username
     if csrf_token != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     try:
@@ -174,8 +180,10 @@ async def change_password(
                     (new_hash, user),
                 )
                 conn.commit()
-    except Exception as exc:
-        return JSONResponse({"error": f"Error cambiando contraseña: {exc}"}, status_code=500)
+    except (HTTPException, ErrorDeDominio):
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return error_interno("change_password", exc, user=user)
     return JSONResponse({"status": "ok"})
 
 
@@ -189,9 +197,10 @@ async def admin_create_user(
     password: str = Form(...),
     role: str = Form("invitado"),
     csrf_token: str = Form(...),
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ):
-    # Admin + CSRF
-    _, role_sess = _require_auth(request)
+    # Admin + CSRF. Con usuario_sesion (y no usuario_admin) para conservar el 403 {"error": "Solo admin"}.
+    admin, role_sess = usuario
     if role_sess != "admin":
         return JSONResponse({"error": "Solo admin"}, status_code=403)
     if csrf_token != request.session.get("csrf"):
@@ -211,6 +220,8 @@ async def admin_create_user(
                     (username, hash_password(password), role_norm),
                 )
                 conn.commit()
-    except Exception as exc:
-        return JSONResponse({"error": f"Error creando usuario: {exc}"}, status_code=500)
+    except (HTTPException, ErrorDeDominio):
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return error_interno("admin_create_user", exc, user=admin, username=username)
     return JSONResponse({"status": "ok"})
