@@ -746,14 +746,13 @@ class IngresoListener:
             camara.id,
             getattr(ingreso, "id", None),
         )
-        # Ningún comando del bot corrige un movimiento ya registrado en otra cámara: "Forzar ingreso"
-        # siempre crea una fila nueva y "Forzar egreso #id" sólo cierra la abierta (no la anula ni la
-        # mueve); el panel web tampoco. No se promete un mecanismo que no existe.
-        aviso = "Si no es esa cámara, avisá a un administrador para corregir el registro."
+        # Ningún comando del bot corrige un movimiento ya registrado en otra cámara, así que la
+        # confirmación informa sólo el resultado (decisión del usuario 2026-10-23: sin frases que
+        # deriven a un administrador).
         if ingreso is None:
             respuesta = (
                 f"✅ *{camara.nombre}* (Fontaine ID {numero}), pero el mensaje original no traía el "
-                f"campo 'Ingreso o Egreso': no se registró ningún movimiento. {aviso}\n"
+                "campo 'Ingreso o Egreso': no se registró ningún movimiento.\n"
                 f"{resultado_acceso.texto}"
             )
         else:
@@ -762,7 +761,7 @@ class IngresoListener:
                 encabezado = f"⚠️ Registré el intento de ingreso (bloqueado) en *{camara.nombre}*"
             else:
                 encabezado = f"✅ Registré el {tipo.lower()} en *{camara.nombre}*"
-            respuesta = f"{encabezado} (Fontaine ID {numero}). {aviso}\n{resultado_acceso.texto}"
+            respuesta = f"{encabezado} (Fontaine ID {numero}).\n{resultado_acceso.texto}"
 
         client.chat_postMessage(channel=channel, thread_ts=thread_ts_evento, text=respuesta, mrkdwn=True)
         return True

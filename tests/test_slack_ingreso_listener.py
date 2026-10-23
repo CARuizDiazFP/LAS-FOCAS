@@ -2966,10 +2966,10 @@ class TestSeguimientoFontaineId(unittest.TestCase):
         session_mock.commit.assert_called_once()
         texto = client_mock.chat_postMessage.call_args.kwargs["text"]
         self.assertIn(
-            "✅ Registré el ingreso en *Cra 25 de Mayo 302 CF* (Fontaine ID 1228619). "
-            "Si no es esa cámara, avisá a un administrador para corregir el registro.",
+            "✅ Registré el ingreso en *Cra 25 de Mayo 302 CF* (Fontaine ID 1228619).",
             texto,
         )
+        self.assertNotIn("administrador", texto)
 
     def test_fontaine_id_con_egreso_registra_egreso(self) -> None:
         camara = self._camara()
