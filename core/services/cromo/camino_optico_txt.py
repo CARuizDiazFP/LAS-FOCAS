@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Optional
 
 from core.services.cromo.camino_optico_service import (
+    STP_PROYECTADO,
+    STP_PROYECTADO_DESINSTALACION,
     TIPO_CONECTOR_ODF,
     TIPO_FUSION,
     TIPO_NO_RESUELTO,
@@ -127,20 +129,58 @@ def nombre_archivo_posicion(
     return f"{prefijo} CROMO {posicion} pelo {pelo_n_id}.txt"
 
 
+# Sufijo que la UI de Cromo agrega al elemento según su estado de proyecto (visto en su web:
+# "Empalme 6631033: Cra. Guardia Vieja 3302 C.F.(OE 360747)  - Proyectado Desinstalación").
+_MARCA_PROYECTO = {
+    STP_PROYECTADO: "  - Proyectado",
+    STP_PROYECTADO_DESINSTALACION: "  - Proyectado Desinstalación",
+}
+
+
+def _marca(nodo: NodoCamino) -> str:
+    return _MARCA_PROYECTO.get(nodo.stp, "") if nodo.stp is not None else ""
+
+
 def _linea_tramo(nodo: NodoCamino, acum_geo: float, acum_real: float) -> str:
     return (
         f"{nodo.cable_nombre or '?'}: {nodo.numero_pelo or '?'} "
         f"({nodo.tubo_color or '?'} / {_ordinal_humano(nodo.tubo_orden)} - "
         f"{_ordinal_humano(nodo.orden_pelo)}) --> {_numero(nodo.distancia_geo_m)} / "
-        f"{_numero(acum_geo)} mts * {_numero(acum_real)} mts"
+        f"{_numero(acum_geo)} mts * {_numero(acum_real)} mts{_marca(nodo)}"
     )
 
 
 def _linea_terminal(nodo: NodoCamino, acum_geo: float, acum_real: float) -> str:
     return (
         f"{nodo.patchera_nombre or nodo.odf_nombre or '?'}: {nodo.conector_numero or '?'} "
-        f"--> Sin longitud / {_numero(acum_geo)} mts * {_numero(acum_real)} mts"
+        f"--> Sin longitud / {_numero(acum_geo)} mts * {_numero(acum_real)} mts{_marca(nodo)}"
     )
+
+
+def _cabecera_completado(camino: CaminoOptico) -> list[str]:
+    """Líneas `#` que declaran un camino completado con otra vista de red, o ninguna."""
+    completado = camino.completado
+    if completado is None:
+        return []
+    corte = completado.corte
+    donde = f"{corte.cable_nombre or '?'}:{corte.numero_pelo or '?'}"
+    if completado.botella:
+        donde += f" ({completado.botella})"
+    if completado.projview == 2:
+        vista = "red proyectada"
+        marcas = 'Los elementos marcados "Proyectado" pueden no estar ejecutados en campo.'
+    else:
+        vista = "red actual"
+        marcas = 'Los elementos marcados "Proyectado Desinstalación" siguen en campo pero se van a retirar.'
+    lineas = [
+        f"# ATENCIÓN: el camino por omisión de Cromo se cortaba en {donde}, un pelo con más de una"
+        " continuación.",
+        f"# Se completó con la {vista} de Cromo (projview={completado.projview}), que agrega "
+        f"{_numero(completado.metros_agregados)} mts. {marcas}",
+    ]
+    if completado.alternativa:
+        lineas.append(f"# Alternativa: {completado.alternativa}.")
+    return lineas
 
 
 def secuencia_para_tracking(camino: CaminoOptico) -> list[NodoCamino]:
@@ -183,6 +223,7 @@ def renderizar_tracking_txt(camino: CaminoOptico, *, generado_en: datetime) -> s
         f"# Servicio at.62={camino.servicio_at62 or 's/d'} · at.61={camino.servicio_at61 or 's/d'}",
         "# El camino es un elemento vivo: cambia ante cortes y reruteos. Cromo es la fuente de la verdad.",
         "# Cromo no publica la atenuación por API: las líneas de tramo NO llevan la columna dB.",
+        *_cabecera_completado(camino),
         "",
         f"Cable: {(raiz.cable_nombre if raiz else None) or '?'}",
         f"{_FLECHA_IZQ} TUBO: {(raiz.tubo_color if raiz else None) or '?'} / "
@@ -207,7 +248,9 @@ def renderizar_tracking_txt(camino: CaminoOptico, *, generado_en: datetime) -> s
                 lineas.extend(["", _SEPARADOR_GUION, cuerpo[0], "", _SEPARADOR_GUION])
                 continue
         elif nodo.tipo == TIPO_FUSION:
-            cuerpo = [f"Empalme {nodo.botella_id or nodo.id_cromo}: {nodo.botella_nombre or 's/d'}"]
+            cuerpo = [
+                f"Empalme {nodo.botella_id or nodo.id_cromo}: {nodo.botella_nombre or 's/d'}{_marca(nodo)}"
+            ]
         elif nodo.tipo == TIPO_CONECTOR_ODF:
             # El legacy emite también la ODF como un `Empalme <id_odf>: <nombre>`, y va del lado
             # que mira al interior del camino: al principio del archivo después del terminal, al

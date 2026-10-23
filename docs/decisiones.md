@@ -2900,3 +2900,22 @@ su propia ventana de mantenimiento.
   - **Sync y operaciones del admin se serializan con un advisory lock transaccional** (review final): sin él, una sync concurrente (ingesta/PROV) podía revertir en silencio un cambio MANUAL/LISTA. La ingesta Excel tampoco pisa una excepción fijada mientras corría.
 - Alternativas: sólo normalizar el nombre en la lectura (sin tabla); columna `cliente_id` con FK en `servicios` (más invasivo para los lectores y las ingestas); recalcular la categoría al leer.
 - Impacto: migración `20261014_01`; módulo admin "Clientes por categoría"; la planilla SLA deja de pisar la categoría. Ver `docs/clientes_categoria.md`. Despliegue a dev y prod pendiente al momento de escribir esta entrada.
+
+## 2026-10-23 — Tracking: reintentar con red proyectada/actual cuando Cromo corta el camino
+
+- Contexto: `/path` sin `projview` corta el camino en un pelo con más de una continuación (fusión a desinstalar +
+  fusión proyectada). El `.txt` quedaba con un extremo en un pelo suelto (Servicio 83693: faltaba la ODF de Córdoba 3016).
+- Decisión: reintento automático dentro de `obtener_tracking`, sólo si un extremo es un pelo con `tp[]` sin recorrer.
+  Se prueban `projview` 2 y 1; se acepta un candidato sólo si extiende el camino original y suma extremos en ODF.
+  Desempatan el at.62 de los conectores y el domicilio del servicio; ante empate, la red proyectada (el usuario pidió
+  "reintentar con red proyectada"). El `.txt` lo declara y marca los elementos proyectados.
+- Alternativas descartadas:
+  - `projview=2` siempre: mostraría como hecho trabajo que no se ejecutó y cambiaría caminos que hoy están bien.
+  - Comparar distancias para disparar: exige la segunda llamada para decidir si hacerla. Quedó como guarda: el
+    candidato tiene que extender (prefijo + más metros), nunca reemplazar.
+  - Domicilio como disparador: hay servicios cuyo domicilio no coincide con el camino real. Quedó como desempate.
+  - Sólo el agregado manual `track <id> proyectado`: carga al operador. Queda como posible complemento si aparecen
+    cortes que la señal no detecta (en la medición no apareció ninguno).
+- Medido (30 Activos al azar + 83693): 3 de 31 con corte por proyecto, los 3 completados; 4 terminan en un pelo sin
+  señal y el reintento no los cambia.
+

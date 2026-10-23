@@ -21,6 +21,8 @@ El caché es lo que lo hace viable: en frío cada pelo cuesta entre 4,6 s y 14 s
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -32,7 +34,9 @@ from core.services.cromo import tracking_cache
 from core.services.cromo.camino_optico_service import (
     ESTADO_OK,
     TIPO_CONECTOR_ODF,
+    TIPO_FUSION,
     CaminoOptico,
+    CompletadoConRed,
     NodoCamino,
     resolver_camino_de_pelo,
     semillas_para_tracking,
@@ -44,7 +48,7 @@ from core.services.cromo.camino_optico_txt import (
     renderizar_tracking_txt,
     secuencia_para_tracking,
 )
-from core.services.cromo.client import CromoClient
+from core.services.cromo.client import CromoClient, CromoClientError
 from core.services.cromo.config import tracking_max_llamadas
 from core.services.cromo.servicio_odf_confirmacion import declaraciones_del_servicio
 from core.services.cromo.servicio_posicion_vigente import (
@@ -143,6 +147,9 @@ class ResumenCamino:
     botellas: tuple[int, ...] = ()
     botella_inicio: Optional[int] = None
     botella_fin: Optional[int] = None
+    # `projview` con que se completó un camino que venía cortado (`completar_camino_cortado`);
+    # `None` = el camino por omisión de Cromo.
+    projview: Optional[int] = None
 
     @property
     def extremos(self) -> tuple[ExtremoCamino, ...]:
@@ -158,6 +165,7 @@ class ResumenCamino:
             "botellas": list(self.botellas),
             "botella_inicio": self.botella_inicio,
             "botella_fin": self.botella_fin,
+            "projview": self.projview,
         }
 
     @classmethod
@@ -194,6 +202,7 @@ class ResumenCamino:
             botellas=tuple(int(x) for x in datos.get("botellas") or ()),
             botella_inicio=_entero_o_none(datos.get("botella_inicio")),
             botella_fin=_entero_o_none(datos.get("botella_fin")),
+            projview=_entero_o_none(datos.get("projview")),
         )
 
 
@@ -256,6 +265,7 @@ def resumen_del_camino(camino: CaminoOptico) -> ResumenCamino:
         botellas=tuple(sorted(set(botellas_en_orden))),
         botella_inicio=botellas_en_orden[0] if botellas_en_orden else None,
         botella_fin=botellas_en_orden[-1] if botellas_en_orden else None,
+        projview=camino.completado.projview if camino.completado else None,
     )
 
 
@@ -269,6 +279,180 @@ def pelos_del_camino(camino: CaminoOptico) -> frozenset[int]:
     if camino.pelo_n_id is not None:
         pelos.add(camino.pelo_n_id)
     return frozenset(pelos)
+
+
+# ── Caminos cortados por un proyecto ─────────────────────────────────────────────────────────
+#
+# Real (Servicio 83693, 2026-10-23): `/path` por omisión corta el camino en un pelo con más de una
+# continuación (una fusión a desinstalar y otra proyectada) y el `.txt` sale con un extremo en un pelo
+# suelto. Pedido con la red proyectada (`projview=2`) llega a la ODF del cliente, la misma que muestra
+# la UI de Cromo con "Red proyectada". Se reintenta sólo si un extremo es un pelo con conexiones sin
+# recorrer (`CaminoOptico.cortes`): un servicio que termina en un pelo de verdad no las tiene y no
+# paga ninguna llamada extra.
+PROJVIEWS_REINTENTO = (2, 1)  # red proyectada primero; ante empate gana la primera
+_NOMBRE_PROJVIEW = {1: "red actual", 2: "red proyectada"}
+# Palabras de un domicilio que no identifican la calle.
+_RUIDO_DOMICILIO = frozenset(
+    {"AV", "AVDA", "AVENIDA", "CALLE", "PISO", "DEPTO", "LOCAL", "CABA", "CF", "BS", "AS", "ESQ"}
+)
+
+_SQL_DOMICILIOS_SERVICIO = text(
+    "SELECT direccion, direccion_2 FROM app.servicios WHERE id = :servicio_id"
+)
+
+
+def nombre_projview(projview: int) -> str:
+    return _NOMBRE_PROJVIEW.get(projview, f"projview={projview}")
+
+
+def _palabras(texto: Optional[str]) -> list[str]:
+    plano = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode().upper()
+    return re.sub(r"[^A-Z0-9]+", " ", plano).split()
+
+
+def coincide_domicilio(domicilio: Optional[str], nombre_odf: Optional[str]) -> bool:
+    """El nombre de la ODF trae la altura y alguna palabra de la calle del domicilio. Pura.
+
+    "CORDOBA AV. 3016" coincide con "ODF Cordoba 3016 Subsuelo. C.F." (Servicio 83693). Sólo
+    desempata: hay servicios cuyo domicilio no coincide con el camino real.
+    """
+    palabras = _palabras(domicilio)
+    alturas = [p for p in palabras if p.isdigit()]
+    calle = [p for p in palabras if not p.isdigit() and len(p) >= 4 and p not in _RUIDO_DOMICILIO]
+    en_odf = set(_palabras(nombre_odf))
+    return bool(alturas) and alturas[0] in en_odf and any(p in en_odf for p in calle)
+
+
+def extiende_camino(base: CaminoOptico, otro: CaminoOptico) -> bool:
+    """`otro` recorre todo `base` y sigue de largo: cada lado de `base` es prefijo de un lado de
+    `otro`. Pura. Cromo elige a su criterio cuál lado es `a` y cuál `b`, así que se aceptan las dos
+    orientaciones. Es lo que impide que un reintento reemplace un camino en vez de completarlo."""
+    a0 = [n.id_cromo for n in base.lado_a]
+    b0 = [n.id_cromo for n in base.lado_b]
+    a1 = [n.id_cromo for n in otro.lado_a]
+    b1 = [n.id_cromo for n in otro.lado_b]
+
+    def _prefijo(corto: list[int], largo: list[int]) -> bool:
+        return largo[: len(corto)] == corto
+
+    if base.id_raiz != otro.id_raiz or (a0, b0) == (a1, b1):
+        return False
+    return (_prefijo(a0, a1) and _prefijo(b0, b1)) or (_prefijo(a0, b1) and _prefijo(b0, a1))
+
+
+def _extremos_odf(camino: CaminoOptico) -> list[ExtremoCamino]:
+    return [e for e in resumen_del_camino(camino).extremos if _es_extremo_odf(e)]
+
+
+def _puntaje(camino: CaminoOptico, domicilios: Sequence[Optional[str]]) -> tuple[int, int, int]:
+    """(extremos en ODF, extremos con el at.62 del servicio, extremos con su domicilio)."""
+    extremos = _extremos_odf(camino)
+    at62 = camino.servicio_at62
+    return (
+        len(extremos),
+        sum(1 for e in extremos if at62 and e.servicio_at62 == at62),
+        sum(1 for e in extremos if any(coincide_domicilio(d, e.odf_nombre) for d in domicilios)),
+    )
+
+
+def _botella_del_corte(camino: CaminoOptico, pelo_corte: int) -> Optional[str]:
+    """Botella de la fusión que sigue al pelo del corte en el camino completado."""
+    for lado in (camino.lado_a, camino.lado_b):
+        ids = [n.id_cromo for n in lado]
+        if pelo_corte in ids:
+            siguiente = ids.index(pelo_corte) + 1
+            if siguiente < len(lado) and lado[siguiente].tipo == TIPO_FUSION:
+                return lado[siguiente].botella_nombre
+    return None
+
+
+async def completar_camino_cortado(
+    cliente: CromoClient,
+    sesion: AsyncSession,
+    camino: CaminoOptico,
+    *,
+    servicio_id: Optional[int],
+) -> CaminoOptico:
+    """El camino tal cual, o el mismo pedido con otra vista de red si así llega a más ODF.
+
+    Sólo si un extremo es un pelo con conexiones sin recorrer (`camino.cortes`). Se pide con cada
+    `PROJVIEWS_REINTENTO` y un candidato vale si **extiende** el camino (`extiende_camino`) y suma
+    extremos en ODF. Entre los que valen gana el de más extremos en ODF, después el que coincide con
+    el at.62 del servicio en los conectores y después con su domicilio; ante empate, la red
+    proyectada. Un reintento que falla contra Cromo no tumba el tracking: queda el camino original.
+    """
+    if not camino.cortes or len(_extremos_odf(camino)) == 2:
+        return camino
+
+    domicilios: Sequence[Optional[str]] = ()
+    if servicio_id is not None:
+        fila = (await sesion.execute(_SQL_DOMICILIOS_SERVICIO, {"servicio_id": servicio_id})).first()
+        domicilios = tuple(fila) if fila else ()
+
+    base_odf = len(_extremos_odf(camino))
+    candidatos: list[CaminoOptico] = []
+    for projview in PROJVIEWS_REINTENTO:
+        try:
+            otro = await resolver_camino_de_pelo(
+                cliente, sesion, camino.pelo_n_id, projview=projview
+            )
+        except CromoClientError as exc:
+            logger.warning(
+                "action=cromo_tracking evento=reintento_fallido pelo_n_id=%s projview=%s error=%s",
+                camino.pelo_n_id,
+                projview,
+                exc,
+            )
+            continue
+        if (
+            otro.estado == ESTADO_OK
+            and extiende_camino(camino, otro)
+            and len(_extremos_odf(otro)) > base_odf
+        ):
+            candidatos.append(otro)
+
+    if not candidatos:
+        logger.info(
+            "action=cromo_tracking evento=corte_sin_completar pelo_n_id=%s cortes=%s",
+            camino.pelo_n_id,
+            [c.pelo_n_id for c in camino.cortes],
+        )
+        return camino
+
+    # `max` devuelve el primero entre empatados: el orden de `PROJVIEWS_REINTENTO` desempata.
+    elegido = max(candidatos, key=lambda c: _puntaje(c, domicilios))
+    corte = camino.cortes[0]
+    odfs_elegido = {e.odf_id for e in _extremos_odf(elegido)}
+    alternativa = next(
+        (
+            f"con la {nombre_projview(c.projview or 0)} el camino termina en "
+            + " y ".join(e.odf_nombre or "?" for e in _extremos_odf(c))
+            for c in candidatos
+            if c is not elegido and {e.odf_id for e in _extremos_odf(c)} != odfs_elegido
+        ),
+        None,
+    )
+    elegido = replace(
+        elegido,
+        completado=CompletadoConRed(
+            projview=elegido.projview or 0,
+            corte=corte,
+            botella=_botella_del_corte(elegido, corte.pelo_n_id),
+            metros_agregados=(
+                elegido.estadisticas.longitud_optica_m - camino.estadisticas.longitud_optica_m
+            ),
+            alternativa=alternativa,
+        ),
+    )
+    logger.info(
+        "action=cromo_tracking evento=corte_completado pelo_n_id=%s projview=%s pelo_corte=%s "
+        "metros_agregados=%.1f",
+        camino.pelo_n_id,
+        elegido.projview,
+        corte.pelo_n_id,
+        elegido.completado.metros_agregados,
+    )
+    return elegido
 
 
 async def obtener_tracking(
@@ -327,6 +511,7 @@ async def obtener_tracking(
     camino = await resolver_camino_de_pelo(cliente, sesion, pelo_n_id)
     if camino.estado != ESTADO_OK:
         raise TrackingNoDisponible(camino.motivo, camino.estado)
+    camino = await completar_camino_cortado(cliente, sesion, camino, servicio_id=servicio_id)
 
     ahora = datetime.now(timezone.utc)
     nombre = nombre_archivo_tracking(camino.servicio_at62, camino.pelo_n_id or pelo_n_id)

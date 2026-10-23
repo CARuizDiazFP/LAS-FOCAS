@@ -292,6 +292,12 @@ class CromoClient:
         ('en servicio' + 'desinstalación proyectada'), `2` = red proyectada. Se manda sólo si se
         pide explícitamente, para no cambiar en silencio lo que Cromo devuelve por omisión.
 
+        "Completa" no significa "más largo". Medido real (2026-10-23, Servicio 83693): sin
+        `projview` (= `0`) el camino se CORTA en un pelo que tiene a la vez una fusión a
+        desinstalar y otra proyectada, porque con las dos visibles hay dos continuaciones y Cromo
+        no elige. `1` sigue la de desinstalación y `2` la proyectada. El tracking reintenta con esas
+        dos vistas cuando detecta el corte (`tracking_service.completar_camino_cortado`).
+
         Devuelve el cuerpo **sin desenvolver** (hay tres formas posibles de envoltura, y elegir
         entre ellas es del servicio, en un solo lugar testeable sin red).
         """

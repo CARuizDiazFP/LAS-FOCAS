@@ -154,6 +154,9 @@ class ResultadoTrack:
     tramos: Optional[int] = None
     full: bool = False
     numero_servicio: str = ""
+    # Archivos subidos cuyo camino se completó con otra vista de red de Cromo (red proyectada o
+    # actual) porque el de por omisión se cortaba (`tracking_service.completar_camino_cortado`).
+    completados_con_red: int = 0
 
 
 ESTADO_OK = "ok"
@@ -166,7 +169,8 @@ def mensaje_resumen(resultado: ResultadoTrack) -> Optional[str]:
     Sólo las líneas que aplican, en este orden: avisos de la posición vigente (retiros, camino no
     usable), segmentación (más de un segmento físico; un par de hilos del mismo recorrido no lo es;
     cuenta tramos, no archivos), cantidad esperada distinta de la de caminos resueltos (o de la
-    generada, si no se informaron), caminos adicionales, semillas que no resolvieron con sus
+    generada, si no se informaron), caminos adicionales, caminos completados con otra vista de red
+    de Cromo, semillas que no resolvieron con sus
     errores —aunque el recorrido haya terminado: puede faltar un tramo entero— y el tope de
     consultas a Cromo sólo si se tocó. Los residuales nunca se mencionan.
     """
@@ -190,6 +194,12 @@ def mensaje_resumen(resultado: ResultadoTrack) -> Optional[str]:
             )
     if resultado.adicionales:
         partes.append(_linea_adicionales(resultado))
+    if resultado.completados_con_red:
+        partes.append(
+            f":construction: {resultado.completados_con_red} tracking(s) se completaron pidiéndole a "
+            "Cromo la red proyectada o la actual: el camino por omisión se cortaba en un pelo con más "
+            "de una continuación. El detalle está en la cabecera del `.txt`."
+        )
     sin_resolver = max(resultado.no_cubiertos, len(resultado.errores))
     if sin_resolver or not resultado.completo:
         partes.append(
@@ -283,6 +293,9 @@ def resultado_de_trackings(
         tramos=len(del_servicio.tramos),
         full=full,
         numero_servicio=numero_servicio or "",
+        completados_con_red=sum(
+            1 for tr in origen if tr.extremos is not None and tr.extremos.projview is not None
+        ),
     )
 
 
