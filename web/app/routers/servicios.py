@@ -25,7 +25,7 @@ from ..comun import (
     logger,
 )
 from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
-from ..errores import Conflicto, ErrorDeDominio, NoEncontrado, error_interno
+from ..errores import Conflicto, ErrorDeDominio, NoEncontrado, error_interno, error_servicio_externo
 
 router = APIRouter(dependencies=[Depends(usuario_sesion)])
 
@@ -1702,7 +1702,9 @@ async def servicios_sin_odf_camino_normalizar_web(
     except CaminoNoResoluble as exc:
         return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
     except CromoClientError as exc:
-        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+        return error_servicio_externo(
+            "camino_normalizar", exc, "Cromo no respondió", user=username, servicio_id=servicio_id
+        )
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
@@ -1768,7 +1770,9 @@ async def servicios_sin_odf_camino_relevar_odf_web(
     except CaminoNoResoluble as exc:
         return JSONResponse({"error": exc.motivo, "estado": exc.estado}, status_code=409)
     except CromoClientError as exc:
-        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+        return error_servicio_externo(
+            "camino_relevar_odf", exc, "Cromo no respondió", user=username, servicio_id=servicio_id
+        )
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
@@ -1856,7 +1860,9 @@ async def servicios_sin_odf_camino_optico_web(
         # Mensaje armado por el servicio para el usuario: misma respuesta 400.
         raise ErrorDeDominio(str(exc)) from exc
     except CromoClientError as exc:
-        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+        return error_servicio_externo(
+            "cromo_camino_optico", exc, "Cromo no respondió", user=username, servicio_id=servicio_id
+        )
 
     logger.info(
         "action=cromo_camino_optico user=%s servicio_id=%s estado=%s pelo_n_id=%s "

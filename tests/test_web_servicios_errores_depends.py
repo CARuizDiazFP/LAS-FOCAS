@@ -238,3 +238,47 @@ def test_pelo_ajeno_al_excluir_sigue_siendo_409_con_su_mensaje(con_sesion, monke
 
     assert res.status_code == 409
     assert res.json() == {"error": "El pelo 3 no es de este Servicio."}
+
+
+# --- 502 de Cromo sin texto interno ------------------------------------------------------------------
+
+
+def test_normalizar_502_de_cromo_sin_texto_interno_y_ref_en_el_log(con_sesion, monkeypatch, caplog):
+    from core.services.cromo import client as cromo_client
+    from core.services.cromo import config as cromo_config
+    from core.services.cromo import normalizacion_consistencia_service as normalizacion
+
+    async def _existe(*_args, **_kwargs):
+        return True
+
+    class _ClienteFalso:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    async def _cromo_caido(*_args, **_kwargs):
+        raise cromo_client.CromoClientError(f"Cromo respondió 401 en /oauth: {SECRETO}")
+
+    con_sesion("admin", username="jefa")
+    monkeypatch.setattr(servicios, "_servicio_existe", _existe)
+    monkeypatch.setattr(cromo_client, "CromoClient", _ClienteFalso)
+    monkeypatch.setattr(cromo_config, "get_cromo_config", lambda: None)
+    monkeypatch.setattr(normalizacion, "normalizar_inconsistencias", _cromo_caido)
+    caplog.set_level(logging.INFO, logger="web")
+
+    res = _cliente().post(
+        "/api/admin/infra/servicios-odf/4/camino-optico/normalizar", json={"pelo_n_id": 10}
+    )
+
+    assert res.status_code == 502
+    assert SECRETO not in res.text
+    ref = re.fullmatch(r"Cromo no respondió \(ref ([0-9a-f]{8})\)", res.json()["error"]).group(1)
+    assert _registro(caplog, "camino_normalizar") == (
+        f"action=camino_normalizar_error user=jefa servicio_id=4 "
+        f"error=Cromo respondió 401 en /oauth: {SECRETO} ref={ref}"
+    )

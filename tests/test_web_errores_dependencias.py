@@ -27,6 +27,7 @@ from web.app.errores import (
     ErrorDeDominio,
     NoEncontrado,
     error_interno,
+    error_servicio_externo,
     manejar_error_de_dominio,
     manejar_error_no_controlado,
 )
@@ -205,6 +206,39 @@ def test_error_interno_pisa_error_del_cuerpo_y_acepta_contexto_con_nombres_posic
 def test_refs_distintas_por_llamada():
     refs = {error_interno("x", RuntimeError()).body for _ in range(20)}
     assert len(refs) == 20
+
+
+# --- error_servicio_externo ----------------------------------------------------
+
+
+def test_error_servicio_externo_status_mensaje_fijo_y_log_con_la_misma_ref(caplog):
+    caplog.set_level(logging.INFO, logger="web")
+    exc = RuntimeError("Cromo respondió 401 en /oauth: cuerpo-secreto")
+    res = error_servicio_externo("camino_normalizar", exc, "Cromo no respondió", user="ana", servicio_id=7)
+
+    assert res.status_code == 502
+    cuerpo = json.loads(res.body)
+    assert list(cuerpo) == ["error"]
+    ref = re.fullmatch(r"Cromo no respondió \(ref ([0-9a-f]{8})\)", cuerpo["error"]).group(1)
+    assert "cuerpo-secreto" not in res.body.decode()
+    (registro,) = _registros(caplog, "camino_normalizar")
+    assert registro.getMessage() == (
+        f"action=camino_normalizar_error user=ana servicio_id=7 error={exc} ref={ref}"
+    )
+    assert registro.levelno == logging.ERROR
+    assert registro.exc_info[1] is exc
+
+
+def test_error_servicio_externo_status_y_cuerpo_explicitos():
+    res = error_servicio_externo(
+        "x", RuntimeError("secreto"), "PROV no respondió", status_code=504, cuerpo={"ok": False, "error": "secreto"}
+    )
+    cuerpo = json.loads(res.body)
+    assert res.status_code == 504
+    assert list(cuerpo) == ["ok", "error"]
+    assert cuerpo["ok"] is False
+    assert re.fullmatch(r"PROV no respondió \(ref [0-9a-f]{8}\)", cuerpo["error"])
+    assert b"secreto" not in res.body
 
 
 # --- dependencias de sesión ----------------------------------------------------

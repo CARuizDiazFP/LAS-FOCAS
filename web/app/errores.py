@@ -10,6 +10,10 @@ Contrato de respuesta (formato `{"error": ...}` de la SPA):
   usuario: no debe contener texto de excepciones internas.
 - Cualquier excepción no controlada → 500 `{"error": "Error interno (ref XXXXXXXX)"}`; el detalle
   (traceback, contexto y la misma ref) va sólo al log.
+- Falla de un servicio externo (Cromo, PROV, SMTP) que hoy se informa con un status propio (p. ej.
+  502) → `error_servicio_externo(accion, exc, "<mensaje fijo>")`: mismo status, `{"error": "<mensaje
+  fijo> (ref XXXXXXXX)"}`, nunca el texto de la excepción (puede traer rutas o cuerpos del proveedor).
+  Loguea igual que `error_interno` (ambos usan `_loguear_con_ref`).
 
 `HTTPException` y `RequestValidationError` NO pasan por acá: FastAPI las sigue manejando igual.
 
@@ -92,6 +96,41 @@ def error_interno(
     `accion` y `exc` son sólo posicionales, así que el contexto puede usar cualquier nombre salvo
     `cuerpo` (reservado).
     """
+    ref = _loguear_con_ref(accion, exc, contexto)
+    contenido: dict[str, Any] = dict(cuerpo or {})
+    contenido["error"] = f"Error interno (ref {ref})"
+    return JSONResponse(contenido, status_code=500)
+
+
+def error_servicio_externo(
+    accion: str,
+    exc: BaseException,
+    mensaje: str,
+    /,
+    *,
+    status_code: int = 502,
+    cuerpo: Mapping[str, Any] | None = None,
+    **contexto: Any,
+) -> JSONResponse:
+    """Falla de un servicio externo (Cromo, PROV, SMTP): status propio y mensaje fijo con ref.
+
+    Mismo log que `error_interno` (`logger.exception`, `action=<accion>_error ... error=<exc> ref=`).
+    Respuesta: `status_code` (502 por omisión) con `{**cuerpo, "error": "<mensaje> (ref <8 hex>)"}`.
+
+    Ejemplo (antes → después):
+
+        return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
+        →
+        return error_servicio_externo("camino_normalizar", exc, "Cromo no respondió", user=username)
+    """
+    ref = _loguear_con_ref(accion, exc, contexto)
+    contenido: dict[str, Any] = dict(cuerpo or {})
+    contenido["error"] = f"{mensaje} (ref {ref})"
+    return JSONResponse(contenido, status_code=status_code)
+
+
+def _loguear_con_ref(accion: str, exc: BaseException, contexto: Mapping[str, Any]) -> str:
+    """`logger.exception("action=<accion>_error <k>=<v>... error=<exc> ref=<ref>")`; devuelve la ref."""
     ref = nueva_ref()
     claves = "".join(f" {clave}=%s" for clave in contexto)
     logger.exception(
@@ -102,9 +141,7 @@ def error_interno(
         ref,
         exc_info=exc,
     )
-    contenido: dict[str, Any] = dict(cuerpo or {})
-    contenido["error"] = f"Error interno (ref {ref})"
-    return JSONResponse(contenido, status_code=500)
+    return ref
 
 
 async def manejar_error_de_dominio(request: Request, exc: ErrorDeDominio) -> JSONResponse:
