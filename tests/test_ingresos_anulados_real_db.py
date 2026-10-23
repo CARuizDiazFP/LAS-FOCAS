@@ -202,3 +202,66 @@ def test_eliminar_camara_pendiente_bloquea_si_tiene_ingresos(session, monkeypatc
     else:
         assert res.status_code == 200
         assert session.get(Camara, camara.id) is None
+
+
+# ── Auditoría sin FKs (20261023_01): los ids de ingresos_correcciones son dato histórico ─────────
+
+
+def _auditoria_que_referencia(s: Session, camara_id: int, columna: str) -> int:
+    """Inserta una fila de auditoría web que apunta a `camara_id` desde `columna` y devuelve su id."""
+    return s.execute(
+        text(
+            f"""
+            INSERT INTO app.ingresos_correcciones
+                (comando, origen, actor_web_usuario, comando_crudo, camara_texto_solicitado, resultado, {columna})
+            VALUES ('MOVER_INGRESO', 'web', 'admin-test', '[test] auditoría sin FK', '#0', 'OK_TEST', :camara_id)
+            RETURNING id
+            """
+        ),
+        {"camara_id": camara_id},
+    ).scalar()
+
+
+def _camara_nueva(s: Session, nombre: str) -> Camara:
+    camara = Camara(nombre=nombre, estado=CamaraEstado.LIBRE)
+    s.add(camara)
+    s.flush()
+    return camara
+
+
+@pytest.mark.parametrize("columna", ["camara_id_resuelta", "camara_id_anterior"])
+def test_camara_referenciada_por_la_auditoria_se_puede_eliminar(session, columna):
+    """Con la FK `ON DELETE SET NULL`, el `UPDATE` de la FK chocaba con el trigger append-only y el
+    borrado fallaba. Sin FK, la cámara se borra y la auditoría conserva el id original."""
+    camara = _camara_nueva(session, "TEST-AUDITORIA-SIN-FK")
+    camara_id = camara.id
+    fila_id = _auditoria_que_referencia(session, camara_id, columna)
+
+    session.delete(camara)
+    session.flush()
+
+    assert session.get(Camara, camara_id) is None
+    valor = session.execute(
+        text(f"SELECT {columna} FROM app.ingresos_correcciones WHERE id = :id"), {"id": fila_id}
+    ).scalar()
+    assert valor == camara_id
+
+
+@pytest.mark.parametrize("columna", ["camara_id_resuelta", "camara_id_anterior"])
+def test_camara_referenciada_por_la_auditoria_se_puede_unificar(session, columna):
+    from core.services.camara_merge_service import unificar_camaras
+
+    principal = _camara_nueva(session, "TEST-AUDITORIA-PRINCIPAL")
+    secundaria = _camara_nueva(session, "TEST-AUDITORIA-SECUNDARIA")
+    secundaria_id = secundaria.id
+    fila_id = _auditoria_que_referencia(session, secundaria_id, columna)
+
+    unificar_camaras(
+        session, principal_id=principal.id, secundaria_id=secundaria_id, usuario="admin-test", guardar_alias=False
+    )
+
+    assert session.get(Camara, secundaria_id) is None
+    valor = session.execute(
+        text(f"SELECT {columna} FROM app.ingresos_correcciones WHERE id = :id"), {"id": fila_id}
+    ).scalar()
+    assert valor == secundaria_id  # histórico: el merge no reescribe la auditoría

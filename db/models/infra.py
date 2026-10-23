@@ -871,9 +871,11 @@ class IngresoCorreccion(Base):
 
     `camara_id_resuelta`/`cromo_botella_id_resuelta`/`ingreso_id` quedan `NULL` cuando el
     procesamiento no llegó a resolverlos (p. ej. `resultado` de falla antes de encontrar la
-    cámara, o `PENDIENTE_FECHA` antes de tener una fecha efectiva) — todas con
-    `ON DELETE SET NULL`: el log de auditoría sobrevive aunque la entidad referenciada se borre
-    después, perder la fila de auditoría sería peor que perder sólo el vínculo.
+    cámara, o `PENDIENTE_FECHA` antes de tener una fecha efectiva). Desde la migración
+    `20261023_01` son **dato histórico, sin FK** (antes `ON DELETE SET NULL`): el trigger de
+    inmutabilidad también rechaza el `UPDATE ... SET NULL` de una FK, así que borrar o unificar una
+    cámara, botella o ingreso referenciado fallaba. La fila conserva el id original aunque la
+    entidad ya no exista; por eso tampoco hay `relationship` hacia esas tablas.
     """
 
     __tablename__ = "ingresos_correcciones"
@@ -899,37 +901,18 @@ class IngresoCorreccion(Base):
     comando_crudo = Column(Text, nullable=False)
     motivo = Column(Text, nullable=True)
     camara_texto_solicitado = Column(String(512), nullable=False)
-    camara_id_resuelta = Column(
-        Integer,
-        ForeignKey("app.camaras.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    cromo_botella_id_resuelta = Column(
-        BigInteger(),
-        ForeignKey("app.cromo_botellas.n_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
+    # Desde `20261023_01` los ids de esta tabla son dato histórico, sin FK (ver docstring de la clase).
+    camara_id_resuelta = Column(Integer, nullable=True, index=True)
+    cromo_botella_id_resuelta = Column(BigInteger(), nullable=True, index=True)
     momento_solicitado = Column(DateTime(timezone=True), nullable=True)
     momento_efectivo = Column(DateTime(timezone=True), nullable=True)
     fuente_momento = Column(String(16), nullable=True)  # "hilo" | "explicito"
-    ingreso_id = Column(
-        Integer,
-        ForeignKey("app.ingresos.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
+    ingreso_id = Column(Integer, nullable=True, index=True)
     resultado = Column(String(64), nullable=False)
     error_detalle = Column(Text, nullable=True)
     # Desde 2026-10-23 (migración `20261023_01`): origen de un `MOVER_INGRESO` desde el portal. La
-    # cámara destino va en `camara_id_resuelta`/`cromo_botella_id_resuelta`. La botella anterior no
-    # lleva FK: es histórico y la botella puede desaparecer en una reingesta de Cromo.
-    camara_id_anterior = Column(
-        Integer,
-        ForeignKey("app.camaras.id", ondelete="SET NULL"),
-        nullable=True,
-    )
+    # cámara destino va en `camara_id_resuelta`/`cromo_botella_id_resuelta`.
+    camara_id_anterior = Column(Integer, nullable=True)
     cromo_botella_id_anterior = Column(BigInteger(), nullable=True)
     created_at = Column(
         DateTime(timezone=True),
@@ -938,9 +921,6 @@ class IngresoCorreccion(Base):
         index=True,
     )
 
-    camara_resuelta = relationship("Camara", foreign_keys=[camara_id_resuelta])
-    cromo_botella_resuelta = relationship("CromoBotella", foreign_keys=[cromo_botella_id_resuelta])
-    ingreso = relationship("Ingreso", foreign_keys=[ingreso_id])
 
     def __repr__(self) -> str:
         return (

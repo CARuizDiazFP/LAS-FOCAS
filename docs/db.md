@@ -456,13 +456,13 @@ inmutable. Ver `docs/decisiones.md`, entrada 2026-09-23, para el razonamiento co
 | `comando_crudo` | `Text`, `NOT NULL` | Texto íntegro del comando — lo re-lee el flujo de "fecha pendiente" para re-ejecutar sin que el operador retipee todo. |
 | `motivo` | `Text`, nullable | Sin palabra clave obligatoria (decisión de producto) — sólo se captura cuando hay un delimitador natural (después de la fecha, después del `#<id>`). |
 | `camara_texto_solicitado` | `String(512)`, `NOT NULL` | Nunca cadena vacía: `"(del hilo)"` en la forma bare, `"#<id>"` (con el id real) en la forma por id, `"(no parseado)"` si el comando murió en el parser antes de tener nombre de cámara. |
-| `camara_id_resuelta` | FK → `app.camaras.id`, `ON DELETE SET NULL`, nullable, index | — |
-| `cromo_botella_id_resuelta` | BigInteger, FK → `app.cromo_botellas.n_id`, `ON DELETE SET NULL`, nullable, index | — |
+| `camara_id_resuelta` | Integer, nullable, index — sin FK desde `20261023_01` (antes FK → `app.camaras.id`, `ON DELETE SET NULL`) | Id histórico: se conserva aunque la cámara se borre o se unifique. |
+| `cromo_botella_id_resuelta` | BigInteger, nullable, index — sin FK desde `20261023_01` (antes FK → `app.cromo_botellas.n_id`) | Id histórico. |
 | `momento_solicitado` / `momento_efectivo` | DateTime(tz), nullable | `NULL` en el estado `PENDIENTE_FECHA` — todavía no hay una fecha resuelta. |
 | `fuente_momento` | `String(16)`, nullable | `hilo` \| `explicito`. |
-| `ingreso_id` | FK → `app.ingresos.id`, `ON DELETE SET NULL`, nullable, index | Sólo se completa si la corrección terminó creando/cerrando un `Ingreso` real. |
-| `camara_id_anterior` | FK → `app.camaras.id`, `ON DELETE SET NULL`, nullable | Desde `20261023_01`: cámara de origen de un `MOVER_INGRESO` (portal). El destino va en `camara_id_resuelta`. |
-| `cromo_botella_id_anterior` | BigInteger, nullable, sin FK | Desde `20261023_01`: botella de origen de un `MOVER_INGRESO`. Sin FK: es histórico y la botella puede desaparecer en una reingesta. |
+| `ingreso_id` | Integer, nullable, index — sin FK desde `20261023_01` (antes FK → `app.ingresos.id`) | Sólo se completa si la corrección terminó creando/cerrando un `Ingreso` real. Id histórico. |
+| `camara_id_anterior` | Integer, nullable, sin FK | Desde `20261023_01`: cámara de origen de un `MOVER_INGRESO` (portal). El destino va en `camara_id_resuelta`. Id histórico. |
+| `cromo_botella_id_anterior` | BigInteger, nullable, sin FK | Desde `20261023_01`: botella de origen de un `MOVER_INGRESO`. Id histórico. |
 | `resultado` | `String(64)`, `NOT NULL` | Uno de 15 valores (`OK_INGRESO`, `OK_EGRESO_CERRADO`, `OK_EGRESO_ASENTADO`, `CAMARA_AMBIGUA`, `CAMARA_NO_ENCONTRADA`, `VARIOS_INGRESOS_ABIERTOS`, `SIN_INGRESO_ABIERTO`, `EGRESO_ANTERIOR_AL_INGRESO`, `INGRESO_YA_CERRADO`, `INGRESO_ANULADO` (desde 2026-10-23), `INGRESO_NO_ENCONTRADO`, `HILO_SIN_FORMULARIO`, `MOMENTO_INVALIDO`, `ERROR_INTERNO`, `PENDIENTE_FECHA`) — constantes `RESULTADO_*` de `core/services/ingreso_correccion_service.py`. `PENDIENTE_FECHA` es un **estado pendiente, no un rechazo**: habilita que el operador conteste en el mismo hilo sólo con `DD-MM-AAAA HH:MM` y el comando se re-ejecute (escribiendo una fila NUEVA — la tabla es append-only). |
 | `error_detalle` | `Text`, nullable | Detalle del rechazo/error, si lo hubo. |
 | `created_at` | DateTime(tz), `NOT NULL`, index | — |
@@ -475,8 +475,16 @@ sin canal/mensaje son rechazadas; una web con actor entra. Una fila web usa `com
 (es la misma operación que `Forzar egreso #<id>`), `camara_texto_solicitado='#<id>'` y
 `thread_ts=NULL` — por eso nunca la ve el flujo de "fecha pendiente" del listener, que filtra por hilo.
 
-FKs con `ON DELETE SET NULL`: el log de auditoría sobrevive aunque la entidad referenciada se borre
-después — perder la fila de auditoría sería peor que perder sólo el vínculo.
+**Sin FKs desde `20261023_01`** (antes `camara_id_resuelta`, `cromo_botella_id_resuelta` e
+`ingreso_id` eran FK `ON DELETE SET NULL`): en una tabla de auditoría inmutable los ids son dato
+histórico, no referencias vivas. El trigger de inmutabilidad también rechaza el `UPDATE ... SET NULL`
+que ejecuta una FK, así que borrar o unificar una cámara (`camara_merge_service.unificar_camaras`
+borra la secundaria), una botella o un ingreso referenciado por la auditoría **fallaba** — verificado
+real contra dev el 2026-10-23. Con "mover" toda cámara de origen quedaría referenciada en
+`camara_id_anterior`. Ahora la fila conserva el id original aunque la entidad ya no exista (puede
+quedar un id que no resuelve: es historia, no un vínculo). Columnas e índices se conservan; el modelo
+ya no tiene `relationship` hacia esas tablas. Test: `tests/test_ingresos_anulados_real_db.py`
+(borrar y unificar una cámara referenciada).
 
 **Trigger de inmutabilidad**: función `app.ingresos_correcciones_bloquear_mutacion()` + trigger
 `trg_ingresos_correcciones_inmutable` (`BEFORE UPDATE OR DELETE ON app.ingresos_correcciones FOR
@@ -1261,7 +1269,7 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 | `20261017_03` | `20261017_03_cromo_servicio_match_vigente.py` | Vista `app.v_cromo_servicio_match_vigente`: `cromo_servicio_match` sin los pelos de casos en `CUARENTENA` |
 | `20261017_04` | `20261017_04_config_cromo_inconsistencias.py` | Fila `Cromo Inconsistencias` en `app.config_servicios` (inactiva, sin canales, idempotente); el downgrade la borra |
 | `20261020_01` | `20261020_01_cromo_arbitro.py` | Árbitro de Cromo: tablas `app.cromo_regla_correccion` (sembrada con 5 reglas en SOMBRA), `app.cromo_propuesta` (índice único parcial de abiertas), `app.cromo_evidencia_camino` y `app.cromo_arbitro_evaluacion`; columnas `origen`/`propuesta_id` y categoría `EVIDENCIA_CAMINO` en `cromo_servicio_odf_override` |
-| `20261023_01` | `20261023_01_ingresos_anulacion_y_mover.py` | Baja lógica de `app.ingresos` (`anulado_at`/`anulado_por`/`anulado_motivo` + CHECK `ck_ingresos_anulado_coherente`) y origen del movimiento en `app.ingresos_correcciones` (`camara_id_anterior` FK SET NULL, `cromo_botella_id_anterior` sin FK). `ADD COLUMN` sin default: no dispara el trigger append-only. El `downgrade()` aborta si hay ingresos anulados o correcciones con origen. Upgrade→downgrade→upgrade verificado en dev |
+| `20261023_01` | `20261023_01_ingresos_anulacion_y_mover.py` | Baja lógica de `app.ingresos` (`anulado_at`/`anulado_por`/`anulado_motivo` + CHECK `ck_ingresos_anulado_coherente`) y origen del movimiento en `app.ingresos_correcciones` (`camara_id_anterior`, `cromo_botella_id_anterior`); además elimina las 3 FKs de `ingresos_correcciones` (ids históricos: con la FK `SET NULL` el trigger append-only impedía borrar o unificar una cámara referenciada). `ADD COLUMN` sin default: no dispara el trigger. El `downgrade()` recrea las FKs `ON DELETE SET NULL` y aborta si hay ingresos anulados, correcciones con origen o ids huérfanos. Upgrade→downgrade→upgrade verificado en dev |
 
 *(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
 migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta
