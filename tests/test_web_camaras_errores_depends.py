@@ -11,7 +11,10 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.test_web_rutas_contrato import muestra_de_ruta
+from web.app.dependencias import usuario_admin
 from web.app.main import app
+from web.app.routers import camaras
 
 REF = re.compile(r"^Error interno \(ref ([0-9a-f]{8})\)$")
 SECRETO = "secreto-interno-xyz"
@@ -35,6 +38,35 @@ def _session_local_roto(monkeypatch) -> None:
         raise RuntimeError(SECRETO)
 
     monkeypatch.setattr(db_session, "SessionLocal", _roto)
+
+
+# --- 403 admin (introspección) -----------------------------------------------------------------------
+
+
+def _llama_a(dependant, objetivo) -> bool:
+    return any(d.call is objetivo or _llama_a(d, objetivo) for d in dependant.dependencies)
+
+
+_RUTAS_ADMIN = sorted(
+    (metodo, ruta.path)
+    for ruta in camaras.router.routes
+    if _llama_a(ruta.dependant, usuario_admin)
+    for metodo in ruta.methods - {"HEAD", "OPTIONS"}
+)
+
+
+def test_hay_rutas_admin_detectadas():
+    assert ("POST", "/api/admin/infra/ingresos/{ingreso_id}/mover") in _RUTAS_ADMIN
+    assert ("POST", "/api/admin/infra/ingresos/{ingreso_id}/anular") in _RUTAS_ADMIN
+
+
+@pytest.mark.parametrize(("metodo", "plantilla"), _RUTAS_ADMIN)
+def test_toda_ruta_admin_da_403_a_un_usuario_comun(con_sesion, metodo, plantilla):
+    # Introspección: cualquier ruta que dependa de usuario_admin, aunque no tenga test propio.
+    con_sesion("user")
+    kwargs = {"json": {}} if metodo in {"POST", "PUT", "PATCH", "DELETE"} else {}
+    res = _cliente().request(metodo, muestra_de_ruta(plantilla), **kwargs)
+    assert res.status_code == 403, f"{metodo} {plantilla} respondió {res.status_code}"
 
 
 # --- sesión vía Depends ------------------------------------------------------------------------------

@@ -21,12 +21,14 @@ from core.services.camaras_consulta import (
 from core.utils.tz import TZ_ARG
 
 from ..comun import (
+    _incluye_anulados,
     _serializar_bloqueos,
     _serialize_camara_ingreso,
+    _validar_csrf,
     logger,
 )
 from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
-from ..errores import Conflicto, ErrorDeDominio, error_interno, nueva_ref
+from ..errores import Conflicto, DatoInvalido, ErrorDeDominio, NoEncontrado, error_interno, nueva_ref
 
 router = APIRouter(dependencies=[Depends(usuario_sesion)])
 
@@ -504,8 +506,16 @@ async def get_camara_botellas_web(
 
 
 @router.get("/api/infra/camaras/{camara_id}/registros")
-async def get_camara_registros_web(camara_id: int) -> JSONResponse:
-    """Obtiene registros operativos parciales de una cámara para la vista dedicada."""
+async def get_camara_registros_web(
+    camara_id: int,
+    incluir_anulados: bool = False,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
+) -> JSONResponse:
+    """Obtiene registros operativos parciales de una cámara para la vista dedicada.
+
+    Los ingresos anulados (baja lógica) no se listan. Un admin puede pedirlos con
+    `?incluir_anulados=1` (la UI los muestra atenuados); para un usuario común el parámetro se ignora.
+    """
 
     try:
         from core.services.camara_estado_service import get_camara_estado_contexto, miembros_del_grupo
@@ -549,13 +559,10 @@ async def get_camara_registros_web(camara_id: int) -> JSONResponse:
             # `camara_estado_service`, para que los ingresos mostrados acá sean consistentes con
             # el estado sugerido de la cámara.
             ids_grupo = [miembro.id for miembro in miembros_del_grupo(camara)]
-            ingresos_db = (
-                session.query(Ingreso)
-                .filter(Ingreso.camara_id.in_(ids_grupo))
-                .order_by(nullslast(Ingreso.fecha_inicio.desc()))
-                .limit(50)
-                .all()
-            )
+            query_ingresos = session.query(Ingreso).filter(Ingreso.camara_id.in_(ids_grupo))
+            if not _incluye_anulados(incluir_anulados, usuario):
+                query_ingresos = query_ingresos.filter(Ingreso.vigente())
+            ingresos_db = query_ingresos.order_by(nullslast(Ingreso.fecha_inicio.desc())).limit(50).all()
 
             contexto = get_camara_estado_contexto(session, camara_id)
             return JSONResponse(
@@ -1737,6 +1744,159 @@ async def registrar_egreso_ingreso_web(
         raise
     except Exception as exc:
         return error_interno("registrar_egreso_web", exc, user=username, ingreso_id=ingreso_id)
+
+
+# ── Corrección de ingresos desde el portal (sólo admin, 2026-10-23) ─────────────────────────────
+#
+# Mover (el ingreso existió pero quedó en la cámara equivocada) y anular (nunca ocurrió, baja lógica).
+# Toda la lógica (validaciones, auditoría en `app.ingresos_correcciones`, FO Monitor) vive en
+# `ingreso_correccion_service`; acá sólo CSRF, sesión admin y el mapeo resultado → error tipado.
+# Cada rechazo de negocio ya quedó auditado por el servicio antes de llegar acá.
+
+
+class MoverIngresoWebRequestModel(BaseModel):
+    """`cromo_botella_destino_n_id` es opcional: sin él, el ingreso queda sin botella en el destino.
+    El largo del motivo (3 a 500 tras `strip`) lo valida el servicio, que audita el rechazo; el tope
+    de Pydantic sólo corta payloads abusivos."""
+
+    camara_destino_id: int
+    cromo_botella_destino_n_id: int | None = None
+    motivo: str = Field(max_length=2000)
+    csrf_token: str | None = None
+
+
+class AnularIngresoWebRequestModel(BaseModel):
+    """Mismo criterio de motivo que `MoverIngresoWebRequestModel`."""
+
+    motivo: str = Field(max_length=2000)
+    csrf_token: str | None = None
+
+
+def _error_correccion_ingreso(resultado: Any) -> ErrorDeDominio:
+    """Rechazo de negocio de mover/anular → error tipado con el texto del servicio (nunca deriva a
+    terceros). Un resultado desconocido es un bug: `RuntimeError` → 500 con ref."""
+    from core.services import ingreso_correccion_service as ics
+
+    clases: dict[str, type[ErrorDeDominio]] = {
+        ics.RESULTADO_INGRESO_NO_ENCONTRADO: NoEncontrado,
+        ics.RESULTADO_CAMARA_NO_ENCONTRADA: NoEncontrado,
+        ics.RESULTADO_MOTIVO_INVALIDO: DatoInvalido,
+        ics.RESULTADO_BOTELLA_INVALIDA: DatoInvalido,
+        ics.RESULTADO_INGRESO_ANULADO: Conflicto,
+        ics.RESULTADO_MISMO_DESTINO: Conflicto,
+    }
+    clase = clases.get(resultado.resultado)
+    if clase is None:
+        raise RuntimeError(f"resultado inesperado de corrección de ingreso: {resultado.resultado}")
+    return clase(resultado.respuesta)
+
+
+def _respuesta_correccion_ingreso(resultado: Any) -> JSONResponse:
+    """Cuerpo 200 de mover/anular: el ingreso serializado como en los listados (más su cámara) y lo
+    que pasó con FO Monitor. Se llama dentro de la sesión (resuelve `camara`/`cromo_botella`)."""
+    ingreso = resultado.ingreso
+    serializado = _serialize_camara_ingreso(ingreso)
+    serializado["camara_id"] = ingreso.camara_id
+    camara = getattr(ingreso, "camara", None)
+    serializado["camara_nombre"] = camara.nombre if camara is not None else None
+    return JSONResponse(
+        {
+            "ok": True,
+            "resultado": resultado.resultado,
+            "mensaje": resultado.respuesta,
+            "ingreso": serializado,
+            "intervenciones_fomon": list(resultado.intervenciones_fomon),
+            "intervenciones_fomon_omitidas": [
+                {"intervencion_id": o.intervencion_id, "motivo": o.motivo}
+                for o in resultado.intervenciones_fomon_omitidas
+            ],
+        }
+    )
+
+
+@router.post("/api/admin/infra/ingresos/{ingreso_id}/mover")
+async def admin_mover_ingreso_web(
+    request: Request, ingreso_id: int, body: MoverIngresoWebRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
+    """Mueve un ingreso a otra Cámara (y opcionalmente a una `CromoBotella` vigente del destino).
+    Delegado en `ingreso_correccion_service.mover_ingreso_web`; 404 ingreso/cámara inexistente,
+    409 ingreso anulado o mismo destino, 422 motivo o botella inválidos."""
+    username = usuario.username
+    if not _validar_csrf(request, body.csrf_token, "admin_mover_ingreso", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services import ingreso_correccion_service as ics
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            resultado = ics.mover_ingreso_web(
+                session,
+                ingreso_id=ingreso_id,
+                camara_destino_id=body.camara_destino_id,
+                cromo_botella_destino_n_id=body.cromo_botella_destino_n_id,
+                motivo=body.motivo,
+                usuario=username,
+            )
+            logger.info(
+                "action=admin_mover_ingreso user=%s ingreso_id=%s camara_destino_id=%s botella=%s "
+                "resultado=%s fomon=%s fomon_omitidas=%s",
+                username,
+                ingreso_id,
+                body.camara_destino_id,
+                body.cromo_botella_destino_n_id,
+                resultado.resultado,
+                resultado.intervenciones_fomon,
+                [o.intervencion_id for o in resultado.intervenciones_fomon_omitidas],
+            )
+            if resultado.resultado != ics.RESULTADO_OK_INGRESO_MOVIDO:
+                raise _error_correccion_ingreso(resultado)
+            return _respuesta_correccion_ingreso(resultado)
+    except (HTTPException, ErrorDeDominio):
+        raise
+    except Exception as exc:
+        return error_interno("admin_mover_ingreso", exc, user=username, ingreso_id=ingreso_id)
+
+
+@router.post("/api/admin/infra/ingresos/{ingreso_id}/anular")
+async def admin_anular_ingreso_web(
+    request: Request, ingreso_id: int, body: AnularIngresoWebRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
+    """Anula (baja lógica) un ingreso que nunca ocurrió. Delegado en
+    `ingreso_correccion_service.anular_ingreso_web`; 404 inexistente, 409 ya anulado, 422 motivo
+    inválido. El `IngresoSinMatch` que lo había resuelto no se reabre (decisión 4 del plan)."""
+    username = usuario.username
+    if not _validar_csrf(request, body.csrf_token, "admin_anular_ingreso", username):
+        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
+
+    try:
+        from core.services import ingreso_correccion_service as ics
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            resultado = ics.anular_ingreso_web(
+                session,
+                ingreso_id=ingreso_id,
+                motivo=body.motivo,
+                usuario=username,
+            )
+            logger.info(
+                "action=admin_anular_ingreso user=%s ingreso_id=%s resultado=%s fomon=%s fomon_omitidas=%s",
+                username,
+                ingreso_id,
+                resultado.resultado,
+                resultado.intervenciones_fomon,
+                [o.intervencion_id for o in resultado.intervenciones_fomon_omitidas],
+            )
+            if resultado.resultado != ics.RESULTADO_OK_INGRESO_ANULADO:
+                raise _error_correccion_ingreso(resultado)
+            return _respuesta_correccion_ingreso(resultado)
+    except (HTTPException, ErrorDeDominio):
+        raise
+    except Exception as exc:
+        return error_interno("admin_anular_ingreso", exc, user=username, ingreso_id=ingreso_id)
 
 
 @router.get("/api/admin/infra/ingresos-sin-match", dependencies=[Depends(usuario_admin)])

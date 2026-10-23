@@ -19,6 +19,7 @@ from ..comun import (
     _encolar_arbitro,
     _internal_api_auth_headers,
     _serializar_pelo_semilla,
+    _incluye_anulados,
     _serialize_camara_ingreso,
     _servicio_existe,
     _validar_csrf,
@@ -291,6 +292,7 @@ async def get_servicio_odfs(
 @router.get("/api/infra/servicios/{servicio_id}/ingresos")
 async def get_servicio_ingresos_web(
     servicio_id: str,
+    incluir_anulados: bool = False,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Obtiene los registros de ingreso de técnico (Slack) a las cámaras que atraviesa un
@@ -299,9 +301,15 @@ async def get_servicio_ingresos_web(
     Las cámaras del servicio se resuelven vía `ProtectionService.get_camaras_for_servicio`
     (ya combina el camino legado `RutaServicio`/`Empalme` con Cromo en una sola llamada) para
     no reimplementar esa resolución acá.
+
+    Los ingresos anulados (baja lógica) no se listan. Un admin puede pedirlos con
+    `?incluir_anulados=1`; para un usuario común el parámetro se ignora. `total` cuenta SIEMPRE sólo
+    los vigentes de la respuesta (también con anulados incluidos); en ese caso se suma
+    `total_anulados` con los anulados devueltos.
     """
 
     username, _ = usuario
+    con_anulados = _incluye_anulados(incluir_anulados, usuario)
 
     try:
         from core.services.protection_service import ProtectionService
@@ -324,13 +332,10 @@ async def get_servicio_ingresos_web(
 
             ingresos_db: list[Any] = []
             if camara_ids:
-                ingresos_db = (
-                    session.query(Ingreso)
-                    .filter(Ingreso.camara_id.in_(camara_ids))
-                    .order_by(nullslast(Ingreso.fecha_inicio.desc()))
-                    .limit(100)
-                    .all()
-                )
+                query_ingresos = session.query(Ingreso).filter(Ingreso.camara_id.in_(camara_ids))
+                if not con_anulados:
+                    query_ingresos = query_ingresos.filter(Ingreso.vigente())
+                ingresos_db = query_ingresos.order_by(nullslast(Ingreso.fecha_inicio.desc())).limit(100).all()
 
             ingresos_info = []
             for item in ingresos_db:
@@ -340,21 +345,25 @@ async def get_servicio_ingresos_web(
                 serializado["camara_nombre"] = camara.nombre if camara else None
                 ingresos_info.append(serializado)
 
+            total_anulados = sum(1 for item in ingresos_info if item["anulado"])
+            total_vigentes = len(ingresos_info) - total_anulados
             logger.info(
-                "action=get_servicio_ingresos user=%s servicio_id=%s total=%d",
+                "action=get_servicio_ingresos user=%s servicio_id=%s total=%d anulados=%d",
                 username,
                 servicio_id,
-                len(ingresos_info),
+                total_vigentes,
+                total_anulados,
             )
 
-            return JSONResponse(
-                {
-                    "status": "ok",
-                    "servicio_id": servicio.servicio_id,
-                    "total": len(ingresos_info),
-                    "ingresos": ingresos_info,
-                }
-            )
+            respuesta: dict[str, Any] = {
+                "status": "ok",
+                "servicio_id": servicio.servicio_id,
+                "total": total_vigentes,
+                "ingresos": ingresos_info,
+            }
+            if con_anulados:
+                respuesta["total_anulados"] = total_anulados
+            return JSONResponse(respuesta)
 
     except (HTTPException, ErrorDeDominio):
         raise

@@ -178,6 +178,9 @@ def _serialize_camara_ingreso(item: Any) -> dict[str, Any]:
         botella_label = "Botella 1"
 
     tipo = getattr(item, "tipo", None)
+    # Baja lógica (2026-10-23): los listados sólo traen anulados si un admin los pide
+    # (`?incluir_anulados=1`); `getattr` por los mismos fakes de test sin esas columnas.
+    anulado_at = getattr(item, "anulado_at", None)
     return {
         "id": item.id,
         "fecha_inicio": item.fecha_inicio.isoformat() if item.fecha_inicio else None,
@@ -186,7 +189,18 @@ def _serialize_camara_ingreso(item: Any) -> dict[str, Any]:
         "cromo_botella_id": item.cromo_botella_id,
         "botella_label": botella_label,
         "tipo": tipo.value if tipo else "INGRESO",
+        "anulado": anulado_at is not None,
+        "anulado_at": anulado_at.isoformat() if anulado_at else None,
+        "anulado_por": getattr(item, "anulado_por", None),
+        "anulado_motivo": getattr(item, "anulado_motivo", None),
     }
+
+
+def _incluye_anulados(pedido: bool, usuario: Any) -> bool:
+    """`?incluir_anulados=1` sólo tiene efecto para un admin; a un usuario común se le ignora sin
+    error (decisión 6 del plan de corrección de ingresos, 2026-10-23). `usuario` es el
+    `UsuarioSesion` de la request."""
+    return bool(pedido) and getattr(usuario, "role", None) == "admin"
 
 
 async def _encolar_arbitro(tipo: str, ids: Sequence[int], motivo: str) -> None:

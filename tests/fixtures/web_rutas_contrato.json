@@ -323,6 +323,20 @@
   },
   {
     "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/ingresos/{ingreso_id}/anular",
+    "muestra": "/api/admin/infra/ingresos/muestra/anular",
+    "endpoint": "admin_anular_ingreso_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/ingresos/{ingreso_id}/mover",
+    "muestra": "/api/admin/infra/ingresos/muestra/mover",
+    "endpoint": "admin_mover_ingreso_web"
+  },
+  {
+    "tipo": "http",
     "metodo": "GET",
     "plantilla": "/api/admin/infra/servicios-odf/listado",
     "muestra": "/api/admin/infra/servicios-odf/listado",
