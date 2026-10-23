@@ -97,6 +97,7 @@ from modules.slack_baneo_notifier.tracking_servicio import (
 from modules.slack_baneo_notifier.camara_search import (
     AmbiguousSearchError,
     NumeroNoCoincideError,
+    _pocos_tokens_significativos,
     detectar_multi_bot,
     extraer_nombre_camara,
     extraer_slack_user_id_autorizacion,
@@ -134,6 +135,13 @@ _RE_SEGUIMIENTO_EMPALME = re.compile(r"^\s*(?:empalme\s*)?#?(\d{3,})\s*$", re.IG
 # `_procesar_revalidacion_ingreso`). Anclado igual que `_RE_SEGUIMIENTO_EMPALME` para no interpretar
 # la frase si aparece como parte de otro texto más largo.
 _RE_REVALIDAR_INGRESO = re.compile(r"^\s*revalidar\s+ingreso\s*$", re.IGNORECASE)
+
+# Comandos conocidos que una persona puede escribir en un hilo y que nunca son una Cámara reescrita
+# (ver `_procesar_reescritura_camara`): una mención al bot (comandos de Cables/track vía
+# `app_mention`), "Forzar …", "Revalidar …" y los comandos de Cables/Servicios sin mención.
+_RE_COMANDO_CONOCIDO = re.compile(
+    r"(?i)^\s*(?:<@|forzar\b|revalidar\b|track\b|info\s+cable\b|verificar\s+cable\b|servicios\b)"
+)
 
 # Ventana de vigencia de una fila `PENDIENTE_FECHA` (`core/services/ingreso_correccion_service.py`,
 # Task 5) para que una respuesta de seguimiento con sólo `DD-MM-AAAA HH:MM` se interprete como la
@@ -683,10 +691,25 @@ class IngresoListener:
             )
             return True
 
+        respuesta = self._cerrar_caso_con_resultado(caso, resultado, session, client, "✅ Revalidado")
+        client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts_evento,
+            text=respuesta,
+            mrkdwn=True,
+        )
+        return True
+
+    def _cerrar_caso_con_resultado(
+        self, caso: Any, resultado: Any, session: Any, client: Any, encabezado: str
+    ) -> str:
+        """Cierra un `IngresoSinMatch` con una cámara ya resuelta (revalidación o reescritura de la
+        Cámara en el hilo): registra el movimiento del mensaje ORIGINAL con su horario original,
+        marca `resuelto_via_revalidacion`, enlaza `ingreso_id` y devuelve el texto de respuesta."""
         resultado_acceso = self._evaluar_estado_acceso_camara(resultado.camara, session)
         ingreso = self._registrar_movimiento_si_corresponde(
             resultado,
-            caso.texto_mensaje,
+            caso.texto_mensaje or "",
             session,
             client,
             bloqueado=resultado_acceso.bloqueado,
@@ -701,26 +724,105 @@ class IngresoListener:
         session.commit()
 
         if ingreso is not None:
-            respuesta = (
-                f"✅ Revalidado — *{resultado.camara.nombre}* matcheó correctamente. Se registró "
+            return (
+                f"{encabezado} — *{resultado.camara.nombre}* matcheó correctamente. Se registró "
                 f"el movimiento con el horario original ({caso.created_at:%d/%m/%Y %H:%M}).\n"
                 f"{resultado_acceso.texto}"
             )
+        return (
+            f"{encabezado} — *{resultado.camara.nombre}* matcheó correctamente, pero el "
+            "mensaje original no traía el campo 'Ingreso o Egreso' así que no se registró "
+            "ningún movimiento.\n"
+            f"{resultado_acceso.texto}"
+        )
+
+    def _procesar_reescritura_camara(
+        self,
+        texto: str,
+        thread_ts_evento: str,
+        session: Any,
+        client: Any,
+        channel: str,
+        actor_slack_user_id: str | None,
+    ) -> bool:
+        """Una persona reescribe la Cámara en el hilo de un `IngresoSinMatch` pendiente (2026-10-23,
+        decisión del usuario: "si la escriben correctamente hace match, si no la escriben queda sin
+        match"). Último eslabón de la cadena de respuestas en hilo: después del seguimiento de
+        empalme, la revalidación y la corrección.
+
+        Devuelve `False` (sigue el flujo) si el autor no es una persona, el texto es un comando
+        conocido o no hay caso pendiente en el hilo. Con caso pendiente:
+
+        - texto que no parece un nombre (menos de 2 tokens significativos y ningún número, la misma
+          heurística de la búsqueda): charla del hilo, se ignora en silencio (`True`, sin responder);
+        - match único: cierra el caso por el mismo camino que "Revalidar ingreso" y confirma;
+        - sin match o ambiguo: responde que sigue sin match y deja el caso como está.
+
+        Nunca asigna una cámara parecida. Sin migración: el texto reescrito queda en el log
+        `action=ingreso_reescritura_camara`."""
+        if not actor_slack_user_id or _RE_COMANDO_CONOCIDO.match(texto) or self._es_fecha_suelta(texto):
+            return False
+
+        from db.models.infra import IngresoSinMatch
+
+        caso = (
+            session.query(IngresoSinMatch)
+            .filter(
+                IngresoSinMatch.thread_ts == thread_ts_evento,
+                IngresoSinMatch.resuelto_via_empalme == False,  # noqa: E712
+                IngresoSinMatch.resuelto_via_revalidacion == False,  # noqa: E712
+            )
+            .order_by(IngresoSinMatch.id.desc())
+            .first()
+        )
+        if caso is None:
+            return False
+
+        nombre = limpiar_ruido_operativo(texto.strip())
+        if _pocos_tokens_significativos(nombre):
+            logger.debug("Respuesta en hilo %s ignorada (no parece una cámara): %r", thread_ts_evento, texto)
+            return True
+
+        candidatos: list[str] = []
+        try:
+            resultado = buscar_camara_o_botella_cromo(nombre, session)
+        except AmbiguousSearchError as exc:
+            resultado, candidatos = None, exc.candidatos
+
+        if resultado is None or resultado.camara is None:
+            logger.info(
+                "action=ingreso_reescritura_camara evento=sin_match caso_id=%s usuario=%s texto=%r",
+                caso.id,
+                actor_slack_user_id,
+                nombre,
+            )
+            respuesta = f"⚠️ *{nombre}* sigue sin match en el inventario. El ingreso queda sin match."
+            if candidatos:
+                vinetas = "\n".join(f"• {c}" for c in candidatos)
+                respuesta += f"\n¿Quisiste decir:\n{vinetas}\nPodés volver a escribirla en este hilo."
         else:
-            respuesta = (
-                f"✅ Revalidado — *{resultado.camara.nombre}* matcheó correctamente, pero el "
-                "mensaje original no traía el campo 'Ingreso o Egreso' así que no se registró "
-                "ningún movimiento.\n"
-                f"{resultado_acceso.texto}"
+            logger.info(
+                "action=ingreso_reescritura_camara evento=match caso_id=%s usuario=%s texto=%r camara_id=%s",
+                caso.id,
+                actor_slack_user_id,
+                nombre,
+                resultado.camara.id,
+            )
+            respuesta = self._cerrar_caso_con_resultado(
+                caso, resultado, session, client, "✅ Cámara corregida"
             )
 
-        client.chat_postMessage(
-            channel=channel,
-            thread_ts=thread_ts_evento,
-            text=respuesta,
-            mrkdwn=True,
-        )
+        client.chat_postMessage(channel=channel, thread_ts=thread_ts_evento, text=respuesta, mrkdwn=True)
         return True
+
+    @staticmethod
+    def _es_fecha_suelta(texto: str) -> bool:
+        """`DD-MM-AAAA HH:MM` suelta (válida o no): respuesta del flujo de fecha pendiente, nunca
+        una Cámara reescrita."""
+        try:
+            return extraer_momento_solo(texto) is not None
+        except MomentoInvalidoError:
+            return True
 
     # ── Corrección manual: "Forzar ingreso"/"Forzar egreso" (Task 6) ────────────────────────
 
@@ -1108,6 +1210,12 @@ class IngresoListener:
                     channel,
                     actor_slack_user_id=actor_slack_user_id,
                     mensaje_ts=event.get("ts") or "",
+                ):
+                    return
+                # Último (2026-10-23): una persona reescribe la Cámara en el hilo de un caso sin
+                # match — ninguno de los anteriores lo reconoció como suyo.
+                if self._procesar_reescritura_camara(
+                    texto, event_thread_ts, session, client, channel, actor_slack_user_id
                 ):
                     return
 

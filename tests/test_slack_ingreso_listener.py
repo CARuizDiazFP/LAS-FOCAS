@@ -3168,6 +3168,190 @@ class TestRevalidacionIngreso(unittest.TestCase):
 # ─── Tests del wiring de "Forzar ingreso"/"Forzar egreso" (Task 6, 2026-09-23) ──
 
 
+class TestReescrituraCamara(unittest.TestCase):
+    """`_procesar_reescritura_camara` (2026-10-23): una persona reescribe la Cámara en el hilo de un
+    `IngresoSinMatch` pendiente. Último eslabón de la cadena: después de empalme, revalidación y
+    corrección. Si matchea, cierra el caso por el camino de la revalidación; si no, sigue sin
+    match; la charla del hilo se ignora en silencio."""
+
+    def _make_listener(self) -> Any:
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+
+    def _event(self, text: str, user: str | None = "U0TECNICO") -> dict:
+        event = {"text": text, "channel": "C123", "ts": "2222.000002", "thread_ts": "1111.000001"}
+        if user:
+            event["user"] = user
+        return event
+
+    def _caso(self) -> Any:
+        from datetime import datetime, timezone
+
+        caso = MagicMock()
+        caso.id = 9
+        caso.resuelto_via_empalme = False
+        caso.resuelto_via_revalidacion = False
+        caso.ingreso_id = None
+        caso.texto_mensaje = "*Nombre: Nodo/Camara/botella*\nCra Mitre 404\n*Ingreso o Egreso*\nIngreso\n"
+        caso.created_at = datetime(2026, 10, 23, 9, 15, tzinfo=timezone.utc)
+        caso.thread_ts = "1111.000001"
+        caso.contexto = "C123"
+        return caso
+
+    def _session(self, caso: Any) -> MagicMock:
+        from db.models.infra import IngresoCorreccion, IngresoSinMatch
+
+        session_mock = MagicMock()
+
+        def _side_effect(model: Any) -> Any:
+            q = MagicMock()
+            if model is IngresoSinMatch:
+                q.filter.return_value.order_by.return_value.first.return_value = caso
+            elif model is IngresoCorreccion:
+                q.filter.return_value.order_by.return_value.first.return_value = None
+            return q
+
+        session_mock.query.side_effect = _side_effect
+        return session_mock
+
+    def _correr(self, text: str, caso: Any, *, buscar: Any = None, user: str | None = "U0TECNICO"):
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = self._session(caso)
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=7, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False,
+            inconsistente=False, incidentes_activos=[], ticket_baneo=None,
+        )
+        ingreso = MagicMock()
+        ingreso.id = 501
+        buscar = buscar if buscar is not None else MagicMock()
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", buscar),
+            patch("modules.slack_baneo_notifier.listener.get_camara_estado_contexto", return_value=contexto_libre),
+            patch("modules.slack_baneo_notifier.listener.resolver_nombre_tecnico", return_value="Técnico"),
+            patch(
+                "modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso", return_value=ingreso
+            ) as mock_registrar,
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="") as mock_extraer,
+        ):
+            listener._handle_message(self._event(text, user), client_mock)
+        return client_mock, session_mock, mock_registrar, mock_extraer
+
+    def test_reescritura_que_matchea_cierra_el_caso_con_el_horario_original(self) -> None:
+        camara = MagicMock()
+        camara.id = 7
+        camara.nombre = "Cra Mitre 440 CF"
+        caso = self._caso()
+        buscar = MagicMock(return_value=_resultado_camara(camara, "cra mitre 440"))
+
+        client_mock, session_mock, mock_registrar, mock_extraer = self._correr("Cra Mitre 440", caso, buscar=buscar)
+
+        buscar.assert_called_once()
+        self.assertEqual(buscar.call_args.args[0], "Cra Mitre 440")
+        mock_extraer.assert_not_called()  # cortó antes del flujo normal
+        mock_registrar.assert_called_once()
+        kwargs = mock_registrar.call_args.kwargs
+        self.assertIs(kwargs["camara"], camara)
+        self.assertEqual(kwargs["tipo_movimiento"], "Ingreso")  # del mensaje ORIGINAL del caso
+        self.assertEqual(kwargs["momento"], caso.created_at)
+        self.assertEqual(kwargs["thread_ts"], "1111.000001")
+        self.assertTrue(caso.resuelto_via_revalidacion)
+        self.assertEqual(caso.ingreso_id, 501)
+        session_mock.commit.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("Cámara corregida", texto)
+        self.assertIn("Cra Mitre 440 CF", texto)
+        self.assertIn("23/10/2026 09:15", texto)
+
+    def test_reescritura_sin_match_responde_y_deja_el_caso(self) -> None:
+        caso = self._caso()
+        buscar = MagicMock(return_value=_resultado_camara(None, "cra mitre 9999"))
+
+        client_mock, session_mock, mock_registrar, mock_extraer = self._correr("Cra Mitre 9999", caso, buscar=buscar)
+
+        mock_registrar.assert_not_called()
+        mock_extraer.assert_not_called()
+        self.assertFalse(caso.resuelto_via_revalidacion)
+        session_mock.commit.assert_not_called()
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("sigue sin match", texto)
+        self.assertEqual(client_mock.chat_postMessage.call_args.kwargs["thread_ts"], "1111.000001")
+
+    def test_reescritura_con_numero_que_no_coincide_sugiere_sin_asignar(self) -> None:
+        from modules.slack_baneo_notifier.camara_search import NumeroNoCoincideError
+
+        caso = self._caso()
+        buscar = MagicMock(side_effect=NumeroNoCoincideError("Cra Mitre 404", 1, ["Cra Mitre 440 CF"]))
+
+        client_mock, session_mock, mock_registrar, _ = self._correr("Cra Mitre 404", caso, buscar=buscar)
+
+        mock_registrar.assert_not_called()
+        self.assertFalse(caso.resuelto_via_revalidacion)
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("sigue sin match", texto)
+        self.assertIn("• Cra Mitre 440 CF", texto)
+
+    def test_charla_del_hilo_se_ignora_en_silencio(self) -> None:
+        caso = self._caso()
+        for texto in ("ok gracias", "dale", "👍"):
+            buscar = MagicMock()
+            client_mock, session_mock, mock_registrar, mock_extraer = self._correr(texto, caso, buscar=buscar)
+            buscar.assert_not_called()
+            client_mock.chat_postMessage.assert_not_called()
+            mock_extraer.assert_not_called()  # no cae al flujo normal como un ingreso nuevo
+            self.assertFalse(caso.resuelto_via_revalidacion)
+
+    def test_sin_caso_pendiente_sigue_el_flujo_normal(self) -> None:
+        buscar = MagicMock()
+        client_mock, _, _, mock_extraer = self._correr("Cra Mitre 440", None, buscar=buscar)
+        mock_extraer.assert_called_once()  # flujo normal (extrae "" y no responde)
+        buscar.assert_not_called()
+        client_mock.chat_postMessage.assert_not_called()
+
+    def test_evento_sin_user_no_reescribe(self) -> None:
+        caso = self._caso()
+        buscar = MagicMock()
+        _, _, _, mock_extraer = self._correr("Cra Mitre 440", caso, buscar=buscar, user=None)
+        buscar.assert_not_called()
+        mock_extraer.assert_called_once()
+
+    def test_comandos_conocidos_no_se_toman_como_camara(self) -> None:
+        caso = self._caso()
+        for texto in ("<@U0BOT> track 123456", "Info cable C-1234", "Servicios C-1234 B2", "23-10-2026 14:30"):
+            buscar = MagicMock()
+            self._correr(texto, caso, buscar=buscar)
+            buscar.assert_not_called()
+            self.assertFalse(caso.resuelto_via_revalidacion)
+
+    def test_numero_solo_sigue_siendo_seguimiento_de_empalme(self) -> None:
+        """Orden de la cadena: un número solo lo toma el seguimiento de empalme, nunca la
+        reescritura."""
+        caso = self._caso()
+        buscar = MagicMock()
+        with patch(
+            "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync", return_value=None
+        ) as mock_empalme:
+            self._correr("1234567", caso, buscar=buscar)
+        mock_empalme.assert_called_once()
+        buscar.assert_not_called()
+
+    def test_forzar_ingreso_lo_toma_la_correccion(self) -> None:
+        caso = self._caso()
+        buscar = MagicMock()
+        with patch(
+            "modules.slack_baneo_notifier.listener.procesar_comando_correccion", return_value=None
+        ) as mock_correccion:
+            self._correr("Forzar ingreso Cra Mitre 440", caso, buscar=buscar)
+        mock_correccion.assert_called_once()
+        buscar.assert_not_called()
+
+
 class TestCorreccionIngresoWiring(unittest.TestCase):
     """Prueba `_procesar_correccion_ingreso` / su integración en `_handle_message` (Task 6): cablea
     `core/services/ingreso_correccion_service.py` (Task 5) al listener. No re-testea las 10 formas
@@ -3259,8 +3443,9 @@ class TestCorreccionIngresoWiring(unittest.TestCase):
 
         Desde el Fix round 1 (Important 3) `_handle_message` consulta `IngresoCorreccion` una vez
         al entrar a cualquier hilo (chequeo de prioridad de "fecha pendiente"); acá no hay ningún
-        pendiente, así que no pasa de esa única consulta."""
-        from db.models.infra import IngresoCorreccion
+        pendiente. Desde 2026-10-23 la reescritura de la Cámara (`_procesar_reescritura_camara`)
+        consulta además si hay un `IngresoSinMatch` pendiente en el hilo: no lo hay."""
+        from db.models.infra import IngresoCorreccion, IngresoSinMatch
 
         listener = self._make_listener()
         client_mock = MagicMock()
@@ -3268,7 +3453,7 @@ class TestCorreccionIngresoWiring(unittest.TestCase):
 
         def _query_side_effect(model: Any) -> Any:
             q = MagicMock()
-            if model is IngresoCorreccion:
+            if model in (IngresoCorreccion, IngresoSinMatch):
                 q.filter.return_value.order_by.return_value.first.return_value = None
             return q
 
@@ -3285,7 +3470,9 @@ class TestCorreccionIngresoWiring(unittest.TestCase):
 
         mock_extraer.assert_called_once()
         client_mock.chat_postMessage.assert_not_called()
-        session_mock.query.assert_called_once()
+        self.assertEqual(
+            [c.args[0] for c in session_mock.query.call_args_list], [IngresoCorreccion, IngresoSinMatch]
+        )
 
     def test_fallo_db_no_impide_responder(self) -> None:
         """Si `procesar_comando_correccion` lanza (fallo de DB, p. ej.), se loguea, se hace
@@ -3607,12 +3794,23 @@ class TestFechaPendienteSeguimiento(unittest.TestCase):
         nada. Desde la prioridad agregada en el Fix round 1 (Important 3), `_handle_message` SÍ
         consulta `IngresoCorreccion` una vez al entrar a cualquier hilo (para decidir si le da
         prioridad al seguimiento de fecha sobre el de empalme) — pero encontrando que no hay
-        ningún pendiente, no pasa de ahí: ni una segunda consulta, ni ningún posteo."""
+        ningún pendiente, no pasa de ahí: ni una segunda consulta de corrección, ni ningún posteo.
+        (Desde 2026-10-23 se suma la consulta de `IngresoSinMatch` pendiente de la reescritura de
+        la Cámara, que acá no existe.)"""
+        from db.models.infra import IngresoCorreccion, IngresoSinMatch
+
         listener = self._make_listener()
         client_mock = MagicMock()
         session_mock = MagicMock()
         side_effect, _capturas = self._query_side_effect(None)
-        session_mock.query.side_effect = side_effect
+
+        def _side_effect_sin_caso(model: Any) -> Any:
+            q = side_effect(model)
+            if model is IngresoSinMatch:
+                q.filter.return_value.order_by.return_value.first.return_value = None
+            return q
+
+        session_mock.query.side_effect = _side_effect_sin_caso
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
@@ -3623,7 +3821,10 @@ class TestFechaPendienteSeguimiento(unittest.TestCase):
         ):
             listener._handle_message(self._make_event_reply("sí, dale"), client_mock)
 
-        session_mock.query.assert_called_once()  # sólo el chequeo de prioridad, ningún pendiente
+        # Sólo el chequeo de prioridad (ningún pendiente) y el de caso sin match pendiente.
+        self.assertEqual(
+            [c.args[0] for c in session_mock.query.call_args_list], [IngresoCorreccion, IngresoSinMatch]
+        )
         client_mock.chat_postMessage.assert_not_called()
         mock_extraer.assert_called_once()
 
