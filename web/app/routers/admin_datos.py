@@ -32,7 +32,7 @@ from ..comun import (
     logger,
 )
 from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
-from ..errores import ErrorDeDominio, error_interno, error_servicio_externo, nueva_ref
+from ..errores import ErrorDeDominio, error_interno, error_servicio_externo, nueva_ref, payload_de_upstream
 
 # Todo el router exige sesión; las rutas admin agregan `usuario_admin`. Tres rutas (config de baneos,
 # health del worker e ingesta de Cámaras) conservan su chequeo de rol propio para seguir respondiendo
@@ -380,10 +380,7 @@ async def camaras_ingest_web(
             )
 
         payload: dict[str, Any]
-        try:
-            payload = response.json()
-        except Exception:  # noqa: BLE001
-            payload = {"error": response.text or "Error en ingesta de cámaras"}
+        payload = payload_de_upstream(response, "Error en ingesta de cámaras", "camaras_ingest_proxy")
 
         logger.info(
             "action=camaras_ingest_proxy user=%s filename=%s status=%s",
@@ -913,10 +910,7 @@ async def _proxy_clientes(
             response = await client.request(method, f"{INTERNAL_API_BASE_URL}/clientes{ruta}", **kwargs)
 
         payload: Any
-        try:
-            payload = response.json()
-        except Exception:  # noqa: BLE001
-            payload = {"error": response.text or "Error en clientes por categoría"}
+        payload = payload_de_upstream(response, "Error en clientes por categoría", "clientes_categoria_proxy")
 
         logger.info("action=%s user=%s ruta=%s status=%s", accion, username, ruta, response.status_code)
         return JSONResponse(payload, status_code=response.status_code)

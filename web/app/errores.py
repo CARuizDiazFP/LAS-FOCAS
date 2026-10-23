@@ -102,6 +102,27 @@ def error_interno(
     return JSONResponse(contenido, status_code=500)
 
 
+def payload_de_upstream(response: Any, mensaje: str, accion: str) -> Any:
+    """Cuerpo a reenviar de una respuesta de la API interna.
+
+    Si el upstream respondió JSON, se devuelve tal cual. Si no (HTML de error, traceback, texto
+    plano), se devuelve `{"error": "<mensaje> (ref XXXXXXXX)"}` y el cuerpo recortado a 500
+    caracteres va sólo al log con la misma ref. El status lo conserva quien llama.
+    """
+    try:
+        return response.json()
+    except Exception:  # noqa: BLE001
+        ref = nueva_ref()
+        logger.error(
+            "action=%s_upstream_no_json status=%s body=%r ref=%s",
+            accion,
+            getattr(response, "status_code", None),
+            (getattr(response, "text", "") or "")[:500],
+            ref,
+        )
+        return {"error": f"{mensaje} (ref {ref})"}
+
+
 def error_servicio_externo(
     accion: str,
     exc: BaseException,

@@ -299,3 +299,57 @@ def test_limites_de_lista_y_alias_en_la_capa_web(monkeypatch) -> None:
     assert (muchos.status_code, largo.status_code, alias.status_code) == (400, 400, 422)
     assert "2000" in muchos.json()["error"]
     assert llamadas == []
+
+
+_TRACEBACK = "Traceback (most recent call last):\n  File '/srv/api/app/x.py', line 9\nValueError: secreto-interno"
+
+
+class _RespNoJson:
+    status_code = 502
+    text = "<html>" + _TRACEBACK + "</html>" + "x" * 800
+
+    def json(self):
+        raise ValueError("no es json")
+
+
+def test_proxy_upstream_no_json_no_expone_texto_y_loguea_ref(monkeypatch, caplog):
+    import logging
+    import re
+
+    client, csrf, _llamadas = _cliente_logueado(monkeypatch, "admin")
+    from web.app import main as web_main
+
+    class _AC:
+        def __init__(self, timeout=None) -> None: ...
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def request(self, method, url, **kw):
+            return _RespNoJson()
+
+    monkeypatch.setattr(web_main.httpx, "AsyncClient", _AC)
+    with caplog.at_level(logging.ERROR):
+        res = client.post(
+            "/api/admin/clientes/fusionar", json={"destino_id": 1, "origen_ids": [2], "csrf_token": csrf}
+        )
+    assert res.status_code == 502
+    assert "secreto-interno" not in res.text and "Traceback" not in res.text and "<html>" not in res.text
+    m = re.fullmatch(r"Error en clientes por categoría \(ref ([0-9a-f]{8})\)", res.json()["error"])
+    assert m
+    registro = [r.getMessage() for r in caplog.records if f"ref={m.group(1)}" in r.getMessage()]
+    assert registro and "secreto-interno" in registro[0]
+    assert "x" * 600 not in registro[0]  # recortado a 500
+
+
+def test_payload_de_upstream_json_se_reenvia_igual():
+    from web.app.errores import payload_de_upstream
+
+    class _R:
+        status_code = 409
+        text = "{}"
+
+        def json(self):
+            return {"detail": "ya existe"}
+
+    assert payload_de_upstream(_R(), "Error", "x") == {"detail": "ya existe"}

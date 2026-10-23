@@ -25,7 +25,14 @@ from ..comun import (
     logger,
 )
 from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
-from ..errores import Conflicto, ErrorDeDominio, NoEncontrado, error_interno, error_servicio_externo
+from ..errores import (
+    Conflicto,
+    ErrorDeDominio,
+    NoEncontrado,
+    error_interno,
+    error_servicio_externo,
+    payload_de_upstream,
+)
 
 router = APIRouter(dependencies=[Depends(usuario_sesion)])
 
@@ -664,10 +671,7 @@ async def servicios_ingest_web(
             )
 
         payload: dict[str, Any]
-        try:
-            payload = response.json()
-        except Exception:  # noqa: BLE001
-            payload = {"error": response.text or "Error en ingesta"}
+        payload = payload_de_upstream(response, "Error en ingesta", "servicios_ingest_proxy")
 
         logger.info(
             "action=servicios_ingest_proxy user=%s filename=%s status=%s",
@@ -1917,10 +1921,7 @@ async def servicios_search_web(
             )
 
         payload: dict[str, Any]
-        try:
-            payload = response.json()
-        except Exception:  # noqa: BLE001
-            payload = {"error": response.text or "Error consultando servicios"}
+        payload = payload_de_upstream(response, "Error consultando servicios", "servicios_list_proxy")
 
         logger.info(
             "action=servicios_search_proxy user=%s q=%s limit=%s offset=%s status=%s",
@@ -1958,10 +1959,7 @@ async def servicios_detail_web(
             )
 
         payload: dict[str, Any]
-        try:
-            payload = response.json()
-        except Exception:  # noqa: BLE001
-            payload = {"error": response.text or "Error consultando detalle de servicio"}
+        payload = payload_de_upstream(response, "Error consultando detalle de servicio", "servicio_detail_proxy")
 
         logger.info(
             "action=servicios_detail_proxy user=%s id=%s status=%s",
@@ -2006,10 +2004,7 @@ async def servicio_categoria_web(
             )
 
         payload: dict[str, Any]
-        try:
-            payload = response.json()
-        except Exception:  # noqa: BLE001
-            payload = {"error": response.text or "Error actualizando categoría"}
+        payload = payload_de_upstream(response, "Error actualizando categoría", "servicio_categoria_proxy")
 
         logger.info(
             "action=servicio_categoria user=%s id=%s categoria=%s status=%s",
@@ -2053,10 +2048,7 @@ async def servicio_categoria_heredar_web(
             )
 
         payload: dict[str, Any]
-        try:
-            payload = response.json()
-        except Exception:  # noqa: BLE001
-            payload = {"error": response.text or "Error restaurando la categoría heredada"}
+        payload = payload_de_upstream(response, "Error restaurando la categoría heredada", "servicio_categoria_restaurar_proxy")
 
         logger.info(
             "action=servicio_categoria_heredar user=%s id=%s status=%s",
@@ -2101,10 +2093,7 @@ async def servicio_verificable_web(
             )
 
         payload: dict[str, Any]
-        try:
-            payload = response.json()
-        except Exception:  # noqa: BLE001
-            payload = {"error": response.text or "Error actualizando verificabilidad"}
+        payload = payload_de_upstream(response, "Error actualizando verificabilidad", "servicio_verificabilidad_proxy")
 
         logger.info(
             "action=servicio_verificable user=%s id=%s es_verificable=%s status=%s",
@@ -2159,10 +2148,7 @@ async def servicio_prov_refrescar_web(
             )
 
         payload: dict[str, Any]
-        try:
-            payload = response.json()
-        except Exception:  # noqa: BLE001
-            payload = {"error": response.text or "Error refrescando servicio desde PROV"}
+        payload = payload_de_upstream(response, "Error refrescando servicio desde PROV", "servicio_refresh_prov_proxy")
 
         logger.info(
             "action=servicio_prov_refrescar user=%s id=%s status=%s",
@@ -2209,10 +2195,7 @@ async def servicios_categoria_masiva_web(
             )
 
         payload: dict[str, Any]
-        try:
-            payload = response.json()
-        except Exception:  # noqa: BLE001
-            payload = {"error": response.text or "Error actualizando categoría"}
+        payload = payload_de_upstream(response, "Error actualizando categoría", "servicio_categoria_proxy")
 
         logger.info(
             "action=servicios_categoria_masiva user=%s cantidad=%d categoria=%s status=%s",
