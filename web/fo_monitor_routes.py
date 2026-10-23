@@ -24,11 +24,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from core.services.fo_monitor import consultas_web
+from web.app.dependencias import UsuarioSesion, usuario_admin, usuario_sesion
 
 logger = logging.getLogger("web.fo_monitor")
 
@@ -50,21 +51,11 @@ def _sesion_local():
     return SessionLocal()
 
 
-def _auth(request: Request) -> tuple[str, str]:
-    username = request.session.get("username")
-    if not username:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No autenticado")
-    return username, request.session.get("role", "user")
-
-
-def _admin(request: Request, csrf_token: Optional[str]) -> str:
-    username, role = _auth(request)
-    if role != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permisos insuficientes")
+def _validar_csrf(request: Request, csrf_token: Optional[str]) -> None:
+    """CSRF en el body de las mutaciones admin; `TESTING=true` lo saltea."""
     testing = os.getenv("TESTING", "false").lower() == "true"
     if not testing and (not csrf_token or csrf_token != request.session.get("csrf")):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF inválido")
-    return username
 
 
 class VerificacionManualBody(BaseModel):
@@ -144,33 +135,29 @@ def servir_con_rango(ruta: Path, request: Request) -> Response:
 
 
 def mount_fo_monitor_routes(app: FastAPI) -> None:  # noqa: C901 - rutas anidadas suman complejidad; FO Monitor en stand-by en prod
-    @app.get("/api/fo-monitor/intervenciones")
+    @app.get("/api/fo-monitor/intervenciones", dependencies=[Depends(usuario_sesion)])
     def fomon_listar(request: Request, estado: Optional[str] = None, desde: Optional[datetime] = None,
                      hasta: Optional[datetime] = None, tecnico: Optional[str] = None, cable: Optional[str] = None,
                      limit: int = 50, offset: int = 0):
-        _auth(request)
         with _sesion_local() as s:
             return consultas_web.listar_intervenciones(s, estado=estado, desde=desde, hasta=hasta,
                                                        tecnico=tecnico, cable=cable, limit=limit, offset=offset)
 
-    @app.get("/api/fo-monitor/intervenciones/{intervencion_id}")
+    @app.get("/api/fo-monitor/intervenciones/{intervencion_id}", dependencies=[Depends(usuario_sesion)])
     def fomon_detalle(request: Request, intervencion_id: int):
-        _auth(request)
         with _sesion_local() as s:
             try:
                 return consultas_web.detalle_intervencion(s, intervencion_id)
             except consultas_web.NoEncontrado:
                 return JSONResponse({"error": "Intervención inexistente"}, status_code=404)
 
-    @app.get("/api/fo-monitor/mapa/intervenciones")
+    @app.get("/api/fo-monitor/mapa/intervenciones", dependencies=[Depends(usuario_sesion)])
     def fomon_mapa_intervenciones(request: Request, horas: int = 24):
-        _auth(request)
         with _sesion_local() as s:
             return consultas_web.geojson_intervenciones(s, horas=horas)
 
-    @app.get("/api/fo-monitor/mapa/red")
+    @app.get("/api/fo-monitor/mapa/red", dependencies=[Depends(usuario_sesion)])
     def fomon_mapa_red(request: Request):
-        _auth(request)
         with _sesion_local() as s:
             huella = consultas_web.huella_red(s)
             if _cache_red["huella"] != huella:
@@ -186,51 +173,45 @@ def mount_fo_monitor_routes(app: FastAPI) -> None:  # noqa: C901 - rutas anidada
                             headers={**headers, "Content-Encoding": "gzip"})
         return Response(_cache_red["cuerpo"], media_type="application/geo+json", headers=headers)
 
-    @app.get("/api/fo-monitor/mapa/buscar")
+    @app.get("/api/fo-monitor/mapa/buscar", dependencies=[Depends(usuario_sesion)])
     def fomon_mapa_buscar(request: Request, tipo: str, q: str):
-        _auth(request)
         with _sesion_local() as s:
             try:
                 return consultas_web.buscar_en_mapa(s, tipo=tipo, q=q)
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
-    @app.get("/api/fo-monitor/mapa/servicios")
+    @app.get("/api/fo-monitor/mapa/servicios", dependencies=[Depends(usuario_sesion)])
     def fomon_mapa_servicios(request: Request, ids: str):
-        _auth(request)
         with _sesion_local() as s:
             try:
                 return consultas_web.geojson_servicios(s, ids.replace(";", ",").replace(" ", ",").split(","))
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
-    @app.get("/api/fo-monitor/cables/{cable_n_id}/ficha")
+    @app.get("/api/fo-monitor/cables/{cable_n_id}/ficha", dependencies=[Depends(usuario_sesion)])
     def fomon_ficha_cable(request: Request, cable_n_id: int):
-        _auth(request)
         with _sesion_local() as s:
             try:
                 return consultas_web.ficha_cable(s, cable_n_id)
             except consultas_web.NoEncontrado:
                 return JSONResponse({"error": "Cable inexistente"}, status_code=404)
 
-    @app.get("/api/fo-monitor/mapa/botellas")
+    @app.get("/api/fo-monitor/mapa/botellas", dependencies=[Depends(usuario_sesion)])
     def fomon_mapa_botellas(request: Request, bbox: Optional[str] = None, limit: int = 5000):
-        _auth(request)
         with _sesion_local() as s:
             try:
                 return consultas_web.geojson_botellas(s, bbox=bbox, limit=limit)
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
-    @app.get("/api/fo-monitor/cables/{cable_n_id}/historial")
+    @app.get("/api/fo-monitor/cables/{cable_n_id}/historial", dependencies=[Depends(usuario_sesion)])
     def fomon_historial(request: Request, cable_n_id: int, limit: int = 50):
-        _auth(request)
         with _sesion_local() as s:
             return consultas_web.historial_cable(s, cable_n_id, limit=limit)
 
-    @app.get("/api/fo-monitor/mapa/config")
+    @app.get("/api/fo-monitor/mapa/config", dependencies=[Depends(usuario_sesion)])
     def fomon_mapa_config(request: Request):
-        _auth(request)
         disponible = (BASEMAP_DIR / PMTILES_ARCHIVO).is_file()
         modo = BASEMAP_MODO if BASEMAP_MODO == "osm" or disponible else "osm"
         return {
@@ -241,9 +222,8 @@ def mount_fo_monitor_routes(app: FastAPI) -> None:  # noqa: C901 - rutas anidada
             "pmtiles_disponible": disponible,
         }
 
-    @app.get("/api/fo-monitor/basemap/{ruta:path}")
+    @app.get("/api/fo-monitor/basemap/{ruta:path}", dependencies=[Depends(usuario_sesion)])
     def fomon_basemap(request: Request, ruta: str):
-        _auth(request)
         base = BASEMAP_DIR.resolve()
         destino = (base / ruta).resolve()
         if base not in destino.parents or not destino.is_file():
@@ -251,8 +231,10 @@ def mount_fo_monitor_routes(app: FastAPI) -> None:  # noqa: C901 - rutas anidada
         return servir_con_rango(destino, request)
 
     @app.post("/api/fo-monitor/verificaciones")
-    def fomon_verificacion_manual(request: Request, body: VerificacionManualBody):
-        usuario = _admin(request, body.csrf_token)
+    def fomon_verificacion_manual(request: Request, body: VerificacionManualBody,
+                                  admin: UsuarioSesion = Depends(usuario_admin)):
+        _validar_csrf(request, body.csrf_token)
+        usuario = admin.username
         from datetime import timezone
 
         from core.services.fo_monitor.motor import crear_intervencion_manual
@@ -271,8 +253,10 @@ def mount_fo_monitor_routes(app: FastAPI) -> None:  # noqa: C901 - rutas anidada
             return {"intervencion_id": interv.id}
 
     @app.post("/api/fo-monitor/intervenciones/{intervencion_id}/reconocimientos")
-    def fomon_reconocer(request: Request, intervencion_id: int, body: ReconocimientoBody):
-        usuario = _admin(request, body.csrf_token)
+    def fomon_reconocer(request: Request, intervencion_id: int, body: ReconocimientoBody,
+                        admin: UsuarioSesion = Depends(usuario_admin)):
+        _validar_csrf(request, body.csrf_token)
+        usuario = admin.username
         with _sesion_local() as s:
             try:
                 return consultas_web.reconocer(s, intervencion_id, usuario=usuario, motivo=body.motivo,
@@ -282,17 +266,15 @@ def mount_fo_monitor_routes(app: FastAPI) -> None:  # noqa: C901 - rutas anidada
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
-    @app.get("/api/admin/fo-monitor/config")
+    @app.get("/api/admin/fo-monitor/config", dependencies=[Depends(usuario_admin)])
     def fomon_config_leer(request: Request):
-        _, role = _auth(request)
-        if role != "admin":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permisos insuficientes")
         with _sesion_local() as s:
             return consultas_web.leer_config(s)
 
     @app.put("/api/admin/fo-monitor/config")
-    def fomon_config_actualizar(request: Request, body: ConfigBody):
-        usuario = _admin(request, body.csrf_token)
+    def fomon_config_actualizar(request: Request, body: ConfigBody, admin: UsuarioSesion = Depends(usuario_admin)):
+        _validar_csrf(request, body.csrf_token)
+        usuario = admin.username
         cambios = body.model_dump(exclude_unset=True, exclude={"csrf_token"})
         with _sesion_local() as s:
             resultado = consultas_web.actualizar_config(s, cambios, usuario=usuario)
