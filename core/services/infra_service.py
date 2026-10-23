@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -608,10 +609,11 @@ class InfraService:
             )
             
         except Exception as exc:
-            logger.exception("action=analyze_tracking_error filename=%s error=%s", filename, exc)
+            ref = secrets.token_hex(4)
+            logger.exception("action=analyze_tracking_error filename=%s error=%s ref=%s", filename, exc, ref)
             return AnalysisResult(
                 status=AnalysisStatus.ERROR,
-                error=str(exc),
+                error=f"Error interno (ref {ref})",
                 message="Error inesperado durante el análisis del archivo",
             )
 
@@ -976,12 +978,13 @@ class InfraService:
                 )
                 
         except Exception as exc:
-            logger.exception("action=resolve_tracking_error action=%s error=%s", action, exc)
+            ref = secrets.token_hex(4)
+            logger.exception("action=resolve_tracking_error action=%s error=%s ref=%s", action, exc, ref)
             self.session.rollback()
             return ResolveResult(
                 success=False,
                 action=action,
-                error=str(exc),
+                error=f"Error interno (ref {ref})",
                 message="Error durante la resolución. Se hizo rollback de la transacción.",
             )
 

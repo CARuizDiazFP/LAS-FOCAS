@@ -16,6 +16,7 @@ Características:
 from __future__ import annotations
 
 import logging
+import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -365,10 +366,11 @@ class ProtectionService:
             )
             
         except Exception as exc:
-            logger.exception("action=create_ban_error error=%s", exc)
+            ref = secrets.token_hex(4)
+            logger.exception("action=create_ban_error error=%s ref=%s", exc, ref)
             return BanResult(
                 success=False,
-                error=str(exc),
+                error=f"Error interno (ref {ref})",
                 message="Error inesperado al crear el baneo",
             )
 
@@ -531,11 +533,12 @@ class ProtectionService:
             )
             
         except Exception as exc:
-            logger.exception("action=lift_ban_error incidente_id=%d error=%s", incidente_id, exc)
+            ref = secrets.token_hex(4)
+            logger.exception("action=lift_ban_error incidente_id=%d error=%s ref=%s", incidente_id, exc, ref)
             return LiftResult(
                 success=False,
                 incidente_id=incidente_id,
-                error=str(exc),
+                error=f"Error interno (ref {ref})",
                 message="Error inesperado al levantar el baneo",
             )
 
