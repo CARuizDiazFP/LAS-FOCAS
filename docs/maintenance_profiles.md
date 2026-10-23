@@ -48,14 +48,18 @@ Usar cuando:
 Incluye:
 
 1. todo el perfil estandar
-2. validación post-limpieza obligatoria
-3. reporte de riesgo residual y acciones manuales pendientes
+2. consumidores fuera del repo en la misma partición: `~/.vscode-server`, dumps de prod en
+   `~/lasfocas-prod-sync-*`, `~/.cache`, `/tmp` (ver `disk-analysis` §7)
+3. validación post-limpieza obligatoria
+4. reporte de riesgo residual y acciones manuales pendientes
 
 ## Guardrails comunes
 
 1. Nunca ejecutar `docker volume prune`.
 2. Nunca ejecutar `docker system prune --volumes`.
 3. Confirmación explícita previa cuando la acción impacta servicios activos.
+4. Nunca `docker image prune -a` ni `docker system prune -a`: el host corre prod y dev en el mismo
+   daemon y borrarían los rollback de prod y `focas-base` (ver `docker-cleanup`).
 
 ## Salida mínima por perfil
 

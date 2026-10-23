@@ -27,10 +27,15 @@ Seleccionar perfil operativo (`rapido`, `estandar`, `profundo`) según `docs/mai
 ```bash
 df -h /
 docker system df
-sudo du -h --max-depth=2 /var/lib/docker 2>/dev/null | sort -hr | head -15
-du -sh Logs/ 2>/dev/null
-find . -type d -name "__pycache__" -exec du -b {} \; 2>/dev/null | awk '{sum+=$1} END {printf "%.2f MB\n", sum/1024/1024}'
+docker images --format '{{.Repository}}:{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}' | sort
+docker ps -a --format '{{.Image}}' | sort -u   # imágenes en uso
+du -sh Logs/ Logs/dev/ 2>/dev/null
+find . -path ./.venv -prune -o -type d -name "__pycache__" -print0 2>/dev/null | du -cb --files0-from=- 2>/dev/null | tail -1
+# Fuera del repo (misma partición): home, VS Code server, dumps de prod, /tmp — ver disk-analysis §7
+du -sh ~/* ~/.[a-z]* 2>/dev/null | sort -hr | head -20
 ```
+
+`sudo du /var/lib/docker` pide contraseña en este host: no usarlo en sesiones no interactivas.
 
 ### 2. Reporte pre-limpieza
 
@@ -43,7 +48,9 @@ Generar tabla compacta con tamaño actual, recuperable y estado por categoría:
 | Contenedores detenidos | X MB | Y MB | 🔴/🟡/🟢 |
 | Logs | X MB | - | 🔴/🟡/🟢 |
 | __pycache__ | X MB | X MB | 🟢 |
+| Fuera del repo (`~/.vscode-server`, dumps, `~/.cache`) | X GB | Y GB | 🔴/🟡/🟢 |
 | **Volúmenes** | X GB | **NO TOCAR** | ⚠️ Info |
+| **Imágenes protegidas** (rollback de prod, `focas-base`) | X GB | **NO TOCAR** | ⚠️ Info |
 
 ### 3. Confirmación interactiva
 
@@ -53,7 +60,8 @@ Pedir confirmación explícita por cada categoría borrable que requiera acción
 
 ```bash
 # Docker
-docker image prune -a -f
+docker image prune -f          # sólo dangling; NUNCA -a (ver regla 7)
+docker image rm <repo>:<tag>   # sólo rollbacks superados aprobados, por tag exacto
 docker container prune -f
 docker builder prune -f
 docker network prune -f
@@ -62,8 +70,8 @@ docker network prune -f
 rm -f Logs/*.log.[0-9]* 2>/dev/null
 
 # Cache Python
-find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
-find . -name "*.pyc" -type f -delete 2>/dev/null
+find . -path ./.venv -prune -o -type d -name "__pycache__" -print0 | xargs -0 rm -rf
+find . -path ./.venv -prune -o -name "*.pyc" -type f -print0 | xargs -0 rm -f
 rm -rf .pytest_cache/ .mypy_cache/ .ruff_cache/ 2>/dev/null
 ```
 
@@ -84,6 +92,12 @@ Resumir espacio liberado, riesgo residual y acciones no ejecutadas.
 4. Confirmar antes de limpiar imágenes, cache, logs o temporales.
 5. Si una acción puede afectar al entorno activo, advertirlo antes de ejecutarla.
 6. Si no hay espacio recuperable significativo, decirlo y no forzar limpieza.
+7. Nunca `docker image prune -a` ni `docker system prune -a`: este host corre prod y dev en el mismo
+   daemon, y esos comandos borran los rollback de prod (`:rollback`, `:pre-deploy-*`,
+   `:pre-hotfix-*`) y `focas-base:latest` (base de builds). Imágenes: sólo por tag exacto (`docker-cleanup`).
+8. Fuera del repo: nunca borrar el servidor de VS Code en ejecución ni a mano una extensión de
+   `.obsolete` (puede ser la que corre esta sesión); los dumps de prod del home se confirman con el
+   usuario conservando los del último deploy (`disk-analysis` §7).
 
 ## Skills de referencia
 

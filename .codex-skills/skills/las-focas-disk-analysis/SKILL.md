@@ -179,6 +179,12 @@ Perfiles operativos recomendados: `docs/maintenance_profiles.md`.
 
 ## 🔍 Comandos de Diagnóstico
 
+> Las rutas relativas (`./Logs/`, `.`) asumen que se corre desde la raíz del checkout de control
+> (`/home/support-focal-01/LAS-FOCAS`). En este host `sudo` pide contraseña, así que `sudo du` falla
+> en sesiones no interactivas: usar `docker system df -v` para el desglose de Docker. El disco del
+> repo y el de Docker son la **misma** partición (`/dev/sda1`, 40 G): el home del usuario compite
+> por el mismo espacio (ver §7).
+
 ### 1. Uso General de Disco
 
 ```bash
@@ -240,47 +246,67 @@ docker system df -v 2>/dev/null | grep -E "^[a-z]" | awk '$NF ~ /GB/ && $NF+0 > 
 ### 4. Top Directorios Más Pesados
 
 ```bash
-# Top 20 directorios en /var/lib/docker (requiere sudo)
+# Top 20 directorios en /var/lib/docker (requiere sudo con contraseña; si no, docker system df -v)
 sudo du -h --max-depth=2 /var/lib/docker 2>/dev/null | sort -hr | head -20
 
 # Top 10 directorios en el proyecto
-du -h --max-depth=2 /home/focal/proyectos/LAS-FOCAS 2>/dev/null | sort -hr | head -10
+du -h --max-depth=2 . 2>/dev/null | sort -hr | head -10
 
 # Archivos más grandes en el proyecto (>10MB)
-find /home/focal/proyectos/LAS-FOCAS -type f -size +10M -exec ls -lh {} \; 2>/dev/null | awk '{print $5, $9}'
+find . -type f -size +10M -exec ls -lh {} \; 2>/dev/null | awk '{print $5, $9}'
 ```
 
 ### 5. Análisis de Logs y Reports
 
 ```bash
-# Tamaño total de logs del proyecto
-du -sh /home/focal/proyectos/LAS-FOCAS/Logs/ 2>/dev/null
+# Tamaño total de logs del proyecto (Logs/ = prod, Logs/dev/ = dev; ver logs-cleanup)
+du -sh ./Logs/ ./Logs/dev/ 2>/dev/null
 
 # Detalle de archivos de log
-ls -lah /home/focal/proyectos/LAS-FOCAS/Logs/*.log* 2>/dev/null
+ls -lah ./Logs/*.log* 2>/dev/null
 
 # Tamaño de informes generados
-du -sh /home/focal/proyectos/LAS-FOCAS/Reports/ 2>/dev/null
+du -sh ./Reports/ 2>/dev/null
 
 # Desglose de Reports por subcarpeta
-du -h --max-depth=1 /home/focal/proyectos/LAS-FOCAS/Reports/ 2>/dev/null
+du -h --max-depth=1 ./Reports/ 2>/dev/null
 
 # Archivos en devs/output (desarrollo)
-du -sh /home/focal/proyectos/LAS-FOCAS/devs/output/ 2>/dev/null
+du -sh ./devs/output/ 2>/dev/null
 ```
 
 ### 6. Caché Python (__pycache__)
 
 ```bash
 # Total de __pycache__ en el proyecto
-find /home/focal/proyectos/LAS-FOCAS -type d -name "__pycache__" -exec du -sh {} \; 2>/dev/null
+find . -type d -name "__pycache__" -exec du -sh {} \; 2>/dev/null
 
 # Suma total
-find /home/focal/proyectos/LAS-FOCAS -type d -name "__pycache__" -exec du -b {} \; 2>/dev/null | awk '{sum+=$1} END {printf "Total __pycache__: %.2f MB\n", sum/1024/1024}'
+find . -type d -name "__pycache__" -exec du -b {} \; 2>/dev/null | awk '{sum+=$1} END {printf "Total __pycache__: %.2f MB\n", sum/1024/1024}'
 
 # Archivos .pyc individuales
-find /home/focal/proyectos/LAS-FOCAS -name "*.pyc" -type f | wc -l
+find . -name "*.pyc" -type f | wc -l
 ```
+
+### 7. Consumidores fuera del repo (home del usuario)
+
+Con el disco crítico, lo grande suele estar **fuera** del repo y de Docker. Real, 2026-10-23
+(89 % → 74 %): de ~6,5 GB recuperados, 2,6 GB eran servidores viejos de VS Code y ~0,9 GB dumps
+de prod en el home.
+
+```bash
+du -sh ~/* ~/.[a-z]* 2>/dev/null | sort -hr | head -20
+du -sh ~/.vscode-server/cli/servers/* ~/.vscode-server/extensions/* 2>/dev/null | sort -hr | head -15
+du -sh /tmp/* 2>/dev/null | sort -hr | head -5
+```
+
+| Consumidor | Qué es | Cómo limpiarlo sin romper nada |
+|---|---|---|
+| `~/.vscode-server/cli/servers/Stable-*` | Una copia del server (~650 MB) por cada versión de VS Code que se conectó | Conservar la que **está corriendo** (`ps -eo args \| grep -o 'servers/Stable-[0-9a-f]*' \| sort \| uniq -c`) y la primera de `lru.json`. Ojo: la que corre puede **no** estar en `lru.json` (real: corría una de septiembre ausente de la lista) |
+| `~/.vscode-server/extensions/` versiones viejas | Listadas en `extensions/.obsolete` | **No borrarlas a mano**: la sesión abierta puede estar ejecutando justo la versión obsoleta (real: `anthropic.claude-code-2.1.308`, la de esta misma sesión de Claude). VS Code las borra solo al recargar la ventana (*Developer: Reload Window*) |
+| `~/lasfocas-prod-sync-YYYYMMDD/*.dump` | Respaldos de la DB de prod (~180 MB c/u) tomados antes de cada deploy | Datos de prod: confirmar con el usuario. Conservar al menos los del último deploy; los `pre_deploy` y `ventana` del mismo día suelen pesar igual |
+| `~/.cache/puccinialin` | Toolchain Rust que baja pip al compilar paquetes con maturin | Borrable; se vuelve a bajar si hace falta |
+| `/tmp/pytest-of-$USER`, `~/.cache/pip`, `~/.npm` | Cachés de herramientas | Borrables (`temp-cleanup`) |
 
 ## 📋 Script de Diagnóstico Completo
 
@@ -330,9 +356,9 @@ done
 # 6. Logs y Reports
 echo -e "\n📁 ARCHIVOS DEL PROYECTO"
 echo "─────────────────────────────"
-echo "  Logs:    $(du -sh /home/focal/proyectos/LAS-FOCAS/Logs/ 2>/dev/null | cut -f1)"
-echo "  Reports: $(du -sh /home/focal/proyectos/LAS-FOCAS/Reports/ 2>/dev/null | cut -f1)"
-echo "  Cache:   $(find /home/focal/proyectos/LAS-FOCAS -type d -name '__pycache__' -exec du -b {} \; 2>/dev/null | awk '{sum+=$1} END {printf "%.1f MB", sum/1024/1024}')"
+echo "  Logs:    $(du -sh ./Logs/ 2>/dev/null | cut -f1)"
+echo "  Reports: $(du -sh ./Reports/ 2>/dev/null | cut -f1)"
+echo "  Cache:   $(find . -type d -name '__pycache__' -exec du -b {} \; 2>/dev/null | awk '{sum+=$1} END {printf "%.1f MB", sum/1024/1024}')"
 
 echo -e "\n═══════════════════════════════════════════════════════════════"
 ```
