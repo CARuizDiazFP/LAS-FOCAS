@@ -1,0 +1,465 @@
+# Nombre de archivo: test_ingresos_mover_anular.py
+# Ubicación de archivo: tests/test_ingresos_mover_anular.py
+# Descripción: Pruebas unitarias de mover_ingreso_web/anular_ingreso_web (validaciones, auditoría y FO Monitor)
+
+"""Servicio de corrección de ingresos desde el portal (plan 2026-10-23, Task 2), sin DB: la sesión es
+un `MagicMock` y las dos consultas de FO Monitor se parchean en el módulo donde se leen. El SQL real
+(filtro de estados abiertos, otros vinculados vigentes) lo cubre `test_ingresos_mover_anular_real_db.py`."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
+
+import pytest
+
+from core.services import ingreso_correccion_service as ics
+from core.services.ingreso_correccion_service import (
+    COMANDO_ANULAR_INGRESO,
+    COMANDO_MOVER_INGRESO,
+    ORIGEN_WEB,
+    RESULTADO_BOTELLA_INVALIDA,
+    RESULTADO_CAMARA_NO_ENCONTRADA,
+    RESULTADO_INGRESO_ANULADO,
+    RESULTADO_INGRESO_NO_ENCONTRADO,
+    RESULTADO_MISMO_DESTINO,
+    RESULTADO_MOTIVO_INVALIDO,
+    RESULTADO_OK_INGRESO_ANULADO,
+    RESULTADO_OK_INGRESO_MOVIDO,
+    ResultadoCorreccion,
+    anular_ingreso_web,
+    mover_ingreso_web,
+)
+from db.models.cromo import CromoBotella
+from db.models.fo_monitor import FomonConsulta, FomonIntervencion
+from db.models.infra import Camara, CamaraEstado, Ingreso, IngresoCorreccion, IngresoTipo
+
+AHORA = datetime(2026, 10, 23, 15, 0, tzinfo=timezone.utc)
+INICIO = datetime(2026, 10, 23, 12, 0, tzinfo=timezone.utc)
+ORIGEN = 7
+DESTINO = 9
+BOTELLA_ORIGEN = 5001
+BOTELLA_DESTINO = 6001
+
+
+def _ingreso(*, camara_id: int = ORIGEN, botella: int | None = BOTELLA_ORIGEN, tipo=IngresoTipo.INGRESO) -> Ingreso:
+    ingreso = Ingreso(
+        id=42,
+        camara_id=camara_id,
+        cromo_botella_id=botella,
+        tecnico_id="rider.fernandez",
+        tipo=tipo,
+        fecha_inicio=INICIO,
+        fecha_fin=None,
+    )
+    ingreso.camara = Camara(id=camara_id, nombre="Cra Origen", estado=CamaraEstado.LIBRE)
+    return ingreso
+
+
+def _botella(n_id: int = BOTELLA_DESTINO, *, camara_id: int | None = DESTINO, vigente: bool = True) -> CromoBotella:
+    return CromoBotella(n_id=n_id, camara_id=camara_id, vigente=vigente, nombre=f"BOT {n_id}")
+
+
+def _session(objetivo: Ingreso | None, *, destino: Camara | None = None, botellas=(), consultas=()) -> MagicMock:
+    session = MagicMock()
+    session.query.return_value.filter.return_value.first.return_value = objetivo
+    session.query.return_value.filter.return_value.all.return_value = list(consultas)
+    por_modelo = {Camara: {} if destino is None else {destino.id: destino}, CromoBotella: {b.n_id: b for b in botellas}}
+    session.get.side_effect = lambda modelo, pk: por_modelo.get(modelo, {}).get(pk)
+    return session
+
+
+def _destino() -> Camara:
+    return Camara(id=DESTINO, nombre="Cra Destino", estado=CamaraEstado.LIBRE)
+
+
+def _auditoria(session: MagicMock) -> IngresoCorreccion:
+    filas = [c.args[0] for c in session.add.call_args_list if isinstance(c.args[0], IngresoCorreccion)]
+    assert len(filas) == 1, "cada invocación escribe exactamente una fila de auditoría"
+    return filas[0]
+
+
+@pytest.fixture
+def fomon(monkeypatch):
+    """Parchea las dos consultas de FO Monitor del módulo. `abiertas` y `otros` (por intervención)
+    se cargan desde cada test."""
+    estado = {"abiertas": [], "otros": {}}
+    abiertas = MagicMock(side_effect=lambda session, ingreso_id: list(estado["abiertas"]))
+    otros = MagicMock(side_effect=lambda session, intervencion_id, ingreso_id: list(estado["otros"].get(intervencion_id, [])))
+    monkeypatch.setattr(ics, "_intervenciones_abiertas_vinculadas", abiertas)
+    monkeypatch.setattr(ics, "_otros_vinculados_vigentes", otros)
+    estado["mock_abiertas"] = abiertas
+    return estado
+
+
+def _mover(session: MagicMock, *, botella: int | None = None, motivo: str = "  Fontaine mal tipeado  ", destino: int = DESTINO) -> ResultadoCorreccion:
+    return mover_ingreso_web(
+        session, ingreso_id=42, camara_destino_id=destino, cromo_botella_destino_n_id=botella,
+        motivo=motivo, usuario="admin2",
+    )
+
+
+def _anular(session: MagicMock, *, motivo: str = "  nunca ocurrió  ", usuario: str = "admin2") -> ResultadoCorreccion:
+    return anular_ingreso_web(session, ingreso_id=42, motivo=motivo, usuario=usuario, ahora=AHORA)
+
+
+def _interv(id_: int, estado: str = "EN_CURSO") -> FomonIntervencion:
+    return FomonIntervencion(
+        id=id_, origen="INGRESO", camara_id=ORIGEN, botella_objetivo_n_id=BOTELLA_ORIGEN,
+        botella_1_inferida=True, estado=estado, proximo_evento_en=AHORA,
+    )
+
+
+# ── Mover: caminos felices ─────────────────────────────────────────────────────────────────────
+
+
+def test_mover_sin_botella_cambia_camara_deja_botella_null_y_audita(fomon):
+    objetivo = _ingreso()
+    session = _session(objetivo, destino=_destino())
+
+    resultado = _mover(session)
+
+    assert resultado.resultado == RESULTADO_OK_INGRESO_MOVIDO
+    assert resultado.ingreso is objetivo
+    assert objetivo.camara_id == DESTINO
+    assert objetivo.cromo_botella_id is None
+    assert objetivo.fecha_fin is None, "un ingreso abierto se mueve abierto"
+    assert objetivo.fecha_inicio == INICIO
+    fila = _auditoria(session)
+    assert fila.comando == COMANDO_MOVER_INGRESO
+    assert fila.origen == ORIGEN_WEB and fila.actor_web_usuario == "admin2"
+    assert fila.actor_slack_user_id is None and fila.canal_id is None
+    assert fila.resultado == RESULTADO_OK_INGRESO_MOVIDO
+    assert fila.ingreso_id == 42
+    assert fila.camara_id_resuelta == DESTINO and fila.cromo_botella_id_resuelta is None
+    assert fila.camara_id_anterior == ORIGEN and fila.cromo_botella_id_anterior == BOTELLA_ORIGEN
+    assert fila.motivo == "Fontaine mal tipeado"
+    assert session.commit.call_count == 2  # el cambio y la auditoría
+
+
+def test_mover_con_botella_vigente_del_destino(fomon):
+    objetivo = _ingreso()
+    session = _session(objetivo, destino=_destino(), botellas=[_botella()])
+
+    resultado = _mover(session, botella=BOTELLA_DESTINO)
+
+    assert resultado.resultado == RESULTADO_OK_INGRESO_MOVIDO
+    assert objetivo.camara_id == DESTINO and objetivo.cromo_botella_id == BOTELLA_DESTINO
+    fila = _auditoria(session)
+    assert fila.cromo_botella_id_resuelta == BOTELLA_DESTINO
+    assert fila.cromo_botella_id_anterior == BOTELLA_ORIGEN
+
+
+@pytest.mark.parametrize(
+    ("botella_actual", "botella_pedida"),
+    [(BOTELLA_ORIGEN, None), (None, BOTELLA_DESTINO), (BOTELLA_ORIGEN, BOTELLA_DESTINO)],
+)
+def test_mover_misma_camara_con_otra_botella_es_valido(fomon, botella_actual, botella_pedida):
+    objetivo = _ingreso(camara_id=DESTINO, botella=botella_actual)
+    session = _session(objetivo, destino=_destino(), botellas=[_botella()])
+
+    resultado = _mover(session, botella=botella_pedida)
+
+    assert resultado.resultado == RESULTADO_OK_INGRESO_MOVIDO
+    assert objetivo.camara_id == DESTINO and objetivo.cromo_botella_id == botella_pedida
+
+
+def test_mover_no_toca_el_estado_persistido_de_las_camaras(fomon):
+    objetivo = _ingreso()
+    origen = objetivo.camara
+    destino = _destino()
+    session = _session(objetivo, destino=destino)
+
+    _mover(session)
+
+    assert origen.estado == CamaraEstado.LIBRE and destino.estado == CamaraEstado.LIBRE
+
+
+# ── Mover: validaciones ────────────────────────────────────────────────────────────────────────
+
+
+def test_mover_ingreso_inexistente(fomon):
+    session = _session(None, destino=_destino())
+
+    resultado = _mover(session)
+
+    assert resultado.resultado == RESULTADO_INGRESO_NO_ENCONTRADO
+    fila = _auditoria(session)
+    assert fila.resultado == RESULTADO_INGRESO_NO_ENCONTRADO and fila.ingreso_id is None
+    assert fila.comando == COMANDO_MOVER_INGRESO and fila.origen == ORIGEN_WEB
+    session.commit.assert_called_once()
+    fomon["mock_abiertas"].assert_not_called()
+
+
+def test_mover_ingreso_anulado(fomon):
+    objetivo = _ingreso()
+    objetivo.anulado_at, objetivo.anulado_por, objetivo.anulado_motivo = AHORA, "admin1", "nunca ocurrió"
+    session = _session(objetivo, destino=_destino())
+
+    resultado = _mover(session)
+
+    assert resultado.resultado == RESULTADO_INGRESO_ANULADO
+    assert objetivo.camara_id == ORIGEN and objetivo.cromo_botella_id == BOTELLA_ORIGEN
+    fila = _auditoria(session)
+    assert fila.resultado == RESULTADO_INGRESO_ANULADO and fila.ingreso_id == 42
+    assert fila.camara_id_anterior == ORIGEN
+    session.commit.assert_called_once()
+    fomon["mock_abiertas"].assert_not_called()
+
+
+@pytest.mark.parametrize("motivo", ["", "   ", "ab", "  ab  ", "x" * 501])
+def test_mover_motivo_invalido(fomon, motivo):
+    objetivo = _ingreso()
+    session = _session(objetivo, destino=_destino())
+
+    resultado = _mover(session, motivo=motivo)
+
+    assert resultado.resultado == RESULTADO_MOTIVO_INVALIDO
+    assert objetivo.camara_id == ORIGEN
+    assert _auditoria(session).resultado == RESULTADO_MOTIVO_INVALIDO
+    session.commit.assert_called_once()
+
+
+@pytest.mark.parametrize("motivo", ["abc", "x" * 500])
+def test_mover_motivo_en_los_bordes_es_valido(fomon, motivo):
+    session = _session(_ingreso(), destino=_destino())
+
+    assert _mover(session, motivo=motivo).resultado == RESULTADO_OK_INGRESO_MOVIDO
+
+
+def test_mover_destino_inexistente(fomon):
+    objetivo = _ingreso()
+    session = _session(objetivo, destino=None)
+
+    resultado = _mover(session)
+
+    assert resultado.resultado == RESULTADO_CAMARA_NO_ENCONTRADA
+    assert objetivo.camara_id == ORIGEN
+    fila = _auditoria(session)
+    assert fila.resultado == RESULTADO_CAMARA_NO_ENCONTRADA and fila.camara_id_resuelta is None
+    assert fila.camara_texto_solicitado == f"camara_id={DESTINO}"
+    fomon["mock_abiertas"].assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "botellas",
+    [
+        [],  # inexistente
+        [_botella(vigente=False)],
+        [_botella(camara_id=ORIGEN)],
+        [_botella(camara_id=None)],
+    ],
+    ids=["inexistente", "no_vigente", "de_otra_camara", "sin_camara"],
+)
+def test_mover_botella_invalida(fomon, botellas):
+    objetivo = _ingreso()
+    session = _session(objetivo, destino=_destino(), botellas=botellas)
+
+    resultado = _mover(session, botella=BOTELLA_DESTINO)
+
+    assert resultado.resultado == RESULTADO_BOTELLA_INVALIDA
+    assert objetivo.camara_id == ORIGEN and objetivo.cromo_botella_id == BOTELLA_ORIGEN
+    fila = _auditoria(session)
+    assert fila.resultado == RESULTADO_BOTELLA_INVALIDA and fila.error_detalle
+    session.commit.assert_called_once()
+    fomon["mock_abiertas"].assert_not_called()
+
+
+@pytest.mark.parametrize("botella", [None, BOTELLA_DESTINO])
+def test_mover_misma_camara_y_misma_botella(fomon, botella):
+    objetivo = _ingreso(camara_id=DESTINO, botella=botella)
+    session = _session(objetivo, destino=_destino(), botellas=[_botella()])
+
+    resultado = _mover(session, botella=botella)
+
+    assert resultado.resultado == RESULTADO_MISMO_DESTINO
+    assert _auditoria(session).resultado == RESULTADO_MISMO_DESTINO
+    session.commit.assert_called_once()
+    fomon["mock_abiertas"].assert_not_called()
+
+
+# ── Mover: FO Monitor ──────────────────────────────────────────────────────────────────────────
+
+
+def test_mover_actualiza_la_intervencion_abierta_vinculada(fomon):
+    interv = _interv(301)
+    fomon["abiertas"] = [interv]
+    session = _session(_ingreso(), destino=_destino(), botellas=[_botella()])
+
+    resultado = _mover(session, botella=BOTELLA_DESTINO)
+
+    assert interv.camara_id == DESTINO and interv.botella_objetivo_n_id == BOTELLA_DESTINO
+    assert interv.botella_1_inferida is False
+    assert interv.estado == "EN_CURSO"
+    assert resultado.intervenciones_fomon == [301] and resultado.intervenciones_fomon_omitidas == []
+
+
+def test_mover_sin_botella_deja_la_botella_objetivo_null(fomon):
+    interv = _interv(301)
+    fomon["abiertas"] = [interv]
+    session = _session(_ingreso(), destino=_destino())
+
+    _mover(session)
+
+    assert interv.camara_id == DESTINO and interv.botella_objetivo_n_id is None
+
+
+def test_mover_omite_intervencion_con_otro_ingreso_vigente_en_otra_camara(fomon):
+    """"Botella 1 y 2" en el mismo hilo: mover una sola de las filas no se lleva la intervención,
+    que sigue verificando la que quedó en la cámara original."""
+    interv = _interv(301)
+    fomon["abiertas"] = [interv]
+    fomon["otros"] = {301: [_ingreso(camara_id=ORIGEN)]}
+    session = _session(_ingreso(), destino=_destino())
+
+    resultado = _mover(session)
+
+    assert interv.camara_id == ORIGEN and interv.botella_objetivo_n_id == BOTELLA_ORIGEN
+    assert resultado.intervenciones_fomon == [] and resultado.intervenciones_fomon_omitidas == [301]
+    assert resultado.resultado == RESULTADO_OK_INGRESO_MOVIDO
+
+
+def test_mover_actualiza_si_los_otros_ingresos_ya_estan_en_el_destino(fomon):
+    interv = _interv(301)
+    fomon["abiertas"] = [interv]
+    fomon["otros"] = {301: [_ingreso(camara_id=DESTINO)]}
+    session = _session(_ingreso(), destino=_destino())
+
+    resultado = _mover(session)
+
+    assert interv.camara_id == DESTINO
+    assert resultado.intervenciones_fomon == [301]
+
+
+# ── Anular: camino feliz ───────────────────────────────────────────────────────────────────────
+
+
+def test_anular_setea_la_baja_logica_y_audita(fomon):
+    objetivo = _ingreso()
+    camara = objetivo.camara
+    session = _session(objetivo)
+
+    resultado = _anular(session)
+
+    assert resultado.resultado == RESULTADO_OK_INGRESO_ANULADO
+    assert objetivo.anulado_at == AHORA and objetivo.anulado_at.tzinfo is not None
+    assert objetivo.anulado_por == "admin2"
+    assert objetivo.anulado_motivo == "nunca ocurrió"
+    assert objetivo.fecha_fin is None and objetivo.camara_id == ORIGEN
+    assert camara.estado == CamaraEstado.LIBRE, "Camara.estado persistido no se toca"
+    fila = _auditoria(session)
+    assert fila.comando == COMANDO_ANULAR_INGRESO
+    assert fila.origen == ORIGEN_WEB and fila.actor_web_usuario == "admin2"
+    assert fila.resultado == RESULTADO_OK_INGRESO_ANULADO
+    assert fila.ingreso_id == 42 and fila.camara_id_resuelta == ORIGEN
+    assert fila.motivo == "nunca ocurrió"
+    assert fila.momento_efectivo == AHORA
+    assert fila.camara_id_anterior is None and fila.cromo_botella_id_anterior is None
+    assert session.commit.call_count == 2
+
+
+def test_anular_no_reabre_ni_consulta_el_caso_sin_match(fomon):
+    """Decisión 4: el `IngresoSinMatch` que había resuelto el ingreso queda como está."""
+    from db.models.infra import IngresoSinMatch
+
+    session = _session(_ingreso())
+
+    _anular(session)
+
+    modelos = [c.args[0] for c in session.query.call_args_list]
+    assert IngresoSinMatch not in modelos
+
+
+def test_anular_trunca_el_autor_al_largo_de_la_columna(fomon):
+    objetivo = _ingreso()
+    session = _session(objetivo)
+
+    _anular(session, usuario="u" * 200)
+
+    assert len(objetivo.anulado_por) == 128
+    assert len(_auditoria(session).actor_web_usuario) == 64
+
+
+@pytest.mark.parametrize("tipo", [IngresoTipo.EGRESO, IngresoTipo.INTENTO_BLOQUEADO])
+def test_anular_acepta_cualquier_tipo_de_fila(fomon, tipo):
+    objetivo = _ingreso(tipo=tipo)
+    session = _session(objetivo)
+
+    assert _anular(session).resultado == RESULTADO_OK_INGRESO_ANULADO
+    assert objetivo.anulado_at == AHORA
+
+
+# ── Anular: validaciones ───────────────────────────────────────────────────────────────────────
+
+
+def test_anular_ingreso_inexistente(fomon):
+    session = _session(None)
+
+    resultado = _anular(session)
+
+    assert resultado.resultado == RESULTADO_INGRESO_NO_ENCONTRADO
+    fila = _auditoria(session)
+    assert fila.comando == COMANDO_ANULAR_INGRESO and fila.ingreso_id is None
+    session.commit.assert_called_once()
+    fomon["mock_abiertas"].assert_not_called()
+
+
+def test_anular_ya_anulado_no_pisa_la_anulacion_previa(fomon):
+    previo = datetime(2026, 10, 22, 9, 0, tzinfo=timezone.utc)
+    objetivo = _ingreso()
+    objetivo.anulado_at, objetivo.anulado_por, objetivo.anulado_motivo = previo, "admin1", "primera vez"
+    session = _session(objetivo)
+
+    resultado = _anular(session)
+
+    assert resultado.resultado == RESULTADO_INGRESO_ANULADO
+    assert resultado.respuesta == "El ingreso #42 ya está anulado."
+    assert (objetivo.anulado_at, objetivo.anulado_por, objetivo.anulado_motivo) == (previo, "admin1", "primera vez")
+    assert _auditoria(session).resultado == RESULTADO_INGRESO_ANULADO
+    session.commit.assert_called_once()
+    fomon["mock_abiertas"].assert_not_called()
+
+
+@pytest.mark.parametrize("motivo", ["", "  ", "no", "x" * 501])
+def test_anular_motivo_invalido(fomon, motivo):
+    objetivo = _ingreso()
+    session = _session(objetivo)
+
+    resultado = _anular(session, motivo=motivo)
+
+    assert resultado.resultado == RESULTADO_MOTIVO_INVALIDO
+    assert objetivo.anulado_at is None
+    assert _auditoria(session).resultado == RESULTADO_MOTIVO_INVALIDO
+    session.commit.assert_called_once()
+    fomon["mock_abiertas"].assert_not_called()
+
+
+# ── Anular: FO Monitor ─────────────────────────────────────────────────────────────────────────
+
+
+def test_anular_cancela_la_intervencion_abierta_y_sus_consultas_pendientes(fomon):
+    interv = _interv(301, estado="PRE_EN_CURSO")
+    fomon["abiertas"] = [interv]
+    pendiente = FomonConsulta(id=1, intervencion_id=301, fase="PRE", estado="PENDIENTE")
+    session = _session(_ingreso(), consultas=[pendiente])
+
+    resultado = _anular(session)
+
+    assert interv.estado == "CANCELADA"
+    assert interv.cerrada_at == AHORA
+    assert interv.proximo_evento_en is None
+    assert pendiente.estado == "CANCELADA" and pendiente.error == "ingreso_anulado"
+    assert resultado.intervenciones_fomon == [301] and resultado.intervenciones_fomon_omitidas == []
+
+
+def test_anular_no_cancela_la_intervencion_si_le_quedan_otros_ingresos_vigentes(fomon):
+    interv = _interv(301)
+    fomon["abiertas"] = [interv]
+    fomon["otros"] = {301: [_ingreso()]}
+    session = _session(_ingreso())
+
+    resultado = _anular(session)
+
+    assert interv.estado == "EN_CURSO" and interv.cerrada_at is None
+    assert resultado.intervenciones_fomon == [] and resultado.intervenciones_fomon_omitidas == [301]
+    assert resultado.resultado == RESULTADO_OK_INGRESO_ANULADO

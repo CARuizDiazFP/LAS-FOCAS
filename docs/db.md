@@ -433,6 +433,18 @@ filtran: los merges de Cámara/Botella (reasignan todas las filas, anuladas incl
 `camara_botella_delete_service._bloqueo_camara` y el `DELETE` de cámara pendiente (una fila anulada
 también bloquea el borrado: es historial) ni la marca de agua de FO Monitor (`cargar_config`).
 
+**Mover / anular desde el portal** (`ingreso_correccion_service.mover_ingreso_web` /
+`anular_ingreso_web`, admin): una fila de auditoría por invocación (`origen='web'`), incluidos los
+rechazos. Mover cambia `camara_id` y deja `cromo_botella_id` en NULL salvo una `CromoBotella` vigente
+del destino; no mueve un anulado ni al mismo par cámara/botella; un ingreso abierto se mueve abierto.
+Anular exige motivo (3 a 500 caracteres) y no re-anula. Ninguna de las dos escribe `Camara.estado` ni
+reabre el `IngresoSinMatch` que hubiera resuelto el ingreso. FO Monitor: las intervenciones vinculadas
+en un estado abierto (`motor.ESTADOS_ABIERTOS`) siguen el cambio — al mover toman la cámara/botella
+destino, al anular pasan a `CANCELADA` (con `cerrada_at`, y sus consultas `PENDIENTE` también pasan a
+`CANCELADA`) — salvo que tengan otros ingresos vigentes vinculados que no acompañan el cambio
+("Botella 1 y 2" del mismo hilo), en cuyo caso se dejan como están. El alcance congelado de la
+intervención (`fomon_intervencion_servicios`) no se recalcula al mover.
+
 ### Tabla `ingresos_correcciones` (2026-09-23) — auditoría append-only de `Forzar ingreso`/`Forzar egreso`
 
 Un registro por cada ejecución de los comandos de corrección manual de Slack (ver `docs/bot.md`,
@@ -463,7 +475,7 @@ inmutable. Ver `docs/decisiones.md`, entrada 2026-09-23, para el razonamiento co
 | `ingreso_id` | Integer, nullable, index — sin FK desde `20261023_01` (antes FK → `app.ingresos.id`) | Sólo se completa si la corrección terminó creando/cerrando un `Ingreso` real. Id histórico. |
 | `camara_id_anterior` | Integer, nullable, sin FK | Desde `20261023_01`: cámara de origen de un `MOVER_INGRESO` (portal). El destino va en `camara_id_resuelta`. Id histórico. |
 | `cromo_botella_id_anterior` | BigInteger, nullable, sin FK | Desde `20261023_01`: botella de origen de un `MOVER_INGRESO`. Id histórico. |
-| `resultado` | `String(64)`, `NOT NULL` | Uno de 15 valores (`OK_INGRESO`, `OK_EGRESO_CERRADO`, `OK_EGRESO_ASENTADO`, `CAMARA_AMBIGUA`, `CAMARA_NO_ENCONTRADA`, `VARIOS_INGRESOS_ABIERTOS`, `SIN_INGRESO_ABIERTO`, `EGRESO_ANTERIOR_AL_INGRESO`, `INGRESO_YA_CERRADO`, `INGRESO_ANULADO` (desde 2026-10-23), `INGRESO_NO_ENCONTRADO`, `HILO_SIN_FORMULARIO`, `MOMENTO_INVALIDO`, `ERROR_INTERNO`, `PENDIENTE_FECHA`) — constantes `RESULTADO_*` de `core/services/ingreso_correccion_service.py`. `PENDIENTE_FECHA` es un **estado pendiente, no un rechazo**: habilita que el operador conteste en el mismo hilo sólo con `DD-MM-AAAA HH:MM` y el comando se re-ejecute (escribiendo una fila NUEVA — la tabla es append-only). |
+| `resultado` | `String(64)`, `NOT NULL` | Uno de 20 valores (`OK_INGRESO`, `OK_EGRESO_CERRADO`, `OK_EGRESO_ASENTADO`, `CAMARA_AMBIGUA`, `CAMARA_NO_ENCONTRADA`, `VARIOS_INGRESOS_ABIERTOS`, `SIN_INGRESO_ABIERTO`, `EGRESO_ANTERIOR_AL_INGRESO`, `INGRESO_YA_CERRADO`, `INGRESO_ANULADO` (desde 2026-10-23), `INGRESO_NO_ENCONTRADO`, `HILO_SIN_FORMULARIO`, `MOMENTO_INVALIDO`, `ERROR_INTERNO`, `PENDIENTE_FECHA`; desde 2026-10-23, para `MOVER_INGRESO`/`ANULAR_INGRESO`: `OK_INGRESO_MOVIDO`, `OK_INGRESO_ANULADO`, `BOTELLA_INVALIDA`, `MISMO_DESTINO`, `MOTIVO_INVALIDO`) — constantes `RESULTADO_*` de `core/services/ingreso_correccion_service.py`. `PENDIENTE_FECHA` es un **estado pendiente, no un rechazo**: habilita que el operador conteste en el mismo hilo sólo con `DD-MM-AAAA HH:MM` y el comando se re-ejecute (escribiendo una fila NUEVA — la tabla es append-only). |
 | `error_detalle` | `Text`, nullable | Detalle del rechazo/error, si lo hubo. |
 | `created_at` | DateTime(tz), `NOT NULL`, index | — |
 
