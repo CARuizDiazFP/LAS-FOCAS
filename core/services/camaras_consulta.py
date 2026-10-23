@@ -16,7 +16,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session, selectinload
 
-from db.models.infra import Camara, Empalme
+from db.models.infra import Camara, Empalme, RutaServicio
 from db.models.infra import CamaraEstado as _CamaraEstado
 
 LIMITE_MAXIMO = 500
@@ -28,14 +28,18 @@ LIMITE_MAXIMO = 500
 # `Camara.cables` es una @property (`cables_origen + cables_destino`), por eso se cargan las dos.
 # Las botellas sólo aportan sus empalmes (`_collect_camara_rutas_info`); sus cables no se leen.
 # `Empalme.servicios` se lee sólo en la cámara raíz, cuando no hay rutas.
-# `Empalme.rutas` queda lazy A PROPÓSITO: es many-to-many sin `order_by` y el lote devuelve las
-# rutas de un empalme en otro orden que la carga individual (151 empalmes en dev), lo que cambiaría
-# el orden de `rutas` en la respuesta. Se mantiene hasta que se decida un orden explícito.
+# `Empalme.rutas` (y sus empalmes, puntos terminales y servicio, que lee `_collect_camara_rutas_info`)
+# también va por lote: desde que la relación tiene `order_by` por id, el lote y la carga individual
+# devuelven el mismo orden (antes, sin `order_by`, diferían en 151 empalmes de dev).
 _CARGA_POR_LOTE = (
     selectinload(Camara.empalmes).selectinload(Empalme.servicios),
     selectinload(Camara.cables_origen),
     selectinload(Camara.cables_destino),
     selectinload(Camara.botellas).selectinload(Camara.empalmes),
+    selectinload(Camara.empalmes).selectinload(Empalme.rutas).selectinload(RutaServicio.empalmes),
+    selectinload(Camara.empalmes).selectinload(Empalme.rutas).selectinload(RutaServicio.puntos_terminales),
+    selectinload(Camara.empalmes).selectinload(Empalme.rutas).selectinload(RutaServicio.servicio),
+    selectinload(Camara.botellas).selectinload(Camara.empalmes).selectinload(Empalme.rutas),
 )
 
 

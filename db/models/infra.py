@@ -176,7 +176,11 @@ class Camara(Base):
         index=True,
     )
 
-    empalmes = relationship("Empalme", back_populates="camara", cascade="all, delete-orphan")
+    # Orden explícito por id (sin `order_by` dependía del plan de la consulta y difería entre la carga
+    # por lote y la individual). Aplica igual a `botellas` y a `Empalme.servicios`/`Empalme.rutas`.
+    empalmes = relationship(
+        "Empalme", back_populates="camara", cascade="all, delete-orphan", order_by="Empalme.id"
+    )
     cables_origen = relationship("Cable", back_populates="origen_camara", foreign_keys="Cable.origen_camara_id")
     cables_destino = relationship("Cable", back_populates="destino_camara", foreign_keys="Cable.destino_camara_id")
     ingresos = relationship("Ingreso", back_populates="camara", cascade="all, delete-orphan")
@@ -191,6 +195,7 @@ class Camara(Base):
         "Camara",
         back_populates="camara_padre",
         foreign_keys=[camara_padre_id],
+        order_by=id,
     )
     cromo_botellas = relationship("CromoBotella", back_populates="camara")
 
@@ -270,6 +275,7 @@ class Empalme(Base):
         "Servicio",
         secondary=servicio_empalme_association,
         back_populates="empalmes",
+        order_by="Servicio.id",
     )
     
     # Nueva relación: empalme pertenece a rutas
@@ -277,6 +283,7 @@ class Empalme(Base):
         "RutaServicio",
         secondary=ruta_empalme_association,
         back_populates="empalmes",
+        order_by="RutaServicio.id",
     )
 
     def __repr__(self) -> str:
@@ -471,6 +478,7 @@ class Servicio(Base):
         "Empalme",
         secondary=servicio_empalme_association,
         back_populates="servicios",
+        order_by="Empalme.id",
     )
 
     historial_ids = relationship(

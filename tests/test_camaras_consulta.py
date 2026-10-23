@@ -248,3 +248,31 @@ def test_rutas_info_usa_sitio_descripcion_de_las_puntas():
 
     assert info[0]["punta_a_sitio"] == "ODF MAIPU 316 1"
     assert info[0]["punta_b_sitio"] is None
+
+
+# --- orden explícito de las relaciones que llegan a la respuesta ---------------------------------
+
+
+def test_relaciones_de_infra_ordenadas_por_id():
+    """El orden de rutas/empalmes/botellas/servicios de la respuesta no depende del plan de la consulta:
+    sin `order_by`, la carga por lote y la individual devolvían órdenes distintos."""
+    from sqlalchemy import inspect
+
+    from db.models.infra import Camara, Empalme, Servicio
+
+    esperado = {
+        (Camara, "empalmes"): ("empalmes", "id"),
+        (Camara, "botellas"): ("camaras", "id"),
+        (Empalme, "servicios"): ("servicios", "id"),
+        (Empalme, "rutas"): ("rutas_servicio", "id"),
+        (Servicio, "empalmes"): ("empalmes", "id"),
+    }
+    for (modelo, nombre), columna in esperado.items():
+        orden = inspect(modelo).relationships[nombre].order_by
+        assert orden, f"{modelo.__name__}.{nombre} sin order_by"
+        assert [(c.table.name, c.name) for c in orden] == [columna], f"{modelo.__name__}.{nombre}: {orden!r}"
+
+
+def test_carga_por_lote_incluye_rutas_de_empalmes_y_botellas():
+    rutas = [o for o in cc._CARGA_POR_LOTE if "Empalme.rutas" in str(o.path)]
+    assert len(rutas) == 4
