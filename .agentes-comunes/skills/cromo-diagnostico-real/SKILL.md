@@ -269,6 +269,28 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    del 25 %). Antes de fijar una regla sobre caminos de posición, imprimir también la etiqueta de los
    pelos del camino: el hilo 2 del 93150 tiene 4 de 49 pelos con etiqueta 61972 (otro servicio
    Activo), ruido que un filtro de "cualquier pelo ajeno" convertía en falso negativo.
+   Desde 2026-10-23 se suma **83693** (pk 620): 2 tramos Córdoba 3016 ↔ Pilar, los dos completados
+   con `projview=2` (regla 15); sin el reintento, cada uno termina en el pelo FL-CTB-330:2. En 93154,
+   un residual (7670697) se completa con `projview=1` sin cambiar los 2 tramos.
+
+15. **Un tracking que termina en un pelo suelto se diagnostica comparando `projview`, no leyendo
+   el parser.** `/path` sin `projview` (= `0`, "red completa") **corta** el camino en un pelo con más
+   de una continuación: con la fusión a desinstalar (`stp=31`) y la proyectada (`stp=1`) visibles a la
+   vez, Cromo no elige. `projview=1` sigue la de desinstalación y `projview=2` la proyectada (= el
+   toggle "Red proyectada" de la UI). Real (2026-10-23, `track 47838`): el extremo faltante era el de
+   **Córdoba 3016**, no el de Pilar como decía el reporte. El de Pilar ya estaba al final del `.txt`, y
+   Slack muestra sólo el principio. Receta, sólo lectura:
+   - Pedir `/path` del pelo semilla con `None`, `1` y `2`, y comparar con `_construir_lado` el final
+     de cada lado (las tres respuestas comparten el tramo inicial).
+   - Mirar el `tp[]` del pelo terminal: si tiene destinos que no están en la secuencia, es un corte
+     por proyecto (`detectar_cortes`). Si tiene un único `tp`, el camino termina ahí de verdad (4 de
+     4 casos medidos) y ningún `projview` lo cambia.
+   - No asumir que gana la red proyectada: en el 105553 la proyectada se fue por otra rama, más
+     corta, y la que completaba era la actual. Por eso el tracking exige que el reintento
+     **extienda** el camino (`extiende_camino`).
+   - `stp` medido: 30 en servicio, 31 a desinstalar, 1 proyectado. Apareció también un `21` (camino
+     del 105553) sin interpretar: no marcarlo hasta medirlo.
+   Medición de referencia: `docs/decisiones.md` (2026-10-23), 30 Activos al azar + 83693.
 
 ## Documentación relacionada
 
