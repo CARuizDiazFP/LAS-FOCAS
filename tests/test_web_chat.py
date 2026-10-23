@@ -39,7 +39,8 @@ def test_chat_message_returns_json(monkeypatch) -> None:
     # Sin sesión ya no responde (401, ver test_web_chat_errores_depends): se simula un usuario y se
     # corta la persistencia (que sólo loguea un warning si falla).
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(chat_router, "get_current_user", lambda request: "tester")
+    from web.app import comun  # usuario_chat lee la sesión vía comun._require_auth (única fuente)
+    monkeypatch.setattr(comun, "_require_auth", lambda request: ("tester", "user"))
 
     def _sin_db(*_a, **_k):
         raise OSError("sin base en este test")

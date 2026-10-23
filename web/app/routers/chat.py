@@ -24,7 +24,8 @@ from core.chatbot import ChatMessage
 from core.repositories.conversations import get_or_create_conversation_for_web_user
 from core.repositories.messages import get_last_messages, insert_message
 
-from ..comun import DATA_DIR, DB_DSN, UPLOADS_DIR, get_current_user, logger
+from .. import comun
+from ..comun import DATA_DIR, DB_DSN, UPLOADS_DIR, logger
 from ..dependencias import UsuarioSesion
 from ..errores import ErrorDeDominio, error_interno, nueva_ref
 
@@ -32,13 +33,14 @@ from ..errores import ErrorDeDominio, error_interno, nueva_ref
 async def usuario_chat(request: Request) -> UsuarioSesion:
     """Sesión del chat; 401 `{"error": "No autenticado"}` (el cuerpo que el chat respondía y la SPA muestra).
 
-    Misma regla que `usuario_sesion` (clave `username` de la sesión), pero vía `ErrorDeDominio` para
-    conservar la clave `error` en lugar del `detail` de `HTTPException`.
+    Reutiliza `comun._require_auth` (única fuente de la regla de sesión) y traduce su 401 a
+    `ErrorDeDominio` para conservar la clave `error` en lugar del `detail` de `HTTPException`.
     """
-    username = get_current_user(request)
-    if not username:
-        raise ErrorDeDominio("No autenticado", status_code=401)
-    return UsuarioSesion(username, request.session.get("role", "user"))
+    try:
+        username, role = comun._require_auth(request)
+    except HTTPException as exc:
+        raise ErrorDeDominio("No autenticado", status_code=exc.status_code) from None
+    return UsuarioSesion(username, role)
 
 
 # Ninguna ruta del chat es pública (el WebSocket vive aparte, en web/chat_ws.py).

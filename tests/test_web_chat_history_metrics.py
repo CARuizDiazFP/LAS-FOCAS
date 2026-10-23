@@ -17,7 +17,8 @@ client = TestClient(app)
 def test_chat_history_and_metrics(monkeypatch):
     # Forzar usuario autenticado
     from web.app.routers import chat as web_main
-    monkeypatch.setattr(web_main, "get_current_user", lambda request: "tester")
+    from web.app import comun  # usuario_chat lee la sesión vía comun._require_auth (única fuente)
+    monkeypatch.setattr(comun, "_require_auth", lambda request: ("tester", "user"))
 
     # Mocks de persistencia en memoria
     messages: list[dict] = []
