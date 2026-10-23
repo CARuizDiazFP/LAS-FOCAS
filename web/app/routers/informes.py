@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from fastapi import APIRouter, File, Form, Request, UploadFile, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from core.services import sla as sla_service
@@ -58,6 +58,20 @@ class VLANCompareRequest(BaseModel):
 @router.get("/reports/index")
 async def reports_index_redirect() -> RedirectResponse:
     return RedirectResponse(url="/reports-history", status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/reports/{ruta:path}")
+async def descargar_informe(ruta: str, request: Request) -> FileResponse:
+    """Sirve un informe generado (antes era un mount estático sin sesión). Exige sesión y no sale de la base."""
+    _require_auth(request)
+    base = Path(_mount_reports).resolve()
+    try:
+        destino = (base / ruta).resolve()
+    except (OSError, ValueError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found") from None
+    if not destino.is_relative_to(base) or not destino.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+    return FileResponse(destino)
 
 
 @router.get("/api/reports/history")

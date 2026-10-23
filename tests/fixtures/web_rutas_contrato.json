@@ -1348,7 +1348,14 @@
     "metodo": "GET",
     "plantilla": "/reports/index",
     "muestra": "/reports/index",
-    "endpoint": "mount:reports"
+    "endpoint": "reports_index_redirect"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/reports/{ruta:path}",
+    "muestra": "/reports/muestra/sub",
+    "endpoint": "descargar_informe"
   },
   {
     "tipo": "websocket",

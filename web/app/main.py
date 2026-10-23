@@ -101,7 +101,6 @@ from .routers import informes  # noqa: E402
 _vite_assets = DIST_DIR / "assets"
 if _vite_assets.exists():
     app.mount("/assets", StaticFiles(directory=str(_vite_assets)), name="vite-assets")
-app.mount("/reports", StaticFiles(directory=str(informes._mount_reports)), name="reports")
 
 
 def _parse_allowed_origins(raw: str | None) -> List[str]:
