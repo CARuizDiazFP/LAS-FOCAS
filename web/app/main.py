@@ -235,7 +235,6 @@ if _vite_assets.exists():
 _cfg_reports = Path(REPORT_SERVICE_CONFIG.reports_dir)
 _mount_reports = _cfg_reports if _cfg_reports.exists() else REPORTS_DIR
 _mount_reports.mkdir(parents=True, exist_ok=True)
-app.mount("/reports", StaticFiles(directory=str(_mount_reports)), name="reports")
 
 
 def _parse_allowed_origins(raw: str | None) -> List[str]:
@@ -412,6 +411,20 @@ async def logout(request: Request) -> RedirectResponse:
 @app.get("/reports/index")
 async def reports_index_redirect() -> RedirectResponse:
     return RedirectResponse(url="/reports-history", status_code=status.HTTP_302_FOUND)
+
+
+@app.api_route("/reports/{ruta:path}", methods=["GET", "HEAD"])
+async def descargar_informe(ruta: str, request: Request) -> FileResponse:
+    """Sirve un informe generado (antes era un mount estático sin sesión). Exige sesión y no sale de la base."""
+    _require_auth(request)
+    base = Path(_mount_reports).resolve()
+    try:
+        destino = (base / ruta).resolve()
+    except (OSError, ValueError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found") from None
+    if not destino.is_relative_to(base) or not destino.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+    return FileResponse(destino)
 
 
 @app.get("/api/reports/history")
