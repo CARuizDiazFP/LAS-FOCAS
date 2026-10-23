@@ -41,6 +41,8 @@ from db.models.infra import (
 )
 from db.session import SessionLocal, get_async_db
 
+from api.app.errores import error_interno, nueva_ref
+
 router = APIRouter(tags=["infra"])
 logger = logging.getLogger(__name__)
 
@@ -308,12 +310,10 @@ async def search_camaras(
             camaras=camaras_response,
         )
 
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.exception("action=search_camaras_error error=%s", exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error buscando cámaras: {exc!s}",
-        ) from exc
+        return error_interno("search_camaras", exc)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -581,12 +581,10 @@ async def advanced_search_camaras(
             camaras=camaras_response,
         )
 
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.exception("action=advanced_search_error error=%s", exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error en búsqueda avanzada: {exc!s}",
-        ) from exc
+        return error_interno("advanced_search", exc)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -768,12 +766,10 @@ async def smart_search_camaras(
             camaras=camaras_response,
         )
 
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.exception("action=smart_search_error error=%s", exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error en smart search: {exc!s}",
-        ) from exc
+        return error_interno("smart_search", exc)
 
 
 @router.post("/sync/camaras", response_model=InfraSyncResponse)
@@ -791,8 +787,7 @@ async def trigger_infra_sync(payload: InfraSyncRequest | None = None) -> InfraSy
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=infra_sync endpoint_error=%s", exc)
-        raise HTTPException(status_code=500, detail="Falló la sincronización de infraestructura") from exc
+        return error_interno("infra_sync_endpoint", exc)
 
     return InfraSyncResponse(
         status="ok",
@@ -1006,11 +1001,7 @@ async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadRespons
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("action=upload_tracking_error filename=%s error=%s", file.filename, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error procesando el archivo de tracking: {exc!s}",
-        ) from exc
+        return error_interno("upload_tracking", exc, filename=file.filename)
 
 
 # =============================================================================
@@ -1231,12 +1222,10 @@ async def analyze_tracking_endpoint(
             alias_id=result.alias_id,
         )
 
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.exception("action=analyze_tracking_error filename=%s error=%s", filename_used, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error analizando el archivo: {exc!s}",
-        ) from exc
+        return error_interno("analyze_tracking", exc, filename=filename_used)
 
 
 @router.post("/api/infra/trackings/resolve", response_model=TrackingResolveResponse)
@@ -1336,11 +1325,7 @@ async def resolve_tracking_endpoint(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("action=resolve_tracking_error action=%s error=%s", body.action, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error resolviendo el tracking: {exc!s}",
-        ) from exc
+        return error_interno("resolve_tracking", exc, action=body.action)
 
 
 @router.get("/api/infra/servicios/{servicio_id}/rutas", response_model=ServicioRutasResponse)
@@ -1398,11 +1383,7 @@ async def get_servicio_rutas(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("action=get_servicio_rutas_error servicio_id=%s error=%s", servicio_id, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error obteniendo rutas del servicio: {exc!s}",
-        ) from exc
+        return error_interno("get_servicio_rutas", exc, servicio_id=servicio_id)
 
 
 @router.get("/api/infra/rutas/{ruta_id}/empalmes")
@@ -1471,11 +1452,7 @@ async def get_ruta_empalmes(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("action=get_ruta_empalmes_error ruta_id=%d error=%s", ruta_id, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error obteniendo empalmes de la ruta: {exc!s}",
-        ) from exc
+        return error_interno("get_ruta_empalmes", exc, ruta_id=ruta_id)
 
 
 @router.delete("/api/infra/servicios/{servicio_id}/empalmes")
@@ -1548,11 +1525,7 @@ async def delete_servicio_empalmes(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("action=delete_servicio_empalmes_error servicio_id=%s error=%s", servicio_id, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error eliminando asociaciones del servicio: {exc!s}",
-        ) from exc
+        return error_interno("delete_servicio_empalmes", exc, servicio_id=servicio_id)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1676,12 +1649,10 @@ async def create_ban(request: BanCreateRequest) -> Dict[str, Any]:
 
     try:
         return await asyncio.to_thread(_do_ban)
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.exception("action=create_ban_endpoint_error error=%s", exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error creando baneo: {exc!s}",
-        ) from exc
+        return error_interno("create_ban_endpoint", exc)
 
 
 @router.post("/api/infra/ban/lift")
@@ -1730,12 +1701,10 @@ async def lift_ban(request: BanLiftRequest) -> Dict[str, Any]:
 
     try:
         return await asyncio.to_thread(_do_lift)
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.exception("action=lift_ban_endpoint_error error=%s", exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error levantando baneo: {exc!s}",
-        ) from exc
+        return error_interno("lift_ban_endpoint", exc)
 
 
 @router.get("/api/infra/ban/active")
@@ -1777,12 +1746,10 @@ async def get_active_bans() -> Dict[str, Any]:
 
     try:
         return await asyncio.to_thread(_get_bans)
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.exception("action=get_active_bans_error error=%s", exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error obteniendo baneos activos: {exc!s}",
-        ) from exc
+        return error_interno("get_active_bans", exc)
 
 
 @router.get("/api/infra/ban/{incidente_id}")
@@ -1821,11 +1788,7 @@ async def get_ban_detail(incidente_id: int) -> Dict[str, Any]:
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("action=get_ban_detail_error incidente_id=%d error=%s", incidente_id, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error obteniendo detalle del baneo: {exc!s}",
-        ) from exc
+        return error_interno("get_ban_detail", exc, incidente_id=incidente_id)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2002,11 +1965,14 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
         )
 
     except Exception as exc:
-        logger.exception("action=notify_email_error error=%s", exc)
+        # Se conserva el 200 con success=False que consume la SPA (InfraTab); sólo cambia
+        # el texto de `error`: ya no expone la excepción, lleva la ref del log.
+        ref = nueva_ref()
+        logger.exception("action=notify_email_error error=%s ref=%s", exc, ref)
         return EmailNotifyResponse(
             success=False,
             message="Error al enviar notificación",
-            error=str(exc),
+            error=f"Error interno (ref {ref})",
         )
 
 
@@ -2057,11 +2023,7 @@ async def download_tracking_file(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("action=download_tracking_error ruta_id=%d error=%s", ruta_id, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error descargando archivo de tracking: {exc!s}",
-        ) from exc
+        return error_interno("download_tracking", exc, ruta_id=ruta_id)
 
 
 @router.get("/api/infra/notify/email/config")
@@ -2153,8 +2115,7 @@ async def download_ban_eml(
     try:
         incidente, camaras, tracking_content, tracking_filename, _ = await asyncio.to_thread(_prepare)
     except Exception as exc:
-        logger.exception("Error recuperando datos para EML")
-        raise HTTPException(status_code=500, detail=f"Error recuperando datos: {exc!s}") from exc
+        return error_interno("download_eml_datos", exc)
 
     if incidente is None:
         raise HTTPException(status_code=404, detail="Incidente no encontrado")
@@ -2171,9 +2132,8 @@ async def download_ban_eml(
             tracking_content=tracking_content,
             tracking_filename=tracking_filename,
         )
-    except Exception as e:
-        logger.exception("Error generando EML")
-        raise HTTPException(status_code=500, detail=f"Error generando EML: {e!s}") from e
+    except Exception as exc:
+        return error_interno("download_eml_generar", exc)
 
     filename = f"Aviso_Baneo_{incidente.ticket_asociado}.eml"
     return StreamingResponse(
@@ -2288,9 +2248,10 @@ async def export_cameras(  # noqa: C901 - API interna; se conserva por decisión
 
     try:
         fmt, timestamp, rows, _ = await asyncio.to_thread(_export)
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.exception("action=export_cameras_error error=%s", exc)
-        raise HTTPException(status_code=500, detail=f"Error exportando cámaras: {exc!s}") from exc
+        return error_interno("export_cameras", exc)
 
     if fmt == ExportFormat.CSV:
         output = io.StringIO()

@@ -557,6 +557,11 @@ class TestIngresoListenerHandleMessage(unittest.TestCase):
         # Invitación al seguimiento por ID de empalme (Tarea 2, 2026-08-23).
         self.assertIn("ID de empalme", texto_respuesta)
         self.assertNotIn("bajo revisión", texto_respuesta)
+        # 2026-10-23: "informa y solicita escribir la cámara dentro del mismo hilo".
+        self.assertIn(
+            "Escribí la cámara correcta en este hilo (o el operador puede responder con el Fontaine ID).",
+            texto_respuesta,
+        )
 
     def test_responde_camara_libre(self) -> None:
         from db.models.infra import CamaraEstado
@@ -1476,6 +1481,7 @@ class TestFiltroAmbiguedad(unittest.TestCase):
         self.assertIn("• Cra A Vicente Lopez", texto)
         self.assertIn("• Cra B Vicente Lopez", texto)
         self.assertIn("Podés continuar con el ingreso con normalidad", texto)
+        self.assertIn("Escribí la cámara correcta en este hilo (o el operador puede responder con el Fontaine ID)", texto)
 
     def test_listener_nombre_generico_tambien_dice_puede_continuar(self) -> None:
         """La rama cantidad==0 (nombre demasiado genérico) también debe agregar la frase 'Podés
@@ -1497,6 +1503,7 @@ class TestFiltroAmbiguedad(unittest.TestCase):
 
         texto = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
         self.assertIn("Podés continuar con el ingreso con normalidad", texto)
+        self.assertIn("Escribí la cámara correcta en este hilo (o el operador puede responder con el Fontaine ID)", texto)
 
     def test_listener_registra_ingreso_sin_match_en_ambiguedad(self) -> None:
         """Regresión (2026-09-07, revierte el comportamiento anterior deliberadamente — ver
@@ -1533,6 +1540,47 @@ class TestFiltroAmbiguedad(unittest.TestCase):
 
         texto_respuesta = client_mock.chat_postMessage.call_args.kwargs.get("text", "")
         self.assertIn("Revalidar ingreso", texto_respuesta)
+
+    def test_listener_numero_no_coincide_sugiere_y_registra_sin_match(self) -> None:
+        """2026-10-23: número que no coincide → "No encontré X con ese número. ¿Quisiste decir…?",
+        pide reescribir la cámara en el hilo y registra el `IngresoSinMatch` como un ambiguo. Nunca
+        registra un movimiento en una de las sugeridas."""
+        from modules.slack_baneo_notifier.camara_search import NumeroNoCoincideError
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        texto_evento = "Cámara: Cra Mitre 404"
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara",
+                  return_value="Cra Mitre 404"),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                  side_effect=NumeroNoCoincideError(
+                      "Cra Mitre 404", 2, ["Cra Mitre 440", "Cra Mitre 399"])),
+            patch("modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso") as mock_registrar,
+        ):
+            listener._handle_message(self._make_event(text=texto_evento), client_mock)
+
+        mock_registrar.assert_not_called()
+        session_mock.add.assert_called_once()
+        caso = session_mock.add.call_args[0][0]
+        self.assertEqual(caso.texto_original, "Cra Mitre 404")
+        self.assertEqual(caso.texto_mensaje, texto_evento)
+        self.assertEqual(caso.thread_ts, "1234567890.000001")
+        self.assertEqual(caso.origen, "slack")
+        session_mock.commit.assert_called_once()
+
+        client_mock.chat_postMessage.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("No encontré *Cra Mitre 404* con ese número", texto)
+        self.assertIn("¿Quisiste decir", texto)
+        self.assertIn("• Cra Mitre 440", texto)
+        self.assertIn("• Cra Mitre 399", texto)
+        self.assertIn("Escribí la cámara correcta en este hilo (o el operador puede responder con el Fontaine ID)", texto)
+        self.assertNotIn("ambigua", texto)
 
     def test_multibot_no_se_confunde_con_ambiguedad(self) -> None:
         """'Botella 1 y 2' es multi-bot, no ambigüedad — se procesan como dos cámaras."""
@@ -2539,6 +2587,34 @@ class TestRegexSeguimientoEmpalme(unittest.TestCase):
         self.assertIsNone(self.regex.match("Cámara: Mitre 1234"))
         self.assertIsNone(self.regex.match("el empalme es 1234 seguro"))
 
+    def test_matchea_formas_reales_del_fontaine_id(self) -> None:
+        """2026-10-23: el operador valida con "ingreso ok, id: 1228619" (y variantes)."""
+        for texto in (
+            "id: 1228619",
+            "id 1228619",
+            "ID:1228619",
+            "ingreso ok, id: 1228619",
+            "INGRESO OK, ID: 1228619",
+            "Ingreso ok id 1228619",
+            "  ingreso ok,id:1228619  ",
+            "egreso ok, id: 1228619",
+        ):
+            m = self.regex.match(texto)
+            self.assertIsNotNone(m, texto)
+            self.assertEqual(m.group(1), "1228619", texto)
+
+    def test_matchea_egreso_ok_id(self) -> None:
+        """Fix de la revisión: el operador también valida el egreso con "egreso ok, id: N"."""
+        for texto in ("egreso ok, id: 1228619", "EGRESO OK id 1228619"):
+            m = self.regex.match(texto)
+            self.assertIsNotNone(m, texto)
+            self.assertEqual(m.group(1), "1228619")
+
+    def test_no_matchea_otras_frases_con_id(self) -> None:
+        self.assertIsNone(self.regex.match("ingreso ok"))
+        self.assertIsNone(self.regex.match("reingreso ok, id: 1228619"))
+        self.assertIsNone(self.regex.match("el id es 1228619"))
+
 
 # ─── Tests del mecanismo de "hilo esperando ID de empalme" ─────────────────────
 
@@ -2547,6 +2623,13 @@ class TestSeguimientoEmpalme(unittest.TestCase):
     """Prueba `_procesar_seguimiento_empalme` / la integración en `_handle_message` (Tarea 2,
     2026-08-23): un técnico responde en el hilo de un caso `IngresoSinMatch` pendiente con el ID de
     empalme más cercano."""
+
+    def setUp(self) -> None:
+        # Desde 2026-10-23 el número se prueba primero como Fontaine ID: en estos tests no existe
+        # (los de Fontaine están en `TestSeguimientoFontaineId`).
+        patcher = patch("modules.slack_baneo_notifier.listener.buscar_por_id_legacy", return_value=None)
+        self.mock_fontaine = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _make_listener(self) -> Any:
         from modules.slack_baneo_notifier.listener import IngresoListener
@@ -2777,6 +2860,302 @@ class TestSeguimientoEmpalme(unittest.TestCase):
 # ─── Tests del regex de "Revalidar ingreso" ─────────────────────────────────────
 
 
+class TestSeguimientoFontaineId(unittest.TestCase):
+    """2026-10-23: el número de la respuesta en hilo se prueba primero como Fontaine ID
+    (`cromo_botellas.id_legacy`) y después como ID de empalme."""
+
+    def _caso(self, tipo: str = "Ingreso") -> Any:
+        from datetime import datetime, timezone
+
+        caso = MagicMock()
+        caso.id = 5
+        caso.resuelto_via_empalme = False
+        caso.resuelto_via_revalidacion = False
+        caso.ingreso_id = None
+        caso.texto_mensaje = f"*Nombre: Nodo/Camara/botella*\nCra 25 de Mayo 320\n*Ingreso o Egreso*\n{tipo}\n"
+        caso.created_at = datetime(2026, 10, 23, 9, 15, tzinfo=timezone.utc)
+        caso.thread_ts = "1111.000001"
+        caso.contexto = "C123"
+        return caso
+
+    def _camara(self) -> Any:
+        camara = MagicMock()
+        camara.id = 33978
+        camara.nombre = "Cra 25 de Mayo 302 CF"
+        return camara
+
+    def _correr(self, texto: str, *, fontaine: Any = None, fusion: Any = None, camara_fusion: Any = None,
+                user: str | None = "U0OPERADOR", tipo: str = "Ingreso", es_nodo: bool = False):
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+        from db.models.infra import Camara, IngresoCorreccion, IngresoSinMatch
+        from modules.slack_baneo_notifier.listener import IngresoListener
+
+        listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        caso = self._caso(tipo)
+
+        def _side_effect(model: Any) -> Any:
+            q = MagicMock()
+            if model is IngresoSinMatch:
+                q.filter.return_value.order_by.return_value.first.return_value = caso
+            elif model is IngresoCorreccion:
+                q.filter.return_value.order_by.return_value.first.return_value = None
+            elif model is Camara:
+                q.filter.return_value.one_or_none.return_value = camara_fusion
+            return q
+
+        session_mock.query.side_effect = _side_effect
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=33978, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False,
+            inconsistente=False, incidentes_activos=[], ticket_baneo=None,
+        )
+        fontaine_mock = MagicMock(**({"side_effect": fontaine} if isinstance(fontaine, Exception) else {"return_value": fontaine}))
+        event = {"text": texto, "channel": "C123", "ts": "2222.000002", "thread_ts": "1111.000001"}
+        if user:
+            event["user"] = user
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.buscar_por_id_legacy", fontaine_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync", return_value=fusion
+            ) as mock_fusion,
+            patch("modules.slack_baneo_notifier.listener.get_camara_estado_contexto", return_value=contexto_libre),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo") as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener.resolver_nombre_tecnico", return_value="Técnico"),
+            patch("modules.slack_baneo_notifier.listener.corresponde_a_nodo", return_value=es_nodo),
+            patch(
+                "modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso", return_value=self.ingreso
+            ) as mock_registrar,
+        ):
+            listener._handle_message(event, client_mock)
+        self.mock_registrar = mock_registrar
+        return client_mock, session_mock, caso, fontaine_mock, mock_fusion, mock_buscar
+
+    def setUp(self) -> None:
+        self.ingreso = MagicMock()
+        self.ingreso.id = 501
+
+    def _fontaine(self, camara: Any) -> ResultadoBusquedaExtendida:
+        botella = MagicMock()
+        botella.n_id = 10245762
+        botella.nombre = "Cra 25 de Mayo 302 CF"
+        return ResultadoBusquedaExtendida(camara=camara, nombre_norm="x", fuente="cromo_botella", botella=botella)
+
+    def test_numero_solo_resuelve_como_fontaine_id_registra_y_confirma(self) -> None:
+        """Decisión del usuario 2026-10-23 ("Registrar y confirmar"): el Fontaine ID registra el
+        movimiento del caso (tipo y horario originales) y confirma con la Cámara y el ID usado."""
+        camara = self._camara()
+        resultado = self._fontaine(camara)
+        client_mock, session_mock, caso, fontaine, fusion, buscar = self._correr("1228619", fontaine=resultado)
+        fontaine.assert_called_once_with("1228619", session_mock)
+        fusion.assert_not_called()  # Fontaine primero: no se prueba el empalme
+        buscar.assert_not_called()
+        self.mock_registrar.assert_called_once()
+        kwargs = self.mock_registrar.call_args.kwargs
+        self.assertIs(kwargs["camara"], camara)
+        self.assertIs(kwargs["botella"], resultado.botella)
+        self.assertEqual(kwargs["tipo_movimiento"], "Ingreso")
+        self.assertEqual(kwargs["momento"], caso.created_at)
+        self.assertTrue(caso.resuelto_via_revalidacion)
+        self.assertFalse(caso.resuelto_via_empalme)
+        self.assertEqual(caso.ingreso_id, 501)
+        session_mock.commit.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn(
+            "✅ Registré el ingreso en *Cra 25 de Mayo 302 CF* (Fontaine ID 1228619). "
+            "Si no es esa cámara, avisá a un administrador para corregir el registro.",
+            texto,
+        )
+
+    def test_fontaine_id_con_egreso_registra_egreso(self) -> None:
+        camara = self._camara()
+        client_mock, session_mock, caso, fontaine, _, _ = self._correr(
+            "egreso ok, id: 1228619", fontaine=self._fontaine(camara), tipo="Egreso"
+        )
+        fontaine.assert_called_once_with("1228619", session_mock)
+        self.assertEqual(self.mock_registrar.call_args.kwargs["tipo_movimiento"], "Egreso")
+        self.assertIn("✅ Registré el egreso en *Cra 25 de Mayo 302 CF* (Fontaine ID 1228619)",
+                      client_mock.chat_postMessage.call_args.kwargs["text"])
+
+    def test_formato_del_operador_ingreso_ok_id(self) -> None:
+        camara = self._camara()
+        client_mock, session_mock, caso, fontaine, _, _ = self._correr(
+            "ingreso ok, id: 1228619", fontaine=self._fontaine(camara)
+        )
+        fontaine.assert_called_once_with("1228619", session_mock)
+        self.mock_registrar.assert_called_once()
+        self.assertTrue(caso.resuelto_via_revalidacion)
+        self.assertIn("Fontaine ID 1228619", client_mock.chat_postMessage.call_args.kwargs["text"])
+
+    def test_formas_del_operador_con_texto_alrededor(self) -> None:
+        """Ronda 3: "Ingreso ok, ID 1228619." (punto final) e "ingreso ok, id: 1228619 abriendo
+        puerta" (texto después) también son el Fontaine ID."""
+        for texto in ("Ingreso ok, ID 1228619.", "ingreso ok, id: 1228619 abriendo puerta"):
+            with self.subTest(texto=texto):
+                client_mock, session_mock, caso, fontaine, _, _ = self._correr(
+                    texto, fontaine=self._fontaine(self._camara())
+                )
+                fontaine.assert_called_once_with("1228619", session_mock)
+                self.mock_registrar.assert_called_once()
+                self.assertTrue(caso.resuelto_via_revalidacion)
+
+    def test_id_corto_suelto_no_se_prueba_como_fontaine(self) -> None:
+        """Ronda 3: hay `id_legacy` cortos (túneles, 7274-7330): "7300" suelto va sólo al empalme,
+        como antes; con la forma explícita "id: 7300" sí se prueba como Fontaine ID."""
+        _, _, _, fontaine, fusion, _ = self._correr("7300", fontaine=self._fontaine(self._camara()))
+        fontaine.assert_not_called()
+        fusion.assert_called_once()
+        self.mock_registrar.assert_not_called()
+
+        _, session_mock, _, fontaine, fusion, _ = self._correr("id: 7300", fontaine=self._fontaine(self._camara()))
+        fontaine.assert_called_once_with("7300", session_mock)
+        fusion.assert_not_called()
+
+    def test_fontaine_id_que_resuelve_a_un_nodo_se_ignora(self) -> None:
+        client_mock, session_mock, caso, _, fusion, _ = self._correr(
+            "id: 1228619", fontaine=self._fontaine(self._camara()), es_nodo=True
+        )
+        self.mock_registrar.assert_not_called()
+        fusion.assert_not_called()
+        self.assertFalse(caso.resuelto_via_revalidacion)
+        self.assertFalse(caso.resuelto_via_empalme)
+        session_mock.commit.assert_not_called()
+        client_mock.chat_postMessage.assert_not_called()
+
+    def test_si_no_es_fontaine_prueba_como_id_de_empalme(self) -> None:
+        camara = self._camara()
+        botella = MagicMock()
+        botella.camara_id = 33978
+        client_mock, session_mock, caso, fontaine, fusion, _ = self._correr(
+            "id 10245999", fontaine=None, fusion=botella, camara_fusion=camara
+        )
+        fontaine.assert_called_once()
+        fusion.assert_called_once_with(session_mock, 10245999)
+        self.assertTrue(caso.resuelto_via_empalme)
+        self.mock_registrar.assert_not_called()  # por ID de empalme: cierra sin registrar, como antes
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("Resuelto por ID de empalme *10245999*", texto)
+        self.assertIn("Cra 25 de Mayo 302 CF", texto)
+
+    def test_ni_fontaine_ni_empalme_mantiene_la_respuesta_de_hoy(self) -> None:
+        client_mock, session_mock, caso, _, fusion, buscar = self._correr("999999", fontaine=None, fusion=None)
+        fusion.assert_called_once()
+        buscar.assert_not_called()
+        # Mismo camino que antes de 2026-10-23: se marca el caso y se avisa que puede continuar.
+        self.assertTrue(caso.resuelto_via_empalme)
+        session_mock.commit.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("No pude ubicar una botella asociada al ID de empalme *999999*", texto)
+        self.assertIn("Fontaine", texto)
+        self.assertIn("Podés continuar con el ingreso con normalidad", texto)
+
+    def test_fontaine_id_que_no_resuelve_no_cierra_el_caso(self) -> None:
+        """Fix de la revisión: con la forma del Fontaine ID ("id: N"), un número que no resuelve
+        por ninguno de los dos caminos NO marca `resuelto_via_empalme` (la reescritura de la
+        Cámara sigue disponible en el hilo). El número suelto conserva el cierre de antes
+        (`test_ni_fontaine_ni_empalme_mantiene_la_respuesta_de_hoy`)."""
+        for texto in ("id: 1999999", "ingreso ok, id: 1999999", "egreso ok, id: 1999999"):
+            with self.subTest(texto=texto):
+                client_mock, session_mock, caso, _, fusion, _ = self._correr(texto, fontaine=None, fusion=None)
+                fusion.assert_called_once()
+                self.assertFalse(caso.resuelto_via_empalme)
+                session_mock.commit.assert_not_called()
+                respuesta = client_mock.chat_postMessage.call_args.kwargs["text"]
+                self.assertIn("No encontré el Fontaine ID *1999999*", respuesta)
+                self.assertIn("escribí la cámara correcta en este hilo", respuesta)
+
+    def test_caso_pendiente_excluye_los_resueltos_por_revalidacion(self) -> None:
+        from modules.slack_baneo_notifier.listener import IngresoListener
+
+        listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+        session_mock = MagicMock()
+        q = session_mock.query.return_value
+        q.filter.return_value.order_by.return_value.first.return_value = None
+
+        self.assertFalse(
+            listener._procesar_seguimiento_empalme("1228619", "1111.000001", session_mock, MagicMock(), "C123")
+        )
+        filtros = [str(arg) for arg in q.filter.call_args.args]
+        self.assertTrue(any("resuelto_via_revalidacion" in f for f in filtros), filtros)
+        self.assertTrue(any("resuelto_via_empalme" in f for f in filtros), filtros)
+
+    def test_fontaine_id_repetido_nunca_elige_y_deja_el_caso_pendiente(self) -> None:
+        from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+
+        dup = AmbiguousSearchError("1256524", 2, ["Poste Paunero 1543 SAN MIGUEL", "Poste Paunero 1543 SAN MIGUEL"])
+        client_mock, session_mock, caso, _, fusion, _ = self._correr("id: 1256524", fontaine=dup)
+        fusion.assert_not_called()
+        self.mock_registrar.assert_not_called()
+        self.assertFalse(caso.resuelto_via_empalme)
+        self.assertFalse(caso.resuelto_via_revalidacion)
+        session_mock.commit.assert_not_called()
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("más de una botella", texto)
+        self.assertIn("• Poste Paunero 1543 SAN MIGUEL", texto)
+
+    def test_prioridad_fecha_pendiente_le_gana_al_fontaine_id(self) -> None:
+        """La corrección con fecha pendiente sigue primero: con un `PENDIENTE_FECHA` vigente que
+        reconoce el texto, el número nunca se busca como Fontaine ID ni como empalme."""
+        from datetime import datetime, timedelta, timezone
+
+        from core.services.ingreso_correccion_service import ResultadoCorreccion
+        from db.models.infra import IngresoCorreccion, IngresoSinMatch
+        from modules.slack_baneo_notifier.listener import IngresoListener
+
+        listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        caso = self._caso()
+        fila_pendiente = MagicMock()
+        fila_pendiente.id = 77
+        fila_pendiente.resultado = RESULTADO_PENDIENTE_FECHA
+        fila_pendiente.comando_crudo = "Forzar egreso"
+        fila_pendiente.created_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+
+        def _side_effect(model: Any) -> Any:
+            q = MagicMock()
+            if model is IngresoSinMatch:
+                q.filter.return_value.order_by.return_value.first.return_value = caso
+            elif model is IngresoCorreccion:
+                q.filter.return_value.order_by.return_value.first.return_value = fila_pendiente
+            return q
+
+        session_mock.query.side_effect = _side_effect
+        resultado_final = ResultadoCorreccion(
+            resultado="OK_EGRESO_ASENTADO", respuesta="✅ Egreso asentado.", comando="FORZAR_EGRESO"
+        )
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.buscar_por_id_legacy") as mock_fontaine,
+            patch("modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync") as mock_fusion,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_momento_solo",
+                return_value=datetime.now(timezone.utc) - timedelta(hours=1),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion",
+                side_effect=lambda session, *, momento_explicito=None, **_k: (
+                    resultado_final if momento_explicito is not None else None
+                ),
+            ),
+        ):
+            listener._handle_message(
+                {"text": "id: 1228619", "channel": "C123", "ts": "2222.000002",
+                 "thread_ts": "1111.000001", "user": "U0OPERADOR"},
+                client_mock,
+            )
+
+        mock_fontaine.assert_not_called()
+        mock_fusion.assert_not_called()
+        self.assertFalse(caso.resuelto_via_empalme)
+        self.assertEqual(client_mock.chat_postMessage.call_args.kwargs["text"], resultado_final.respuesta)
+
+
 class TestRegexRevalidarIngreso(unittest.TestCase):
     """Prueba directa de `_RE_REVALIDAR_INGRESO` (2026-09-07)."""
 
@@ -2948,6 +3327,30 @@ class TestRevalidacionIngreso(unittest.TestCase):
         session_mock.commit.assert_not_called()
         self.assertIn("sigue sin poder", client_mock.chat_postMessage.call_args.kwargs["text"])
 
+    def test_numero_no_coincide_en_revalidacion_se_trata_como_ambigua(self) -> None:
+        from modules.slack_baneo_notifier.camara_search import NumeroNoCoincideError
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        caso_mock = self._make_caso()
+        session_mock.query.side_effect = self._query_side_effect(caso_mock)
+
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="Cra Mitre 404"),
+            patch(
+                "modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo",
+                side_effect=NumeroNoCoincideError("Cra Mitre 404", 1, ["Cra Mitre 440"]),
+            ),
+        ):
+            listener._handle_message(self._make_event_reply(), client_mock)
+
+        self.assertFalse(caso_mock.resuelto_via_revalidacion)
+        session_mock.commit.assert_not_called()
+        self.assertIn("sigue sin poder", client_mock.chat_postMessage.call_args.kwargs["text"])
+
     def test_sigue_sin_match_no_marca_resuelto(self) -> None:
         listener = self._make_listener()
         client_mock = MagicMock()
@@ -3103,6 +3506,254 @@ class TestRevalidacionIngreso(unittest.TestCase):
 # ─── Tests del wiring de "Forzar ingreso"/"Forzar egreso" (Task 6, 2026-09-23) ──
 
 
+class TestReescrituraCamara(unittest.TestCase):
+    """`_procesar_reescritura_camara` (2026-10-23): una persona reescribe la Cámara en el hilo de un
+    `IngresoSinMatch` pendiente. Último eslabón de la cadena: después de empalme, revalidación y
+    corrección. Si matchea, cierra el caso por el camino de la revalidación; si no, sigue sin
+    match; la charla del hilo se ignora en silencio."""
+
+    def _make_listener(self) -> Any:
+        from modules.slack_baneo_notifier.listener import IngresoListener
+        return IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+
+    def _event(self, text: str, user: str | None = "U0TECNICO", **extra: Any) -> dict:
+        event = {"text": text, "channel": "C123", "ts": "2222.000002", "thread_ts": "1111.000001"}
+        if user:
+            event["user"] = user
+        event.update(extra)
+        return event
+
+    def _caso(self) -> Any:
+        from datetime import datetime, timezone
+
+        caso = MagicMock()
+        caso.id = 9
+        caso.resuelto_via_empalme = False
+        caso.resuelto_via_revalidacion = False
+        caso.ingreso_id = None
+        caso.texto_mensaje = "*Nombre: Nodo/Camara/botella*\nCra Mitre 404\n*Ingreso o Egreso*\nIngreso\n"
+        caso.created_at = datetime(2026, 10, 23, 9, 15, tzinfo=timezone.utc)
+        caso.thread_ts = "1111.000001"
+        caso.contexto = "C123"
+        return caso
+
+    def _session(self, caso: Any) -> MagicMock:
+        from db.models.infra import IngresoCorreccion, IngresoSinMatch
+
+        session_mock = MagicMock()
+
+        def _side_effect(model: Any) -> Any:
+            q = MagicMock()
+            if model is IngresoSinMatch:
+                q.filter.return_value.order_by.return_value.first.return_value = caso
+            elif model is IngresoCorreccion:
+                q.filter.return_value.order_by.return_value.first.return_value = None
+            return q
+
+        session_mock.query.side_effect = _side_effect
+        return session_mock
+
+    def _correr(self, text: str, caso: Any, *, buscar: Any = None, user: str | None = "U0TECNICO",
+                es_nodo: bool = False, **extra: Any):
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+
+        listener = self._make_listener()
+        client_mock = MagicMock()
+        session_mock = self._session(caso)
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=7, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False,
+            inconsistente=False, incidentes_activos=[], ticket_baneo=None,
+        )
+        ingreso = MagicMock()
+        ingreso.id = 501
+        buscar = buscar if buscar is not None else MagicMock()
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo", buscar),
+            patch("modules.slack_baneo_notifier.listener.get_camara_estado_contexto", return_value=contexto_libre),
+            patch("modules.slack_baneo_notifier.listener.resolver_nombre_tecnico", return_value="Técnico"),
+            patch(
+                "modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso", return_value=ingreso
+            ) as mock_registrar,
+            patch("modules.slack_baneo_notifier.listener.extraer_nombre_camara", return_value="") as mock_extraer,
+            patch("modules.slack_baneo_notifier.listener.corresponde_a_nodo", return_value=es_nodo),
+        ):
+            listener._handle_message(self._event(text, user, **extra), client_mock)
+        return client_mock, session_mock, mock_registrar, mock_extraer
+
+    def test_reescritura_que_matchea_cierra_el_caso_con_el_horario_original(self) -> None:
+        camara = MagicMock()
+        camara.id = 7
+        camara.nombre = "Cra Mitre 440 CF"
+        caso = self._caso()
+        buscar = MagicMock(return_value=_resultado_camara(camara, "cra mitre 440"))
+
+        client_mock, session_mock, mock_registrar, mock_extraer = self._correr("Cra Mitre 440", caso, buscar=buscar)
+
+        buscar.assert_called_once()
+        self.assertEqual(buscar.call_args.args[0], "Cra Mitre 440")
+        mock_extraer.assert_not_called()  # cortó antes del flujo normal
+        mock_registrar.assert_called_once()
+        kwargs = mock_registrar.call_args.kwargs
+        self.assertIs(kwargs["camara"], camara)
+        self.assertEqual(kwargs["tipo_movimiento"], "Ingreso")  # del mensaje ORIGINAL del caso
+        self.assertEqual(kwargs["momento"], caso.created_at)
+        self.assertEqual(kwargs["thread_ts"], "1111.000001")
+        self.assertTrue(caso.resuelto_via_revalidacion)
+        self.assertEqual(caso.ingreso_id, 501)
+        session_mock.commit.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("Cámara corregida", texto)
+        self.assertIn("Cra Mitre 440 CF", texto)
+        self.assertIn("23/10/2026 09:15", texto)
+
+    def test_reescritura_sin_match_responde_y_deja_el_caso(self) -> None:
+        caso = self._caso()
+        buscar = MagicMock(return_value=_resultado_camara(None, "cra mitre 9999"))
+
+        client_mock, session_mock, mock_registrar, mock_extraer = self._correr("Cra Mitre 9999", caso, buscar=buscar)
+
+        mock_registrar.assert_not_called()
+        mock_extraer.assert_not_called()
+        self.assertFalse(caso.resuelto_via_revalidacion)
+        session_mock.commit.assert_not_called()
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("sigue sin match", texto)
+        self.assertEqual(client_mock.chat_postMessage.call_args.kwargs["thread_ts"], "1111.000001")
+
+    def test_reescritura_con_numero_que_no_coincide_sugiere_sin_asignar(self) -> None:
+        from modules.slack_baneo_notifier.camara_search import NumeroNoCoincideError
+
+        caso = self._caso()
+        buscar = MagicMock(side_effect=NumeroNoCoincideError("Cra Mitre 404", 1, ["Cra Mitre 440 CF"]))
+
+        client_mock, session_mock, mock_registrar, _ = self._correr("Cra Mitre 404", caso, buscar=buscar)
+
+        mock_registrar.assert_not_called()
+        self.assertFalse(caso.resuelto_via_revalidacion)
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("sigue sin match", texto)
+        self.assertIn("• Cra Mitre 440 CF", texto)
+
+    def test_charla_del_hilo_se_ignora_en_silencio(self) -> None:
+        caso = self._caso()
+        for texto in ("ok gracias", "dale", "👍"):
+            buscar = MagicMock()
+            client_mock, session_mock, mock_registrar, mock_extraer = self._correr(texto, caso, buscar=buscar)
+            buscar.assert_not_called()
+            client_mock.chat_postMessage.assert_not_called()
+            mock_extraer.assert_not_called()  # no cae al flujo normal como un ingreso nuevo
+            self.assertFalse(caso.resuelto_via_revalidacion)
+
+    def test_ruido_real_de_hilos_de_prod_se_ignora(self) -> None:
+        """Respuestas humanas reales de 6 hilos de prod (revisión 2026-10-23): con la heurística
+        anterior 13 de 22 recibían "sigue sin match". Ahora ninguna se busca ni se responde."""
+        caso = self._caso()
+        ruido = [
+            "verificando", "gracias", "ingreso ok", "ingreso para Sergio de T Y C", "GRACIAS", ":+1:",
+            "ingreso ok, abriendo puerta", "Ahí abrio", "Buenas", "Hola, va a pedir el egreso?", "Si",
+            "egreso ok, requiere apertura?", "No gracias", "ingreso ok, abriendo", "Listo gracias",
+            "egreso ok", "Perdón Lomas de Zamora", "Bueno, ahí abro", "dale ya lo cargo",
+            "<!subteam^S056XUXU5FD> me podrán abrir un momentito la puerta por favor",
+            # Falsos positivos de la heurística anterior: texto corto con un número de 1 dígito.
+            "sala 1", "Poste 1 frente",
+            # Ronda 3: charla con números de 2 dígitos (no son una altura).
+            "llego en 20 minutos", "en 10 minutos salgo", "son las 14 30 ya termine",
+        ]
+        for texto in ruido:
+            with self.subTest(texto=texto):
+                buscar = MagicMock()
+                client_mock, _, _, _ = self._correr(texto, caso, buscar=buscar)
+                buscar.assert_not_called()
+                client_mock.chat_postMessage.assert_not_called()
+
+    def test_nombres_reales_se_buscan(self) -> None:
+        caso = self._caso()
+        nombres = {
+            "ingreso ok, sin id, nombre: BOT INTERNA NICARAGUA 2853 NAVE D6": "BOT INTERNA NICARAGUA 2853 NAVE D6",
+            "Cra Mitre 440": "Cra Mitre 440",
+            "Cra 25 de Mayo 302": "Cra 25 de Mayo 302",
+            "Cra camacua 80": "Cra camacua 80",
+            "Poste Colectora Oeste Panamericana": "Poste Colectora Oeste Panamericana",
+            "egreso ok, nombre: Tza Florida 142 :+1:": "Tza Florida 142",
+        }
+        for texto, esperado in nombres.items():
+            with self.subTest(texto=texto):
+                buscar = MagicMock(return_value=_resultado_camara(None, "x"))
+                self._correr(texto, caso, buscar=buscar)
+                buscar.assert_called_once()
+                self.assertEqual(buscar.call_args.args[0], esperado)
+
+    def test_nodo_reescrito_se_ignora(self) -> None:
+        caso = self._caso()
+        buscar = MagicMock()
+        client_mock, _, _, _ = self._correr("Nodo Pilar Centro 120", caso, buscar=buscar, es_nodo=True)
+        buscar.assert_not_called()
+        client_mock.chat_postMessage.assert_not_called()
+
+    def test_evento_de_bot_no_reescribe_aunque_traiga_user(self) -> None:
+        """Guard contra loops entre bots: un evento con `user` Y `bot_id`, o con un `subtype` que no
+        sea `thread_broadcast`, nunca dispara la reescritura."""
+        caso = self._caso()
+        for extra in ({"bot_id": "B0OTRO"}, {"subtype": "bot_message"}):
+            with self.subTest(extra=extra):
+                buscar = MagicMock()
+                self._correr("Cra Mitre 440", caso, buscar=buscar, **extra)
+                buscar.assert_not_called()
+        buscar = MagicMock(return_value=_resultado_camara(None, "x"))
+        self._correr("Cra Mitre 440", caso, buscar=buscar, subtype="thread_broadcast")
+        buscar.assert_called_once()
+
+    def test_sin_caso_pendiente_sigue_el_flujo_normal(self) -> None:
+        buscar = MagicMock()
+        client_mock, _, _, mock_extraer = self._correr("Cra Mitre 440", None, buscar=buscar)
+        mock_extraer.assert_called_once()  # flujo normal (extrae "" y no responde)
+        buscar.assert_not_called()
+        client_mock.chat_postMessage.assert_not_called()
+
+    def test_evento_sin_user_no_reescribe(self) -> None:
+        caso = self._caso()
+        buscar = MagicMock()
+        _, _, _, mock_extraer = self._correr("Cra Mitre 440", caso, buscar=buscar, user=None)
+        buscar.assert_not_called()
+        mock_extraer.assert_called_once()
+
+    def test_comandos_conocidos_no_se_toman_como_camara(self) -> None:
+        caso = self._caso()
+        for texto in ("<@U0BOT> track 123456", "Info cable C-1234", "Servicios C-1234 B2", "23-10-2026 14:30"):
+            buscar = MagicMock()
+            self._correr(texto, caso, buscar=buscar)
+            buscar.assert_not_called()
+            self.assertFalse(caso.resuelto_via_revalidacion)
+
+    def test_numero_solo_sigue_siendo_seguimiento_de_empalme(self) -> None:
+        """Orden de la cadena: un número solo lo toma el seguimiento de empalme, nunca la
+        reescritura."""
+        caso = self._caso()
+        buscar = MagicMock()
+        with patch(
+            "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync", return_value=None
+        ) as mock_empalme, patch(
+            "modules.slack_baneo_notifier.listener.buscar_por_id_legacy", return_value=None
+        ):
+            self._correr("1234567", caso, buscar=buscar)
+        mock_empalme.assert_called_once()
+        buscar.assert_not_called()
+
+    def test_forzar_ingreso_lo_toma_la_correccion(self) -> None:
+        caso = self._caso()
+        buscar = MagicMock()
+        with patch(
+            "modules.slack_baneo_notifier.listener.procesar_comando_correccion", return_value=None
+        ) as mock_correccion:
+            self._correr("Forzar ingreso Cra Mitre 440", caso, buscar=buscar)
+        mock_correccion.assert_called_once()
+        buscar.assert_not_called()
+
+
 class TestCorreccionIngresoWiring(unittest.TestCase):
     """Prueba `_procesar_correccion_ingreso` / su integración en `_handle_message` (Task 6): cablea
     `core/services/ingreso_correccion_service.py` (Task 5) al listener. No re-testea las 10 formas
@@ -3194,8 +3845,9 @@ class TestCorreccionIngresoWiring(unittest.TestCase):
 
         Desde el Fix round 1 (Important 3) `_handle_message` consulta `IngresoCorreccion` una vez
         al entrar a cualquier hilo (chequeo de prioridad de "fecha pendiente"); acá no hay ningún
-        pendiente, así que no pasa de esa única consulta."""
-        from db.models.infra import IngresoCorreccion
+        pendiente. Desde 2026-10-23 la reescritura de la Cámara (`_procesar_reescritura_camara`)
+        consulta además si hay un `IngresoSinMatch` pendiente en el hilo: no lo hay."""
+        from db.models.infra import IngresoCorreccion, IngresoSinMatch
 
         listener = self._make_listener()
         client_mock = MagicMock()
@@ -3203,7 +3855,7 @@ class TestCorreccionIngresoWiring(unittest.TestCase):
 
         def _query_side_effect(model: Any) -> Any:
             q = MagicMock()
-            if model is IngresoCorreccion:
+            if model in (IngresoCorreccion, IngresoSinMatch):
                 q.filter.return_value.order_by.return_value.first.return_value = None
             return q
 
@@ -3220,7 +3872,9 @@ class TestCorreccionIngresoWiring(unittest.TestCase):
 
         mock_extraer.assert_called_once()
         client_mock.chat_postMessage.assert_not_called()
-        session_mock.query.assert_called_once()
+        self.assertEqual(
+            [c.args[0] for c in session_mock.query.call_args_list], [IngresoCorreccion, IngresoSinMatch]
+        )
 
     def test_fallo_db_no_impide_responder(self) -> None:
         """Si `procesar_comando_correccion` lanza (fallo de DB, p. ej.), se loguea, se hace
@@ -3542,12 +4196,23 @@ class TestFechaPendienteSeguimiento(unittest.TestCase):
         nada. Desde la prioridad agregada en el Fix round 1 (Important 3), `_handle_message` SÍ
         consulta `IngresoCorreccion` una vez al entrar a cualquier hilo (para decidir si le da
         prioridad al seguimiento de fecha sobre el de empalme) — pero encontrando que no hay
-        ningún pendiente, no pasa de ahí: ni una segunda consulta, ni ningún posteo."""
+        ningún pendiente, no pasa de ahí: ni una segunda consulta de corrección, ni ningún posteo.
+        (Desde 2026-10-23 se suma la consulta de `IngresoSinMatch` pendiente de la reescritura de
+        la Cámara, que acá no existe.)"""
+        from db.models.infra import IngresoCorreccion, IngresoSinMatch
+
         listener = self._make_listener()
         client_mock = MagicMock()
         session_mock = MagicMock()
         side_effect, _capturas = self._query_side_effect(None)
-        session_mock.query.side_effect = side_effect
+
+        def _side_effect_sin_caso(model: Any) -> Any:
+            q = side_effect(model)
+            if model is IngresoSinMatch:
+                q.filter.return_value.order_by.return_value.first.return_value = None
+            return q
+
+        session_mock.query.side_effect = _side_effect_sin_caso
 
         with (
             patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
@@ -3558,7 +4223,10 @@ class TestFechaPendienteSeguimiento(unittest.TestCase):
         ):
             listener._handle_message(self._make_event_reply("sí, dale"), client_mock)
 
-        session_mock.query.assert_called_once()  # sólo el chequeo de prioridad, ningún pendiente
+        # Sólo el chequeo de prioridad (ningún pendiente) y el de caso sin match pendiente.
+        self.assertEqual(
+            [c.args[0] for c in session_mock.query.call_args_list], [IngresoCorreccion, IngresoSinMatch]
+        )
         client_mock.chat_postMessage.assert_not_called()
         mock_extraer.assert_called_once()
 
@@ -3868,6 +4536,52 @@ def test_pendiente_fecha_vigente_ciclo_previo_completo_real_db() -> None:
         session.rollback()  # nunca commit: ninguna fila queda persistida en la DB de dev
         session.close()
 
+
+
+@requiere_postgres_real
+def test_fontaine_id_real_registra_en_la_camara_33978_sin_dejar_datos() -> None:
+    """Datos reales de dev (5433): "ingreso ok, id: 1228619" en el hilo de un `IngresoSinMatch`
+    pendiente registra el movimiento en la Cámara 33978 (Botella 10245762) y confirma. Todo corre
+    en una transacción que nunca se compromete: `session.commit` se reemplaza por `flush` (el camino
+    de registro commitea internamente) y el `finally` hace `rollback()` — no queda nada en dev."""
+    from datetime import datetime, timedelta, timezone
+
+    from db.models.infra import IngresoSinMatch
+    from db.session import SessionLocal
+    from modules.slack_baneo_notifier.listener import IngresoListener
+
+    listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+    client_mock = MagicMock()
+    thread_ts = "9999999999.999902"
+    session = SessionLocal()
+    session.commit = session.flush  # type: ignore[method-assign]
+    try:
+        caso = IngresoSinMatch(
+            texto_original="Cra 25 de Mayo 320",
+            origen="slack",
+            contexto="C_TEST_FONTAINE",
+            thread_ts=thread_ts,
+            texto_mensaje="*Nombre: Nodo/Camara/botella*\nCra 25 de Mayo 320\n*Ingreso o Egreso*\nIngreso\n",
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+        )
+        session.add(caso)
+        session.flush()
+
+        with patch("modules.slack_baneo_notifier.listener.resolver_nombre_tecnico", return_value="Test Fontaine"):
+            tratado = listener._procesar_seguimiento_empalme(
+                "ingreso ok, id: 1228619", thread_ts, session, client_mock, "C_TEST_FONTAINE"
+            )
+
+        assert tratado is True
+        assert caso.resuelto_via_revalidacion is True
+        assert caso.ingreso_id is not None
+        assert caso.ingreso.camara_id == 33978
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        assert "(Fontaine ID 1228619)" in texto
+        assert "Cra 25 de Mayo 302" in texto
+    finally:
+        session.rollback()  # nunca commit real: ninguna fila queda en la DB de dev
+        session.close()
 
 if __name__ == "__main__":
     unittest.main()

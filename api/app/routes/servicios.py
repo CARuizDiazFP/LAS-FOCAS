@@ -880,7 +880,7 @@ async def refrescar_servicio_desde_prov(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProvClientError as exc:
         logger.error("action=servicios_prov_refrescar evento=error_cliente id=%s error=%s", id_consultado, exc)
-        raise HTTPException(status_code=502, detail=f"No se pudo consultar PROV: {exc}") from exc
+        raise HTTPException(status_code=502, detail="No se pudo consultar PROV") from exc
 
     async with AsyncSessionLocal() as db_write:
         svc = await _buscar_servicio_por_id(db_write, id_consultado)
