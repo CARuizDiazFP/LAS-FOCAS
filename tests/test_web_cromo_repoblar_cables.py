@@ -595,9 +595,13 @@ def test_actualizar_nombre_502_si_cromo_no_esta_configurado(monkeypatch):
     assert "no está configurado" in res.json()["error"]
 
 
-def test_actualizar_nombre_500_controlado_ante_error_inesperado(monkeypatch):
+def test_actualizar_nombre_500_controlado_ante_error_inesperado(monkeypatch, caplog):
     """Red de seguridad final (hallazgo I5): cualquier excepción no prevista del alta desde vivo
-    devuelve un 500 con mensaje de dominio, no una traza propagada sin logging."""
+    devuelve un 500 con ref (sin el texto de la excepción), no una traza propagada sin logging. El
+    log conserva su texto `action=` y lleva la misma ref (Task 11)."""
+    import logging
+    import re
+
     from web.app import main as web_main
     import core.services.cromo.botella_creacion_service as creacion_module
 
@@ -608,6 +612,7 @@ def test_actualizar_nombre_500_controlado_ante_error_inesperado(monkeypatch):
     monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
     _parchear_cromo(monkeypatch, _cliente_cromo_fake({BOTELLA_N_ID: BOTELLA_VIGENTE}))
     monkeypatch.setattr(creacion_module, "crear_o_actualizar_botella_desde_vivo", _explota)
+    caplog.set_level(logging.INFO, logger="web")
 
     client = TestClient(app)
     csrf = _login(client, "admin", "adminpass")
@@ -616,7 +621,18 @@ def test_actualizar_nombre_500_controlado_ante_error_inesperado(monkeypatch):
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo nombre", "csrf_token": csrf}
     )
     assert res.status_code == 500
-    assert res.json() == {"error": "Error inesperado al crear la Botella desde Cromo."}
+    assert "boom inesperado" not in res.text
+    ref = re.fullmatch(r"Error interno \(ref ([0-9a-f]{8})\)", res.json()["error"]).group(1)
+    assert list(res.json()) == ["error"]
+    (registro,) = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "web" and r.getMessage().startswith("action=botella_actualizar_nombre result=fail")
+    ]
+    assert registro == (
+        f"action=botella_actualizar_nombre result=fail reason=error_inesperado n_id={BOTELLA_N_ID} "
+        f"error=boom inesperado ref={ref}"
+    )
 
 
 def test_actualizar_nombre_409_si_identidad_ya_resuelta(monkeypatch):
