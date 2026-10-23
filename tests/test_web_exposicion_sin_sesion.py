@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
-from starlette.routing import WebSocketRoute
+from starlette.routing import Mount, WebSocketRoute
 
 from tests.test_web_rutas_contrato import muestra_de_ruta
 from web.app import main as web_main
@@ -173,6 +173,13 @@ def test_ruta_no_publica_exige_sesion(metodo, plantilla):
     assert res.status_code in (401, 403), f"{metodo} {plantilla} respondió {res.status_code} sin sesión"
 
 
+def test_unico_mount_es_assets_del_spa():
+    # El bug original era un Mount de StaticFiles sin sesión: el recorrido de APIRoute no lo ve.
+    mounts = [r.path for r in app.router.routes if isinstance(r, Mount)]
+    # /assets sólo se monta si existe web/frontend/dist (no en todos los entornos de test).
+    assert set(mounts) <= {"/assets"}
+
+
 def test_pendientes_depends_son_rutas_reales():
     existentes = set(_casos())
     assert PENDIENTES_DEPENDS <= existentes
@@ -217,6 +224,12 @@ def test_reports_con_sesion_200(informes_tmp, client_con_sesion):
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
     assert client_con_sesion.get("/reports/sub/x.pdf").content == b"%PDF-x"
+
+
+def test_reports_head_sin_sesion_401_y_con_sesion_200(informes_tmp, client_con_sesion):
+    # StaticFiles aceptaba HEAD: se conserva.
+    assert TestClient(app).head("/reports/sla.docx").status_code == 401
+    assert client_con_sesion.head("/reports/sla.docx").status_code == 200
 
 
 @pytest.mark.parametrize(

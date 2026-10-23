@@ -60,7 +60,7 @@ async def reports_index_redirect() -> RedirectResponse:
     return RedirectResponse(url="/reports-history", status_code=status.HTTP_302_FOUND)
 
 
-@router.get("/reports/{ruta:path}")
+@router.api_route("/reports/{ruta:path}", methods=["GET", "HEAD"])
 async def descargar_informe(ruta: str, request: Request) -> FileResponse:
     """Sirve un informe generado (antes era un mount estático sin sesión). Exige sesión y no sale de la base."""
     _require_auth(request)

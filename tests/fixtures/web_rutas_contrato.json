@@ -1358,6 +1358,13 @@
     "endpoint": "descargar_informe"
   },
   {
+    "tipo": "http",
+    "metodo": "HEAD",
+    "plantilla": "/reports/{ruta:path}",
+    "muestra": "/reports/muestra/sub",
+    "endpoint": "descargar_informe"
+  },
+  {
     "tipo": "websocket",
     "metodo": "WEBSOCKET",
     "plantilla": "/ws/admin-notifications",
