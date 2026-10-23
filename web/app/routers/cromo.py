@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -29,8 +29,6 @@ from ..comun import (
     _encolar_arbitro,
     _es_destino_slack_valido,
     _marcar_corrida_fallida,
-    _require_admin,
-    _require_auth,
     _serializar_bloqueos,
     _serializar_cromo_corrida,
     _serializar_pelo_semilla,
@@ -38,8 +36,10 @@ from ..comun import (
     _validar_csrf,
     logger,
 )
+from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+from ..errores import DatoInvalido, ErrorDeDominio, NoEncontrado, error_interno, nueva_ref
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(usuario_sesion)])
 
 
 # ── Endpoints: verificador de servicios sobre inventario Cromo (Etapa 6) ─────
@@ -65,17 +65,16 @@ def _serializar_servicio_encontrado(servicio: Any) -> dict[str, Any]:
 
 
 @router.get("/api/infra/cromo/cables/{cable_n_id}/servicios")
-async def cromo_verificador_por_cable_web(request: Request, cable_n_id: int) -> JSONResponse:
+async def cromo_verificador_por_cable_web(cable_n_id: int) -> JSONResponse:
     """Servicios que pasan por un cable entero (cualquiera de sus tubos/pelos)."""
     from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_por_cable
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     try:
         async with AsyncSessionLocal() as sesion:
             resultado = await servicios_por_cable(sesion, cable_n_id)
     except ObjetoNoEncontrado as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
+        raise NoEncontrado(str(exc)) from exc
 
     return JSONResponse(
         {
@@ -90,17 +89,16 @@ async def cromo_verificador_por_cable_web(request: Request, cable_n_id: int) -> 
 
 
 @router.get("/api/infra/cromo/tubos/{tubo_n_id}/servicios")
-async def cromo_verificador_por_tubo_web(request: Request, tubo_n_id: int) -> JSONResponse:
+async def cromo_verificador_por_tubo_web(tubo_n_id: int) -> JSONResponse:
     """Servicios que pasan por un tubo/buffer específico dentro de un cable."""
     from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_por_tubo
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     try:
         async with AsyncSessionLocal() as sesion:
             resultado = await servicios_por_tubo(sesion, tubo_n_id)
     except ObjetoNoEncontrado as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
+        raise NoEncontrado(str(exc)) from exc
 
     return JSONResponse(
         {
@@ -114,19 +112,18 @@ async def cromo_verificador_por_tubo_web(request: Request, tubo_n_id: int) -> JS
 
 
 @router.get("/api/infra/cromo/botellas/{botella_n_id}/servicios")
-async def cromo_verificador_por_botella_web(request: Request, botella_n_id: int) -> JSONResponse:
+async def cromo_verificador_por_botella_web(botella_n_id: int) -> JSONResponse:
     """Servicios que pasan por los cables que tienen esta botella como uno de sus extremos, más el
     listado de esos cables (id, nombre, cantidad de servicios) para la tarjeta "Cables asociados"
     del detalle de Botella en el Verificador."""
     from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_por_botella
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     try:
         async with AsyncSessionLocal() as sesion:
             resultado = await servicios_por_botella(sesion, botella_n_id)
     except ObjetoNoEncontrado as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
+        raise NoEncontrado(str(exc)) from exc
 
     return JSONResponse(
         {
@@ -483,14 +480,13 @@ async def _ejecutar_refresco_prov_lote(pendientes: list[Any]) -> _ResultadoRefre
         },
     },
 )
-async def cromo_cable_resolver_web(request: Request, q: str) -> JSONResponse:
+async def cromo_cable_resolver_web(q: str) -> JSONResponse:
     """Resuelve un cable por `n_id` (si `q` es puramente numérico) o por `nombre` exacto case-
     insensitive (si no) — ver `_resolver_cable_por_texto`. 404 si no hay ningún cable vigente con
     ese criterio; 409 explícito (nunca elegir arbitrariamente) si hay 2+ — hay al menos 2 pares de
     nombres duplicados reales conocidos (`F-ALV-2335`, `F-LEM-11-A`) sobre ~32.782 cables."""
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     async with AsyncSessionLocal() as sesion:
         candidatos = await _resolver_cable_por_texto(sesion, q)
 
@@ -521,7 +517,7 @@ async def cromo_cable_resolver_web(request: Request, q: str) -> JSONResponse:
         },
     },
 )
-async def cromo_servicios_unicos_por_cable_web(request: Request, cable_n_id: int) -> JSONResponse:
+async def cromo_servicios_unicos_por_cable_web(cable_n_id: int) -> JSONResponse:
     """IDs de servicio únicos (Task 1: `servicios_unicos_por_cable`) de un cable entero, con
     frescura PROV por servicio (Task 7) — vista complementaria a
     `/api/infra/cromo/cables/{id}/servicios` (arriba), que es por-pelo para la tabla del
@@ -530,7 +526,6 @@ async def cromo_servicios_unicos_por_cable_web(request: Request, cable_n_id: int
     from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_unicos_por_cable
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     try:
         async with AsyncSessionLocal() as sesion:
             resultado = await servicios_unicos_por_cable(sesion, cable_n_id)
@@ -563,7 +558,7 @@ async def cromo_servicios_unicos_por_cable_web(request: Request, cable_n_id: int
         },
     },
 )
-async def cromo_servicios_unicos_por_buffer_web(request: Request, cable_n_id: int, numero: int) -> JSONResponse:
+async def cromo_servicios_unicos_por_buffer_web(cable_n_id: int, numero: int) -> JSONResponse:
     """Igual que la ruta anterior, acotado a un buffer humano `B<numero>` puntual (`numero` 1-
     indexado, mapea a `cromo_tubos.orden = numero - 1`, ver `_resolver_buffer_por_numero`). 404 con
     `total_buffers` si el cable no tiene ese buffer — para que el cliente pueda orientar al técnico
@@ -571,7 +566,6 @@ async def cromo_servicios_unicos_por_buffer_web(request: Request, cable_n_id: in
     from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_unicos_por_tubo, ResultadoServiciosUnicos
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     async with AsyncSessionLocal() as sesion:
         tubo, total_buffers = await _resolver_buffer_por_numero(sesion, cable_n_id, numero)
         if tubo is None:
@@ -615,7 +609,10 @@ async def cromo_servicios_unicos_por_buffer_web(request: Request, cable_n_id: in
     },
 )
 async def cromo_servicios_unicos_refrescar_prov_web(
-    request: Request, cable_n_id: int, body: CromoServiciosUnicosRefrescarRequestModel
+    request: Request,
+    cable_n_id: int,
+    body: CromoServiciosUnicosRefrescarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Dispara el refresco PROV (Task 9) de los servicios únicos vencidos de este cable, awaiteado
     dentro del propio request (a diferencia del comando de Slack, fire-and-forget) — ver
@@ -626,7 +623,7 @@ async def cromo_servicios_unicos_refrescar_prov_web(
     from core.services.prov.frescura import servicios_vencidos
     from db.session import AsyncSessionLocal
 
-    username, _ = _require_auth(request)
+    username, _ = usuario
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -653,11 +650,10 @@ async def cromo_servicios_unicos_refrescar_prov_web(
                 exc,
             )
             return JSONResponse({"error": f"PROV no está configurado: {exc}"}, status_code=502)
+        except (HTTPException, ErrorDeDominio):
+            raise
         except Exception as exc:
-            logger.exception(
-                "action=cromo_servicios_unicos_refrescar_prov_error cable_n_id=%s error=%s", cable_n_id, exc
-            )
-            return JSONResponse({"error": "No se pudo ejecutar el refresco PROV"}, status_code=500)
+            return error_interno("cromo_servicios_unicos_refrescar_prov", exc, cable_n_id=cable_n_id)
         refresco_prov = {"estado": "completado" if not lote.fallidos else "parcial", "fallidos": lote.fallidos}
 
     async with AsyncSessionLocal() as sesion:
@@ -699,7 +695,7 @@ def _serializar_pelo_empalme(pelo: Any) -> Optional[dict[str, Any]]:
 
 
 @router.get("/api/infra/cromo/botellas/{botella_n_id}/empalmes")
-async def cromo_empalmes_de_botella_web(request: Request, botella_n_id: int) -> JSONResponse:
+async def cromo_empalmes_de_botella_web(botella_n_id: int) -> JSONResponse:
     """Empalmes (fusiones) internos de una Botella, aplanados y con Splitters agrupados en una sola
     fila por pelo de origen — para la tabla dinámica de `/infra/cromo/verificador?...&n_id=.../empalmes`.
     Sólo lectura sobre `app.cromo_fusiones` ya ingerido, cualquier usuario autenticado (mismo
@@ -708,12 +704,11 @@ async def cromo_empalmes_de_botella_web(request: Request, botella_n_id: int) -> 
     from core.services.cromo.verificador import ObjetoNoEncontrado
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     try:
         async with AsyncSessionLocal() as sesion:
             resultado = await empalmes_de_botella(sesion, botella_n_id)
     except ObjetoNoEncontrado as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
+        raise NoEncontrado(str(exc)) from exc
 
     return JSONResponse(
         {
@@ -757,7 +752,6 @@ async def cromo_empalmes_de_botella_web(request: Request, botella_n_id: int) -> 
 
 @router.get("/api/infra/cromo/cables")
 async def cromo_inventario_cables_web(
-    request: Request,
     q: Optional[str] = None,
     jerarquia: Optional[str] = None,
     propietario: Optional[str] = None,
@@ -774,7 +768,6 @@ async def cromo_inventario_cables_web(
     from core.services.cromo.inventario import buscar_cables
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
@@ -818,7 +811,6 @@ async def cromo_inventario_cables_web(
 
 @router.get("/api/infra/cromo/pon")
 async def cromo_inventario_pon_web(
-    request: Request,
     q: Optional[str] = None,
     n_id: Optional[int] = None,
     clases: Optional[str] = None,
@@ -841,7 +833,6 @@ async def cromo_inventario_pon_web(
     from core.services.cromo.pon_inventario import buscar_pon_elementos
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
@@ -891,7 +882,6 @@ async def cromo_inventario_pon_web(
 
 @router.get("/api/infra/cromo/odfs")
 async def cromo_inventario_odfs_web(
-    request: Request,
     q: Optional[str] = None,
     n_id: Optional[int] = None,
     vigente: Optional[bool] = None,
@@ -905,7 +895,6 @@ async def cromo_inventario_odfs_web(
     from core.services.cromo.odf_inventario import buscar_odfs
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
@@ -969,7 +958,7 @@ def _serializar_detalle_odf(detalle: Any) -> dict[str, Any]:
 
 
 @router.get("/api/infra/cromo/odfs/{n_id}/detalle")
-async def cromo_odf_detalle_web(request: Request, n_id: int) -> JSONResponse:
+async def cromo_odf_detalle_web(n_id: int) -> JSONResponse:
     """Detalle de un ODF: metadata, cables asociados resueltos (n_id + nombre) y otros ODFs que
     comparten domicilio físico (Tarea 4 del plan ODFs). Sólo lectura, cualquier usuario autenticado
     (mismo criterio que el detalle de cable)."""
@@ -977,30 +966,28 @@ async def cromo_odf_detalle_web(request: Request, n_id: int) -> JSONResponse:
     from core.services.cromo.verificador import ObjetoNoEncontrado
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     try:
         async with AsyncSessionLocal() as sesion:
             detalle = await obtener_detalle_odf(sesion, n_id)
     except ObjetoNoEncontrado as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
+        raise NoEncontrado(str(exc)) from exc
 
     return JSONResponse(_serializar_detalle_odf(detalle))
 
 
 @router.get("/api/infra/cromo/odfs/{odf_n_id}/servicios")
-async def cromo_verificador_por_odf_web(request: Request, odf_n_id: int) -> JSONResponse:
+async def cromo_verificador_por_odf_web(odf_n_id: int) -> JSONResponse:
     """Servicios que pasan por los cables asociados a este ODF, más el listado de esos cables (id,
     nombre, cantidad de servicios) — mismo formato de tarjeta "Cables asociados" que el verificador
     de Botella (Tarea 4 del plan ODFs). Sólo lectura, cualquier usuario autenticado."""
     from core.services.cromo.verificador import ObjetoNoEncontrado, servicios_por_odf
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     try:
         async with AsyncSessionLocal() as sesion:
             resultado = await servicios_por_odf(sesion, odf_n_id)
     except ObjetoNoEncontrado as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
+        raise NoEncontrado(str(exc)) from exc
 
     return JSONResponse(
         {
@@ -1018,19 +1005,18 @@ async def cromo_verificador_por_odf_web(request: Request, odf_n_id: int) -> JSON
 
 
 @router.get("/api/infra/cromo/odfs/{odf_n_id}/conectores")
-async def cromo_conectores_de_odf_web(request: Request, odf_n_id: int) -> JSONResponse:
+async def cromo_conectores_de_odf_web(odf_n_id: int) -> JSONResponse:
     """Conectores/posiciones de patchera de esta ODF, con Cliente/Estado ya resueltos (atributo
     directo de Cromo + regex del pelo, combinados por MAX-based ID final — ver
     `core/services/cromo/odf_conectores.py`). Sólo lectura, cualquier usuario autenticado."""
     from core.services.cromo.odf_conectores import ObjetoNoEncontrado, conectores_de_odf
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     try:
         async with AsyncSessionLocal() as sesion:
             resultado = await conectores_de_odf(sesion, odf_n_id)
     except ObjetoNoEncontrado as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
+        raise NoEncontrado(str(exc)) from exc
 
     return JSONResponse(
         {
@@ -1064,7 +1050,6 @@ async def cromo_conectores_de_odf_web(request: Request, odf_n_id: int) -> JSONRe
 
 @router.get("/api/infra/botellas/buscar")
 async def botellas_unificadas_buscar_web(
-    request: Request,
     q: Optional[str] = None,
     limit: int = 30,
     offset: int = 0,
@@ -1077,7 +1062,6 @@ async def botellas_unificadas_buscar_web(
     from core.services.botellas_unificadas_service import buscar_botellas_unificadas
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
@@ -1119,11 +1103,15 @@ class BotellasEstadoMasivoRequestModel(BaseModel):
 
 
 @router.put("/api/infra/botellas/estado")
-async def botellas_estado_masivo_web(request: Request, body: BotellasEstadoMasivoRequestModel) -> JSONResponse:
+async def botellas_estado_masivo_web(
+    request: Request,
+    body: BotellasEstadoMasivoRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Cambia el estado de un lote de Botellas (Cromo + legado) en una sola operación. Legado
     cascadea por grupo completo vía `aplicar_estado_a_grupo`; Cromo actualiza `CromoBotella.estado`
     directo (foto propia, ver `core/services/botellas_estado_masivo_service.py`)."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -1160,7 +1148,7 @@ async def botellas_estado_masivo_web(request: Request, body: BotellasEstadoMasiv
                 )
             except EstadoMasivoError as exc:
                 session.rollback()
-                return JSONResponse({"error": str(exc)}, status_code=400)
+                raise ErrorDeDominio(str(exc)) from exc
 
             session.commit()
             logger.info(
@@ -1172,16 +1160,14 @@ async def botellas_estado_masivo_web(request: Request, body: BotellasEstadoMasiv
                 len(resultado.no_encontrados),
             )
             return JSONResponse({"ok": True, **resultado.to_dict()})
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=botellas_estado_masivo_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudo actualizar el estado de las Botellas"}, status_code=500)
+        return error_interno("botellas_estado_masivo", exc, user=username)
 
 
-@router.get("/api/admin/infra/botellas/viewer")
+@router.get("/api/admin/infra/botellas/viewer", dependencies=[Depends(usuario_admin)])
 async def botellas_viewer_listado_web(
-    request: Request,
     q: Optional[str] = None,
     limit: int = 30,
     offset: int = 0,
@@ -1190,7 +1176,6 @@ async def botellas_viewer_listado_web(
     """Listado paginado dual (Cromo + legado) para `/admin/servicios/viewer/Botellas` — delega
     íntegramente en `buscar_botellas_unificadas` (mismo servicio y patrón `AsyncSessionLocal` que ya
     usa `GET /api/infra/botellas/buscar`), con guarda admin adicional para el namespace del dashboard."""
-    _require_admin(request)
     try:
         from core.services.botellas_unificadas_service import buscar_botellas_unificadas
         from db.session import AsyncSessionLocal
@@ -1213,13 +1198,14 @@ async def botellas_viewer_listado_web(
                 for b in resultado.botellas
             ],
         })
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=botellas_viewer_listado_error error=%s", exc)
-        return JSONResponse({"error": "No se pudo obtener el listado de Botellas"}, status_code=500)
+        return error_interno("botellas_viewer_listado", exc)
 
 
-@router.get("/api/admin/infra/botellas/viewer/duplicados")
-async def botellas_viewer_duplicados_web(request: Request, refrescar: bool = False) -> JSONResponse:
+@router.get("/api/admin/infra/botellas/viewer/duplicados", dependencies=[Depends(usuario_admin)])
+async def botellas_viewer_duplicados_web(refrescar: bool = False) -> JSONResponse:
     """Grupos de Botellas (Cromo + legado) candidatas a duplicado dentro de la misma Cámara padre.
     Sin paginar — ver `core/services/botella_duplicados_service.py`. Cada miembro Cromo lleva
     `tiene_cables` (señal "operativa" para elegir el destino al consolidar un grupo no `resoluble`,
@@ -1241,7 +1227,6 @@ async def botellas_viewer_duplicados_web(request: Request, refrescar: bool = Fal
     entrada 2026-08-21 (cont.). El cómputo (cache miss o `refrescar=true`) corre en un hilo aparte
     (`asyncio.to_thread`) para no bloquear el event loop del proceso `web` — mismo patrón ya usado en
     `modules/botellas_recalculo_worker/worker.py`, ver `docs/decisiones.md`, entrada 2026-08-22."""
-    _require_admin(request)
     try:
         from core.services.botella_duplicados_service import (
             detectar_grupos_duplicados_botellas,
@@ -1287,9 +1272,10 @@ async def botellas_viewer_duplicados_web(request: Request, refrescar: bool = Fal
                     for g in grupos
                 ],
             })
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=botellas_viewer_duplicados_error error=%s", exc)
-        return JSONResponse({"error": "No se pudo calcular los grupos de duplicados"}, status_code=500)
+        return error_interno("botellas_viewer_duplicados", exc)
 
 
 class BotellasOperatividadRequestModel(BaseModel):
@@ -1298,12 +1284,11 @@ class BotellasOperatividadRequestModel(BaseModel):
     n_ids: list[int]
 
 
-@router.post("/api/admin/infra/botellas/operatividad")
-async def botellas_operatividad_web(request: Request, body: BotellasOperatividadRequestModel) -> JSONResponse:
+@router.post("/api/admin/infra/botellas/operatividad", dependencies=[Depends(usuario_admin)])
+async def botellas_operatividad_web(body: BotellasOperatividadRequestModel) -> JSONResponse:
     """Cuáles de los n_ids Cromo dados tienen al menos un cable asociado (extremo_a/b) — señal
     "operativa" para el flujo de consolidación manual con IDs tipeados a mano (sin pasar por un grupo
     ya detectado). Una sola query batcheada, sin N+1."""
-    _require_admin(request)
     try:
         from core.services.cromo.verificador import tiene_cables_asociados_batch_sync
         from db.session import SessionLocal
@@ -1311,9 +1296,10 @@ async def botellas_operatividad_web(request: Request, body: BotellasOperatividad
         with SessionLocal() as session:
             operativos = tiene_cables_asociados_batch_sync(session, body.n_ids)
         return JSONResponse({"operativos": sorted(operativos)})
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=botellas_operatividad_error error=%s", exc)
-        return JSONResponse({"error": "No se pudo calcular operatividad"}, status_code=500)
+        return error_interno("botellas_operatividad", exc)
 
 
 class BotellaApropiarRequestModel(BaseModel):
@@ -1325,11 +1311,15 @@ class BotellaApropiarRequestModel(BaseModel):
 
 
 @router.post("/api/infra/botellas/apropiar")
-async def botellas_apropiar_web(request: Request, body: BotellaApropiarRequestModel) -> JSONResponse:
+async def botellas_apropiar_web(
+    request: Request,
+    body: BotellaApropiarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Apropia una Botella legado hacia su CromoBotella hermana: Cromo se conserva, la legado se
     elimina físicamente tras reasignar sus FKs reales a la Cámara padre. Ver
     `core/services/botella_merge_service.py`."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -1347,7 +1337,7 @@ async def botellas_apropiar_web(request: Request, body: BotellaApropiarRequestMo
                 )
             except ApropiacionBotellaError as exc:
                 session.rollback()
-                return JSONResponse({"error": str(exc)}, status_code=400)
+                raise ErrorDeDominio(str(exc)) from exc
 
             session.commit()
             logger.info(
@@ -1385,11 +1375,10 @@ async def botellas_apropiar_web(request: Request, body: BotellaApropiarRequestMo
                 "aliases_migrados": resultado.aliases_migrados,
                 "estado_final": resultado.estado_final,
             })
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=botellas_apropiar_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudo apropiar la Botella"}, status_code=500)
+        return error_interno("botellas_apropiar", exc, user=username)
 
 
 class BotellaApropiarMasivoRequestModel(BaseModel):
@@ -1399,14 +1388,18 @@ class BotellaApropiarMasivoRequestModel(BaseModel):
 
 
 @router.post("/api/infra/botellas/apropiar-masivo")
-async def botellas_apropiar_masivo_web(request: Request, body: BotellaApropiarMasivoRequestModel) -> JSONResponse:
+async def botellas_apropiar_masivo_web(
+    request: Request,
+    body: BotellaApropiarMasivoRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Apropia automáticamente TODOS los grupos de Botellas duplicadas `resoluble` (1 legado + 1
     Cromo dentro del mismo padre) detectados en este momento — mismo patrón que
     `POST /api/infra/camaras/merge-masivo`: cada grupo corre en su PROPIA transacción, así que un
     fallo aislado no revierte los grupos ya apropiados exitosamente. Grupos no `resoluble` (todo
     legado, todo cromo, o mixto con 2+ legado) se omiten — no tienen política de resolución
     automática definida, ver `core/services/botella_duplicados_service.py`."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -1478,11 +1471,10 @@ async def botellas_apropiar_masivo_web(request: Request, body: BotellaApropiarMa
             "grupos_con_error": grupos_con_error,
             "detalle": detalle,
         })
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=botellas_apropiar_masivo_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudo ejecutar la apropiación masiva"}, status_code=500)
+        return error_interno("botellas_apropiar_masivo", exc, user=username)
 
 
 class BotellaConsolidarRequestModel(BaseModel):
@@ -1503,13 +1495,17 @@ class BotellaConsolidarRequestModel(BaseModel):
 
 
 @router.post("/api/infra/botellas/consolidar")
-async def botellas_consolidar_web(request: Request, body: BotellaConsolidarRequestModel) -> JSONResponse:
+async def botellas_consolidar_web(
+    request: Request,
+    body: BotellaConsolidarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Consolida un grupo libre de Botellas Cromo duplicadas hacia un único n_id destino: crea/
     actualiza filas en `app.cromo_botella_alias` (`accion='fusionar'`), opcionalmente migra una o más
     Botellas legado hacia el destino (reusa `apropiar_legado_a_cromo` tal cual) y opcionalmente
     corrige el nombre del destino si falta. Cierra el gap "Revisión manual" documentado 2026-08-14 en
     `core/services/botella_duplicados_service.py`. Ver `core/services/cromo/consolidacion_service.py`."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -1538,7 +1534,7 @@ async def botellas_consolidar_web(request: Request, body: BotellaConsolidarReque
                 )
             except (ConsolidacionBotellaError, ApropiacionBotellaError) as exc:
                 session.rollback()
-                return JSONResponse({"error": str(exc)}, status_code=400)
+                raise ErrorDeDominio(str(exc)) from exc
 
             session.commit()
             logger.info(
@@ -1578,20 +1574,19 @@ async def botellas_consolidar_web(request: Request, body: BotellaConsolidarReque
                 "nombre_nuevo": resultado.nombre_nuevo,
                 "legados_con_camara_forzada": resultado.legados_con_camara_forzada,
             })
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=botellas_consolidar_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudo consolidar el grupo"}, status_code=500)
+        return error_interno("botellas_consolidar", exc, user=username)
 
 
 @router.get("/api/admin/infra/botellas/inconsistencias/exportar")
-async def botellas_inconsistencias_exportar_web(request: Request) -> Response:
+async def botellas_inconsistencias_exportar_web(usuario: UsuarioSesion = Depends(usuario_admin)) -> Response:
     """Excel de inconsistencias de Botellas sin resolver: huérfanas (sin Cámara padre) + miembros de
     grupos duplicados no `resoluble` automáticamente. Columnas: ID Cromo, Nombre, Cámara Padre,
     Motivo — mismo patrón de export ya usado en este archivo para Cámaras (`pd.ExcelWriter(engine=
     "openpyxl")` + `Response` con `Content-Disposition`)."""
-    username = _require_admin(request)
+    username = usuario.username
     try:
         from datetime import datetime, timezone
 
@@ -1652,9 +1647,10 @@ async def botellas_inconsistencias_exportar_web(request: Request) -> Response:
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f'attachment; filename="botellas_inconsistencias_{timestamp}.xlsx"'},
         )
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=botellas_inconsistencias_exportar_error error=%s", exc)
-        return JSONResponse({"error": "No se pudo generar el reporte"}, status_code=500)
+        return error_interno("botellas_inconsistencias_exportar", exc)
 
 
 class BotellaEliminarRequestModel(BaseModel):
@@ -1666,14 +1662,18 @@ class BotellaEliminarRequestModel(BaseModel):
 
 
 @router.post("/api/infra/botellas/eliminar")
-async def botellas_eliminar_web(request: Request, body: BotellaEliminarRequestModel) -> JSONResponse:
+async def botellas_eliminar_web(
+    request: Request,
+    body: BotellaEliminarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Elimina permanentemente una Botella (legado o Cromo) — se rechaza si tiene Cables/Empalmes/
     Ingresos (legado) o Cables/Fusiones Cromo (o si ya es destino de otra fila de alias) asociados;
     sólo se puede eliminar lo que esté genuinamente vacío. Para Cromo, registra automáticamente el
     n_id en `app.cromo_botella_alias` (`accion='ignorar'`) para que la ingesta no la resucite. Si la
     Cámara padre queda vacía como consecuencia, también se elimina. Ver
     `core/services/camara_botella_delete_service.py`."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -1715,11 +1715,10 @@ async def botellas_eliminar_web(request: Request, body: BotellaEliminarRequestMo
                 "camara_padre_eliminada": resultado.camara_padre_eliminada,
                 "alias_registrado": resultado.alias_registrado,
             })
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=botellas_eliminar_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudo eliminar la Botella"}, status_code=500)
+        return error_interno("botellas_eliminar", exc, user=username)
 
 
 class BotellaEliminarGrupoRequestModel(BaseModel):
@@ -1734,14 +1733,14 @@ class BotellaEliminarGrupoRequestModel(BaseModel):
 
 @router.post("/api/infra/botellas/eliminar-grupo")
 async def botellas_eliminar_grupo_web(
-    request: Request, body: BotellaEliminarGrupoRequestModel
+    request: Request, body: BotellaEliminarGrupoRequestModel, usuario: UsuarioSesion = Depends(usuario_admin)
 ) -> JSONResponse:
     """Elimina físicamente un grupo de Botellas Cromo conflictivas (residuo de cambios de nombre en
     la ingesta) junto con sus `CromoCable`/`CromoFusion` asociados, SIN bloquear por datos reales —
     a diferencia de `/api/infra/botellas/eliminar`. Registra cada n_id en `app.cromo_botella_alias`
     (`accion='ignorar'`) para que la ingesta no las resucite. Ver
     `core/services/camara_botella_delete_service.py::eliminar_y_excluir_grupo_cromo`."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -1762,7 +1761,7 @@ async def botellas_eliminar_grupo_web(
                 )
             except EliminacionBloqueadaError as exc:
                 session.rollback()
-                return JSONResponse({"error": str(exc)}, status_code=400)
+                raise ErrorDeDominio(str(exc)) from exc
 
             session.commit()
             logger.info(
@@ -1790,15 +1789,14 @@ async def botellas_eliminar_grupo_web(
                 "aliases_registrados": resultado.aliases_registrados,
                 "no_encontradas": resultado.no_encontradas,
             })
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=botellas_eliminar_grupo_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudo eliminar el grupo de Botellas"}, status_code=500)
+        return error_interno("botellas_eliminar_grupo", exc, user=username)
 
 
 @router.get("/api/infra/cromo-botellas/{n_id}/estado-asociacion")
-async def cromo_botella_estado_asociacion_web(request: Request, n_id: int) -> JSONResponse:
+async def cromo_botella_estado_asociacion_web(n_id: int) -> JSONResponse:
     """Chequeo liviano de una Botella Cromo puntual: ¿está huérfana (sin `camara_id`)? Usado por
     `BotellaDetalleUnificadaView.vue` para decidir si mostrar el panel de resolución individual en
     vez de redirigir directo al Verificador Cromo. Desde 2026-08-13 también trae `camara_id`/
@@ -1810,7 +1808,6 @@ async def cromo_botella_estado_asociacion_web(request: Request, n_id: int) -> JS
     from db.models.infra import Camara
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     async with AsyncSessionLocal() as sesion:
         botella = (
             await sesion.execute(
@@ -1837,7 +1834,6 @@ async def cromo_botella_estado_asociacion_web(request: Request, n_id: int) -> JS
 
 @router.get("/api/infra/cromo-botellas/huerfanas")
 async def cromo_botellas_huerfanas_web(
-    request: Request,
     q: Optional[str] = None,
     limit: int = 30,
     offset: int = 0,
@@ -1847,7 +1843,6 @@ async def cromo_botellas_huerfanas_web(
     from core.services.cromo.orfanas_service import buscar_huerfanas
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
@@ -1875,10 +1870,16 @@ class CromoBotellasAsociarRequestModel(BaseModel):
 
 
 @router.post("/api/infra/cromo-botellas/asociar")
-async def cromo_botellas_asociar_web(request: Request, body: CromoBotellasAsociarRequestModel) -> JSONResponse:
+async def cromo_botellas_asociar_web(
+    request: Request,
+    body: CromoBotellasAsociarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
+) -> JSONResponse:
     """Asocia una o más Botellas Cromo huérfanas a una Cámara existente o recién creada — resolución
     manual individual o masiva (Caso 1, huérfanas). Ver `core/services/cromo/orfanas_service.py`."""
-    username = _require_auth(request)
+    # Comportamiento previo preservado: `username` es la tupla (usuario, rol), no el
+    # string (bug latente anterior a la Task 11, ver su reporte).
+    username = tuple(usuario)
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -1900,7 +1901,7 @@ async def cromo_botellas_asociar_web(request: Request, body: CromoBotellasAsocia
                 )
             except AsociarHuerfanasError as exc:
                 session.rollback()
-                return JSONResponse({"error": str(exc)}, status_code=400)
+                raise ErrorDeDominio(str(exc)) from exc
 
             session.commit()
             logger.info(
@@ -1917,11 +1918,10 @@ async def cromo_botellas_asociar_web(request: Request, body: CromoBotellasAsocia
                 "botellas_vinculadas": resultado.botellas_vinculadas,
                 "estado_asignado": resultado.estado_asignado,
             })
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=cromo_botellas_asociar_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudieron asociar las Botellas"}, status_code=500)
+        return error_interno("cromo_botellas_asociar", exc, user=username)
 
 
 def _serializar_extremo_cable(n_id: Any, clase: Any, legacy: Any, nombre: Any) -> dict[str, Any]:
@@ -1994,7 +1994,7 @@ def _serializar_detalle_cable(detalle: Any) -> dict[str, Any]:
 
 
 @router.get("/api/infra/cromo/cables/{n_id}/detalle")
-async def cromo_cable_detalle_web(request: Request, n_id: int) -> JSONResponse:
+async def cromo_cable_detalle_web(n_id: int) -> JSONResponse:
     """Detalle jerárquico completo de un cable: metadata, extremos, tubos/buffers y pelos con su
     servicio matcheado (Etapa 9). Sólo lectura, cualquier usuario autenticado (mismo criterio que el
     verificador/inventario)."""
@@ -2002,12 +2002,11 @@ async def cromo_cable_detalle_web(request: Request, n_id: int) -> JSONResponse:
     from core.services.cromo.verificador import ObjetoNoEncontrado
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     try:
         async with AsyncSessionLocal() as sesion:
             detalle = await obtener_detalle_cable(sesion, n_id)
     except ObjetoNoEncontrado as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
+        raise NoEncontrado(str(exc)) from exc
 
     return JSONResponse(_serializar_detalle_cable(detalle))
 
@@ -2027,7 +2026,7 @@ def _serializar_elemento_vivo(elemento: Any) -> dict[str, Any]:
 
 
 @router.get("/api/infra/cromo/elementos/{n_id}/vivo")
-async def cromo_elemento_vivo_web(request: Request, n_id: int) -> JSONResponse:
+async def cromo_elemento_vivo_web(n_id: int) -> JSONResponse:
     """Visor en vivo de un elemento Cromo por `n_id` — GET directo contra Cromo (nunca contra las
     tablas ya ingeridas), para auditar inconsistencias sin esperar a la próxima corrida de ingesta.
     Sólo lectura, cualquier usuario autenticado (mismo criterio que el resto de `/api/infra/cromo/*`).
@@ -2038,12 +2037,11 @@ async def cromo_elemento_vivo_web(request: Request, n_id: int) -> JSONResponse:
     from core.services.cromo.verificador import ObjetoNoEncontrado
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     try:
         async with AsyncSessionLocal() as sesion, CromoClient(config=get_cromo_config()) as cliente:
             elemento = await obtener_elemento_vivo(cliente, sesion, n_id)
     except ObjetoNoEncontrado as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
+        raise NoEncontrado(str(exc)) from exc
     except CromoClientError as exc:
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
 
@@ -2064,7 +2062,10 @@ def _serializar_pelo_excluido(excluido: Any) -> dict[str, Any]:
 
 
 @router.get("/api/infra/cromo/servicios/{servicio_id}/odfs")
-async def cromo_odfs_de_servicio_web(request: Request, servicio_id: int) -> JSONResponse:
+async def cromo_odfs_de_servicio_web(
+    servicio_id: int,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
+) -> JSONResponse:
     """ODFs de Cromo a las que llega un Servicio — el canal por defecto del Detalle de Servicio.
 
     SQL local sobre lo ya ingerido: **no toca Cromo en vivo**. La consulta en vivo es el segundo
@@ -2079,7 +2080,7 @@ async def cromo_odfs_de_servicio_web(request: Request, servicio_id: int) -> JSON
     from core.services.cromo.verificador import odfs_por_servicio
     from db.session import AsyncSessionLocal
 
-    username, _ = _require_auth(request)
+    username, _ = usuario
 
     async with AsyncSessionLocal() as sesion:
         if not await _servicio_existe(sesion, servicio_id):
@@ -2116,7 +2117,7 @@ async def cromo_odfs_de_servicio_web(request: Request, servicio_id: int) -> JSON
 
 @router.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/pelos")
 async def cromo_camino_pelos_web(
-    request: Request, servicio_id: int, priorizar_conector: bool = False
+    servicio_id: int, priorizar_conector: bool = False
 ) -> JSONResponse:
     """Pelos de Cromo con los que se puede pedir el camino óptico de un Servicio.
 
@@ -2135,7 +2136,6 @@ async def cromo_camino_pelos_web(
     from core.services.cromo.servicio_posicion_vigente import tiene_posiciones
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
 
     async with AsyncSessionLocal() as sesion:
         if not await _servicio_existe(sesion, servicio_id):
@@ -2191,11 +2191,11 @@ async def cromo_camino_pelos_web(
 
 @router.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/tracking.txt")
 async def cromo_camino_tracking_txt_web(
-    request: Request,
     servicio_id: int,
     pelo_n_id: Optional[int] = None,
     tramo: Optional[int] = Query(default=None, ge=1),
     adicional: Optional[int] = Query(default=None, ge=1),
+    sesion_usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> Response:
     """Tracking óptico de un Servicio, generado desde Cromo, en el formato `.txt` legacy.
 
@@ -2209,7 +2209,7 @@ async def cromo_camino_tracking_txt_web(
     Un pelo que sólo es de posición se nombra siempre con el número del Servicio, nunca con el
     at.62 (el de esos pelos es `4649`), y si no está declarado se cachea sin servicio.
 
-    `_require_auth` con el mismo criterio que `/api/infra/tracking/{ruta_id}/download`, que ya
+    Sesión de usuario (`usuario_sesion`) con el mismo criterio que `/api/infra/tracking/{ruta_id}/download`, que ya
     entrega el tracking completo de una ruta a cualquier usuario autenticado.
 
     `SIN_SEMILLA`/`SIN_CAMINO` responden **409** y no 200: no hay archivo que adjuntar, y un
@@ -2242,7 +2242,7 @@ async def cromo_camino_tracking_txt_web(
     )
     from db.session import AsyncSessionLocal
 
-    usuario, _rol = _require_auth(request)
+    usuario = sesion_usuario.username
     if tramo is not None and adicional is not None:
         return JSONResponse(
             {"error": "Pedí un tramo o un adicional, no los dos a la vez."}, status_code=400
@@ -2413,7 +2413,10 @@ async def _inconsistencias_del_servicio(sesion: Any, servicio_id: int) -> dict[s
 
 
 @router.get("/api/infra/cromo/servicios/{servicio_id}/camino-optico/caminos")
-async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONResponse:
+async def cromo_camino_caminos_web(
+    servicio_id: int,
+    sesion_usuario: UsuarioSesion = Depends(usuario_sesion),
+) -> JSONResponse:
     """Los caminos del Servicio, separados en tramos y residuales.
 
     Es lo mismo que hace `@bot track` en Slack (`tracking_service.trackings_del_servicio`): recorre
@@ -2454,7 +2457,7 @@ async def cromo_camino_caminos_web(request: Request, servicio_id: int) -> JSONRe
     from core.services.cromo.tracking_service import es_camino_completo, trackings_del_servicio
     from db.session import AsyncSessionLocal
 
-    usuario, _rol = _require_auth(request)
+    usuario = sesion_usuario.username
     try:
         async with AsyncSessionLocal() as sesion:
             if not await _servicio_existe(sesion, servicio_id):
@@ -2612,9 +2615,8 @@ class HuerfanosAuditoriaGlobalRequestModel(BaseModel):
     csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
-@router.get("/api/admin/infra/huerfanos")
+@router.get("/api/admin/infra/huerfanos", dependencies=[Depends(usuario_admin)])
 async def huerfanos_listar_web(
-    request: Request,
     servicio_id: Optional[int] = None,
     causa: Optional[str] = None,
     estado: Optional[str] = None,
@@ -2629,7 +2631,6 @@ async def huerfanos_listar_web(
     from core.services.cromo.auditoria_huerfanos import CAUSAS, ESTADOS, listar_huerfanos
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     if causa is not None and causa not in CAUSAS:
         return JSONResponse({"error": f"causa inválida. Valores: {list(CAUSAS)}"}, status_code=400)
     if estado is not None and estado not in ESTADOS:
@@ -2644,7 +2645,11 @@ async def huerfanos_listar_web(
 
 
 @router.post("/api/admin/infra/huerfanos/normalizar")
-async def huerfanos_normalizar_web(request: Request, body: HuerfanosRevisarRequestModel) -> JSONResponse:
+async def huerfanos_normalizar_web(
+    request: Request,
+    body: HuerfanosRevisarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Normaliza en lote: excluye del Servicio el pelo de cada fila (`origen=AUDITORIA`).
 
     Qué se puede normalizar lo decide el servidor con la fila guardada: sólo PENDIENTE, no
@@ -2654,7 +2659,7 @@ async def huerfanos_normalizar_web(request: Request, body: HuerfanosRevisarReque
     from core.services.cromo.auditoria_huerfanos import normalizar
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "cromo_huerfanos_normalizar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
@@ -2665,12 +2670,16 @@ async def huerfanos_normalizar_web(request: Request, body: HuerfanosRevisarReque
 
 
 @router.post("/api/admin/infra/huerfanos/descartar")
-async def huerfanos_descartar_web(request: Request, body: HuerfanosRevisarRequestModel) -> JSONResponse:
+async def huerfanos_descartar_web(
+    request: Request,
+    body: HuerfanosRevisarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Marca DESCARTADO las filas PENDIENTE elegidas (revisadas, no son huérfanos). Admin + CSRF."""
     from core.services.cromo.auditoria_huerfanos import descartar
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "cromo_huerfanos_descartar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
@@ -2680,8 +2689,8 @@ async def huerfanos_descartar_web(request: Request, body: HuerfanosRevisarReques
     )
 
 
-@router.get("/api/admin/infra/huerfanos/auditoria-global")
-async def huerfanos_auditoria_global_estado_web(request: Request) -> JSONResponse:
+@router.get("/api/admin/infra/huerfanos/auditoria-global", dependencies=[Depends(usuario_admin)])
+async def huerfanos_auditoria_global_estado_web() -> JSONResponse:
     """Última auditoría global (o `null`), para que el Viewer muestre su estado al abrir. Admin."""
     from core.services.cromo.auditoria_huerfanos_global import (
         max_servicios_configurado,
@@ -2689,7 +2698,6 @@ async def huerfanos_auditoria_global_estado_web(request: Request) -> JSONRespons
     )
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     async with AsyncSessionLocal() as sesion:
         corrida = await ultima_auditoria(sesion)
     return JSONResponse(
@@ -2702,7 +2710,9 @@ async def huerfanos_auditoria_global_estado_web(request: Request) -> JSONRespons
 
 @router.post("/api/admin/infra/huerfanos/auditoria-global")
 async def huerfanos_auditoria_global_iniciar_web(
-    request: Request, body: HuerfanosAuditoriaGlobalRequestModel
+    request: Request,
+    body: HuerfanosAuditoriaGlobalRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Lanza la auditoría global: corrida sintética que ejecuta el `cromo_worker` (tiene las
     credenciales de Cromo). Recorre los Servicios Activos con más pelos hasta el tope. El progreso
@@ -2715,7 +2725,7 @@ async def huerfanos_auditoria_global_iniciar_web(
     )
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "cromo_huerfanos_auditoria_global", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     tope = body.max_servicios or max_servicios_configurado()
@@ -2769,9 +2779,8 @@ class InconsistenciasDeteccionRequestModel(BaseModel):
     csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
-@router.get("/api/admin/infra/inconsistencias-cromo")
+@router.get("/api/admin/infra/inconsistencias-cromo", dependencies=[Depends(usuario_admin)])
 async def inconsistencias_cromo_listar_web(
-    request: Request,
     tipo: Optional[str] = None,
     estado: Optional[str] = None,
     revision: Optional[str] = None,
@@ -2795,7 +2804,6 @@ async def inconsistencias_cromo_listar_web(
     )
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     if tipo is not None and tipo not in TIPOS:
         return JSONResponse({"error": f"tipo inválido. Valores: {list(TIPOS)}"}, status_code=400)
     if estado is not None and estado not in ESTADOS:
@@ -2823,13 +2831,12 @@ async def inconsistencias_cromo_listar_web(
 
 @router.get("/api/admin/infra/inconsistencias-cromo/exportar.xlsx")
 async def inconsistencias_cromo_exportar_web(
-    request: Request,
     tipo: Optional[str] = None,
     estado: Optional[str] = None,
     revision: Optional[str] = None,
     localidad: Optional[str] = None,
     servicio: Optional[str] = None,
-    servicio_id: Optional[int] = None,
+    servicio_id: Optional[int] = None, usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> Response:
     """XLSX "para corregir en Cromo": una hoja por localidad, con tipo, revisión, estado, objeto,
     ID Cromo, qué falta, servicios afectados y fechas. Mismos filtros que el listado; sin `estado`
@@ -2838,7 +2845,7 @@ async def inconsistencias_cromo_exportar_web(
     from core.services.cromo.inconsistencias_cromo import ESTADOS, REVISIONES, TIPOS
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if tipo is not None and tipo not in TIPOS:
         return JSONResponse({"error": f"tipo inválido. Valores: {list(TIPOS)}"}, status_code=400)
     if estado is not None and estado not in ESTADOS:
@@ -2859,9 +2866,10 @@ async def inconsistencias_cromo_exportar_web(
                 servicio_id=servicio_id,
             )
         contenido = await asyncio.to_thread(reporte.generar_xlsx, filas)
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=inconsistencias_cromo_exportar_error error=%s", exc)
-        return JSONResponse({"error": "No se pudo generar el reporte"}, status_code=500)
+        return error_interno("inconsistencias_cromo_exportar", exc)
     logger.info("action=inconsistencias_cromo_exportar user=%s filas=%d", username, len(filas))
     sello = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     return Response(
@@ -2879,27 +2887,28 @@ class InconsistenciasAvisoSlackRequestModel(BaseModel):
     csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
-@router.get("/api/admin/infra/inconsistencias-cromo/aviso-slack")
-async def inconsistencias_cromo_aviso_slack_get_web(request: Request) -> JSONResponse:
+@router.get("/api/admin/infra/inconsistencias-cromo/aviso-slack", dependencies=[Depends(usuario_admin)])
+async def inconsistencias_cromo_aviso_slack_get_web() -> JSONResponse:
     """Config del aviso de casos nuevos a Slack (fila "Cromo Inconsistencias"). Admin."""
     from core.services.cromo.inconsistencias_reporte import leer_config_aviso
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     async with AsyncSessionLocal() as sesion:
         return JSONResponse(await leer_config_aviso(sesion))
 
 
 @router.post("/api/admin/infra/inconsistencias-cromo/aviso-slack")
 async def inconsistencias_cromo_aviso_slack_post_web(
-    request: Request, body: InconsistenciasAvisoSlackRequestModel
+    request: Request,
+    body: InconsistenciasAvisoSlackRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Guarda canales y activación del aviso a Slack. Mismas reglas de formato de canal que el
     resto de los servicios de Slack. Admin + CSRF."""
     from core.services.cromo.inconsistencias_reporte import guardar_config_aviso, normalizar_canales
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "cromo_inconsistencias_aviso_slack", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     canales = normalizar_canales(body.slack_channels)
@@ -2923,7 +2932,9 @@ async def inconsistencias_cromo_aviso_slack_post_web(
 
 @router.post("/api/admin/infra/inconsistencias-cromo/estado")
 async def inconsistencias_cromo_estado_web(
-    request: Request, body: InconsistenciasEstadoRequestModel
+    request: Request,
+    body: InconsistenciasEstadoRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Cambia el estado de los casos elegidos (cuarentena, aceptar, reportar o liberar a
     PENDIENTE). Las transiciones válidas las decide el servidor (`cambiar_estado`): lo que no se
@@ -2931,7 +2942,7 @@ async def inconsistencias_cromo_estado_web(
     from core.services.cromo.inconsistencias_cromo import ESTADOS_DESTINO_MANUAL, cambiar_estado
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "cromo_inconsistencias_estado", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     if body.estado not in ESTADOS_DESTINO_MANUAL:
@@ -2955,13 +2966,12 @@ async def inconsistencias_cromo_estado_web(
     )
 
 
-@router.get("/api/admin/infra/inconsistencias-cromo/deteccion")
-async def inconsistencias_cromo_deteccion_estado_web(request: Request) -> JSONResponse:
+@router.get("/api/admin/infra/inconsistencias-cromo/deteccion", dependencies=[Depends(usuario_admin)])
+async def inconsistencias_cromo_deteccion_estado_web() -> JSONResponse:
     """Última corrida del detector (o `null`), para que el Viewer muestre su estado al abrir. Admin."""
     from core.services.cromo.inconsistencias_cromo import ultima_deteccion
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     async with AsyncSessionLocal() as sesion:
         corrida = await ultima_deteccion(sesion)
     return JSONResponse(
@@ -2971,7 +2981,9 @@ async def inconsistencias_cromo_deteccion_estado_web(request: Request) -> JSONRe
 
 @router.post("/api/admin/infra/inconsistencias-cromo/deteccion")
 async def inconsistencias_cromo_deteccion_iniciar_web(
-    request: Request, body: InconsistenciasDeteccionRequestModel
+    request: Request,
+    body: InconsistenciasDeteccionRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Lanza el detector a mano: corrida sintética que ejecuta el `cromo_worker` (tiene las
     credenciales de Cromo para confirmar cables en vivo). El progreso se sigue con el SSE de
@@ -2980,7 +2992,7 @@ async def inconsistencias_cromo_deteccion_iniciar_web(
     from core.services.cromo.inconsistencias_cromo import iniciar_si_no_hay_otra
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "cromo_inconsistencias_deteccion", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
@@ -3035,9 +3047,8 @@ class ArbitroNormalizarRequestModel(BaseModel):
     csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
-@router.get("/api/admin/infra/arbitro-cromo/propuestas")
+@router.get("/api/admin/infra/arbitro-cromo/propuestas", dependencies=[Depends(usuario_admin)])
 async def arbitro_cromo_propuestas_web(
-    request: Request,
     regla: Optional[str] = None,
     estado: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
@@ -3048,7 +3059,6 @@ async def arbitro_cromo_propuestas_web(
     from core.services.cromo.arbitro import motor
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     async with AsyncSessionLocal() as sesion:
         resultado = await motor.listar_propuestas(
             sesion, regla=regla, estado=estado, limit=limit, offset=offset
@@ -3070,13 +3080,13 @@ async def _encolar_arbitro_tras_decision(sesion, ids: Sequence[int], motivo: str
 
 @router.post("/api/admin/infra/arbitro-cromo/propuestas/aplicar")
 async def arbitro_cromo_aplicar_web(
-    request: Request, body: ArbitroPropuestasRequestModel
+    request: Request, body: ArbitroPropuestasRequestModel, usuario: UsuarioSesion = Depends(usuario_admin)
 ) -> JSONResponse:
     """Aplica propuestas a mano. Lo que no se puede vuelve en `rechazados` con su motivo. Admin + CSRF."""
     from core.services.cromo.arbitro import motor
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_propuestas", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
@@ -3089,13 +3099,13 @@ async def arbitro_cromo_aplicar_web(
 
 @router.post("/api/admin/infra/arbitro-cromo/propuestas/rechazar")
 async def arbitro_cromo_rechazar_web(
-    request: Request, body: ArbitroPropuestasRequestModel
+    request: Request, body: ArbitroPropuestasRequestModel, usuario: UsuarioSesion = Depends(usuario_admin)
 ) -> JSONResponse:
     """Rechaza propuestas (la decisión humana bloquea re-proponer con la misma evidencia). Admin + CSRF."""
     from core.services.cromo.arbitro import motor
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_propuestas", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
@@ -3106,13 +3116,13 @@ async def arbitro_cromo_rechazar_web(
 
 @router.post("/api/admin/infra/arbitro-cromo/propuestas/revertir")
 async def arbitro_cromo_revertir_web(
-    request: Request, body: ArbitroPropuestasRequestModel
+    request: Request, body: ArbitroPropuestasRequestModel, usuario: UsuarioSesion = Depends(usuario_admin)
 ) -> JSONResponse:
     """Revierte propuestas en observación o aplicadas. Lo que no se puede vuelve en `omitidos`. Admin + CSRF."""
     from core.services.cromo.arbitro import motor
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_propuestas", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
@@ -3123,14 +3133,13 @@ async def arbitro_cromo_revertir_web(
     return JSONResponse({"ok": True, **resultado})
 
 
-@router.get("/api/admin/infra/arbitro-cromo/reglas")
-async def arbitro_cromo_reglas_web(request: Request) -> JSONResponse:
+@router.get("/api/admin/infra/arbitro-cromo/reglas", dependencies=[Depends(usuario_admin)])
+async def arbitro_cromo_reglas_web() -> JSONResponse:
     """Configuración de cada regla con su precisión histórica y si conviene pasarla a AUTO. Admin."""
     from fastapi.encoders import jsonable_encoder
     from core.services.cromo.arbitro import motor
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     async with AsyncSessionLocal() as sesion:
         reglas = await motor.precision_por_regla(sesion)
     return JSONResponse({"reglas": jsonable_encoder(reglas)})
@@ -3138,13 +3147,13 @@ async def arbitro_cromo_reglas_web(request: Request) -> JSONResponse:
 
 @router.post("/api/admin/infra/arbitro-cromo/reglas")
 async def arbitro_cromo_reglas_actualizar_web(
-    request: Request, body: ArbitroReglaRequestModel
+    request: Request, body: ArbitroReglaRequestModel, usuario: UsuarioSesion = Depends(usuario_admin)
 ) -> JSONResponse:
     """Cambia modo, umbral y presupuesto de una regla. 422 ante valores inválidos. Admin + CSRF."""
     from core.services.cromo.arbitro import motor
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_reglas", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
@@ -3158,14 +3167,14 @@ async def arbitro_cromo_reglas_actualizar_web(
                 usuario=username,
             )
         except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=422)
+            raise DatoInvalido(str(exc)) from exc
         await sesion.commit()
     return JSONResponse({"ok": True})
 
 
 @router.post("/api/admin/infra/arbitro-cromo/normalizar")
 async def arbitro_cromo_normalizar_web(
-    request: Request, body: ArbitroNormalizarRequestModel
+    request: Request, body: ArbitroNormalizarRequestModel, usuario: UsuarioSesion = Depends(usuario_admin)
 ) -> JSONResponse:
     """Lanza el análisis retroactivo (alcance TODO) en el worker. 409 si ya hay otro en curso
     (EN_COLA/EN_CURSO de las últimas 6 h); 422 si alguna regla no existe. Admin + CSRF."""
@@ -3175,7 +3184,7 @@ async def arbitro_cromo_normalizar_web(
     from core.services.cromo.arbitro.senales import Alcance
     from db.session import AsyncSessionLocal
 
-    username = _require_admin(request)
+    username = usuario.username
     if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_normalizar", username):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     reglas = body.reglas or None  # lista vacía = todas las reglas
@@ -3209,16 +3218,15 @@ async def arbitro_cromo_normalizar_web(
     return JSONResponse({"evaluacion_id": evaluacion_id}, status_code=202)
 
 
-@router.get("/api/admin/infra/arbitro-cromo/evaluaciones")
+@router.get("/api/admin/infra/arbitro-cromo/evaluaciones", dependencies=[Depends(usuario_admin)])
 async def arbitro_cromo_evaluaciones_web(
-    request: Request, limit: int = Query(10, ge=1, le=50)
+    limit: int = Query(10, ge=1, le=50)
 ) -> JSONResponse:
     """Últimas evaluaciones del árbitro y el id de la que está en curso (o `null`). Admin."""
     from fastapi.encoders import jsonable_encoder
     from core.services.cromo.arbitro import evaluaciones
     from db.session import AsyncSessionLocal
 
-    _require_admin(request)
     async with AsyncSessionLocal() as sesion:
         resultado = await evaluaciones.listar_evaluaciones(sesion, limit)
     return JSONResponse(jsonable_encoder(resultado))
@@ -3283,7 +3291,7 @@ def _serializar_validacion_cromo(resultado: Any) -> dict[str, Any]:
 
 
 @router.get("/api/infra/cromo/validar/{n_id}")
-async def cromo_validar_datos_web(request: Request, n_id: int) -> JSONResponse:
+async def cromo_validar_datos_web(n_id: int) -> JSONResponse:
     """"Validar datos DB Cromo" (Tool Kit) — consulta un n_id en vivo contra Cromo y le aplica el
     MISMO parseo que usa la ingesta (`parse_objeto`/`parse_arbol_botella`/`extraer_tubos_y_pelos`):
     árbol completo de cables/tubos/pelos/fusiones, no sólo los atributos planos del objeto. Distinto
@@ -3298,12 +3306,11 @@ async def cromo_validar_datos_web(request: Request, n_id: int) -> JSONResponse:
     from core.services.cromo.validador_datos_service import validar_elemento_cromo
     from core.services.cromo.verificador import ObjetoNoEncontrado
 
-    _require_auth(request)
     try:
         async with CromoClient(config=get_cromo_config()) as cliente:
             resultado = await validar_elemento_cromo(cliente, n_id)
     except ObjetoNoEncontrado as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
+        raise NoEncontrado(str(exc)) from exc
     except CromoClientError as exc:
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
 
@@ -3321,7 +3328,7 @@ def _serializar_cable_detectado(cable: Any) -> dict[str, Any]:
 
 
 @router.get("/api/infra/cromo/botellas/{n_id}/cables-detectados")
-async def cromo_botella_cables_detectados_web(request: Request, n_id: int) -> JSONResponse:
+async def cromo_botella_cables_detectados_web(n_id: int) -> JSONResponse:
     """Verificador Cromo — "Cables detectados en Cromo": consulta la botella en vivo (siguiendo
     `hist[]`/`next_id` si el `n_id` quedó vacío por un caso de "ID dual") y compara sus cables
     contra `app.cromo_cables` local. Sólo lectura, nunca persiste — mismo criterio que el resto de
@@ -3333,12 +3340,11 @@ async def cromo_botella_cables_detectados_web(request: Request, n_id: int) -> JS
     from core.services.cromo.verificador import ObjetoNoEncontrado
     from db.session import AsyncSessionLocal
 
-    _require_auth(request)
     try:
         async with AsyncSessionLocal() as sesion, CromoClient(config=get_cromo_config()) as cliente:
             resultado = await detectar_cables_faltantes(cliente, sesion, n_id)
     except ObjetoNoEncontrado as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
+        raise NoEncontrado(str(exc)) from exc
     except CromoClientError as exc:
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
 
@@ -3358,13 +3364,18 @@ class BotellaRepoblarCablesRequestModel(BaseModel):
 
 
 @router.post("/api/infra/botellas/{n_id}/repoblar-cables")
-async def botella_repoblar_cables_web(request: Request, n_id: int, body: BotellaRepoblarCablesRequestModel) -> JSONResponse:
+async def botella_repoblar_cables_web(
+    request: Request,
+    n_id: int,
+    body: BotellaRepoblarCablesRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Verificador Cromo — "Repoblar Cables": toma los cables que `GET .../cables-detectados`
     encontró faltantes o desactualizados y los persiste en `app.cromo_cables`/`cromo_tubos`/
     `cromo_pelos` local, con el extremo correctamente anclado a esta Botella. Nunca escribe hacia
     Cromo (`CromoClient` es de sólo lectura por diseño) ni toca `CromoBotella`/`CromoFusion`. Sólo
     admin — ver `core/services/cromo/repoblacion_service.py::repoblar_cables`."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -3381,14 +3392,13 @@ async def botella_repoblar_cables_web(request: Request, n_id: int, body: Botella
         async with AsyncSessionLocal() as sesion, CromoClient(config=get_cromo_config()) as cliente:
             resultado = await repoblar_cables(cliente, sesion, botella_n_id=n_id, usuario=username)
     except ObjetoNoEncontrado as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
+        raise NoEncontrado(str(exc)) from exc
     except CromoClientError as exc:
         return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=botella_repoblar_cables_error user=%s n_id=%s error=%s", username, n_id, exc)
-        return JSONResponse({"error": "No se pudo repoblar cables"}, status_code=500)
+        return error_interno("botella_repoblar_cables", exc, user=username, n_id=n_id)
 
     if resultado.corrida_id is not None:
         await encolar_recalculo_duplicados_botellas(motivo=f"repoblar-cables n_id={n_id} usuario={username}")
@@ -3414,7 +3424,12 @@ class BotellaActualizarNombreRequestModel(BaseModel):
 
 
 @router.patch("/api/infra/botellas/{n_id}/nombre")
-async def botella_actualizar_nombre_web(request: Request, n_id: int, body: BotellaActualizarNombreRequestModel) -> JSONResponse:
+async def botella_actualizar_nombre_web(
+    request: Request,
+    n_id: int,
+    body: BotellaActualizarNombreRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Verificador Cromo — corrección manual de nombre duplicado/incorrecto. Marca
     `nombre_editado_manual=True` para que ninguna corrida de ingesta futura la pise (ver
     `core/services/cromo/ingesta.py::_procesar_botella_completa`). Si la Botella ya existe
@@ -3425,7 +3440,7 @@ async def botella_actualizar_nombre_web(request: Request, n_id: int, body: Botel
     al de la URL (el de la URL puede ser un id de versión; Cromo manda con su n_id de linaje), así
     que el `n_id` de la respuesta es siempre el real, más `n_id_solicitado` cuando difieren.
     Sólo admin."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -3457,13 +3472,13 @@ async def botella_actualizar_nombre_web(request: Request, n_id: int, body: Botel
                         cliente, sesion, n_id=n_id, usuario=username
                     )
             except ObjetoNoEncontrado as exc:
-                return JSONResponse({"error": str(exc)}, status_code=404)
+                raise NoEncontrado(str(exc)) from exc
             except IdentidadYaResueltaError as exc:
                 return JSONResponse(
                     {"error": str(exc), "n_id_correcto": exc.n_id_resuelto}, status_code=409
                 )
             except ClaseExcluidaError as exc:
-                return JSONResponse({"error": f"n_id={n_id} no es una Botella: {exc}"}, status_code=400)
+                raise ErrorDeDominio(f"n_id={n_id} no es una Botella: {exc}") from exc
             except CromoClientError as exc:
                 return JSONResponse({"error": f"Cromo no respondió: {exc}"}, status_code=502)
             except CromoConfigError as exc:
@@ -3475,19 +3490,21 @@ async def botella_actualizar_nombre_web(request: Request, n_id: int, body: Botel
                     exc,
                 )
                 return JSONResponse({"error": f"Cromo no está configurado: {exc}"}, status_code=502)
-            except HTTPException:
+            except (HTTPException, ErrorDeDominio):
                 raise
             except Exception as exc:
                 # Red de seguridad final, mismo patrón que `botella_repoblar_cables_web`: cualquier
-                # otra falla queda logueada con traza en vez de propagarse como 500 sin contexto.
+                # otra falla queda logueada con traza y la ref en vez de propagarse como 500 sin
+                # contexto. No pasa por `error_interno` para conservar el texto `action=` de este log
+                # (no termina en `_error`); la respuesta es la misma: 500 con ref, sin texto interno.
+                ref = nueva_ref()
                 logger.exception(
-                    "action=botella_actualizar_nombre result=fail reason=error_inesperado n_id=%s error=%s",
+                    "action=botella_actualizar_nombre result=fail reason=error_inesperado n_id=%s error=%s ref=%s",
                     n_id,
                     exc,
+                    ref,
                 )
-                return JSONResponse(
-                    {"error": "Error inesperado al crear la Botella desde Cromo."}, status_code=500
-                )
+                return JSONResponse({"error": f"Error interno (ref {ref})"}, status_code=500)
 
             logger.info(
                 "action=botella_creada_desde_vivo user=%s n_id=%s n_id_solicitado=%s accion=%s corrida_id=%s",
@@ -3532,13 +3549,18 @@ class BotellaSepararPadreRequestModel(BaseModel):
 
 
 @router.post("/api/infra/botellas/{n_id}/separar-padre")
-async def botella_separar_padre_web(request: Request, n_id: int, body: BotellaSepararPadreRequestModel) -> JSONResponse:
+async def botella_separar_padre_web(
+    request: Request,
+    n_id: int,
+    body: BotellaSepararPadreRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Verificador Cromo — separa una Botella agrupada erróneamente por nombre bajo una Cámara
     padre compartida: crea una Cámara nueva e independiente y reasigna `camara_id`. Rechaza si el
     nombre (siempre editable en el modal) colisiona, tras normalizar, con cualquier Cámara raíz
     existente. Nunca toca la Cámara padre anterior. Sólo admin — ver
     `core/services/cromo/separacion_service.py::separar_botella_de_padre`."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -3559,10 +3581,10 @@ async def botella_separar_padre_web(request: Request, n_id: int, body: BotellaSe
             )
         except BotellaNoEncontradaError as exc:
             session.rollback()
-            return JSONResponse({"error": str(exc)}, status_code=404)
+            raise NoEncontrado(str(exc)) from exc
         except SeparacionBotellaError as exc:
             session.rollback()
-            return JSONResponse({"error": str(exc)}, status_code=400)
+            raise ErrorDeDominio(str(exc)) from exc
         session.commit()
 
     logger.info(
