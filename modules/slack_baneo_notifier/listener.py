@@ -45,7 +45,7 @@ from core.services.camara_estado_service import (
     miembros_del_grupo,
     obtener_ultimo_motivo_baneo_manual,
 )
-from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo
+from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo, buscar_por_id_legacy
 from core.services.camara_sugerencias import sugerir_camaras
 from core.services.nodos_catalogo import corresponde_a_nodo
 from core.services.cromo.detalle import pelos_de_tubo_sync
@@ -127,7 +127,13 @@ _CANAL_ID_DEFAULT = ""  # Se completa desde config_servicios en DB
 # match). Dígitos puros, opcionalmente precedidos de "empalme" o "#". Mínimo 3 dígitos a propósito:
 # evita falsos positivos con respuestas cortas tipo "sí"/"ok"/números de piso — un `fusion_n_id`
 # real de Cromo tiene muchos más dígitos (ver ejemplos en `core/services/cromo/empalmes.py`).
-_RE_SEGUIMIENTO_EMPALME = re.compile(r"^\s*(?:empalme\s*)?#?(\d{3,})\s*$", re.IGNORECASE)
+#
+# Desde 2026-10-23 también las formas reales con que el operador valida el ingreso con el Fontaine
+# ID: "id: 1228619", "id 1228619", "ingreso ok, id: 1228619" (sin distinguir mayúsculas). El número
+# se prueba primero como Fontaine ID y después como ID de empalme (`_procesar_seguimiento_empalme`).
+_RE_SEGUIMIENTO_EMPALME = re.compile(
+    r"^\s*(?:ingreso\s+ok\s*[,.;:]?\s*)?(?:(?:empalme|id)\s*:?\s*)?#?(\d{3,})\s*$", re.IGNORECASE
+)
 
 # Detecta el trigger "Revalidar ingreso" como respuesta en el hilo de un caso `IngresoSinMatch`
 # pendiente (sin match o ambiguo/genérico) — reintenta la búsqueda con el código ACTUAL contra el
@@ -527,6 +533,11 @@ class IngresoListener:
         caso `IngresoSinMatch` pendiente (invitado por `_construir_respuesta_camara` cuando no
         matcheó ninguna cámara).
 
+        Desde 2026-10-23 el número se prueba primero como Fontaine ID (`buscar_por_id_legacy`) y,
+        si no existe, como ID de empalme. Lo que resuelve cierra el caso igual que antes
+        (`resuelto_via_empalme`) y la respuesta dice por cuál de los dos IDs. Un Fontaine ID
+        repetido nunca elige: responde y deja el caso pendiente.
+
         Devuelve `True` cuando el mensaje fue tratado como intento de seguimiento (el caller debe
         cortar ahí, no seguir al flujo normal) y `False` cuando no aplica: el texto no matchea el
         patrón numérico, o matchea pero no hay un caso `IngresoSinMatch` pendiente para este hilo
@@ -551,32 +562,61 @@ class IngresoListener:
         if caso is None:
             return False
 
-        fusion_n_id = int(match.group(1))
+        numero = match.group(1)
+        fusion_n_id = int(numero)
         logger.info(
-            "Seguimiento de empalme detectado en hilo %s: fusion_n_id=%s (caso IngresoSinMatch id=%s)",
+            "Seguimiento de empalme detectado en hilo %s: numero=%s (caso IngresoSinMatch id=%s)",
             thread_ts_evento,
-            fusion_n_id,
+            numero,
             caso.id,
         )
 
-        botella = resolver_botella_por_fusion_sync(session, fusion_n_id)
-        camara = None
-        if botella is not None and botella.camara_id is not None:
-            from db.models.infra import Camara
+        # Primero como Fontaine ID (`cromo_botellas.id_legacy`), después como ID de empalme.
+        try:
+            por_fontaine = buscar_por_id_legacy(numero, session)
+        except AmbiguousSearchError as exc:
+            # `id_legacy` repetido: nunca se elige. El caso queda pendiente (sin marcar) para que
+            # se pueda reescribir la Cámara o revalidar.
+            vinetas = "\n".join(f"• {c}" for c in exc.candidatos)
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts_evento,
+                text=(
+                    f"⚠️ El Fontaine ID *{numero}* corresponde a más de una botella:\n{vinetas}\n"
+                    "No puedo elegir una. Escribí la cámara correcta en este hilo. "
+                    "*Podés continuar con el ingreso con normalidad.*"
+                ),
+                mrkdwn=True,
+            )
+            return True
 
-            camara = session.query(Camara).filter(Camara.id == botella.camara_id).one_or_none()
+        camara = None
+        via = ""
+        if por_fontaine is not None:
+            camara, via = por_fontaine.camara, f"Fontaine ID *{numero}*"
+        else:
+            botella = resolver_botella_por_fusion_sync(session, fusion_n_id)
+            if botella is not None and botella.camara_id is not None:
+                from db.models.infra import Camara
+
+                camara = session.query(Camara).filter(Camara.id == botella.camara_id).one_or_none()
+                via = f"ID de empalme *{numero}*"
 
         if camara is not None:
+            logger.info(
+                "Seguimiento resuelto por %s → camara_id=%s (caso id=%s)", via, camara.id, caso.id
+            )
             resultado_acceso = self._evaluar_estado_acceso_camara(camara, session)
-            respuesta = resultado_acceso.texto
+            respuesta = f"Resuelto por {via}.\n{resultado_acceso.texto}"
         else:
             logger.info(
-                "Empalme #%s no resolvió una botella con cámara asociada (caso id=%s)",
-                fusion_n_id,
+                "Número %s no resolvió como Fontaine ID ni como empalme con cámara asociada (caso id=%s)",
+                numero,
                 caso.id,
             )
             respuesta = (
-                f"⚠️ No pude ubicar una botella asociada al ID de empalme *{fusion_n_id}*. "
+                f"⚠️ No pude ubicar una botella asociada al ID de empalme *{fusion_n_id}* "
+                "(tampoco es un Fontaine ID). "
                 "*Podés continuar con el ingreso con normalidad.*"
             )
 

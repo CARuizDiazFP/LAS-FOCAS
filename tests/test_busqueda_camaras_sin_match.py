@@ -17,6 +17,7 @@ os.environ.setdefault("TESTING", "true")
 from core.services import camara_sugerencias, nodos_catalogo
 from core.services.cromo import camara_botella_busqueda as cb
 from modules.slack_baneo_notifier import camara_search as cs
+from tests.soporte_postgres_real import requiere_postgres_real
 
 MODULE_CB = "core.services.cromo.camara_botella_busqueda"
 MODULE_CS = "modules.slack_baneo_notifier.camara_search"
@@ -530,3 +531,84 @@ def test_numero_no_coincide_sin_reintento_que_resuelva_se_relanza():
     ):
         cb.buscar_camara_o_botella_cromo("Cra Mitre 404", MagicMock(), tolerante=False)
     cascada.assert_called_once()
+
+
+# ── Fontaine ID (`cromo_botellas.id_legacy`) y prefijo "Empalme <n_id>" (2026-10-23) ───────────
+
+
+def _session_id_legacy(botellas: list) -> MagicMock:
+    session = MagicMock()
+    session.query.return_value.filter.return_value.order_by.return_value.all.return_value = botellas
+    return session
+
+
+def test_buscar_por_id_legacy_existente_devuelve_la_camara_vinculada():
+    botella = _bot(10245762, "Cra 25 de Mayo 302 CF", 33978)
+    r = cb.buscar_por_id_legacy(" 1228619 ", _session_id_legacy([botella]))
+    assert r.camara is botella.camara and r.botella is botella
+    assert r.fuente == "cromo_botella"
+
+
+def test_buscar_por_id_legacy_inexistente_o_vacio_devuelve_none():
+    assert cb.buscar_por_id_legacy("1999999", _session_id_legacy([])) is None
+    session = _session_id_legacy([])
+    assert cb.buscar_por_id_legacy("  ", session) is None
+    session.query.assert_not_called()
+
+
+def test_buscar_por_id_legacy_sin_camara_devuelve_none():
+    assert cb.buscar_por_id_legacy("1228619", _session_id_legacy([_bot(1, "Cra X 1", None)])) is None
+
+
+def test_buscar_por_id_legacy_duplicado_es_ambiguo_y_nunca_elige():
+    dup = [_bot(6635924, "Poste Paunero 1543 SAN MIGUEL", 28942), _bot(10055506, "Poste Paunero 1543 SAN MIGUEL", 28942)]
+    with pytest.raises(cs.AmbiguousSearchError) as exc:
+        cb.buscar_por_id_legacy("1256524", _session_id_legacy(dup))
+    assert exc.value.cantidad == 2
+
+
+def test_prefijo_empalme_en_la_busqueda_extendida_devuelve_la_botella():
+    botella = _bot(10245762, "Cra 25 de Mayo 302 CF", 33978)
+    botella.vigente = True
+    session = MagicMock()
+    session.get.return_value = botella
+    with patch(f"{MODULE_CB}._buscar_extendida") as cascada:
+        r = cb.buscar_camara_o_botella_cromo("Empalme 10245762: Cra 25 de Mayo 302", session)
+    cascada.assert_not_called()
+    assert r.botella is botella and r.camara is botella.camara and r.fuente == "cromo_botella"
+    assert session.get.call_args.args[1] == 10245762
+
+
+def test_prefijo_empalme_inexistente_sigue_sin_el_prefijo():
+    session = MagicMock()
+    session.get.return_value = None
+    vacio = _res()
+    with patch(f"{MODULE_CB}._buscar_extendida", return_value=vacio) as cascada, patch(
+        "core.services.localidades_catalogo.localidades", return_value=_CATALOGO
+    ):
+        cb.buscar_camara_o_botella_cromo("Empalme 10245762: Cra 25 de Mayo 302", session)
+    assert cascada.call_args_list[0].args[0] == "Cra 25 de Mayo 302"
+
+
+@requiere_postgres_real
+def test_fontaine_id_y_empalme_reales_resuelven_a_la_camara_33978():
+    """Datos reales de dev (5433, read-only): el Fontaine ID 1228619 es el `id_legacy` de la
+    Botella 10245762 "Cra 25 de Mayo 302 CF" (Cámara 33978), y el mensaje real del técnico
+    "Empalme 10245762: Cra 25 de Mayo 302" — que antes quedaba sin match — resuelve a la misma."""
+    from sqlalchemy import text
+
+    from db.session import SessionLocal
+
+    session = SessionLocal()
+    try:
+        session.execute(text("SET TRANSACTION READ ONLY"))
+        r = cb.buscar_por_id_legacy("1228619", session)
+        assert r is not None
+        assert (r.camara.id, r.botella.n_id) == (33978, 10245762)
+
+        r = cb.buscar_camara_o_botella_cromo("Empalme 10245762: Cra 25 de Mayo 302", session)
+        assert r.camara is not None and r.camara.id == 33978
+        assert r.botella is not None and r.botella.n_id == 10245762
+    finally:
+        session.rollback()
+        session.close()

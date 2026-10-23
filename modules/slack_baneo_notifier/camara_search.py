@@ -19,6 +19,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 if TYPE_CHECKING:
+    from db.models.cromo import CromoBotella
     from db.models.infra import Camara
 
 # Exportado explícitamente para reuso desde `core/services/cromo/camara_botella_busqueda.py`
@@ -43,6 +44,10 @@ __all__ = [
     "buscar_camara",
     "normalizar_candidato",
     "preparar_nombre_busqueda",
+    "separar_prefijo_empalme",
+    "botella_cromo_por_n_id",
+    "resto_corrobora_botella",
+    "camara_por_prefijo_empalme",
     "quitar_botella_uno",
     "extraer_tipo_movimiento",
     "extraer_slack_user_id_autorizacion",
@@ -143,6 +148,59 @@ _RE_LETRAS_NUMERO = re.compile(r"(?<=[^\W\d_]{3})(?=\d)")
 # "Bot 1" (ver `detectar_multi_bot`). Se quita sólo como SEGUNDO intento (`quitar_botella_uno`):
 # hay nombres reales que sí lo llevan literal ("Cra Juan Domingo Peron 498 Bot 1 CF").
 _RE_BOTELLA_UNO = re.compile(r"(?i)\bbot(?:ella)?\.?\s*1(?!\d)\.?")
+
+
+# "Empalme 10245762: Cra 25 de Mayo 302" (caso real, 2026-10-23): el técnico antepone el `n_id` de
+# Cromo de la Botella (8 dígitos) — "empalme" es como llaman a la Botella en la calle. Sólo al
+# principio del texto y seguido de ":"/"-" o del fin del texto.
+_RE_PREFIJO_EMPALME = re.compile(r"(?i)^\s*empalme\s*#?\s*(\d{8})\s*(?:[:\-–]\s*|$)")
+
+
+def separar_prefijo_empalme(texto: str) -> tuple[int | None, str]:
+    """``("Empalme 10245762: Cra X 1")`` → ``(10245762, "Cra X 1")``. Sin el prefijo devuelve
+    ``(None, texto)`` sin cambios."""
+    match = _RE_PREFIJO_EMPALME.match(texto or "")
+    if not match:
+        return None, texto
+    return int(match.group(1)), texto[match.end():].strip()
+
+
+def botella_cromo_por_n_id(n_id: int, session: Session) -> "CromoBotella | None":
+    """`CromoBotella` por `n_id`, sólo si es vigente y está vinculada a una Cámara. Compartida con la
+    búsqueda por ID explícito de `core/services/cromo/camara_botella_busqueda.py`."""
+    from db.models.cromo import CromoBotella
+
+    botella = session.get(CromoBotella, n_id)
+    if botella is None or botella.camara_id is None or not botella.vigente:
+        return None
+    return botella
+
+
+def resto_corrobora_botella(botella: "CromoBotella", resto: str) -> bool:
+    """El texto que acompaña a un ID explícito no contradice a la Botella: vacío, o comparte con su
+    nombre un número o una palabra de 4+ letras. Un ID mal tipeado que exista no puede resolver a
+    una cámara que el resto del texto contradice (hallazgo de la revisión de 2026-09-28)."""
+    resto = _normalizar(resto or "")
+    resto = re.sub(r"\b(?:id|de|botella|bot|n[°ºo]?)\b", " ", resto)
+    senales = set(re.findall(r"\d+", resto)) | set(re.findall(r"[a-z]{4,}", resto))
+    if not senales:
+        return True
+    nombre_botella = _normalizar(botella.nombre or "")
+    return any(re.search(rf"(?<![a-z0-9]){re.escape(x)}(?![a-z0-9])", nombre_botella) for x in senales)
+
+
+def camara_por_prefijo_empalme(texto: str, session: Session) -> tuple["CromoBotella | None", str]:
+    """Resuelve el prefijo "Empalme <n_id>" por `n_id` de Cromo. Devuelve ``(botella, resto)``: la
+    Botella si el `n_id` existe, es vigente, tiene Cámara y el resto del texto la corrobora; si no,
+    ``(None, resto)`` — el texto SIN el prefijo, para seguir la búsqueda por nombre sin exigir ese
+    número. Sin prefijo, ``(None, texto)``."""
+    n_id, resto = separar_prefijo_empalme(texto)
+    if n_id is None:
+        return None, texto
+    botella = botella_cromo_por_n_id(n_id, session)
+    if botella is not None and resto_corrobora_botella(botella, resto):
+        return botella, resto
+    return None, resto
 
 
 def preparar_nombre_busqueda(texto: str) -> str:
@@ -456,7 +514,16 @@ def buscar_camara(
     — esto preserva casos donde el sufijo SÍ es parte legítima del nombre real y necesaria para
     desambiguar (ej. "Poste Lavalle - Campana", ver `TestLimpiarRuidoOperativo
     .test_localidad_con_guion_se_preserva`).
+
+    Antes que nada (2026-10-23), el prefijo "Empalme <n_id de 8 dígitos>:" se resuelve por `n_id`
+    de Cromo (`camara_por_prefijo_empalme`): si la Botella existe y tiene Cámara, es match directo;
+    si no, se quita el prefijo y su número no cuenta como requerido.
     """
+    botella, nombre_raw = camara_por_prefijo_empalme(nombre_raw, session)
+    if botella is not None:
+        return botella.camara, _aplicar_sinonimos(
+            _normalizar(_expandir_abreviaturas(_limpiar_puntuacion(nombre_raw)))
+        )
     nombre_raw = preparar_nombre_busqueda(nombre_raw)
     if "-" in nombre_raw:
         prefijo = nombre_raw.split("-", 1)[0].strip()

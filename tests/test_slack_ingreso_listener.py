@@ -2580,6 +2580,26 @@ class TestRegexSeguimientoEmpalme(unittest.TestCase):
         self.assertIsNone(self.regex.match("Cámara: Mitre 1234"))
         self.assertIsNone(self.regex.match("el empalme es 1234 seguro"))
 
+    def test_matchea_formas_reales_del_fontaine_id(self) -> None:
+        """2026-10-23: el operador valida con "ingreso ok, id: 1228619" (y variantes)."""
+        for texto in (
+            "id: 1228619",
+            "id 1228619",
+            "ID:1228619",
+            "ingreso ok, id: 1228619",
+            "INGRESO OK, ID: 1228619",
+            "Ingreso ok id 1228619",
+            "  ingreso ok,id:1228619  ",
+        ):
+            m = self.regex.match(texto)
+            self.assertIsNotNone(m, texto)
+            self.assertEqual(m.group(1), "1228619", texto)
+
+    def test_no_matchea_otras_frases_con_id(self) -> None:
+        self.assertIsNone(self.regex.match("ingreso ok"))
+        self.assertIsNone(self.regex.match("egreso ok, id: 1228619"))
+        self.assertIsNone(self.regex.match("el id es 1228619"))
+
 
 # ─── Tests del mecanismo de "hilo esperando ID de empalme" ─────────────────────
 
@@ -2588,6 +2608,13 @@ class TestSeguimientoEmpalme(unittest.TestCase):
     """Prueba `_procesar_seguimiento_empalme` / la integración en `_handle_message` (Tarea 2,
     2026-08-23): un técnico responde en el hilo de un caso `IngresoSinMatch` pendiente con el ID de
     empalme más cercano."""
+
+    def setUp(self) -> None:
+        # Desde 2026-10-23 el número se prueba primero como Fontaine ID: en estos tests no existe
+        # (los de Fontaine están en `TestSeguimientoFontaineId`).
+        patcher = patch("modules.slack_baneo_notifier.listener.buscar_por_id_legacy", return_value=None)
+        self.mock_fontaine = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _make_listener(self) -> Any:
         from modules.slack_baneo_notifier.listener import IngresoListener
@@ -2816,6 +2843,193 @@ class TestSeguimientoEmpalme(unittest.TestCase):
 
 
 # ─── Tests del regex de "Revalidar ingreso" ─────────────────────────────────────
+
+
+class TestSeguimientoFontaineId(unittest.TestCase):
+    """2026-10-23: el número de la respuesta en hilo se prueba primero como Fontaine ID
+    (`cromo_botellas.id_legacy`) y después como ID de empalme."""
+
+    def _caso(self) -> Any:
+        caso = MagicMock()
+        caso.id = 5
+        caso.resuelto_via_empalme = False
+        return caso
+
+    def _camara(self) -> Any:
+        camara = MagicMock()
+        camara.id = 33978
+        camara.nombre = "Cra 25 de Mayo 302 CF"
+        return camara
+
+    def _correr(self, texto: str, *, fontaine: Any = None, fusion: Any = None, camara_fusion: Any = None,
+                user: str | None = "U0OPERADOR"):
+        from db.models.infra import CamaraEstado
+        from core.services.camara_estado_service import CamaraEstadoContexto
+        from db.models.infra import Camara, IngresoCorreccion, IngresoSinMatch
+        from modules.slack_baneo_notifier.listener import IngresoListener
+
+        listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        caso = self._caso()
+
+        def _side_effect(model: Any) -> Any:
+            q = MagicMock()
+            if model is IngresoSinMatch:
+                q.filter.return_value.order_by.return_value.first.return_value = caso
+            elif model is IngresoCorreccion:
+                q.filter.return_value.order_by.return_value.first.return_value = None
+            elif model is Camara:
+                q.filter.return_value.one_or_none.return_value = camara_fusion
+            return q
+
+        session_mock.query.side_effect = _side_effect
+        contexto_libre = CamaraEstadoContexto(
+            camara_id=33978, estado_actual=CamaraEstado.LIBRE, estado_sugerido=CamaraEstado.LIBRE,
+            tiene_baneo_activo=False, tiene_incidente_activo=False, tiene_ingreso_activo=False,
+            inconsistente=False, incidentes_activos=[], ticket_baneo=None,
+        )
+        fontaine_mock = MagicMock(**({"side_effect": fontaine} if isinstance(fontaine, Exception) else {"return_value": fontaine}))
+        event = {"text": texto, "channel": "C123", "ts": "2222.000002", "thread_ts": "1111.000001"}
+        if user:
+            event["user"] = user
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.buscar_por_id_legacy", fontaine_mock),
+            patch(
+                "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync", return_value=fusion
+            ) as mock_fusion,
+            patch("modules.slack_baneo_notifier.listener.get_camara_estado_contexto", return_value=contexto_libre),
+            patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo") as mock_buscar,
+        ):
+            listener._handle_message(event, client_mock)
+        return client_mock, session_mock, caso, fontaine_mock, mock_fusion, mock_buscar
+
+    def _fontaine(self, camara: Any) -> ResultadoBusquedaExtendida:
+        botella = MagicMock()
+        botella.n_id = 10245762
+        return ResultadoBusquedaExtendida(camara=camara, nombre_norm="x", fuente="cromo_botella", botella=botella)
+
+    def test_numero_solo_resuelve_como_fontaine_id(self) -> None:
+        camara = self._camara()
+        client_mock, session_mock, caso, fontaine, fusion, buscar = self._correr(
+            "1228619", fontaine=self._fontaine(camara)
+        )
+        fontaine.assert_called_once_with("1228619", session_mock)
+        fusion.assert_not_called()  # Fontaine primero: no se prueba el empalme
+        buscar.assert_not_called()
+        self.assertTrue(caso.resuelto_via_empalme)
+        session_mock.commit.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("Resuelto por Fontaine ID *1228619*", texto)
+        self.assertIn("Cra 25 de Mayo 302 CF", texto)
+        self.assertIn("✅", texto)
+
+    def test_formato_del_operador_ingreso_ok_id(self) -> None:
+        camara = self._camara()
+        client_mock, session_mock, caso, fontaine, _, _ = self._correr(
+            "ingreso ok, id: 1228619", fontaine=self._fontaine(camara)
+        )
+        fontaine.assert_called_once_with("1228619", session_mock)
+        self.assertTrue(caso.resuelto_via_empalme)
+        self.assertIn("Fontaine ID", client_mock.chat_postMessage.call_args.kwargs["text"])
+
+    def test_si_no_es_fontaine_prueba_como_id_de_empalme(self) -> None:
+        camara = self._camara()
+        botella = MagicMock()
+        botella.camara_id = 33978
+        client_mock, session_mock, caso, fontaine, fusion, _ = self._correr(
+            "id 10245999", fontaine=None, fusion=botella, camara_fusion=camara
+        )
+        fontaine.assert_called_once()
+        fusion.assert_called_once_with(session_mock, 10245999)
+        self.assertTrue(caso.resuelto_via_empalme)
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("Resuelto por ID de empalme *10245999*", texto)
+        self.assertIn("Cra 25 de Mayo 302 CF", texto)
+
+    def test_ni_fontaine_ni_empalme_mantiene_la_respuesta_de_hoy(self) -> None:
+        client_mock, session_mock, caso, _, fusion, buscar = self._correr("999999", fontaine=None, fusion=None)
+        fusion.assert_called_once()
+        buscar.assert_not_called()
+        # Mismo camino que antes de 2026-10-23: se marca el caso y se avisa que puede continuar.
+        self.assertTrue(caso.resuelto_via_empalme)
+        session_mock.commit.assert_called_once()
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("No pude ubicar una botella asociada al ID de empalme *999999*", texto)
+        self.assertIn("Fontaine", texto)
+        self.assertIn("Podés continuar con el ingreso con normalidad", texto)
+
+    def test_fontaine_id_repetido_nunca_elige_y_deja_el_caso_pendiente(self) -> None:
+        from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+
+        dup = AmbiguousSearchError("1256524", 2, ["Poste Paunero 1543 SAN MIGUEL", "Poste Paunero 1543 SAN MIGUEL"])
+        client_mock, session_mock, caso, _, fusion, _ = self._correr("id: 1256524", fontaine=dup)
+        fusion.assert_not_called()
+        self.assertFalse(caso.resuelto_via_empalme)
+        session_mock.commit.assert_not_called()
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        self.assertIn("más de una botella", texto)
+        self.assertIn("• Poste Paunero 1543 SAN MIGUEL", texto)
+
+    def test_prioridad_fecha_pendiente_le_gana_al_fontaine_id(self) -> None:
+        """La corrección con fecha pendiente sigue primero: con un `PENDIENTE_FECHA` vigente que
+        reconoce el texto, el número nunca se busca como Fontaine ID ni como empalme."""
+        from datetime import datetime, timedelta, timezone
+
+        from core.services.ingreso_correccion_service import ResultadoCorreccion
+        from db.models.infra import IngresoCorreccion, IngresoSinMatch
+        from modules.slack_baneo_notifier.listener import IngresoListener
+
+        listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+        client_mock = MagicMock()
+        session_mock = MagicMock()
+        caso = self._caso()
+        fila_pendiente = MagicMock()
+        fila_pendiente.id = 77
+        fila_pendiente.resultado = RESULTADO_PENDIENTE_FECHA
+        fila_pendiente.comando_crudo = "Forzar egreso"
+        fila_pendiente.created_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+
+        def _side_effect(model: Any) -> Any:
+            q = MagicMock()
+            if model is IngresoSinMatch:
+                q.filter.return_value.order_by.return_value.first.return_value = caso
+            elif model is IngresoCorreccion:
+                q.filter.return_value.order_by.return_value.first.return_value = fila_pendiente
+            return q
+
+        session_mock.query.side_effect = _side_effect
+        resultado_final = ResultadoCorreccion(
+            resultado="OK_EGRESO_ASENTADO", respuesta="✅ Egreso asentado.", comando="FORZAR_EGRESO"
+        )
+        with (
+            patch.object(listener, "_get_config", return_value=("C123", True, [], False)),
+            patch("modules.slack_baneo_notifier.listener.SessionLocal", return_value=session_mock),
+            patch("modules.slack_baneo_notifier.listener.buscar_por_id_legacy") as mock_fontaine,
+            patch("modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync") as mock_fusion,
+            patch(
+                "modules.slack_baneo_notifier.listener.extraer_momento_solo",
+                return_value=datetime.now(timezone.utc) - timedelta(hours=1),
+            ),
+            patch(
+                "modules.slack_baneo_notifier.listener.procesar_comando_correccion",
+                side_effect=lambda session, *, momento_explicito=None, **_k: (
+                    resultado_final if momento_explicito is not None else None
+                ),
+            ),
+        ):
+            listener._handle_message(
+                {"text": "id: 1228619", "channel": "C123", "ts": "2222.000002",
+                 "thread_ts": "1111.000001", "user": "U0OPERADOR"},
+                client_mock,
+            )
+
+        mock_fontaine.assert_not_called()
+        mock_fusion.assert_not_called()
+        self.assertFalse(caso.resuelto_via_empalme)
+        self.assertEqual(client_mock.chat_postMessage.call_args.kwargs["text"], resultado_final.respuesta)
 
 
 class TestRegexRevalidarIngreso(unittest.TestCase):
@@ -3336,7 +3550,9 @@ class TestReescrituraCamara(unittest.TestCase):
         buscar = MagicMock()
         with patch(
             "modules.slack_baneo_notifier.listener.resolver_botella_por_fusion_sync", return_value=None
-        ) as mock_empalme:
+        ) as mock_empalme, patch(
+            "modules.slack_baneo_notifier.listener.buscar_por_id_legacy", return_value=None
+        ):
             self._correr("1234567", caso, buscar=buscar)
         mock_empalme.assert_called_once()
         buscar.assert_not_called()

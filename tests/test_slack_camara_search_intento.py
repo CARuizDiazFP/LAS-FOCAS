@@ -7,7 +7,8 @@
 Se parchean `_buscar_ilike_lista` y `_buscar_tokens_lista` en el módulo donde se leen, igual que
 `tests/test_slack_ingreso_listener.py`, así la función se ejercita sin base de datos. Cada caso
 fija una rama de la cascada: heurística previa, intentos 1 a 4, desempate exacto, seguimiento del
-grupo ambiguo más acotado y resolución final.
+grupo ambiguo más acotado y resolución final. Al final, el prefijo "Empalme <n_id>" de
+`buscar_camara` (2026-10-23).
 """
 
 from __future__ import annotations
@@ -361,3 +362,97 @@ def test_ambiguo_se_resuelve_si_un_intento_posterior_da_una_sola():
 
 def test_reexporta_sin_cambios_la_firma_publica():
     assert cs._buscar_camara_intento is _buscar_camara_intento
+
+
+# ── Prefijo "Empalme <n_id>" (2026-10-23) ────────────────────────────────
+
+def _botella(n_id: int, nombre: str, camara) -> SimpleNamespace:
+    return SimpleNamespace(
+        n_id=n_id, nombre=nombre, camara=camara, camara_id=getattr(camara, "id", None), vigente=True
+    )
+
+
+class _Sesion:
+    """Sesión mínima: `get(CromoBotella, n_id)` desde un dict; registra las llamadas."""
+
+    def __init__(self, botellas: dict | None = None) -> None:
+        self.botellas = botellas or {}
+        self.gets: list[int] = []
+
+    def get(self, _modelo, n_id):
+        self.gets.append(n_id)
+        return self.botellas.get(n_id)
+
+
+@pytest.mark.parametrize(
+    ("texto", "esperado"),
+    [
+        ("Empalme 10245762: Cra 25 de Mayo 302", (10245762, "Cra 25 de Mayo 302")),
+        ("empalme 10245762 - Cra 25 de Mayo 302", (10245762, "Cra 25 de Mayo 302")),
+        ("EMPALME #10245762:Cra X 1", (10245762, "Cra X 1")),
+        ("Empalme 10245762", (10245762, "")),
+        ("Cra 25 de Mayo 302", (None, "Cra 25 de Mayo 302")),
+        ("Empalme 1024576: Cra X 1", (None, "Empalme 1024576: Cra X 1")),  # 7 dígitos: no es n_id
+        ("Empalme 10245762 Cra X 1", (None, "Empalme 10245762 Cra X 1")),  # sin separador
+        ("Cra Empalme 10245762: X", (None, "Cra Empalme 10245762: X")),  # sólo al principio
+    ],
+)
+def test_separar_prefijo_empalme(texto, esperado):
+    assert cs.separar_prefijo_empalme(texto) == esperado
+
+
+def test_prefijo_empalme_valido_es_match_directo_sin_buscar_por_nombre():
+    camara = _cam(33978, "Cra 25 de Mayo 302 CF")
+    sesion = _Sesion({10245762: _botella(10245762, "Cra 25 de Mayo 302 CF", camara)})
+    with (
+        patch(f"{MOD}._buscar_ilike_lista") as ilike,
+        patch(f"{MOD}._buscar_tokens_lista") as tokens,
+    ):
+        res, _ = cs.buscar_camara("Empalme 10245762: Cra 25 de Mayo 302", sesion)
+    assert res is camara
+    assert sesion.gets == [10245762]
+    ilike.assert_not_called()
+    tokens.assert_not_called()
+
+
+def test_prefijo_empalme_inexistente_busca_por_nombre_sin_exigir_el_numero():
+    camara = _cam(33978, "Cra 25 de Mayo 302 CF")
+    sesion = _Sesion()
+    res, ilikes, _ = _correr_buscar_camara("Empalme 10245762: Cra 25 de Mayo 302", sesion,
+                                            ilike={"cra 25 de mayo 302": [camara]})
+    assert res[0] is camara
+    assert sesion.gets == [10245762]
+    assert all("10245762" not in p for p in ilikes)
+
+
+def test_prefijo_empalme_que_el_resto_contradice_busca_por_nombre():
+    # n_id existente pero de otra cámara (typo): el resto no lo corrobora → búsqueda por nombre.
+    otra = _cam(1, "Cra Mitre 440")
+    buena = _cam(33978, "Cra 25 de Mayo 302 CF")
+    sesion = _Sesion({10245762: _botella(10245762, "Cra Mitre 440", otra)})
+    res, _, _ = _correr_buscar_camara("Empalme 10245762: Cra 25 de Mayo 302", sesion,
+                                      ilike={"cra 25 de mayo 302": [buena]})
+    assert res[0] is buena
+
+
+def test_sin_prefijo_empalme_no_consulta_n_id():
+    sesion = _Sesion()
+    _correr_buscar_camara("Cra 25 de Mayo 302", sesion)
+    assert sesion.gets == []
+
+
+def _correr_buscar_camara(nombre_raw, sesion, ilike=None, tokens=None):
+    ilike = ilike or {}
+    tokens = tokens or {}
+    llamadas: list[str] = []
+
+    def _fake_ilike(patron, session):
+        llamadas.append(patron)
+        return list(ilike.get(patron, []))
+
+    with (
+        patch(f"{MOD}._buscar_ilike_lista", side_effect=_fake_ilike),
+        patch(f"{MOD}._buscar_tokens_lista", side_effect=lambda t, s: list(tokens.get(tuple(t), []))),
+    ):
+        res = cs.buscar_camara(nombre_raw, sesion)
+    return res, llamadas, None
