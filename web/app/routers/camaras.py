@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -21,14 +21,14 @@ from core.services.camaras_consulta import (
 from core.utils.tz import TZ_ARG
 
 from ..comun import (
-    _require_admin,
-    _require_auth,
     _serializar_bloqueos,
     _serialize_camara_ingreso,
     logger,
 )
+from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+from ..errores import ErrorDeDominio, error_interno, nueva_ref
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(usuario_sesion)])
 
 # =============================================================================
 # INFRAESTRUCTURA / CÁMARAS
@@ -185,14 +185,14 @@ def _serialize_camara_baneo(item: Any) -> dict[str, Any]:
 
 @router.get("/api/infra/camaras")
 async def search_camaras_web(
-    request: Request,
     q: Optional[str] = None,
     estado: Optional[str] = None,
     limit: int = 100,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Busca cámaras por query y/o estado (proxy al API interno)."""
 
-    username, role = _require_auth(request)
+    username, role = usuario
     limit = min(limit, 500)
 
     try:
@@ -306,17 +306,14 @@ async def search_camaras_web(
                 "camaras": camaras_response,
             })
 
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=search_camaras_error user=%s error=%s", username, exc)
-        return JSONResponse(
-            {"error": f"Error buscando cámaras: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("search_camaras", exc, user=username)
 
 
 @router.get("/api/infra/camaras/buscar")
 async def camaras_buscar_ligero_web(
-    request: Request,
     q: Optional[str] = None,
     limit: int = 10,
     excluir_id: Optional[int] = None,
@@ -340,7 +337,6 @@ async def camaras_buscar_ligero_web(
     from core.services.camara_busqueda_service import buscar_camaras_ligero
     from db.session import SessionLocal
 
-    _require_auth(request)
     try:
         with SessionLocal() as session:
             candidatas = buscar_camaras_ligero(
@@ -362,16 +358,20 @@ async def camaras_buscar_ligero_web(
                     for c in candidatas
                 ]
             })
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=camaras_buscar_ligero_error error=%s", exc)
-        return JSONResponse({"error": "No se pudo buscar cámaras"}, status_code=500)
+        return error_interno("camaras_buscar_ligero", exc)
 
 
 @router.get("/api/infra/camaras/{camara_id}")
-async def get_camara_detail_web(request: Request, camara_id: int) -> JSONResponse:
+async def get_camara_detail_web(
+    camara_id: int,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
+) -> JSONResponse:
     """Obtiene el resumen operativo base de una cámara para la vista de detalle."""
 
-    _, role = _require_auth(request)
+    _, role = usuario
 
     try:
         from core.services.camara_estado_service import get_camara_estado_contexto
@@ -393,16 +393,15 @@ async def get_camara_detail_web(request: Request, camara_id: int) -> JSONRespons
                 editable=role == "admin",
             )
             return JSONResponse({"status": "ok", "camara": payload})
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=get_camara_detail_error camara_id=%s error=%s", camara_id, exc)
-        return JSONResponse({"error": "No se pudo obtener el detalle de la cámara"}, status_code=500)
+        return error_interno("get_camara_detail", exc, camara_id=camara_id)
 
 
 @router.get("/api/infra/camaras/{camara_id}/aliases")
-async def get_camara_aliases_web(request: Request, camara_id: int) -> JSONResponse:
+async def get_camara_aliases_web(camara_id: int) -> JSONResponse:
     """Obtiene los alias conocidos de una cámara."""
-
-    _require_auth(request)
 
     try:
         from db.models.infra import Camara, CamaraAlias
@@ -428,13 +427,17 @@ async def get_camara_aliases_web(request: Request, camara_id: int) -> JSONRespon
                     "aliases": [_serialize_camara_alias(alias) for alias in aliases],
                 }
             )
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=get_camara_aliases_error camara_id=%s error=%s", camara_id, exc)
-        return JSONResponse({"error": "No se pudieron obtener los alias de la cámara"}, status_code=500)
+        return error_interno("get_camara_aliases", exc, camara_id=camara_id)
 
 
 @router.get("/api/infra/camaras/{camara_id}/botellas")
-async def get_camara_botellas_web(request: Request, camara_id: int) -> JSONResponse:
+async def get_camara_botellas_web(
+    camara_id: int,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
+) -> JSONResponse:
     """Obtiene las Botellas (jerarquía Cámara/Botella) de una cámara — sólo lectura. Une las dos
     fuentes que pueden colgar de una Cámara padre: Botellas legado (`camara.botellas`, self-FK) y
     Botellas Cromo (`CromoBotella.camara_id`, vigentes, backfilleadas por
@@ -449,7 +452,7 @@ async def get_camara_botellas_web(request: Request, camara_id: int) -> JSONRespo
     vacía para ese origen — el modelo self-FK es de exactamente 2 niveles, una Botella no tiene sus
     propias botellas."""
 
-    _, role = _require_auth(request)
+    _, role = usuario
 
     try:
         from core.services.camara_estado_service import get_camara_estado_contexto
@@ -494,16 +497,15 @@ async def get_camara_botellas_web(request: Request, camara_id: int) -> JSONRespo
                     "botellas": botellas,
                 }
             )
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=get_camara_botellas_error camara_id=%s error=%s", camara_id, exc)
-        return JSONResponse({"error": "No se pudieron obtener las botellas de la cámara"}, status_code=500)
+        return error_interno("get_camara_botellas", exc, camara_id=camara_id)
 
 
 @router.get("/api/infra/camaras/{camara_id}/registros")
-async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResponse:
+async def get_camara_registros_web(camara_id: int) -> JSONResponse:
     """Obtiene registros operativos parciales de una cámara para la vista dedicada."""
-
-    _require_auth(request)
 
     try:
         from core.services.camara_estado_service import get_camara_estado_contexto, miembros_del_grupo
@@ -566,9 +568,10 @@ async def get_camara_registros_web(request: Request, camara_id: int) -> JSONResp
                     "ingresos": [_serialize_camara_ingreso(item) for item in ingresos_db],
                 }
             )
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=get_camara_registros_error camara_id=%s error=%s", camara_id, exc)
-        return JSONResponse({"error": "No se pudieron obtener los registros de la cámara"}, status_code=500)
+        return error_interno("get_camara_registros", exc, camara_id=camara_id)
 
 
 # -----------------------------------------------------------------------------
@@ -590,12 +593,12 @@ class BanCreateRequestModel(BaseModel):
 
 @router.post("/api/infra/ban/create")
 async def create_ban_web(
-    request: Request,
     ban_request: BanCreateRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Crea un incidente de baneo y marca las cámaras como BANEADAS."""
     
-    username, _ = _require_auth(request)
+    username, _ = usuario
     
     try:
         from core.services.protection_service import create_ban as do_create_ban
@@ -645,19 +648,17 @@ async def create_ban_web(
             
             return JSONResponse(result.to_dict())
             
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=create_ban_error user=%s error=%s", username, exc)
-        return JSONResponse(
-            {"success": False, "error": f"Error creando baneo: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("create_ban", exc, cuerpo={"success": False}, user=username)
 
 
 @router.get("/api/infra/ban/active")
-async def get_active_bans_web(request: Request) -> JSONResponse:
+async def get_active_bans_web(usuario: UsuarioSesion = Depends(usuario_sesion)) -> JSONResponse:
     """Obtiene todos los incidentes de baneo activos con conteo de cámaras."""
     
-    username, _ = _require_auth(request)
+    username, _ = usuario
     
     try:
         from core.services.protection_service import get_incidentes_activos, ProtectionService
@@ -709,12 +710,10 @@ async def get_active_bans_web(request: Request) -> JSONResponse:
                 "total_camaras_baneadas": total_camaras_baneadas,
             })
             
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=get_active_bans_error user=%s error=%s", username, exc)
-        return JSONResponse(
-            {"error": f"Error obteniendo baneos activos: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("get_active_bans", exc, user=username)
 
 
 class BanLiftRequestModel(BaseModel):
@@ -725,12 +724,12 @@ class BanLiftRequestModel(BaseModel):
 
 @router.post("/api/infra/ban/lift")
 async def lift_ban_web(
-    request: Request,
     lift_request: BanLiftRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Levanta un baneo y restaura el estado de las cámaras."""
     
-    username, _ = _require_auth(request)
+    username, _ = usuario
     
     try:
         from core.services.protection_service import lift_ban as do_lift_ban
@@ -773,12 +772,10 @@ async def lift_ban_web(
             
             return JSONResponse(result.to_dict())
             
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=lift_ban_error user=%s error=%s", username, exc)
-        return JSONResponse(
-            {"success": False, "error": f"Error levantando baneo: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("lift_ban", exc, cuerpo={"success": False}, user=username)
 
 
 # -----------------------------------------------------------------------------
@@ -790,9 +787,8 @@ async def lift_ban_web(
 # -----------------------------------------------------------------------------
 
 
-@router.get("/api/admin/baneos/grupos")
+@router.get("/api/admin/baneos/grupos", dependencies=[Depends(usuario_admin)])
 async def baneos_grupos_listar_web(
-    request: Request,
     q: Optional[str] = None,
     limit: int = 25,
     offset: int = 0,
@@ -801,7 +797,6 @@ async def baneos_grupos_listar_web(
     siempre viene de query param acá (int) — el `limit=None` sin paginar de
     `listar_grupos_baneados` sólo lo usa internamente el reporte Excel de la Tarea 8, nunca este
     endpoint web."""
-    _require_admin(request)
 
     try:
         from core.services.baneos_grupos_service import listar_grupos_baneados
@@ -813,9 +808,10 @@ async def baneos_grupos_listar_web(
         with SessionLocal() as session:
             resultado = listar_grupos_baneados(session, q=q, limit=limit, offset=offset)
             return JSONResponse({"status": "ok", "limit": limit, "offset": offset, **resultado.to_dict()})
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=baneos_grupos_listar_error error=%s", exc)
-        return JSONResponse({"error": "No se pudo obtener el listado de grupos baneados"}, status_code=500)
+        return error_interno("baneos_grupos_listar", exc)
 
 
 class BaneosLiberarMasivoRequestModel(BaseModel):
@@ -828,11 +824,15 @@ class BaneosLiberarMasivoRequestModel(BaseModel):
 
 
 @router.post("/api/admin/baneos/grupos/liberar")
-async def baneos_grupos_liberar_web(request: Request, body: BaneosLiberarMasivoRequestModel) -> JSONResponse:
+async def baneos_grupos_liberar_web(
+    request: Request,
+    body: BaneosLiberarMasivoRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Libera (desbanea) varios grupos de una — la única acción masiva nueva de este dominio.
     Guard de incidente activo por grupo (`core.services.baneos_grupos_service.liberar_grupos_masivo`):
     sin `forzar`, un grupo con un `IncidenteBaneo` activo detrás se omite en vez de desbanearse."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -867,9 +867,10 @@ async def baneos_grupos_liberar_web(request: Request, body: BaneosLiberarMasivoR
                 body.forzar,
             )
             return JSONResponse({"ok": True, **resultado.to_dict()})
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=baneos_grupos_liberar_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudieron liberar los grupos"}, status_code=500)
+        return error_interno("baneos_grupos_liberar", exc, user=username)
 
 
 # -----------------------------------------------------------------------------
@@ -889,12 +890,12 @@ class EmailNotifyRequestModel(BaseModel):
 
 @router.post("/api/infra/notify/email")
 async def send_email_notification_web(
-    request: Request,
     email_request: EmailNotifyRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Envía un correo electrónico con información de baneos."""
     
-    username, _ = _require_auth(request)
+    username, _ = usuario
     
     try:
         from core.services.email_service import EmailAttachment, get_email_service
@@ -1019,19 +1020,17 @@ async def send_email_notification_web(
             "recipients_count": len(email_request.to) + len(email_request.cc or []),
         })
         
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=send_email_error user=%s error=%s", username, exc)
-        return JSONResponse(
-            {"success": False, "message": "Error enviando email", "error": str(exc)},
-            status_code=500
+        return error_interno(
+            "send_email", exc, cuerpo={"success": False, "message": "Error enviando email"}, user=username
         )
 
 
 @router.get("/api/infra/notify/email/config")
-async def get_email_config_web(request: Request) -> JSONResponse:
+async def get_email_config_web() -> JSONResponse:
     """Obtiene el estado de configuración del email."""
-    
-    _require_auth(request)
     
     try:
         from core.services.email_service import get_email_service
@@ -1046,8 +1045,10 @@ async def get_email_config_web(request: Request) -> JSONResponse:
         })
         
     except Exception as exc:
-        logger.exception("action=get_email_config_error error=%s", exc)
-        return JSONResponse({"configured": False, "error": str(exc)})
+        # Responde 200 (no 500) como siempre: sólo deja de exponer el texto de la excepción.
+        ref = nueva_ref()
+        logger.exception("action=get_email_config_error error=%s ref=%s", exc, ref)
+        return JSONResponse({"configured": False, "error": f"Error interno (ref {ref})"})
 
 
 # -----------------------------------------------------------------------------
@@ -1107,8 +1108,8 @@ DEFAULT_EMAIL_TEMPLATE = """
 
 @router.post("/api/infra/notify/download-eml")
 async def generate_eml_file(
-    request: Request,
     eml_request: EmlDownloadRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> Response:
     """Genera un archivo .eml descargable con el correo de notificación.
     
@@ -1130,7 +1131,7 @@ async def generate_eml_file(
     import io  # noqa: F811
     import re  # noqa: F811
     
-    username, _ = _require_auth(request)
+    username, _ = usuario
     
     try:
         from db.models.infra import Servicio
@@ -1291,12 +1292,10 @@ async def generate_eml_file(
                 }
             )
             
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=generate_eml_error user=%s error=%s", username, exc)
-        return JSONResponse(
-            {"error": f"Error generando archivo EML: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("generate_eml", exc, user=username)
 
 
 # -----------------------------------------------------------------------------
@@ -1305,14 +1304,14 @@ async def generate_eml_file(
 
 @router.get("/api/infra/export/cameras")
 async def export_cameras_web(
-    request: Request,
     filter_status: Optional[str] = None,
     servicio_id: Optional[str] = None,
     format: str = "csv",
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> Response:
     """Exporta listado de cámaras a CSV o XLSX."""
 
-    username, _ = _require_auth(request)
+    username, _ = usuario
 
     try:
         from db.session import SessionLocal
@@ -1351,12 +1350,10 @@ async def export_cameras_web(
                 },
             )
 
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=export_cameras_error user=%s error=%s", username, exc)
-        return JSONResponse(
-            {"error": f"Error exportando cámaras: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("export_cameras", exc, user=username)
 
 
 class SearchFilterModel(BaseModel):
@@ -1375,8 +1372,8 @@ class SearchRequestModel(BaseModel):
 
 @router.post("/api/infra/search")
 async def advanced_search_camaras_web(  # noqa: C901 - variante conservada a propósito
-    request: Request,
     body: SearchRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Búsqueda avanzada de cámaras con filtros combinables (AND).
 
@@ -1384,7 +1381,7 @@ async def advanced_search_camaras_web(  # noqa: C901 - variante conservada a pro
     Operadores: eq, contains, starts_with, ends_with, in
     """
 
-    username, _ = _require_auth(request)
+    username, _ = usuario
 
     try:
         from db.models.infra import Camara
@@ -1542,12 +1539,10 @@ async def advanced_search_camaras_web(  # noqa: C901 - variante conservada a pro
                 "camaras": camaras_response,
             })
 
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=advanced_search_error user=%s error=%s", username, exc)
-        return JSONResponse(
-            {"error": f"Error en búsqueda avanzada: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("advanced_search", exc, user=username)
 
 
 class SmartSearchRequestModel(BaseModel):
@@ -1559,11 +1554,9 @@ class SmartSearchRequestModel(BaseModel):
     incluir_no_operativas: bool = False
 
 
-@router.get("/api/infra/camaras/{camara_id}/estado")
-async def get_camara_estado_web(request: Request, camara_id: int) -> JSONResponse:
+@router.get("/api/infra/camaras/{camara_id}/estado", dependencies=[Depends(usuario_admin)])
+async def get_camara_estado_web(camara_id: int) -> JSONResponse:
     """Obtiene el contexto operativo del estado de una cámara."""
-
-    _require_admin(request)
 
     try:
         from core.services.camara_estado_service import get_camara_estado_contexto
@@ -1592,11 +1585,10 @@ async def get_camara_estado_web(request: Request, camara_id: int) -> JSONRespons
                     "contexto": contexto.to_dict(),
                 }
             )
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=get_camara_estado_error camara_id=%s error=%s", camara_id, exc)
-        return JSONResponse({"error": "No se pudo obtener el estado de la cámara"}, status_code=500)
+        return error_interno("get_camara_estado", exc, camara_id=camara_id)
 
 
 @router.post("/api/infra/camaras/{camara_id}/estado")
@@ -1604,10 +1596,11 @@ async def update_camara_estado_web(
     request: Request,
     camara_id: int,
     body: CamaraEstadoUpdateRequest,
+    usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Permite a un administrador aplicar un override manual del estado."""
 
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -1652,11 +1645,10 @@ async def update_camara_estado_web(
                 session.rollback()
 
             return JSONResponse(result.to_dict())
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=update_camara_estado_error user=%s camara_id=%s error=%s", username, camara_id, exc)
-        return JSONResponse({"error": "No se pudo actualizar el estado de la cámara"}, status_code=500)
+        return error_interno("update_camara_estado", exc, user=username, camara_id=camara_id)
 
 
 # ── Endpoints admin: gestión de cámaras PENDIENTE_REVISION ───────────────
@@ -1686,6 +1678,7 @@ _EGRESO_WEB_STATUS = {
 @router.post("/api/infra/ingresos/{ingreso_id}/egreso")
 async def registrar_egreso_ingreso_web(
     request: Request, ingreso_id: int, body: RegistrarEgresoWebRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Registra el egreso de un `Ingreso` que quedó "en curso" (el formulario de Egreso nunca llegó
     por Slack). Delegado entero en `ingreso_correccion_service.registrar_egreso_web` — mismas reglas
@@ -1693,7 +1686,7 @@ async def registrar_egreso_ingreso_web(
 
     Sin restricción de rol más allá de estar autenticado: mismo criterio que los comandos de Slack
     (cualquiera del canal puede corregir; la auditoría es el control — ver docstring del servicio)."""
-    username, _ = _require_auth(request)
+    username, _ = usuario
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != request.session.get("csrf")):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
@@ -1739,23 +1732,21 @@ async def registrar_egreso_ingreso_web(
                     },
                 }
             )
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=registrar_egreso_web_error user=%s ingreso_id=%s error=%s", username, ingreso_id, exc)
-        return JSONResponse({"error": "Error al registrar el egreso"}, status_code=500)
+        return error_interno("registrar_egreso_web", exc, user=username, ingreso_id=ingreso_id)
 
 
-@router.get("/api/admin/infra/ingresos-sin-match")
+@router.get("/api/admin/infra/ingresos-sin-match", dependencies=[Depends(usuario_admin)])
 async def admin_ingresos_sin_match(
-    request: Request, revisado: Optional[bool] = None, origen: Optional[str] = None,
+    revisado: Optional[bool] = None, origen: Optional[str] = None,
 ) -> JSONResponse:
     """Lista casos de ingreso (bot de Slack o carga de tracking) cuya cámara no matcheó contra el
     inventario (2026-08-11) — reemplaza el auto-registro `PENDIENTE_REVISION`. Es información de
     sólo lectura para revisión manual y mejora del regex, no crea ninguna Cámara. `revisado` filtra
     por el flag (default: todos, sin filtrar). `origen` filtra por uno o más valores separados por
     coma (ej. `?origen=excel_camaras` o `?origen=slack,tracking`; default: todos, sin filtrar)."""
-    _require_admin(request)
     try:
         from db.models.infra import IngresoSinMatch
         from db.session import SessionLocal
@@ -1780,18 +1771,18 @@ async def admin_ingresos_sin_match(
                 }
                 for caso in casos
             ])
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=admin_ingresos_sin_match error=%s", exc)
-        return JSONResponse({"error": "Error al obtener ingresos sin match"}, status_code=500)
+        return error_interno("admin_ingresos_sin_match", exc)
 
 
-@router.post("/api/admin/infra/ingresos-sin-match/{caso_id}/marcar-revisado")
-async def admin_marcar_revisado_ingreso_sin_match(request: Request, caso_id: int) -> JSONResponse:
+@router.post(
+    "/api/admin/infra/ingresos-sin-match/{caso_id}/marcar-revisado", dependencies=[Depends(usuario_admin)]
+)
+async def admin_marcar_revisado_ingreso_sin_match(caso_id: int) -> JSONResponse:
     """Marca un caso de ingreso sin match como revisado — no muta ningún dato de infraestructura,
     sólo el flag de triage."""
-    _require_admin(request)
     try:
         from db.models.infra import IngresoSinMatch
         from db.session import SessionLocal
@@ -1803,11 +1794,10 @@ async def admin_marcar_revisado_ingreso_sin_match(request: Request, caso_id: int
             caso.revisado = True
             session.commit()
             return JSONResponse({"ok": True, "id": caso.id})
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=admin_marcar_revisado_ingreso_sin_match error=%s", exc)
-        return JSONResponse({"error": "Error al marcar el caso como revisado"}, status_code=500)
+        return error_interno("admin_marcar_revisado_ingreso_sin_match", exc)
 
 
 class MarcarRevisadoMasivoRequestModel(BaseModel):
@@ -1818,11 +1808,15 @@ class MarcarRevisadoMasivoRequestModel(BaseModel):
 
 
 @router.post("/api/admin/infra/ingresos-sin-match/marcar-revisado-masivo")
-async def admin_marcar_revisado_masivo_web(request: Request, body: MarcarRevisadoMasivoRequestModel) -> JSONResponse:
+async def admin_marcar_revisado_masivo_web(
+    request: Request,
+    body: MarcarRevisadoMasivoRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Marca en lote varios casos de ingreso sin match como revisados — es el 'Borrado' del visor de
     ingesta: sólo descarta de la vista, no muta ningún dato de infraestructura, la fila queda en la
     base para poder ajustar a futuro el regex/normalización de búsqueda."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -1843,17 +1837,15 @@ async def admin_marcar_revisado_masivo_web(request: Request, body: MarcarRevisad
             )
             session.commit()
             return JSONResponse({"ok": True, "actualizados": actualizados})
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("action=admin_marcar_revisado_masivo_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudo marcar los casos como revisados"}, status_code=500)
+        return error_interno("admin_marcar_revisado_masivo", exc, user=username)
 
 
-@router.get("/api/admin/infra/camaras/pendientes")
-async def admin_camaras_pendientes(request: Request) -> JSONResponse:
+@router.get("/api/admin/infra/camaras/pendientes", dependencies=[Depends(usuario_admin)])
+async def admin_camaras_pendientes() -> JSONResponse:
     """Lista cámaras auto-registradas en estado PENDIENTE_REVISION."""
-    _require_admin(request)
     try:
         from db.models.infra import Camara, CamaraEstado
         from db.session import SessionLocal
@@ -1874,17 +1866,15 @@ async def admin_camaras_pendientes(request: Request) -> JSONResponse:
                 }
                 for c in camaras
             ])
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=admin_camaras_pendientes error=%s", exc)
-        return JSONResponse({"error": "Error al obtener cámaras pendientes"}, status_code=500)
+        return error_interno("admin_camaras_pendientes", exc)
 
 
-@router.post("/api/admin/infra/camaras/{camara_id}/aprobar")
-async def admin_aprobar_camara(request: Request, camara_id: int) -> JSONResponse:
+@router.post("/api/admin/infra/camaras/{camara_id}/aprobar", dependencies=[Depends(usuario_admin)])
+async def admin_aprobar_camara(camara_id: int) -> JSONResponse:
     """Aprueba una cámara PENDIENTE_REVISION, cambiando su estado a LIBRE."""
-    _require_admin(request)
     try:
         from db.models.infra import Camara, CamaraEstado
         from db.session import SessionLocal
@@ -1913,20 +1903,18 @@ async def admin_aprobar_camara(request: Request, camara_id: int) -> JSONResponse
             session.commit()
             logger.info("action=aprobar_camara camara_id=%s nombre='%s'", camara_id, camara.nombre)
             return JSONResponse({"ok": True, "camara_id": camara_id, "estado": camara.estado.value})
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=admin_aprobar_camara_error camara_id=%s error=%s", camara_id, exc)
-        return JSONResponse({"error": "Error al aprobar la cámara"}, status_code=500)
+        return error_interno("admin_aprobar_camara", exc, camara_id=camara_id)
 
 
 class _ConvertirAliasRequest(BaseModel):
     camara_destino_id: int
 
 
-@router.post("/api/admin/infra/camaras/{camara_id}/convertir-alias")
+@router.post("/api/admin/infra/camaras/{camara_id}/convertir-alias", dependencies=[Depends(usuario_admin)])
 async def admin_convertir_alias(
-    request: Request,
     camara_id: int,
     body: _ConvertirAliasRequest,
 ) -> JSONResponse:
@@ -1936,7 +1924,6 @@ async def admin_convertir_alias(
       pendiente como alias de la cámara destino.
     - Elimina físicamente el registro pendiente.
     """
-    _require_admin(request)
     try:
         from db.models.infra import Camara, CamaraAlias, CamaraEstado
         from db.session import SessionLocal
@@ -1970,20 +1957,18 @@ async def admin_convertir_alias(
                 "alias_nombre": pendiente.nombre,
                 "camara_destino_id": destino.id,
             })
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=admin_convertir_alias_error camara_id=%s error=%s", camara_id, exc)
-        return JSONResponse({"error": "Error al convertir alias"}, status_code=500)
+        return error_interno("admin_convertir_alias", exc, camara_id=camara_id)
 
 
 class _DarDeAltaRequest(BaseModel):
     nombre_canon: str
 
 
-@router.post("/api/admin/infra/camaras/{camara_id}/dar-de-alta")
+@router.post("/api/admin/infra/camaras/{camara_id}/dar-de-alta", dependencies=[Depends(usuario_admin)])
 async def admin_dar_de_alta_camara(
-    request: Request,
     camara_id: int,
     body: _DarDeAltaRequest,
 ) -> JSONResponse:
@@ -1994,7 +1979,6 @@ async def admin_dar_de_alta_camara(
     (el que ingresó el técnico) como un alias en ``app.camara_alias``, siempre
     que sea diferente al nombre canónico.
     """
-    _require_admin(request)
     nombre_canon = body.nombre_canon.strip()
     if not nombre_canon:
         return JSONResponse({"error": "El nombre canónico no puede estar vacío"}, status_code=400)
@@ -2052,16 +2036,14 @@ async def admin_dar_de_alta_camara(
                 "alias_creado": alias_creado,
                 "alias_nombre": nombre_original if alias_creado else None,
             })
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=admin_dar_de_alta_error camara_id=%s error=%s", camara_id, exc)
-        return JSONResponse({"error": "Error al dar de alta la cámara"}, status_code=500)
+        return error_interno("admin_dar_de_alta", exc, camara_id=camara_id)
 
 
-@router.delete("/api/admin/infra/camaras/pendientes/{camara_id}")
+@router.delete("/api/admin/infra/camaras/pendientes/{camara_id}", dependencies=[Depends(usuario_admin)])
 async def admin_eliminar_camara_pendiente(
-    request: Request,
     camara_id: int,
 ) -> JSONResponse:
     """Elimina físicamente de la DB una cámara en estado PENDIENTE_REVISION.
@@ -2070,7 +2052,6 @@ async def admin_eliminar_camara_pendiente(
     Para proteger contra borrados accidentales, registros en otros estados
     deben gestionarse por otros medios.
     """
-    _require_admin(request)
     try:
         from db.models.infra import Camara, CamaraEstado
         from db.session import SessionLocal
@@ -2098,16 +2079,14 @@ async def admin_eliminar_camara_pendiente(
                 nombre_eliminado,
             )
             return JSONResponse({"ok": True, "id": camara_id})
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=admin_eliminar_pendiente_error camara_id=%s error=%s", camara_id, exc)
-        return JSONResponse({"error": "Error al eliminar la cámara"}, status_code=500)
+        return error_interno("admin_eliminar_pendiente", exc, camara_id=camara_id)
 
 
-@router.get("/api/admin/infra/camaras/viewer")
+@router.get("/api/admin/infra/camaras/viewer", dependencies=[Depends(usuario_admin)])
 async def camaras_viewer_listado_web(
-    request: Request,
     q: Optional[str] = None,
     estado: Optional[str] = None,
     limit: int = 60,
@@ -2115,7 +2094,6 @@ async def camaras_viewer_listado_web(
 ) -> JSONResponse:
     """Listado paginado de Cámaras raíz para el dashboard `/admin/servicios/viewer/Camaras` (vista
     dual grid/lista). Paginación real en SQL, sin el N+1 en memoria de `smart-search`."""
-    _require_admin(request)
     try:
         from db.models.infra import Camara, CamaraEstado
         from db.session import SessionLocal
@@ -2147,17 +2125,17 @@ async def camaras_viewer_listado_web(
                     for c in filas
                 ],
             })
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=camaras_viewer_listado_error error=%s", exc)
-        return JSONResponse({"error": "No se pudo obtener el listado de cámaras"}, status_code=500)
+        return error_interno("camaras_viewer_listado", exc)
 
 
-@router.get("/api/admin/infra/camaras/viewer/duplicados")
-async def camaras_viewer_duplicados_web(request: Request) -> JSONResponse:
+@router.get("/api/admin/infra/camaras/viewer/duplicados", dependencies=[Depends(usuario_admin)])
+async def camaras_viewer_duplicados_web() -> JSONResponse:
     """Grupos de Cámaras raíz candidatas a duplicado por nombre normalizado extendido (sin
     similitud difusa). Devuelve TODOS los grupos sin paginar — la cantidad de grupos es órdenes de
     magnitud menor que el total de Cámaras raíz. Ver `core/services/camara_duplicados_service.py`."""
-    _require_admin(request)
     try:
         from core.services.camara_duplicados_service import detectar_grupos_duplicados
         from db.session import SessionLocal
@@ -2186,15 +2164,16 @@ async def camaras_viewer_duplicados_web(request: Request) -> JSONResponse:
                     for g in grupos
                 ],
             })
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=camaras_viewer_duplicados_error error=%s", exc)
-        return JSONResponse({"error": "No se pudo calcular los grupos de duplicados"}, status_code=500)
+        return error_interno("camaras_viewer_duplicados", exc)
 
 
 @router.post("/api/infra/smart-search")
 async def smart_search_camaras_web(
-    request: Request,
     body: SmartSearchRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Smart Search: búsqueda libre por términos.
 
@@ -2202,7 +2181,7 @@ async def smart_search_camaras_web(
     servicios, cables, estado, origen). Los términos se combinan con AND.
     """
 
-    username, role = _require_auth(request)
+    username, role = usuario
 
     try:
         from core.services.camara_estado_service import get_camara_estado_contexto
@@ -2253,12 +2232,10 @@ async def smart_search_camaras_web(
                 "camaras": camaras_response,
             })
 
+    except (HTTPException, ErrorDeDominio):
+        raise
     except Exception as exc:
-        logger.exception("action=smart_search_error user=%s error=%s", username, exc)
-        return JSONResponse(
-            {"error": f"Error en smart search: {exc!s}"},
-            status_code=500
-        )
+        return error_interno("smart_search", exc, user=username)
 
 
 
@@ -2381,13 +2358,17 @@ class CamaraEliminarRequestModel(BaseModel):
 
 
 @router.post("/api/infra/camaras/eliminar")
-async def camaras_eliminar_web(request: Request, body: CamaraEliminarRequestModel) -> JSONResponse:
+async def camaras_eliminar_web(
+    request: Request,
+    body: CamaraEliminarRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Elimina permanentemente una Cámara raíz junto con TODAS sus Botellas (legado + Cromo) — todo
     o nada: si un solo hijo (o la propia Cámara) tiene Cables/Empalmes/Ingresos/Fusiones reales
     asociados, se rechaza la operación completa sin borrar nada. Cada Botella Cromo eliminada
     registra su n_id en `app.cromo_botella_alias` (`accion='ignorar'`). Ver
     `core/services/camara_botella_delete_service.py`."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -2403,6 +2384,7 @@ async def camaras_eliminar_web(request: Request, body: CamaraEliminarRequestMode
                 resultado = eliminar_camara(session, camara_id=body.camara_id, usuario=username)
             except EliminacionBloqueadaError as exc:
                 session.rollback()
+                # Mensaje de dominio armado por el servicio para el usuario (no es texto interno).
                 return JSONResponse(
                     {"error": str(exc), "bloqueos": _serializar_bloqueos(exc.bloqueos)}, status_code=400
                 )
@@ -2423,11 +2405,10 @@ async def camaras_eliminar_web(request: Request, body: CamaraEliminarRequestMode
                 "botellas_cromo_eliminadas": resultado.botellas_cromo_eliminadas,
                 "aliases_registrados": resultado.aliases_registrados,
             })
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=camaras_eliminar_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudo eliminar la Cámara"}, status_code=500)
+        return error_interno("camaras_eliminar", exc, user=username)
 
 
 
@@ -2448,11 +2429,15 @@ class CamaraMergeRequestModel(BaseModel):
 
 
 @router.post("/api/infra/camaras/merge")
-async def camaras_merge_web(request: Request, body: CamaraMergeRequestModel) -> JSONResponse:
+async def camaras_merge_web(
+    request: Request,
+    body: CamaraMergeRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Fusiona dos Cámaras raíz duplicadas: la principal hereda todo lo heredable de la secundaria
     (Botellas propias, Botellas Cromo, Cables, Empalmes, Ingresos, alias y auditoría/historial) y la
     secundaria se elimina físicamente. Ver `core/services/camara_merge_service.py`."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -2474,6 +2459,7 @@ async def camaras_merge_web(request: Request, body: CamaraMergeRequestModel) -> 
                 )
             except MergeCamarasError as exc:
                 session.rollback()
+                # Mensaje de dominio armado por el servicio para el usuario (no es texto interno).
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
             session.commit()
@@ -2507,11 +2493,10 @@ async def camaras_merge_web(request: Request, body: CamaraMergeRequestModel) -> 
                 "alias_creado": resultado.alias_creado,
                 "estado_final": resultado.estado_final,
             })
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=camaras_merge_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudo unificar las cámaras"}, status_code=500)
+        return error_interno("camaras_merge", exc, user=username)
 
 
 class CamaraMergeGrupoRequestModel(BaseModel):
@@ -2524,12 +2509,16 @@ class CamaraMergeGrupoRequestModel(BaseModel):
 
 
 @router.post("/api/infra/camaras/merge-grupo")
-async def camaras_merge_grupo_web(request: Request, body: CamaraMergeGrupoRequestModel) -> JSONResponse:
+async def camaras_merge_grupo_web(
+    request: Request,
+    body: CamaraMergeGrupoRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Fusiona TODAS las Cámaras de un grupo de duplicados dentro de una única principal, con un solo
     click admin. Mismo mecanismo que `POST /api/infra/camaras/merge` (`unificar_camaras`), aplicado en
     loop con `session.expire_all()` entre cada llamada — ver
     `core/services/camara_merge_service.py::fusionar_grupo_camaras`."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -2551,6 +2540,7 @@ async def camaras_merge_grupo_web(request: Request, body: CamaraMergeGrupoReques
                 )
             except MergeCamarasError as exc:
                 session.rollback()
+                # Mensaje de dominio armado por el servicio para el usuario (no es texto interno).
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
             session.commit()
@@ -2584,11 +2574,10 @@ async def camaras_merge_grupo_web(request: Request, body: CamaraMergeGrupoReques
                 "aliases_creados": resultado.aliases_creados,
                 "estado_final": resultado.estado_final,
             })
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=camaras_merge_grupo_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudo fusionar el grupo de Cámaras"}, status_code=500)
+        return error_interno("camaras_merge_grupo", exc, user=username)
 
 
 class CamaraMergeMasivoRequestModel(BaseModel):
@@ -2599,7 +2588,11 @@ class CamaraMergeMasivoRequestModel(BaseModel):
 
 
 @router.post("/api/infra/camaras/merge-masivo")
-async def camaras_merge_masivo_web(request: Request, body: CamaraMergeMasivoRequestModel) -> JSONResponse:
+async def camaras_merge_masivo_web(
+    request: Request,
+    body: CamaraMergeMasivoRequestModel,
+    usuario: UsuarioSesion = Depends(usuario_admin),
+) -> JSONResponse:
     """Fusiona automáticamente TODOS los grupos de Cámaras duplicadas detectados en este momento —
     para cada grupo, `sugerir_principal()` (`core/services/camara_duplicados_service.py`) elige la
     Cámara con más `botellas_count + cables_count` (empate → id más bajo) y fusiona las demás dentro
@@ -2612,7 +2605,7 @@ async def camaras_merge_masivo_web(request: Request, body: CamaraMergeMasivoRequ
     reportado en `detalle` y se sigue con el resto. Es una desviación deliberada del patrón habitual
     (una única sesión/transacción por request) porque acá cada grupo es independiente por diseño
     (nunca comparten Cámaras entre sí) y una falla aislada no debe descartar el resto del lote."""
-    username = _require_admin(request)
+    username = usuario.username
     expected_csrf = request.session.get("csrf")
     testing_mode = os.getenv("TESTING", "false").lower() == "true"
     if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
@@ -2642,6 +2635,7 @@ async def camaras_merge_masivo_web(request: Request, body: CamaraMergeMasivoRequ
                     )
                 except MergeCamarasError as exc:
                     session.rollback()
+                    # Mensaje de dominio armado por el servicio para el usuario (no es texto interno).
                     detalle.append({
                         "exito": False,
                         "principal_id": principal_id,
@@ -2674,11 +2668,10 @@ async def camaras_merge_masivo_web(request: Request, body: CamaraMergeMasivoRequ
             "grupos_con_error": grupos_con_error,
             "detalle": detalle,
         })
-    except HTTPException:
+    except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
-        logger.exception("action=camaras_merge_masivo_error user=%s error=%s", username, exc)
-        return JSONResponse({"error": "No se pudo ejecutar la fusión masiva"}, status_code=500)
+        return error_interno("camaras_merge_masivo", exc, user=username)
 
 
 
