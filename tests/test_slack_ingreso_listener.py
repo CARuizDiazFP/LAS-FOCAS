@@ -2864,10 +2864,18 @@ class TestSeguimientoFontaineId(unittest.TestCase):
     """2026-10-23: el número de la respuesta en hilo se prueba primero como Fontaine ID
     (`cromo_botellas.id_legacy`) y después como ID de empalme."""
 
-    def _caso(self) -> Any:
+    def _caso(self, tipo: str = "Ingreso") -> Any:
+        from datetime import datetime, timezone
+
         caso = MagicMock()
         caso.id = 5
         caso.resuelto_via_empalme = False
+        caso.resuelto_via_revalidacion = False
+        caso.ingreso_id = None
+        caso.texto_mensaje = f"*Nombre: Nodo/Camara/botella*\nCra 25 de Mayo 320\n*Ingreso o Egreso*\n{tipo}\n"
+        caso.created_at = datetime(2026, 10, 23, 9, 15, tzinfo=timezone.utc)
+        caso.thread_ts = "1111.000001"
+        caso.contexto = "C123"
         return caso
 
     def _camara(self) -> Any:
@@ -2877,7 +2885,7 @@ class TestSeguimientoFontaineId(unittest.TestCase):
         return camara
 
     def _correr(self, texto: str, *, fontaine: Any = None, fusion: Any = None, camara_fusion: Any = None,
-                user: str | None = "U0OPERADOR"):
+                user: str | None = "U0OPERADOR", tipo: str = "Ingreso", es_nodo: bool = False):
         from db.models.infra import CamaraEstado
         from core.services.camara_estado_service import CamaraEstadoContexto
         from db.models.infra import Camara, IngresoCorreccion, IngresoSinMatch
@@ -2886,7 +2894,7 @@ class TestSeguimientoFontaineId(unittest.TestCase):
         listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
         client_mock = MagicMock()
         session_mock = MagicMock()
-        caso = self._caso()
+        caso = self._caso(tipo)
 
         def _side_effect(model: Any) -> Any:
             q = MagicMock()
@@ -2917,29 +2925,61 @@ class TestSeguimientoFontaineId(unittest.TestCase):
             ) as mock_fusion,
             patch("modules.slack_baneo_notifier.listener.get_camara_estado_contexto", return_value=contexto_libre),
             patch("modules.slack_baneo_notifier.listener.buscar_camara_o_botella_cromo") as mock_buscar,
+            patch("modules.slack_baneo_notifier.listener.resolver_nombre_tecnico", return_value="Técnico"),
+            patch("modules.slack_baneo_notifier.listener.corresponde_a_nodo", return_value=es_nodo),
+            patch(
+                "modules.slack_baneo_notifier.listener.registrar_movimiento_ingreso", return_value=self.ingreso
+            ) as mock_registrar,
         ):
             listener._handle_message(event, client_mock)
+        self.mock_registrar = mock_registrar
         return client_mock, session_mock, caso, fontaine_mock, mock_fusion, mock_buscar
+
+    def setUp(self) -> None:
+        self.ingreso = MagicMock()
+        self.ingreso.id = 501
 
     def _fontaine(self, camara: Any) -> ResultadoBusquedaExtendida:
         botella = MagicMock()
         botella.n_id = 10245762
+        botella.nombre = "Cra 25 de Mayo 302 CF"
         return ResultadoBusquedaExtendida(camara=camara, nombre_norm="x", fuente="cromo_botella", botella=botella)
 
-    def test_numero_solo_resuelve_como_fontaine_id(self) -> None:
+    def test_numero_solo_resuelve_como_fontaine_id_registra_y_confirma(self) -> None:
+        """Decisión del usuario 2026-10-23 ("Registrar y confirmar"): el Fontaine ID registra el
+        movimiento del caso (tipo y horario originales) y confirma con la Cámara y el ID usado."""
         camara = self._camara()
-        client_mock, session_mock, caso, fontaine, fusion, buscar = self._correr(
-            "1228619", fontaine=self._fontaine(camara)
-        )
+        resultado = self._fontaine(camara)
+        client_mock, session_mock, caso, fontaine, fusion, buscar = self._correr("1228619", fontaine=resultado)
         fontaine.assert_called_once_with("1228619", session_mock)
         fusion.assert_not_called()  # Fontaine primero: no se prueba el empalme
         buscar.assert_not_called()
-        self.assertTrue(caso.resuelto_via_empalme)
+        self.mock_registrar.assert_called_once()
+        kwargs = self.mock_registrar.call_args.kwargs
+        self.assertIs(kwargs["camara"], camara)
+        self.assertIs(kwargs["botella"], resultado.botella)
+        self.assertEqual(kwargs["tipo_movimiento"], "Ingreso")
+        self.assertEqual(kwargs["momento"], caso.created_at)
+        self.assertTrue(caso.resuelto_via_revalidacion)
+        self.assertFalse(caso.resuelto_via_empalme)
+        self.assertEqual(caso.ingreso_id, 501)
         session_mock.commit.assert_called_once()
         texto = client_mock.chat_postMessage.call_args.kwargs["text"]
-        self.assertIn("Resuelto por Fontaine ID *1228619*", texto)
-        self.assertIn("Cra 25 de Mayo 302 CF", texto)
-        self.assertIn("✅", texto)
+        self.assertIn(
+            "✅ Registré el ingreso en *Cra 25 de Mayo 302 CF* (Fontaine ID 1228619). "
+            "Si no es esa cámara, avisá en este hilo.",
+            texto,
+        )
+
+    def test_fontaine_id_con_egreso_registra_egreso(self) -> None:
+        camara = self._camara()
+        client_mock, session_mock, caso, fontaine, _, _ = self._correr(
+            "egreso ok, id: 1228619", fontaine=self._fontaine(camara), tipo="Egreso"
+        )
+        fontaine.assert_called_once_with("1228619", session_mock)
+        self.assertEqual(self.mock_registrar.call_args.kwargs["tipo_movimiento"], "Egreso")
+        self.assertIn("✅ Registré el egreso en *Cra 25 de Mayo 302 CF* (Fontaine ID 1228619)",
+                      client_mock.chat_postMessage.call_args.kwargs["text"])
 
     def test_formato_del_operador_ingreso_ok_id(self) -> None:
         camara = self._camara()
@@ -2947,8 +2987,20 @@ class TestSeguimientoFontaineId(unittest.TestCase):
             "ingreso ok, id: 1228619", fontaine=self._fontaine(camara)
         )
         fontaine.assert_called_once_with("1228619", session_mock)
-        self.assertTrue(caso.resuelto_via_empalme)
-        self.assertIn("Fontaine ID", client_mock.chat_postMessage.call_args.kwargs["text"])
+        self.mock_registrar.assert_called_once()
+        self.assertTrue(caso.resuelto_via_revalidacion)
+        self.assertIn("Fontaine ID 1228619", client_mock.chat_postMessage.call_args.kwargs["text"])
+
+    def test_fontaine_id_que_resuelve_a_un_nodo_se_ignora(self) -> None:
+        client_mock, session_mock, caso, _, fusion, _ = self._correr(
+            "id: 1228619", fontaine=self._fontaine(self._camara()), es_nodo=True
+        )
+        self.mock_registrar.assert_not_called()
+        fusion.assert_not_called()
+        self.assertFalse(caso.resuelto_via_revalidacion)
+        self.assertFalse(caso.resuelto_via_empalme)
+        session_mock.commit.assert_not_called()
+        client_mock.chat_postMessage.assert_not_called()
 
     def test_si_no_es_fontaine_prueba_como_id_de_empalme(self) -> None:
         camara = self._camara()
@@ -2960,6 +3012,7 @@ class TestSeguimientoFontaineId(unittest.TestCase):
         fontaine.assert_called_once()
         fusion.assert_called_once_with(session_mock, 10245999)
         self.assertTrue(caso.resuelto_via_empalme)
+        self.mock_registrar.assert_not_called()  # por ID de empalme: cierra sin registrar, como antes
         texto = client_mock.chat_postMessage.call_args.kwargs["text"]
         self.assertIn("Resuelto por ID de empalme *10245999*", texto)
         self.assertIn("Cra 25 de Mayo 302 CF", texto)
@@ -3012,7 +3065,9 @@ class TestSeguimientoFontaineId(unittest.TestCase):
         dup = AmbiguousSearchError("1256524", 2, ["Poste Paunero 1543 SAN MIGUEL", "Poste Paunero 1543 SAN MIGUEL"])
         client_mock, session_mock, caso, _, fusion, _ = self._correr("id: 1256524", fontaine=dup)
         fusion.assert_not_called()
+        self.mock_registrar.assert_not_called()
         self.assertFalse(caso.resuelto_via_empalme)
+        self.assertFalse(caso.resuelto_via_revalidacion)
         session_mock.commit.assert_not_called()
         texto = client_mock.chat_postMessage.call_args.kwargs["text"]
         self.assertIn("más de una botella", texto)
@@ -4455,6 +4510,52 @@ def test_pendiente_fecha_vigente_ciclo_previo_completo_real_db() -> None:
         session.rollback()  # nunca commit: ninguna fila queda persistida en la DB de dev
         session.close()
 
+
+
+@requiere_postgres_real
+def test_fontaine_id_real_registra_en_la_camara_33978_sin_dejar_datos() -> None:
+    """Datos reales de dev (5433): "ingreso ok, id: 1228619" en el hilo de un `IngresoSinMatch`
+    pendiente registra el movimiento en la Cámara 33978 (Botella 10245762) y confirma. Todo corre
+    en una transacción que nunca se compromete: `session.commit` se reemplaza por `flush` (el camino
+    de registro commitea internamente) y el `finally` hace `rollback()` — no queda nada en dev."""
+    from datetime import datetime, timedelta, timezone
+
+    from db.models.infra import IngresoSinMatch
+    from db.session import SessionLocal
+    from modules.slack_baneo_notifier.listener import IngresoListener
+
+    listener = IngresoListener(bot_token="xoxb-test", app_token="xapp-test")
+    client_mock = MagicMock()
+    thread_ts = "9999999999.999902"
+    session = SessionLocal()
+    session.commit = session.flush  # type: ignore[method-assign]
+    try:
+        caso = IngresoSinMatch(
+            texto_original="Cra 25 de Mayo 320",
+            origen="slack",
+            contexto="C_TEST_FONTAINE",
+            thread_ts=thread_ts,
+            texto_mensaje="*Nombre: Nodo/Camara/botella*\nCra 25 de Mayo 320\n*Ingreso o Egreso*\nIngreso\n",
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+        )
+        session.add(caso)
+        session.flush()
+
+        with patch("modules.slack_baneo_notifier.listener.resolver_nombre_tecnico", return_value="Test Fontaine"):
+            tratado = listener._procesar_seguimiento_empalme(
+                "ingreso ok, id: 1228619", thread_ts, session, client_mock, "C_TEST_FONTAINE"
+            )
+
+        assert tratado is True
+        assert caso.resuelto_via_revalidacion is True
+        assert caso.ingreso_id is not None
+        assert caso.ingreso.camara_id == 33978
+        texto = client_mock.chat_postMessage.call_args.kwargs["text"]
+        assert "(Fontaine ID 1228619)" in texto
+        assert "Cra 25 de Mayo 302" in texto
+    finally:
+        session.rollback()  # nunca commit real: ninguna fila queda en la DB de dev
+        session.close()
 
 if __name__ == "__main__":
     unittest.main()

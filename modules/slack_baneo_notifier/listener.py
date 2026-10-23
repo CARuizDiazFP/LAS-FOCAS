@@ -572,8 +572,9 @@ class IngresoListener:
         matcheó ninguna cámara).
 
         Desde 2026-10-23 el número se prueba primero como Fontaine ID (`buscar_por_id_legacy`) y,
-        si no existe, como ID de empalme. Lo que resuelve cierra el caso igual que antes
-        (`resuelto_via_empalme`) y la respuesta dice por cuál de los dos IDs. Un Fontaine ID
+        si no existe, como ID de empalme. Por Fontaine ID registra el movimiento y confirma
+        (`_registrar_por_fontaine`); por ID de empalme cierra el caso sin registrar, como antes
+        (`resuelto_via_empalme`). Un Fontaine ID
         repetido en Cámaras distintas nunca elige: responde y deja el caso pendiente. Si no
         resuelve por ninguno: con la forma del Fontaine ID ("id: N", "ingreso ok, id: N") el caso
         queda pendiente (se puede reescribir la Cámara); con un número suelto o "empalme N", se
@@ -632,24 +633,25 @@ class IngresoListener:
             )
             return True
 
-        camara = None
-        via = ""
         if por_fontaine is not None:
-            camara, via = por_fontaine.camara, f"Fontaine ID *{numero}*"
-        else:
-            botella = resolver_botella_por_fusion_sync(session, fusion_n_id)
-            if botella is not None and botella.camara_id is not None:
-                from db.models.infra import Camara
+            return self._registrar_por_fontaine(
+                caso, por_fontaine, numero, session, client, channel, thread_ts_evento
+            )
 
-                camara = session.query(Camara).filter(Camara.id == botella.camara_id).one_or_none()
-                via = f"ID de empalme *{numero}*"
+        # Sólo como ID de empalme: cierra el caso SIN registrar movimiento, como antes de 2026-10-23.
+        camara = None
+        botella = resolver_botella_por_fusion_sync(session, fusion_n_id)
+        if botella is not None and botella.camara_id is not None:
+            from db.models.infra import Camara
+
+            camara = session.query(Camara).filter(Camara.id == botella.camara_id).one_or_none()
 
         if camara is not None:
             logger.info(
-                "Seguimiento resuelto por %s → camara_id=%s (caso id=%s)", via, camara.id, caso.id
+                "Seguimiento resuelto por ID de empalme %s → camara_id=%s (caso id=%s)", numero, camara.id, caso.id
             )
             resultado_acceso = self._evaluar_estado_acceso_camara(camara, session)
-            respuesta = f"Resuelto por {via}.\n{resultado_acceso.texto}"
+            respuesta = f"Resuelto por ID de empalme *{numero}*.\n{resultado_acceso.texto}"
         elif _RE_FORMA_FONTAINE.match(texto):
             # Fontaine ID que no resuelve (ni como empalme): el caso queda pendiente, así se puede
             # reescribir la Cámara o reintentar con otro ID en el mismo hilo.
@@ -692,6 +694,54 @@ class IngresoListener:
             text=respuesta,
             mrkdwn=True,
         )
+        return True
+
+    def _registrar_por_fontaine(
+        self,
+        caso: Any,
+        resultado: Any,
+        numero: str,
+        session: Any,
+        client: Any,
+        channel: str,
+        thread_ts_evento: str,
+    ) -> bool:
+        """El Fontaine ID resolvió a una Cámara (decisión del usuario 2026-10-23: "Registrar y
+        confirmar"). Registra el movimiento del caso por el mismo camino que la reescritura y la
+        revalidación (`_registrar_y_cerrar_caso`: tipo y horario del mensaje original,
+        `resuelto_via_revalidacion`, `ingreso_id`) y confirma nombrando la Cámara y el ID usado,
+        para que el operador vea enseguida si lo tipeó mal. Un Nodo se ignora en silencio, igual
+        que en la reescritura y en el flujo normal."""
+        camara = resultado.camara
+        nombre_elemento = resultado.botella.nombre if resultado.botella is not None else camara.nombre
+        if corresponde_a_nodo(nombre_elemento or "", session) or corresponde_a_nodo(camara.nombre or "", session):
+            logger.info("Fontaine ID %s resolvió a un Nodo ('%s') — ignorado (caso id=%s)", numero, camara.nombre, caso.id)
+            return True
+
+        ingreso, resultado_acceso = self._registrar_y_cerrar_caso(caso, resultado, session, client)
+        logger.info(
+            "action=ingreso_fontaine_id caso_id=%s id_legacy=%s camara_id=%s ingreso_id=%s",
+            caso.id,
+            numero,
+            camara.id,
+            getattr(ingreso, "id", None),
+        )
+        aviso = "Si no es esa cámara, avisá en este hilo."
+        if ingreso is None:
+            respuesta = (
+                f"✅ *{camara.nombre}* (Fontaine ID {numero}), pero el mensaje original no traía el "
+                f"campo 'Ingreso o Egreso': no se registró ningún movimiento. {aviso}\n"
+                f"{resultado_acceso.texto}"
+            )
+        else:
+            tipo = extraer_tipo_movimiento(caso.texto_mensaje or "") or "Ingreso"
+            if resultado_acceso.bloqueado and tipo == "Ingreso":
+                encabezado = f"⚠️ Registré el intento de ingreso (bloqueado) en *{camara.nombre}*"
+            else:
+                encabezado = f"✅ Registré el {tipo.lower()} en *{camara.nombre}*"
+            respuesta = f"{encabezado} (Fontaine ID {numero}). {aviso}\n{resultado_acceso.texto}"
+
+        client.chat_postMessage(channel=channel, thread_ts=thread_ts_evento, text=respuesta, mrkdwn=True)
         return True
 
     def _procesar_revalidacion_ingreso(
@@ -809,6 +859,26 @@ class IngresoListener:
         """Cierra un `IngresoSinMatch` con una cámara ya resuelta (revalidación o reescritura de la
         Cámara en el hilo): registra el movimiento del mensaje ORIGINAL con su horario original,
         marca `resuelto_via_revalidacion`, enlaza `ingreso_id` y devuelve el texto de respuesta."""
+        ingreso, resultado_acceso = self._registrar_y_cerrar_caso(caso, resultado, session, client)
+        if ingreso is not None:
+            return (
+                f"{encabezado} — *{resultado.camara.nombre}* matcheó correctamente. Se registró "
+                f"el movimiento con el horario original ({caso.created_at:%d/%m/%Y %H:%M}).\n"
+                f"{resultado_acceso.texto}"
+            )
+        return (
+            f"{encabezado} — *{resultado.camara.nombre}* matcheó correctamente, pero el "
+            "mensaje original no traía el campo 'Ingreso o Egreso' así que no se registró "
+            "ningún movimiento.\n"
+            f"{resultado_acceso.texto}"
+        )
+
+    def _registrar_y_cerrar_caso(
+        self, caso: Any, resultado: Any, session: Any, client: Any
+    ) -> tuple[Any, _ResultadoAccesoCamara]:
+        """Núcleo compartido de revalidación, reescritura y Fontaine ID: registra el movimiento del
+        mensaje ORIGINAL del caso (su tipo y su horario), marca `resuelto_via_revalidacion` y enlaza
+        `ingreso_id`. Devuelve `(ingreso | None, resultado_acceso)`."""
         resultado_acceso = self._evaluar_estado_acceso_camara(resultado.camara, session)
         ingreso = self._registrar_movimiento_si_corresponde(
             resultado,
@@ -825,19 +895,7 @@ class IngresoListener:
         if ingreso is not None:
             caso.ingreso_id = ingreso.id
         session.commit()
-
-        if ingreso is not None:
-            return (
-                f"{encabezado} — *{resultado.camara.nombre}* matcheó correctamente. Se registró "
-                f"el movimiento con el horario original ({caso.created_at:%d/%m/%Y %H:%M}).\n"
-                f"{resultado_acceso.texto}"
-            )
-        return (
-            f"{encabezado} — *{resultado.camara.nombre}* matcheó correctamente, pero el "
-            "mensaje original no traía el campo 'Ingreso o Egreso' así que no se registró "
-            "ningún movimiento.\n"
-            f"{resultado_acceso.texto}"
-        )
+        return ingreso, resultado_acceso
 
     def _procesar_reescritura_camara(
         self,
