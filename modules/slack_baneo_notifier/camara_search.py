@@ -12,12 +12,14 @@ niveles de coincidencia antes de rendirse.
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 if TYPE_CHECKING:
+    from db.models.cromo import CromoBotella
     from db.models.infra import Camara
 
 # Exportado explícitamente para reuso desde `core/services/cromo/camara_botella_busqueda.py`
@@ -42,10 +44,15 @@ __all__ = [
     "buscar_camara",
     "normalizar_candidato",
     "preparar_nombre_busqueda",
+    "separar_prefijo_empalme",
+    "botella_cromo_por_n_id",
+    "resto_corrobora_botella",
+    "camara_por_prefijo_empalme",
     "quitar_botella_uno",
     "extraer_tipo_movimiento",
     "extraer_slack_user_id_autorizacion",
     "AmbiguousSearchError",
+    "NumeroNoCoincideError",
 ]
 
 # ── Tabla de abreviaturas comunes usadas por técnicos ────────────────────
@@ -141,6 +148,77 @@ _RE_LETRAS_NUMERO = re.compile(r"(?<=[^\W\d_]{3})(?=\d)")
 # "Bot 1" (ver `detectar_multi_bot`). Se quita sólo como SEGUNDO intento (`quitar_botella_uno`):
 # hay nombres reales que sí lo llevan literal ("Cra Juan Domingo Peron 498 Bot 1 CF").
 _RE_BOTELLA_UNO = re.compile(r"(?i)\bbot(?:ella)?\.?\s*1(?!\d)\.?")
+
+
+# "Empalme 10245762: Cra 25 de Mayo 302" (caso real, 2026-10-23): el técnico antepone el `n_id` de
+# Cromo de la Botella — "empalme" es como llaman a la Botella en la calle. 7 u 8 dígitos (prefijos
+# reales de prod: 9429606, 9404415, 9542798, 9472462, 10245762; el `n_id` mínimo es 6.630.905, sin
+# choque con el Fontaine ID, que llega a 1.274.823). Sólo al principio del texto: con la palabra
+# "Empalme", seguido de ":"/"-" o del fin del texto; sin ella ("6635973: Cra …", también real),
+# sólo seguido de ":"/"-". Siempre se corrobora contra el resto (`resto_corrobora_botella`).
+_RE_PREFIJO_EMPALME = re.compile(
+    r"(?i)^\s*(?:empalme\s*#?\s*(\d{7,8})\s*(?:[:\-–]\s*|$)|#?(\d{7,8})\s*[:\-–]\s*)"
+)
+
+
+def separar_prefijo_empalme(texto: str) -> tuple[int | None, str]:
+    """``("Empalme 10245762: Cra X 1")`` → ``(10245762, "Cra X 1")``. Sin el prefijo devuelve
+    ``(None, texto)`` sin cambios."""
+    match = _RE_PREFIJO_EMPALME.match(texto or "")
+    if not match:
+        return None, texto
+    return int(match.group(1) or match.group(2)), texto[match.end():].strip()
+
+
+def botella_cromo_por_n_id(n_id: int, session: Session) -> "CromoBotella | None":
+    """`CromoBotella` por `n_id`, sólo si es vigente y está vinculada a una Cámara. Compartida con la
+    búsqueda por ID explícito de `core/services/cromo/camara_botella_busqueda.py`."""
+    from db.models.cromo import CromoBotella
+
+    botella = session.get(CromoBotella, n_id)
+    if botella is None or botella.camara_id is None or not botella.vigente:
+        return None
+    return botella
+
+
+# Umbral de `SequenceMatcher` entre el resto del texto y el nombre de la Botella. Medido en la
+# revisión (2026-10-23) contra todos los `n_id` de dev con un dígito mal tipeado o dos transpuestos
+# que existen y son de OTRA cámara: con sólo "comparte una palabra o un número" el 4,6% de esos
+# typos resolvía a la cámara equivocada; con números contenidos + ratio ≥ 0,8, el 0,09%. Los 6
+# prefijos reales de prod dan ratio 1,0.
+_UMBRAL_CORROBORACION = 0.8
+
+
+def _para_corroborar(texto: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", normalizar_candidato(texto))).strip()
+
+
+def resto_corrobora_botella(botella: "CromoBotella", resto: str) -> bool:
+    """El texto que acompaña a un ID explícito describe a ESA Botella: vacío, o todos sus números
+    de 2+ dígitos están en el nombre y el parecido (`SequenceMatcher`) es ≥ 0,8. Un ID mal tipeado
+    que exista no puede resolver a una cámara que el resto del texto no describe (revisiones del
+    2026-09-28 y 2026-10-23)."""
+    resto_norm = _para_corroborar(resto or "")
+    if not resto_norm:
+        return True
+    nombre_norm = _para_corroborar(botella.nombre or "")
+    if not set(re.findall(r"\d{2,}", resto_norm)) <= set(re.findall(r"\d{2,}", nombre_norm)):
+        return False
+    return SequenceMatcher(None, resto_norm, nombre_norm).ratio() >= _UMBRAL_CORROBORACION
+
+
+def camara_por_prefijo_empalme(texto: str, session: Session) -> tuple["CromoBotella | None", str]:
+    """Resuelve el prefijo "Empalme <n_id>" por `n_id` de Cromo. Devuelve ``(botella, resto)``: la
+    Botella si el `n_id` existe, es vigente, tiene Cámara y el resto del texto la corrobora; si no,
+    ``(None, resto)`` — el texto SIN el prefijo, para seguir la búsqueda por nombre sin exigir ese
+    número. Sin prefijo, ``(None, texto)``."""
+    n_id, resto = separar_prefijo_empalme(texto)
+    if n_id is None:
+        return None, texto
+    botella = botella_cromo_por_n_id(n_id, session)
+    if botella is not None and resto_corrobora_botella(botella, resto):
+        return botella, resto
+    return None, resto
 
 
 def preparar_nombre_busqueda(texto: str) -> str:
@@ -426,6 +504,20 @@ class AmbiguousSearchError(Exception):
         )
 
 
+class NumeroNoCoincideError(AmbiguousSearchError):
+    """El texto trae números y ninguna cámara los tiene, pero sin esos números sí hay parecidas.
+
+    Caso típico: el técnico escribió mal la altura ("Cra Mitre 404" para "Cra Mitre 440"). Las
+    candidatas son SÓLO sugerencias — nunca se asigna automáticamente una cámara parecida (decisión
+    del usuario 2026-10-23: "son pocos casos pero hay"). Es subclase de `AmbiguousSearchError` a
+    propósito: todo caller que hoy trata la ambigüedad como "no se puede resolver" (revalidación,
+    corrección, reproceso, baneo masivo) la sigue tratando igual sin cambios; sólo el listener la
+    captura antes para responder "No encontré X con ese número. ¿Quisiste decir…?".
+
+    ``cantidad`` es la cantidad de parecidas encontradas; ``candidatos`` las hasta 3 más similares.
+    """
+
+
 def buscar_camara(
     nombre_raw: str, session: Session, *, desempatar: bool = True
 ) -> tuple["Camara | None", str]:
@@ -440,7 +532,16 @@ def buscar_camara(
     — esto preserva casos donde el sufijo SÍ es parte legítima del nombre real y necesaria para
     desambiguar (ej. "Poste Lavalle - Campana", ver `TestLimpiarRuidoOperativo
     .test_localidad_con_guion_se_preserva`).
+
+    Antes que nada (2026-10-23), el prefijo "Empalme <n_id de 8 dígitos>:" se resuelve por `n_id`
+    de Cromo (`camara_por_prefijo_empalme`): si la Botella existe y tiene Cámara, es match directo;
+    si no, se quita el prefijo y su número no cuenta como requerido.
     """
+    botella, nombre_raw = camara_por_prefijo_empalme(nombre_raw, session)
+    if botella is not None:
+        return botella.camara, _aplicar_sinonimos(
+            _normalizar(_expandir_abreviaturas(_limpiar_puntuacion(nombre_raw)))
+        )
     nombre_raw = preparar_nombre_busqueda(nombre_raw)
     if "-" in nombre_raw:
         prefijo = nombre_raw.split("-", 1)[0].strip()
@@ -458,6 +559,117 @@ def buscar_camara(
     return _buscar_camara_intento(nombre_raw, session, desempate_exacto=desempatar)
 
 
+def _tokens_significativos(texto: str) -> list[str]:
+    """Tokens de `texto` con al menos 3 caracteres (umbral de la cascada)."""
+    return [t for t in texto.split() if len(t) >= 3]
+
+
+class _CascadaBusqueda:
+    """Estado de una corrida de `_buscar_camara_intento`: restricciones del input y grupo ambiguo.
+
+    Conserva el grupo más acotado (menos candidatos) que ningún intento pudo reducir a una sola.
+    """
+
+    def __init__(
+        self, nombre_raw: str, session: Session, nombre_norm: str, desempate_exacto: bool
+    ) -> None:
+        self.nombre_raw = nombre_raw
+        self.session = session
+        self.nombre_norm = nombre_norm
+        self.desempate_exacto = desempate_exacto
+        # Números requeridos: si el input tiene "440", solo aceptamos cámaras con "440"
+        self.numeros_requeridos: set[str] = set(re.findall(r"\d+", nombre_norm))
+        # Bot/Botella: si el técnico lo menciona explícitamente, permitimos bots secundarios
+        self.tiene_bot: bool = bool(re.search(r"\bbot(ella)?\b", nombre_raw, re.IGNORECASE))
+        self.ambiguos: list["Camara"] = []
+
+    def _filtrar(self, candidatos: list["Camara"]) -> list["Camara"]:
+        candidatos = _filtrar_por_numeros(candidatos, self.numeros_requeridos)
+        candidatos = _filtrar_bots_secundarios(candidatos, self.tiene_bot)
+        return _filtrar_numero_de_botella(candidatos, self.nombre_raw)
+
+    def candidatos_ilike(self, patron: str) -> list["Camara"]:
+        return self._filtrar(_buscar_ilike_lista(patron, self.session))
+
+    def candidatos_tokens(self, tokens: list[str]) -> list["Camara"]:
+        return self._filtrar(_buscar_tokens_lista(tokens, self.session))
+
+    def _desempatar_por_exacta(self, candidatos: list["Camara"]) -> "Camara | None":
+        # Desempate (2026-09-28): si exactamente UNA candidata coincide por igualdad con la
+        # entrada normalizada, es ésa — "Cra Libertad 991 CF" contra "BOTELLA CRITICA Cra
+        # Libertad 991 CF". Dos o más exactas (duplicados reales del inventario, "X C.F." y
+        # "X CF") siguen siendo ambiguas: nunca se elige entre dos Cámaras distintas.
+        if not self.desempate_exacto or tiene_gemela_critica(candidatos):
+            return None
+        exactas = [c for c in candidatos if normalizar_candidato(c.nombre) == self.nombre_norm]
+        return exactas[0] if len(exactas) == 1 else None
+
+    def evaluar(self, candidatos: list["Camara"]) -> "Camara | None":
+        if len(candidatos) == 1:
+            return candidatos[0]
+        if len(candidatos) > 1:
+            elegida = self._desempatar_por_exacta(candidatos)
+            if elegida is not None:
+                return elegida
+            if not self.ambiguos or len(candidatos) < len(self.ambiguos):
+                self.ambiguos = candidatos
+        return None
+
+    def probar(self, patron: str) -> "Camara | None":
+        """ILIKE con `patron` y, si hay 2+ tokens significativos, todos los tokens (AND)."""
+        resultado = self.evaluar(self.candidatos_ilike(patron))
+        if resultado:
+            return resultado
+        tokens = _tokens_significativos(patron)
+        if len(tokens) >= 2:
+            return self.evaluar(self.candidatos_tokens(tokens)) or None
+        return None
+
+
+# Tipo de elemento y descriptores que, solos, no identifican una calle: si al quitar los números
+# del texto sólo quedan éstos ("Cra 440" → "cra"), no se buscan parecidas — serían miles.
+_TOKENS_GENERICOS = frozenset({"cra", "bot", "poste", "tza", "calle", "avenida", "pasaje", "esq"})
+
+
+def _parecidas_sin_numeros(cascada: _CascadaBusqueda) -> list["Camara"]:
+    """Cámaras que coinciden con el texto SIN sus números (reemplaza al viejo Intento 3, que era
+    inalcanzable: sólo corría cuando el texto no tenía números, y entonces no había nada que quitar).
+
+    Sólo para un texto CON números al que los intentos 1, 2 y 4 no le encontraron nada. Se busca por
+    tokens (AND ILIKE) sobre la forma expandida y la literal, con los mismos filtros de bot y de
+    número de botella que la cascada — pero sin el de números, que es justamente el que no coincide.
+    Si sin los números quedan menos de 2 tokens significativos, o sólo tokens genéricos ("cra",
+    "calle"), no se busca nada. Devuelve las candidatas ordenadas de más a menos parecidas al texto;
+    NUNCA se usan como match (ver `NumeroNoCoincideError`)."""
+    literal = _aplicar_sinonimos(_normalizar(_limpiar_puntuacion(cascada.nombre_raw)))
+    vistas: dict[int, "Camara"] = {}
+    for texto in dict.fromkeys((cascada.nombre_norm, literal)):
+        sin_numeros = re.sub(r"\s+", " ", re.sub(r"\d+", " ", texto)).strip()
+        tokens = _tokens_significativos(sin_numeros)
+        if len(tokens) < 2 or set(tokens) <= _TOKENS_GENERICOS:
+            continue
+        candidatas = _buscar_tokens_lista(tokens, cascada.session)
+        candidatas = _filtrar_bots_secundarios(candidatas, cascada.tiene_bot)
+        for camara in _filtrar_numero_de_botella(candidatas, cascada.nombre_raw):
+            vistas.setdefault(camara.id, camara)
+
+    def _similitud(camara: "Camara") -> float:
+        return SequenceMatcher(None, cascada.nombre_norm, normalizar_candidato(camara.nombre)).ratio()
+
+    return sorted(vistas.values(), key=lambda c: (-_similitud(c), len(c.nombre or ""), c.id))
+
+
+def _intento_sin_expansion(cascada: _CascadaBusqueda) -> tuple["Camara | None", str]:
+    """Intento 4: nombre raw normalizado SIN expansión de abreviaturas.
+
+    Cubre el caso en que la DB almacena el nombre con abreviaturas literales.
+    """
+    nombre_raw_norm = _aplicar_sinonimos(_normalizar(_limpiar_puntuacion(cascada.nombre_raw)))
+    if nombre_raw_norm != cascada.nombre_norm:
+        return cascada.probar(nombre_raw_norm), nombre_raw_norm
+    return None, nombre_raw_norm
+
+
 def _buscar_camara_intento(
     nombre_raw: str, session: Session, *, desempate_exacto: bool = True
 ) -> tuple["Camara | None", str]:
@@ -471,8 +683,8 @@ def _buscar_camara_intento(
 
     Regla de numeración:
       Si el input contiene números, solo se aceptan cámaras cuyo nombre los
-      contenga exactamente (como palabras completas).  El Intento 3 (búsqueda
-      sin números) se omite para evitar falsos positivos (ej: 440 ≠ 399).
+      contenga exactamente (como palabras completas). Una cámara con otro número
+      nunca es match (ej: 440 ≠ 399): a lo sumo es una sugerencia (Intento 3).
 
     Regla de Botella/Bot:
       Si el input NO menciona explícitamente "bot" o "botella", se excluyen
@@ -481,9 +693,13 @@ def _buscar_camara_intento(
     Estrategia en cascada:
       1. ILIKE '%nombre_norm%' en Camara.nombre y CamaraAlias.alias_nombre
       2. Todos los tokens (≥3 chars) presentes — AND ILIKE
-      3. Reintentar sin números (SOLO si el input no tenía números)
       4. Fallback con nombre raw normalizado SIN expansión (para abreviaturas
          almacenadas literalmente en DB, p.ej. "Cra")
+      3. Se evalúa al final, después del 4 (desde 2026-10-23): si el input
+         TIENE números y ningún intento encontró nada —ni siquiera un grupo
+         ambiguo—, se buscan parecidas sin esos números
+         (`_parecidas_sin_numeros`). Si hay, se lanza ``NumeroNoCoincideError``
+         con hasta 3 sugerencias; nunca se asigna una.
 
     Filtro de ambigüedad:
       - Heurística previa: si hay < 2 tokens significativos (≥3 chars) y ningún
@@ -504,107 +720,38 @@ def _buscar_camara_intento(
     Raises:
         AmbiguousSearchError: Cuando el nombre es ambiguo o insuficientemente
             específico para identificar una cámara de forma unívoca.
+        NumeroNoCoincideError: (subclase) Cuando el número del input no coincide
+            con ninguna cámara pero sin él hay parecidas (sólo sugerencias).
     """
     # ── Pre-proceso ──────────────────────────────────────────────────────
     nombre_limpio = _limpiar_puntuacion(nombre_raw)
     nombre_expandido = _expandir_abreviaturas(nombre_limpio)
-    nombre_norm_base = _normalizar(nombre_expandido)
-    nombre_norm = _aplicar_sinonimos(nombre_norm_base)
-
-    # ── Restricciones extraídas del input original ───────────────────────
-    # Números requeridos: si el input tiene "440", solo aceptamos cámaras con "440"
-    numeros_requeridos: set[str] = set(re.findall(r"\d+", nombre_norm))
-    # Bot/Botella: si el técnico lo menciona explícitamente, permitimos bots secundarios
-    tiene_bot: bool = bool(re.search(r"\bbot(ella)?\b", nombre_raw, re.IGNORECASE))
+    nombre_norm = _aplicar_sinonimos(_normalizar(nombre_expandido))
+    cascada = _CascadaBusqueda(nombre_raw, session, nombre_norm, desempate_exacto)
 
     # ── Heurística pre-búsqueda: nombre insuficientemente específico ──────
-    # Si hay < 2 tokens significativos (≥3 chars) y ningún número, el nombre
-    # es demasiado genérico para encontrar una cámara de forma unívoca.
-    tokens_sig = [t for t in nombre_norm.split() if len(t) >= 3]
-    if len(tokens_sig) < 2 and not numeros_requeridos:
+    if len(_tokens_significativos(nombre_norm)) < 2 and not cascada.numeros_requeridos:
         raise AmbiguousSearchError(nombre_raw, 0, [])
 
-    # ── Helpers de búsqueda con filtros aplicados ────────────────────────
-    def _get_candidatos_ilike(patron: str) -> list["Camara"]:
-        candidatos = _buscar_ilike_lista(patron, session)
-        candidatos = _filtrar_por_numeros(candidatos, numeros_requeridos)
-        candidatos = _filtrar_bots_secundarios(candidatos, tiene_bot)
-        return _filtrar_numero_de_botella(candidatos, nombre_raw)
-
-    def _get_candidatos_tokens(tokens: list[str]) -> list["Camara"]:
-        candidatos = _buscar_tokens_lista(tokens, session)
-        candidatos = _filtrar_por_numeros(candidatos, numeros_requeridos)
-        candidatos = _filtrar_bots_secundarios(candidatos, tiene_bot)
-        return _filtrar_numero_de_botella(candidatos, nombre_raw)
-
-    # Seguimiento de ambigüedad: conserva el grupo más acotado (menos candidatos)
-    _ambiguos: list["Camara"] = []
-
-    def _evaluar(candidatos: list["Camara"]) -> "Camara | None":
-        nonlocal _ambiguos
-        if len(candidatos) == 1:
-            return candidatos[0]
-        if len(candidatos) > 1:
-            # Desempate (2026-09-28): si exactamente UNA candidata coincide por igualdad con la
-            # entrada normalizada, es ésa — "Cra Libertad 991 CF" contra "BOTELLA CRITICA Cra
-            # Libertad 991 CF". Dos o más exactas (duplicados reales del inventario, "X C.F." y
-            # "X CF") siguen siendo ambiguas: nunca se elige entre dos Cámaras distintas.
-            if desempate_exacto and not tiene_gemela_critica(candidatos):
-                exactas = [c for c in candidatos if normalizar_candidato(c.nombre) == nombre_norm]
-                if len(exactas) == 1:
-                    return exactas[0]
-            if not _ambiguos or len(candidatos) < len(_ambiguos):
-                _ambiguos = candidatos
-        return None
-
-    # ── Intento 1: coincidencia parcial normalizada ──────────────────────
-    resultado = _evaluar(_get_candidatos_ilike(nombre_norm))
+    # ── Intentos 1 y 2: nombre normalizado completo y todos sus tokens ───
+    resultado = cascada.probar(nombre_norm)
     if resultado:
         return resultado, nombre_norm
+    # ── Intento 4 (sin expansión) ────────────────────────────────────────
+    resultado, nombre_usado = _intento_sin_expansion(cascada)
+    if resultado:
+        return resultado, nombre_usado
 
-    # ── Intento 2: todos los tokens presentes ────────────────────────────
-    tokens = [t for t in nombre_norm.split() if len(t) >= 3]
-    if len(tokens) >= 2:
-        resultado = _evaluar(_get_candidatos_tokens(tokens))
-        if resultado:
-            return resultado, nombre_norm
+    # ── Resolución final: múltiples candidatos sin reducir a 1 → ambiguo ─
+    if cascada.ambiguos:
+        nombres_candidatos = [c.nombre for c in cascada.ambiguos[:3]]
+        raise AmbiguousSearchError(nombre_raw, len(cascada.ambiguos), nombres_candidatos)
 
-    # ── Intento 3: sin números (OMITIDO si el input tenía números) ───────
-    # Si el input tiene números, no ampliar la búsqueda sin ellos para evitar
-    # emparejar "Cra Mitre 440" con "Cra Mitre 399".
-    if not numeros_requeridos:
-        nombre_sin_num = re.sub(r"\d+", "", nombre_norm).strip()
-        nombre_sin_num = re.sub(r"\s+", " ", nombre_sin_num).strip()
-        if nombre_sin_num and nombre_sin_num != nombre_norm:
-            resultado = _evaluar(_get_candidatos_ilike(nombre_sin_num))
-            if resultado:
-                return resultado, nombre_sin_num
-            tokens_sin_num = [t for t in nombre_sin_num.split() if len(t) >= 3]
-            if len(tokens_sin_num) >= 2:
-                resultado = _evaluar(_get_candidatos_tokens(tokens_sin_num))
-                if resultado:
-                    return resultado, nombre_sin_num
-
-    # ── Intento 4: sin expansión de abreviaturas (nombre raw normalizado) ─
-    # Cubre el caso en que la DB almacena el nombre con abreviaturas literales.
-    nombre_raw_norm = _aplicar_sinonimos(_normalizar(_limpiar_puntuacion(nombre_raw)))
-    if nombre_raw_norm != nombre_norm:
-        resultado = _evaluar(_get_candidatos_ilike(nombre_raw_norm))
-        if resultado:
-            return resultado, nombre_raw_norm
-        tokens_raw = [t for t in nombre_raw_norm.split() if len(t) >= 3]
-        if len(tokens_raw) >= 2:
-            resultado = _evaluar(_get_candidatos_tokens(tokens_raw))
-            if resultado:
-                return resultado, nombre_raw_norm
-
-    # ── Resolución final ─────────────────────────────────────────────────
-    # Si algún intento devolvió múltiples candidatos sin que ninguno llegara a 1,
-    # el nombre es ambiguo → no auto-registrar.
-    if _ambiguos:
-        nombres_candidatos = [c.nombre for c in _ambiguos[:3]]
-        raise AmbiguousSearchError(nombre_raw, len(_ambiguos), nombres_candidatos)
-
+    # ── Intento 3: el número no coincide con ninguna → sólo sugerencias ──
+    if cascada.numeros_requeridos:
+        parecidas = _parecidas_sin_numeros(cascada)
+        if parecidas:
+            raise NumeroNoCoincideError(nombre_raw, len(parecidas), [c.nombre for c in parecidas[:3]])
     return None, nombre_norm
 
 

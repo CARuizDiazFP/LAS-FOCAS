@@ -1015,6 +1015,166 @@ Cromo. Endpoints admin (`/api/admin/infra/huerfanos`, `.../normalizar`, `.../des
 `.../auditoria-global` GET/POST); el progreso usa el SSE de corridas (`?desde=<id>` para reanudar).
 Viewer: `/admin/servicios/viewer/Huerfanos` (`AdminHuerfanosViewer.vue`).
 
+### Posición vigente por conector, caminos adicionales y `full` (2026-10-21, sólo dev)
+
+**Problema real (93150).** El camino viejo, por el que el servicio sigue yendo, está entero en Cromo,
+pero sus 98 pelos llevan la etiqueta `FO 44649` (servicio id 24547, dado de baja). Sólo los
+conectores dicen 93150 (O-1252871-1:1/2, conectores 8604882/83, pelos 7028862/63). Como las
+semillas salían únicamente de pelos etiquetados, ese camino nunca se calculaba y el tracking
+entregaba sólo el camino nuevo (6799280/81). Medido en la Task 0, contra Cromo sin caché: los dos
+caminos son ODF↔ODF (49 y 40 pelos), no comparten pelos, y el viejo cruza O-1239922-1:5 (conector
+con dos pelos). 7469850 es PELO↔ODF (19 pelos, incompleto).
+
+**Semillas de posiciones** (`core/services/cromo/servicio_posicion_vigente.py`,
+`posiciones_posibles`). Una "posición posible" es un conector de ODF cuyo `servicio_resuelto` es
+alguna identidad del Servicio (`IDENTIDADES_DEL_SERVICIO_SQL`) o cuyo pelo matchea al Servicio. Hay
+un filtro único, compartido por las semillas, el selector del portal y la guarda del `.txt`:
+
+- Se excluye el conector cuyo pelo matchea a **otro servicio Activo** y no a este
+  (`SIN_PELO_DE_OTRO_SERVICIO_ACTIVO_SQL`). Medido en dev: saca 94 conectores en 54 servicios. Entre
+  ellos están los 11 del 42352, que sin el filtro se llevaba caminos del 42351.
+- Se excluyen los pelos excluidos del Servicio (`_SIN_EXCLUIDOS_SQL`): las 8 exclusiones del 93153
+  no vuelven por esta vía.
+
+Cada posición lleva `etiqueta_ajena` (el pelo tiene la etiqueta de otro servicio, como 44649),
+`por_resuelto`/`por_pelo` (por qué entró) y el par sugerido (`:1`↔`:2`). En el 93150 hay 14.
+
+**Orden de siembra** (`trackings_del_servicio`, kwarg `posiciones`). Las semillas se siembran en tres
+pasadas de `trackings_por_camino`, que no se modificó: primero los pelos **declarados**, después los
+**etiquetados** y al final los de **posiciones**. Las pasadas comparten los topes de llamadas y de
+fallidas, y ninguna repite un pelo ya pedido o recorrido.
+
+- `posiciones="todas"` es el modo de web y Slack. La corrida global de auditoría usa
+  `"declaradas"`, para no salir a Cromo por posiciones que nadie confirmó. `"ninguna"` deja el
+  comportamiento anterior.
+- `completo`, `errores`, `no_cubiertos` y `tope_llamadas` salen sólo de las etiquetadas. Las fallas
+  de declaradas y posiciones van a `errores_posiciones`/`no_cubiertos_posiciones`: no marcan
+  "incompleto" ni saltean la auditoría de huérfanos.
+- La auditoría recibe `tramos = vigentes/tramos + adicionales` y como semillas sólo las etiquetadas:
+  los pelos del camino adicional no crecen como huérfanos PENDIENTE. La evidencia del árbitro
+  incluye adicionales y residuales.
+- Caché: el upsert de `cromo_tracking_cache` hace `COALESCE(excluded.servicio_id, servicio_id)`, y
+  los pelos de posiciones **no declaradas** se piden con `servicio_id=None`. Así la traza y la API v1,
+  que leen esa columna, no atribuyen al Servicio un camino que nadie confirmó.
+
+**Roles** (`clasificar_con_posiciones`). `clasificar_caminos` se aplica **sólo** a los caminos de
+semillas etiquetadas, así que ni los caminos de posición ni el declarado mueven el umbral del 25%.
+El origen de cada camino se decide por intersección de pelos (`origen_del_camino`: DECLARADO,
+ETIQUETADO o POSICION).
+
+| Origen | Rol |
+|---|---|
+| DECLARADO | **VIGENTE** |
+| ETIQUETADO | el de `clasificar_caminos`, salvo que, con una declaración aplicada, sus TRAMO pasan a **ADICIONAL** |
+| POSICION | **ADICIONAL** si es ODF↔ODF en ambos extremos (`es_camino_completo`, clases 69/86) **y** tiene al menos el 25% (`_PROPORCION_PELOS_MINIMA`) de los pelos del camino completo más largo del Servicio (de cualquier origen); si no RESIDUAL |
+
+Umbral de tamaño de los adicionales de posición (2026-10-22, medido E2E contra Cromo en dev): en el
+102452 (`servicios.id=1168`) las posiciones daban 2 "adicionales" de 1 pelo (semillas
+9614673/9614674), jumpers dentro del Nodo Dixon entre 'Rack 1 Sala 2' O-9585104-6:3/4 y 'Rack 2
+SAENZ PEÑA' O-1247502-3:3/4, frente a tramos de 47/27/24 pelos: ahora son RESIDUAL (1 < 0,25 × 47).
+En el 93150 el camino viejo (49 pelos) frente al nuevo (40) sigue ADICIONAL. Los caminos
+incompletos no cuentan para el máximo.
+
+Regresión cubierta: sin posiciones el resultado es idéntico al de `clasificar_caminos` sobre los
+casos medidos (102452, 42351, 93154, 94673). `TrackingsDelServicio` suma `adicionales`,
+`info_adicionales` (posiciones y etiquetas de cada adicional), `caminos_resueltos` (=
+vigentes/tramos ∪ adicionales) y `posicion` (declaradas, aplicada, etiqueta, avisos).
+
+**`full`.** Es un `.txt` por camino resuelto: nunca descarta un tramo, aunque termine en pelo
+(segmentados 107556 y 76567), y nunca sube residuales. Nombres:
+`{numero_servicio} CROMO T{n}|A{n} pelo {n_id}.txt`, siempre con el número del Servicio en
+LAS-FOCAS y **nunca** con el at.62. El at.62 de los pelos viejos del 93150 es `4649`, y el parser
+legacy toma el primer número de 4 dígitos o más del nombre (`nombre_archivo_adicional`).
+`trackings_esperados` se compara contra los caminos resueltos. Comandos de Slack en
+`docs/slack_app_cables.md`.
+
+**Tabla `app.servicio_posicion_vigente`** (migración `20261021_01`, modelo `ServicioPosicionVigente`).
+
+- Columnas:
+  - `servicio_id`: FK a `app.servicios` con CASCADE;
+  - `conector_n_id`: referencia blanda;
+  - foto del conector: `odf_n_id`, `bandeja_n_id`, `bandeja_nombre`, `numero_conector`, `pelo_n_id`;
+  - `pelos_candidatos BIGINT[]`: todos los pelos del conector al declarar;
+  - `declarado_por`/`declarado_en`;
+  - `vigente`, `retirado_en`/`retirado_por`, `motivo_retiro`, `detalle_retiro JSONB`.
+- Restricciones e índices:
+  - CHECK de motivo: `MANUAL`, `SIN_PELO`, `PELO_CAMBIO`, `PELO_DANADO`, `CABLE_SIN_USO`,
+    `CONECTOR_INEXISTENTE`;
+  - CHECK de coherencia: una fila retirada tiene fecha y motivo;
+  - índice único parcial `(servicio_id, conector_n_id) WHERE vigente`.
+- Retirar no borra: deja `vigente=false` y la fila queda como historial.
+- La fusión de Servicios por cadena PROV (`servicios_fusion_prov.py`) la reasigna igual que
+  `servicio_empalme_association`.
+
+`declarar` valida todo o nada contra las posiciones posibles y toma
+`pg_advisory_xact_lock` por Servicio. Si la validación falla hace rollback, y re-declarar conserva
+el id.
+
+**Retiro automático** (al final de cada corrida, cada uno en su transacción y condicionado por `id`
++ `pelo_n_id` leído, para no retirar una declaración que cambió mientras tanto):
+
+1. `validar_en_db`: el conector ya no está (`CONECTOR_INEXISTENTE`), se quedó sin pelo
+   (`SIN_PELO`) o su pelo actual no está entre los `pelos_candidatos` (`PELO_CAMBIO`; la ingesta
+   puede cambiar cuál elige como `pelo_n_id` al entrar el cable de un tercero; medido en dev:
+   O-1239922-1:5, conector 8546318, guarda dos candidatos).
+2. `validar_camino` + `decidir_retiro`: el camino declarado pasa por un pelo Dañado/Cortado
+   (`PELO_DANADO`) o por un cable con tendido "Sin Uso" (`CABLE_SIN_USO`). Sólo se retira si existe
+   **otro camino completo sano** (sin contar los de las otras declaradas, para que un hilo del par
+   no retire al otro). Si no lo hay, se mantiene y se avisa.
+3. Si Cromo no resuelve el camino declarado (`CAMINO_NO_RESUELTO`) o el camino no es ODF↔ODF
+   (`CAMINO_INCOMPLETO`), la corrida usa el cálculo automático y la declaración no se retira.
+4. **Retiro del par** (`arrastrar_par`, 2026-10-22): cualquier retiro automático de los puntos 1 y 2
+   arrastra, en la **misma corrida**, a las demás declaradas vigentes del Servicio con el mismo
+   `bandeja_n_id` (misma patchera), con el mismo `motivo_retiro` y
+   `detalle_retiro = {"arrastrada_por": <conector que lo disparó>, …detalle original}`. Cada una
+   genera su aviso (`Se retiró la posición vigente O-1252871-1:2 junto con O-1252871-1:1 (mismo
+   par): …`) y su retiro sigue condicionado por su propio `id` + pelo leído (no pisa una
+   re-declaración concurrente) y limpia su propio caché. Motivo: el Servicio es un par de pelos que
+   van juntos (93150 = O-1252871-1:1 y :2, siempre 2 trackings); antes se retiraba sólo :1, esa
+   corrida usaba el cálculo automático y la siguiente aplicaba sólo :2, así que dos `track`
+   seguidos daban resultados distintos y quedaba 1 tracking suelto. Ahora `posicion.declaradas`
+   queda sin ninguna y la corrida siguiente da lo mismo. Las declaradas de **otra** patchera (o sin
+   `bandeja_n_id`) no se arrastran, y el retiro **manual** no arrastra. `declaradas_validas` y el
+   GET del portal ya excluyen a la arrastrada pendiente.
+
+Con cualquier retiro o aviso de camino no usable, esa corrida cae al cálculo automático.
+
+**Endpoints** (admin + CSRF, en `web/app/routers/servicios.py`, junto a ODF confirmadas):
+
+- `GET /api/admin/infra/servicios-odf/{id}/posicion-vigente`: devuelve `{declaradas, posibles}`.
+  Las declaradas traen `valida`, `aviso` y `codigo_aviso` de `validar_en_db` + `arrastrar_par`; las posibles traen
+  `etiqueta_ajena`, `servicio_activo_ajeno`, `par_sugerido_n_id` y `declarada`. **Sólo informa, no
+  retira.**
+- `POST …/posicion-vigente` con `{conectores_n_id: [1..8], csrf_token}`. Responde 200
+  `{ok, declaradas}`, 409 con el motivo, 422 si la lista está vacía o tiene más de 8.
+- `POST …/posicion-vigente/retirar` con `{conector_n_id, csrf_token}`. Motivo `MANUAL`; 404 si el
+  conector no estaba declarado.
+
+En `web/app/routers/cromo.py`:
+
+- `GET /api/infra/cromo/servicios/{id}/camino-optico/tracking.txt`:
+  - suma `adicional=N`; pedir `tramo` y `adicional` a la vez da 400;
+  - acepta el pelo si `pelo_pertenece_al_servicio` **o** `pelo_es_de_posicion`. El pelo del 42351
+    pedido para el 42352 sigue dando 400 sin ir a Cromo;
+  - sin semillas etiquetadas usa la primera posición declarada y, si no hay, la primera posible.
+- `GET …/camino-optico/caminos`: cambios aditivos. Suma `rol`/`completo` en los tramos,
+  `adicionales` (con `origen`, `posiciones` y `etiquetas`), `caminos_resueltos` y
+  `posicion_vigente` (`declarada`, `aplicada`, `posiciones`, `avisos`). Como llama a
+  `trackings_del_servicio`, **puede aplicar retiros automáticos**.
+
+El contrato de rutas (`tests/fixtures/web_rutas_contrato.json`) suma las 3 rutas nuevas.
+
+**Portal.** En la sección Camino del Detalle de Servicio (`CromoCaminoPanel.vue`, prop
+`mostrarPosicionVigente`, que el modal de ODF no usa):
+
+- un bloque "Posición vigente" sólo para admin, con un select de posibles que marca «otra
+  etiqueta» y «servicio Activo X», el par sugerido, Declarar, Retirar y los avisos;
+- el chip «vigente» en los tramos;
+- la lista de caminos adicionales con Detalle y Descargar.
+
+«Descargar todos» sigue bajando sólo vigentes/tramos. Un no admin con un Servicio sin semillas
+etiquetadas, como el 93150, todavía no ve el botón Resolver.
+
 ### Inconsistencias de Cromo y cuarentena (2026-10-17)
 
 #### Fusiones de ODF (clase 141) en los conectores

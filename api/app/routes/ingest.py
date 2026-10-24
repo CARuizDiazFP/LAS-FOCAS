@@ -15,7 +15,7 @@ import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
-from core.parsers.reclamos_excel import IngestSummary, parse_reclamos_df
+from core.parsers.reclamos_excel import parse_reclamos_df
 from core.services.repetitividad import upsert_reclamos
 from core.services.camara_ingest_service import procesar_ingesta_camaras
 
@@ -43,6 +43,8 @@ async def ingest_reclamos(
             df = pd.read_csv(io.BytesIO(content), dtype=str, keep_default_na=False)
         else:
             raise HTTPException(status_code=415, detail="Formato no soportado (use .xlsx o .csv)")
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("action=ingest_read error=%s", exc)
         raise HTTPException(status_code=400, detail="No se pudo leer el archivo") from exc

@@ -208,9 +208,10 @@ que de verdad es compartido.
   sync: fetch + merge de origin/dev DENTRO de su worktree
   (los conflictos se resuelven ahí, sin tocar a nadie más)
         ↓
-  ready: worktree limpio + validaciones → ready_to_merge
+  ready: worktree limpio + gate de calidad (ruff + tests focales) → ready_to_merge
+        (evento quality_gate_passed con el sha; --sin-gate --motivo → quality_gate_bypassed)
         ↓
-  integrate  ← git:integrate-dev (ventana corta, exclusiva)
+  integrate  ← exige que el HEAD sea el del último gate; luego git:integrate-dev (ventana corta, exclusiva)
         ↓
   finished → cleanup (sólo si el worktree está limpio)
 ```

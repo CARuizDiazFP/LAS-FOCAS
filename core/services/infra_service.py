@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -24,7 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from core.parsers.tracking_parser import TrackingParseResult, parse_tracking, PuntaTerminal
+from core.parsers.tracking_parser import TrackingParseResult, parse_tracking
 from db.models.infra import (
     Camara,
     Empalme,
@@ -523,7 +524,6 @@ class InfraService:
             # ESCENARIO 2/3/4: Servicio existe
             rutas_info = []
             ruta_identica = None
-            ruta_mismo_camino: Optional[RutaServicio] = None
             
             for ruta in servicio.rutas:
                 info = RutaInfo(
@@ -541,10 +541,6 @@ class InfraService:
                 # Comparar hash exacto
                 if ruta.hash_contenido == nuevo_hash:
                     ruta_identica = ruta.id
-                
-                # Verificar si es el mismo camino (mismas puntas) para detectar nuevo pelo
-                if self._routes_have_same_path(ruta, punta_a_sitio, punta_b_sitio):
-                    ruta_mismo_camino = ruta
             
             # ESCENARIO 2: Hash coincide exacto
             if ruta_identica:
@@ -613,10 +609,11 @@ class InfraService:
             )
             
         except Exception as exc:
-            logger.exception("action=analyze_tracking_error filename=%s error=%s", filename, exc)
+            ref = secrets.token_hex(4)
+            logger.exception("action=analyze_tracking_error filename=%s error=%s ref=%s", filename, exc, ref)
             return AnalysisResult(
                 status=AnalysisStatus.ERROR,
-                error=str(exc),
+                error=f"Error interno (ref {ref})",
                 message="Error inesperado durante el análisis del archivo",
             )
 
@@ -981,12 +978,13 @@ class InfraService:
                 )
                 
         except Exception as exc:
-            logger.exception("action=resolve_tracking_error action=%s error=%s", action, exc)
+            ref = secrets.token_hex(4)
+            logger.exception("action=resolve_tracking_error action=%s error=%s ref=%s", action, exc, ref)
             self.session.rollback()
             return ResolveResult(
                 success=False,
                 action=action,
-                error=str(exc),
+                error=f"Error interno (ref {ref})",
                 message="Error durante la resolución. Se hizo rollback de la transacción.",
             )
 

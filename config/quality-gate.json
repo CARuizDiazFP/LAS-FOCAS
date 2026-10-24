@@ -1,0 +1,4 @@
+{
+  "_descripcion": "Gate de calidad local de agent_worktree.py ready (scripts/agentes/calidad.py). smoke: tests que corren siempre que la rama cambie algo.",
+  "smoke": ["tests/test_health.py"]
+}

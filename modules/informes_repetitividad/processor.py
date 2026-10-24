@@ -4,7 +4,7 @@
 
 import logging
 import zipfile
-from typing import Optional, List, Dict
+from typing import Optional, List
 
 import pandas as pd
 import unicodedata

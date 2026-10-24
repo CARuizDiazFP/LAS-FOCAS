@@ -193,6 +193,7 @@ def get_camara_estado_contexto(session: Session, camara_id: int) -> CamaraEstado
             Ingreso.camara_id.in_(ids_grupo),
             Ingreso.tipo == IngresoTipo.INGRESO,
             Ingreso.fecha_fin == None,  # noqa: E711
+            Ingreso.vigente(),
         )
         .first()
         is not None

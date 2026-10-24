@@ -2,9 +2,7 @@
 # Ubicación de archivo: tests/test_web_infra_camera_state.py
 # Descripción: Pruebas del flujo web para consulta y edición manual del estado de cámaras
 
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
 
@@ -19,7 +17,8 @@ from core.services.camara_estado_service import (
 from db.models.infra import CamaraEstado, CamaraOrigenDatos, RutaTipo
 
 
-from web.app.main import _serialize_camara_response, app  # type: ignore  # noqa: E402
+from web.app.main import app  # type: ignore  # noqa: E402
+from web.app.routers.camaras import _serialize_camara_response  # type: ignore  # noqa: E402
 
 
 class _Cur:
@@ -197,8 +196,8 @@ def _build_fake_camara() -> Any:
         nombre="Ruta Principal",
         tipo=RutaTipo.PRINCIPAL,
         empalmes=[SimpleNamespace(es_transito=False), SimpleNamespace(es_transito=True)],
-        punta_a=SimpleNamespace(sitio="POP A"),
-        punta_b=SimpleNamespace(sitio="POP B"),
+        punta_a=SimpleNamespace(sitio_descripcion="POP A"),
+        punta_b=SimpleNamespace(sitio_descripcion="POP B"),
     )
     empalme = SimpleNamespace(rutas=[ruta], servicios=[])
     camara = SimpleNamespace(

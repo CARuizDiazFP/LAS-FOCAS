@@ -25,7 +25,6 @@ import sys
 # Agregar el directorio raíz al path para imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import text
 
 from db.models.infra import (
     Servicio,

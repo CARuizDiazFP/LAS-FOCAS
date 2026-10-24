@@ -121,7 +121,7 @@ abajo) como plantilla, no reinventar el estilo:
   tubos/pelos tenga el cable. Extender el criterio de "referencia colgada tolerante" (`verificador.py`)
   a cada nivel nuevo: un hijo referenciado sin fila propia en su tabla no es "no encontrado", aparece
   igual con su metadata en `None`.
-- Endpoints de sólo consulta van con `_require_auth` (no `_require_admin`) en `web/app/main.py` —
+- Endpoints de sólo consulta van con `_require_auth` (no `_require_admin`) en `web/app/main.py` o `web/app/routers/` —
   ver la convención ya usada en `/api/infra/cromo/cables`, `/api/infra/cromo/cables/{n_id}/detalle` y
   `/api/infra/cromo/verificar`.
 

@@ -12,7 +12,6 @@ from modules.informes_repetitividad import processor, report
 from modules.informes_repetitividad.schemas import ResultadoRepetitividad
 from modules.informes_repetitividad.service import (
     ReportConfig,
-    ReportResult,
     generar_informe_desde_excel,
 )
 

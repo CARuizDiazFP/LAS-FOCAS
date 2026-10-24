@@ -17,6 +17,11 @@ from starlette.datastructures import Headers, UploadFile
 from core.services.report_history import InMemoryReportHistory
 from modules.informes_repetitividad.service import ReportConfig, ReportResult
 from web.app import main as web_main
+from web.app.dependencias import UsuarioSesion
+from web.app.routers import informes as web_informes
+
+# Los handlers se llaman directo: la sesión (Depends) se pasa explícita.
+USUARIO = UsuarioSesion("user", "user")
 
 
 def _fake_request(csrf: str = "csrf-test") -> SimpleNamespace:
@@ -66,11 +71,10 @@ def test_reports_history_endpoint_devuelve_items_autenticado(monkeypatch: pytest
         input_metadata={},
     )
     history.finish_error(report_id, error_code="HTTP_422", error_message="Archivo inválido")
-    monkeypatch.setattr(web_main, "REPORT_HISTORY", history)
+    monkeypatch.setattr(web_informes, "REPORT_HISTORY", history)
 
     response = asyncio.run(
-        web_main.api_reports_history(
-            _fake_request(),
+        web_informes.api_reports_history(
             type="repetitividad",
             status="error",
         )
@@ -84,12 +88,12 @@ def test_reports_history_endpoint_devuelve_items_autenticado(monkeypatch: pytest
 
 def test_sla_missing_files_registra_error(monkeypatch: pytest.MonkeyPatch) -> None:
     history = InMemoryReportHistory()
-    monkeypatch.setattr(web_main, "REPORT_HISTORY", history)
+    monkeypatch.setattr(web_informes, "REPORT_HISTORY", history)
     monkeypatch.setenv("TESTING", "true")
     csrf = "csrf-test"
 
     response = asyncio.run(
-        web_main.generar_informe_sla_web(
+        web_informes.generar_informe_sla_web(
             _fake_request(csrf),
             mes="6",
             anio="2026",
@@ -97,6 +101,7 @@ def test_sla_missing_files_registra_error(monkeypatch: pytest.MonkeyPatch) -> No
             use_db=False,
             csrf_token=csrf,
             files=[],
+            usuario=USUARIO,
         )
     )
 
@@ -109,13 +114,13 @@ def test_sla_missing_files_registra_error(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_repetitividad_success_registra_salidas(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     history = InMemoryReportHistory()
-    monkeypatch.setattr(web_main, "REPORT_HISTORY", history)
+    monkeypatch.setattr(web_informes, "REPORT_HISTORY", history)
     csrf = "csrf-test"
 
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     config = ReportConfig(reports_dir=reports_dir, soffice_bin=None, maps_enabled=False)
-    monkeypatch.setattr(web_main, "REPORT_SERVICE_CONFIG", config)
+    monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
     docx_path = reports_dir / "reporte.docx"
     docx_path.write_bytes(b"DOCX")
@@ -134,10 +139,10 @@ def test_repetitividad_success_registra_salidas(monkeypatch: pytest.MonkeyPatch,
         )
 
     monkeypatch.setattr(web_main.asyncio, "to_thread", _fake_to_thread)
-    monkeypatch.setattr(web_main, "generar_informe_desde_excel", _fake_generar_informe)
+    monkeypatch.setattr(web_informes, "generar_informe_desde_excel", _fake_generar_informe)
 
     response = asyncio.run(
-        web_main.flow_repetitividad(
+        web_informes.flow_repetitividad(
             _fake_request(csrf),
             file=_upload("casos.xlsx", _excel_bytes()),
             mes=7,
@@ -146,6 +151,7 @@ def test_repetitividad_success_registra_salidas(monkeypatch: pytest.MonkeyPatch,
             csrf_token=csrf,
             with_geo=False,
             use_db=False,
+            usuario=USUARIO,
         )
     )
 

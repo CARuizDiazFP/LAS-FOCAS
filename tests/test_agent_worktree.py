@@ -336,9 +336,46 @@ def test_integracion_serializada_mientras_el_otro_agente_sigue_trabajando(
     assert sincronizado["resultado"] == "ok"
     assert (worktree_b / "api/a.py").exists()  # ya incorporó el trabajo de A
 
+    # El sync movió el HEAD de B: el gate se corre sobre lo que realmente se integra.
+    _correr_json(["ready", "--agent", "codex-web"], capsys)
     integrado_b = _correr_json(["integrate", "--agent", "codex-web"], capsys)
     assert integrado_b["status"] == "finished"
     assert gitops.es_ancestro(gitops.sha("HEAD", worktree_b), "origin/dev", control)
+
+
+def test_integrate_actualiza_el_control_aunque_tenga_archivos_sin_trackear(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Un archivo sin trackear en el control (p. ej. ``.claude/settings.json`` de la herramienta) no
+    bloquea el ``merge --ff-only``: Git ya aborta solo si el merge fuera a pisarlo (real 2026-10-20,
+    dos integraciones dejaron el control atrás de ``origin/dev``)."""
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "# A\n", "feat(api): trabajo de A")
+    (control / "local.json").write_text("{}\n", encoding="utf-8")
+
+    _correr_json(["ready", "--agent", "claude-api"], capsys)
+    integrado = _correr_json(["integrate", "--agent", "claude-api"], capsys)
+
+    assert integrado["control_actualizado"].startswith("actualizado a ")
+    assert gitops.sha("HEAD", control) == gitops.sha("HEAD", worktree_a)
+    assert (control / "local.json").read_text(encoding="utf-8") == "{}\n"
+
+
+def test_integrate_no_toca_el_control_con_cambios_trackeados(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "# A\n", "feat(api): trabajo de A")
+    previo = gitops.sha("HEAD", control)
+    (control / "README.md").write_text("# editado en el control\n", encoding="utf-8")
+
+    _correr_json(["ready", "--agent", "claude-api"], capsys)
+    integrado = _correr_json(["integrate", "--agent", "claude-api"], capsys)
+
+    assert integrado["control_actualizado"].startswith("omitido:")
+    assert gitops.sha("HEAD", control) == previo
 
 
 def test_integrate_se_bloquea_si_otro_agente_sostiene_la_ventana(
@@ -347,6 +384,7 @@ def test_integrate_se_bloquea_si_otro_agente_sostiene_la_ventana(
     worktree_a, worktree_b = dos_agentes
     _configurar_identidad(worktree_b)
     _commit(worktree_b, "web/b.ts", "// B\n", "feat(web): trabajo de B")
+    _correr_json(["ready", "--agent", "codex-web"], capsys)
 
     # A está integrando (sostiene el recurso serializado).
     Registro(rutas.contexto(control).db_path).adquirir(
@@ -368,12 +406,100 @@ def test_integrate_exige_sincronizar_si_dev_avanzo(
     _configurar_identidad(worktree_b)
     _commit(worktree_a, "api/a.py", "# A\n", "feat(api): trabajo de A")
     _commit(worktree_b, "web/b.ts", "// B\n", "feat(web): trabajo de B")
+    _correr_json(["ready", "--agent", "claude-api"], capsys)
+    _correr_json(["ready", "--agent", "codex-web"], capsys)
 
     _correr_json(["integrate", "--agent", "claude-api"], capsys)
     capsys.readouterr()
 
     assert _correr(["integrate", "--agent", "codex-web"]) == 1
     assert "sync --agent codex-web" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------ gate de calidad
+
+
+def test_ready_con_gate_fallido_no_cambia_el_estado(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "import os\n", "feat(api): import sin uso")
+    capsys.readouterr()
+
+    assert _correr(["ready", "--agent", "claude-api"]) == 1
+    error = capsys.readouterr().err
+    assert "el gate de calidad falló en 'lint'" in error
+    assert "F401" in error
+
+    agente = Registro(rutas.contexto(control).db_path).agente("claude-api")
+    assert agente is not None and agente.status == "active"
+    assert _correr(["integrate", "--agent", "claude-api"]) == 1
+
+
+def test_ready_con_gate_ok_informa_el_resumen(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "VALOR = 1\n", "feat(api): trabajo de A")
+
+    listo = _correr_json(["ready", "--agent", "claude-api"], capsys)
+
+    assert listo["gate"]["ok"] is True
+    assert listo["gate"]["archivos"] == ["api/a.py"]
+    assert listo["gate"]["sha"] == gitops.sha("HEAD", worktree_a)
+
+
+def test_integrate_sin_ready_es_rechazado(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "# A\n", "feat(api): trabajo de A")
+    capsys.readouterr()
+
+    assert _correr(["integrate", "--agent", "claude-api"]) == 1
+    assert "ready --agent claude-api" in capsys.readouterr().err
+    assert not gitops.es_ancestro(gitops.sha("HEAD", worktree_a), "origin/dev", control)
+
+
+def test_integrate_rechaza_un_head_posterior_al_ready(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "# A\n", "feat(api): trabajo de A")
+    _correr_json(["ready", "--agent", "claude-api"], capsys)
+    _commit(worktree_a, "api/a2.py", "# A2\n", "feat(api): commit después del ready")
+    capsys.readouterr()
+
+    assert _correr(["integrate", "--agent", "claude-api"]) == 1
+    assert "cambió después de 'ready'" in capsys.readouterr().err
+
+
+def test_sin_gate_exige_motivo_y_queda_auditado(
+    control: Path, dos_agentes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree_a, _ = dos_agentes
+    _configurar_identidad(worktree_a)
+    _commit(worktree_a, "api/a.py", "import os\n", "feat(api): import sin uso")
+    capsys.readouterr()
+
+    assert _correr(["ready", "--agent", "claude-api", "--sin-gate"]) == 1
+    assert "--sin-gate exige --motivo" in capsys.readouterr().err
+
+    listo = _correr_json(
+        ["ready", "--agent", "claude-api", "--sin-gate", "--motivo", "hotfix de prod caído"], capsys
+    )
+    assert listo["gate"] == "salteado"
+
+    registro = Registro(rutas.contexto(control).db_path)
+    salteado = next(e for e in registro.eventos(agent_id="claude-api") if e["evento"] == "quality_gate_bypassed")
+    assert salteado["detalle"] == f"{gitops.sha('HEAD', worktree_a)} | hotfix de prod caído"
+
+    integrado = _correr_json(["integrate", "--agent", "claude-api"], capsys)
+    assert integrado["status"] == "finished"
 
 
 def test_integrate_rechaza_un_worktree_sucio(
@@ -929,6 +1055,24 @@ def test_cleanup_aborta_si_hay_ignorados_que_no_son_runtime(
 
     (worktree / "informe_generado.docx").unlink()
     resultado = _correr_json(["cleanup", "--agent", "claude-api"], capsys)
+    assert resultado["worktree_removido"] is True
+
+
+def test_cleanup_descarta_el_workspace_sdd(control: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`.superpowers/` (ledgers y reportes del flujo con subagentes) es scratch de la sesión: no
+    bloquea el cleanup. Real 2026-10-21/22: lo trabó en 4 worktrees y hubo que borrarlo a mano."""
+    (control / ".gitignore").write_text(".superpowers/\n", encoding="utf-8")
+    _git(["add", ".gitignore"], control)
+    _git(["commit", "-m", "chore: ignorar superpowers"], control)
+    _git(["push", "origin", "dev"], control)
+    worktree = Path(_iniciar("claude-api", "tarea-a", capsys)["worktree"])
+    ledger = worktree / ".superpowers" / "sdd" / "plan-x" / "progress.md"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text("# ledger\n", encoding="utf-8")
+    _correr_json(["finish", "--agent", "claude-api"], capsys)
+
+    resultado = _correr_json(["cleanup", "--agent", "claude-api"], capsys)
+
     assert resultado["worktree_removido"] is True
 
 

@@ -10,6 +10,9 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 
 - `api/`: FastAPI orientada a endpoints REST asíncronos y procesos de ingest/reporting. No mezclar UI aquí.
 - `web/`: backend del panel (sesión/autenticación/WebSocket/chat) y frontend SPA en `web/frontend/` con Vue 3 + Vite + TypeScript + CSS modular.
+- Backend de la SPA: `web/app/main.py` (ensamblador: app, middleware, mounts, websockets, `include_router`, catch-all) + `web/app/routers/<dominio>.py` (sesion, informes, chat, admin_datos, servicios, cromo, camaras) + `web/app/comun.py` (auth, CSRF, config y estado compartidos).
+- Regla de routers: importan con `from ..comun import ...` y nunca importan `main`; al mover o parchear nombres en tests, parchear el módulo donde se lee.
+- Búsqueda y exportación de Cámaras del panel: `core/services/camaras_consulta.py` (smart search) y `core/services/camaras_exportacion.py`. Las variantes `search_camaras*` y `advanced_search_camaras*` (SPA y API interna) y `smart_search_camaras` y `export_cameras` (API interna) se conservan a propósito: tienen poco uso pero siguen operativas; no se borran sin decisión explícita del usuario.
 - `bot_telegram/`: bot aiogram que consume flujos y servicios; evitar lógica de negocio duplicada.
 - `core/`: configuración, logging, parsers, repositorios y servicios compartidos.
 - `modules/`: implementación específica de informes SLA, repetitividad y utilidades comunes.
@@ -60,11 +63,46 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
   `bash scripts/check_skill_mirror_drift.sh` si se tocaron skills), para que la ventana del lease
   `git:integrate-dev` sea mínima. La suite regresiva completa, `npm run build` y los builds de
   imágenes se ejecutan **exclusivamente en el despliegue productivo**. Detalle en `pytest-focas`.
+- **Gate de calidad local**: `agent_worktree.py ready` corre `ruff` sobre los `.py` cambiados y
+  `pytest` sobre los tests focales (`scripts/agentes/calidad.py`, smoke en `config/quality-gate.json`);
+  `integrate` rechaza un HEAD que no lo pasó. Reemplaza a la CI de GitHub, que sólo corre a mano
+  (sin créditos de Actions). Emergencia auditada: `ready --sin-gate --motivo "..."`.
+  Si el cambio toca `.vue`/`.ts` bajo `web/frontend/src`, el gate también corre
+  `npm run type-check` (`vue-tsc --noEmit`, script de `web/frontend/package.json`); sin
+  `node_modules` lo saltea con motivo explícito ("correr npm ci"), nunca pasa en silencio.
+- Lint: `ruff check .` con la config de `pyproject.toml` (E9 + F + C901 ≤ 20). El repo está en 0
+  avisos; las 6 funciones que todavía superan complejidad 20 llevan `# noqa: C901 - <motivo>`.
+- **Errores y sesión en la SPA, FO Monitor y API interna** (2026-10-23):
+  - Un 500 nunca devuelve el texto de la excepción. Se usa `error_interno(accion, exc, cuerpo=..., **ctx)` de
+    `web/app/errores.py`, que responde `{"error": "Error interno (ref XXXXXXXX)"}` y loguea
+    `action=<accion>_error ... ref=` con la misma ref. Para buscar el detalle en `Logs/web.log`, se
+    busca por la ref.
+  - En la API interna, el equivalente es `api/app/errores.py`, con la clave `detail`. La API v1 no se toca.
+  - Si falla un servicio externo (Cromo, PROV, SMTP), se usa `error_servicio_externo(accion, exc,
+    "<mensaje fijo>")`, que conserva el status y no concatena `{exc}`.
+  - Los errores esperados del dominio se lanzan como `NoEncontrado` (404), `DatoInvalido` (422),
+    `Conflicto` (409) o `ErrorDeDominio`, y el handler global los responde como `{"error": mensaje}`.
+    Dentro de un `try/except Exception` hay que re-lanzarlos antes con
+    `except (HTTPException, ErrorDeDominio): raise`.
+  - La sesión se exige con `Depends(usuario_sesion)` a nivel router y con `Depends(usuario_admin)` en
+    la firma (`web/app/dependencias.py`, que envuelve `comun._require_auth`/`_require_admin`).
+    Nunca se llama `_require_auth(request)` a mano en un endpoint nuevo.
+  - Los routers con rutas públicas (`sesion.py` e `informes.py`, por `/reports/index`) la llevan por
+    endpoint.
+  - En los tests se usa el fixture `con_sesion("admin" | "user" | None)` (`tests/soporte_sesion.py`).
+  - `tests/test_web_exposicion_sin_sesion.py` falla si una ruta no pública responde sin sesión, o si
+    aparece un `Mount` distinto de `/assets`. `PENDIENTES_DEPENDS` quedó vacío y no se vuelve a llenar.
+    Si se agrega una ruta pública, va en `PUBLICAS`, como decisión explícita.
+  - Cada router admin tiene su test de 403 por introspección (`test_toda_ruta_admin_da_403_a_un_usuario_comun`).
 - Migraciones: `ALEMBIC_URL="..." alembic upgrade head`
 
 ## Gotchas
 
 - Existe conflicto potencial entre `api/app` y `web/app`; evitar imports ambiguos y respetar `pytest.ini`.
+- En la imagen de `web`, `web/app` se copia como `app` (`COPY web/app /app/app`): un módulo suelto de `web/`
+  (`fo_monitor_routes.py`, `chat_ws.py`, `admin_ws.py`) que importe `web.app...` pasa todos los tests y tumba el
+  contenedor con `ModuleNotFoundError: No module named 'web.app'` (real 2026-10-23). Usar `try: from web.app... except
+  ModuleNotFoundError: from app...`; lo vigila `tests/test_web_imports_layout_contenedor.py`.
 - Algunos tests y módulos requieren `TESTING=true` antes de importar configuración sensible; revisar patrones existentes en tests.
 - El informe SLA depende de la columna U (`Horas Netas Reclamo`) en el Excel legacy; no reintroducir fallbacks a otras columnas.
 - La VM y varios defaults asumen la IP `172.18.208.162`; si cambia, revisar configuración y documentación relacionada.

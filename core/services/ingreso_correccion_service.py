@@ -88,8 +88,17 @@ from sqlalchemy.orm import Session
 
 from core.services.camara_estado_service import get_camara_estado_contexto
 from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo
+from core.services.fo_monitor.alcance import resolver_alcance
+from core.services.fo_monitor.motor import ESTADOS_ABIERTOS as FOMON_ESTADOS_ABIERTOS
+from core.services.fo_monitor.motor import congelar_alcance
 from core.services.ingreso_service import cerrar_ingreso_forzado, registrar_movimiento_ingreso
 from db.models.cromo import CromoBotella
+from db.models.fo_monitor import (
+    FomonConsulta,
+    FomonIntervencion,
+    FomonIntervencionIngreso,
+    FomonIntervencionServicio,
+)
 from db.models.infra import Camara, Ingreso, IngresoCorreccion, IngresoSinMatch, IngresoTipo
 from modules.slack_baneo_notifier.camara_search import (
     AmbiguousSearchError,
@@ -108,6 +117,7 @@ from modules.slack_baneo_notifier.correccion_ingreso import (
     construir_respuesta_egreso_anterior_al_ingreso,
     construir_respuesta_falta_fecha,
     construir_respuesta_hilo_sin_formulario,
+    construir_respuesta_ingreso_anulado,
     construir_respuesta_ingreso_no_encontrado,
     construir_respuesta_ingreso_ya_cerrado,
     construir_respuesta_momento_invalido,
@@ -127,6 +137,9 @@ logger = logging.getLogger("slack_baneo_worker.ingreso_correccion")
 
 COMANDO_FORZAR_INGRESO = "FORZAR_INGRESO"
 COMANDO_FORZAR_EGRESO = "FORZAR_EGRESO"
+# Desde 2026-10-23: corrección desde el portal (admin), siempre `origen='web'`.
+COMANDO_MOVER_INGRESO = "MOVER_INGRESO"
+COMANDO_ANULAR_INGRESO = "ANULAR_INGRESO"
 
 # ── Valores de `IngresoCorreccion.origen` (String(16), migración `20260928_01`) ─────────────────
 
@@ -151,10 +164,22 @@ RESULTADO_VARIOS_INGRESOS_ABIERTOS = "VARIOS_INGRESOS_ABIERTOS"
 RESULTADO_SIN_INGRESO_ABIERTO = "SIN_INGRESO_ABIERTO"
 RESULTADO_EGRESO_ANTERIOR_AL_INGRESO = "EGRESO_ANTERIOR_AL_INGRESO"
 RESULTADO_INGRESO_YA_CERRADO = "INGRESO_YA_CERRADO"
+# Desde 2026-10-23: `#<id>` (Slack o web) apunta a un ingreso anulado desde el portal.
+RESULTADO_INGRESO_ANULADO = "INGRESO_ANULADO"
 RESULTADO_INGRESO_NO_ENCONTRADO = "INGRESO_NO_ENCONTRADO"
 RESULTADO_HILO_SIN_FORMULARIO = "HILO_SIN_FORMULARIO"
 RESULTADO_MOMENTO_INVALIDO = "MOMENTO_INVALIDO"
 RESULTADO_ERROR_INTERNO = "ERROR_INTERNO"
+# Desde 2026-10-23: mover/anular un ingreso desde el portal (`mover_ingreso_web`/`anular_ingreso_web`).
+# Un ingreso inexistente, uno anulado y una cámara destino inexistente reusan
+# `INGRESO_NO_ENCONTRADO`, `INGRESO_ANULADO` y `CAMARA_NO_ENCONTRADA`.
+RESULTADO_OK_INGRESO_MOVIDO = "OK_INGRESO_MOVIDO"
+RESULTADO_OK_INGRESO_ANULADO = "OK_INGRESO_ANULADO"
+RESULTADO_BOTELLA_INVALIDA = "BOTELLA_INVALIDA"
+RESULTADO_MISMO_DESTINO = "MISMO_DESTINO"
+RESULTADO_MOTIVO_INVALIDO = "MOTIVO_INVALIDO"
+# El destino es una fila con `camara_padre_id` (Botella legado dentro de otra Cámara), no una Cámara raíz.
+RESULTADO_DESTINO_NO_RAIZ = "DESTINO_NO_RAIZ"
 
 # Pedido de fecha: NO es un rechazo terminal, es un **estado pendiente**. La Task 6 busca
 # exactamente esta fila (`resultado='PENDIENTE_FECHA'`, mismo `thread_ts`, menos de 30 minutos) para
@@ -176,6 +201,21 @@ _LARGO_ACTOR_NOMBRE = 255
 
 TipoFormulario = Literal["Ingreso", "Egreso"]
 
+# Por qué mover/anular dejó una intervención de FO Monitor abierta como estaba.
+# - OTROS_INGRESOS_VIGENTES: le quedan otros ingresos vigentes vinculados que no acompañan el cambio
+#   ("Botella 1 y 2" del mismo hilo) — mover y anular.
+# - CONSULTAS_YA_ENVIADAS: ya se le mandó a burritoIA al menos una consulta (ENVIADA, RESPONDIDA o
+#   TIMEOUT) con el alcance de la cámara vieja; recalcularlo en silencio mezclaría mediciones de dos
+#   cámaras — sólo mover.
+OMISION_OTROS_INGRESOS_VIGENTES = "OTROS_INGRESOS_VIGENTES"
+OMISION_CONSULTAS_YA_ENVIADAS = "CONSULTAS_YA_ENVIADAS"
+
+
+@dataclass(slots=True, frozen=True)
+class IntervencionFomonOmitida:
+    intervencion_id: int
+    motivo: str
+
 
 @dataclass(slots=True)
 class ResultadoCorreccion:
@@ -188,6 +228,11 @@ class ResultadoCorreccion:
     comando: str
     ingreso: Ingreso | None = None
     auditoria: IngresoCorreccion | None = None
+    # Sólo mover/anular desde el portal: ids de las intervenciones de FO Monitor abiertas vinculadas
+    # al ingreso que se reubicaron/cancelaron, y las que se dejaron como estaban (con el motivo,
+    # `OMISION_*`).
+    intervenciones_fomon: list[int] = field(default_factory=list)
+    intervenciones_fomon_omitidas: list[IntervencionFomonOmitida] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -324,9 +369,11 @@ def resolver_contexto_hilo(
     )
 
     # ── Nivel 1: el `Ingreso` real del hilo, sin llamadas de red ──────────────────────────────
+    # Sólo vigentes: un ingreso anulado desde el portal nunca ocurrió, así que no define la cámara
+    # ni el tipo del hilo (si todos están anulados, la cascada sigue por los niveles 2 y 3).
     ingresos = (
         session.query(Ingreso)
-        .filter(Ingreso.thread_ts == thread_ts)
+        .filter(Ingreso.thread_ts == thread_ts, Ingreso.vigente())
         .order_by(Ingreso.id.asc())
         .all()
     )
@@ -439,6 +486,9 @@ def _finalizar(
     fuente_momento: str | None = None,
     ingreso: Ingreso | None = None,
     error_detalle: str | None = None,
+    camara_id_anterior: int | None = None,
+    cromo_botella_id_anterior: int | None = None,
+    atomico: bool = False,
 ) -> ResultadoCorreccion:
     """Escribe la fila de auditoría y arma el `ResultadoCorreccion`. **Todo** camino de retorno de
     `procesar_comando_correccion` pasa por acá — incluidos los rechazos: un rechazo sin rastro es un
@@ -447,7 +497,12 @@ def _finalizar(
     Si la escritura de auditoría falla, se loguea como error y se hace `rollback()` (la sesión es
     compartida con el resto del handler de Slack: sin el rollback, cualquier operación posterior
     relanza `PendingRollbackError`), pero la respuesta al operador se devuelve igual — el movimiento
-    ya se registró y no tiene sentido ocultárselo."""
+    ya se registró y no tiene sentido ocultárselo.
+
+    `atomico=True` (mover/anular desde el portal): el caller deja su cambio **sin confirmar** y este
+    `commit()` es el único — cambio y auditoría entran juntos o no entra ninguno. Si falla, se hace
+    `rollback()` (que también deshace el cambio) y la excepción se propaga: el endpoint la convierte
+    en `error_interno`. Un cambio sin su fila de auditoría no puede quedar persistido."""
     fila = IngresoCorreccion(
         comando=inv.comando,
         origen=inv.origen,
@@ -468,6 +523,8 @@ def _finalizar(
         ingreso_id=ingreso.id if ingreso is not None else None,
         resultado=resultado,
         error_detalle=error_detalle,
+        camara_id_anterior=camara_id_anterior,
+        cromo_botella_id_anterior=cromo_botella_id_anterior,
     )
     try:
         session.add(fila)
@@ -484,6 +541,8 @@ def _finalizar(
             exc,
             exc_info=True,
         )
+        if atomico:
+            raise
         return ResultadoCorreccion(
             resultado=resultado, respuesta=respuesta, comando=inv.comando, ingreso=ingreso
         )
@@ -689,7 +748,7 @@ def _resolver_momento(
 
 def _ingresos_abiertos(session: Session, camara: Camara) -> list[Ingreso]:
     """Ingresos abiertos de la cámara: `tipo=INGRESO` (un `INTENTO_BLOQUEADO` también tiene
-    `fecha_fin IS NULL` y nunca fue un ingreso real) y `fecha_fin IS NULL`.
+    `fecha_fin IS NULL` y nunca fue un ingreso real), `fecha_fin IS NULL` y vigentes (no anulados).
 
     El alcance es la cámara entera, sin filtrar por `cromo_botella_id`: `Ingreso.camara_id` siempre
     apunta a la cámara raíz (tanto el flujo en vivo como la búsqueda de Cromo resuelven a la raíz),
@@ -703,6 +762,7 @@ def _ingresos_abiertos(session: Session, camara: Camara) -> list[Ingreso]:
             Ingreso.camara_id == camara.id,
             Ingreso.tipo == IngresoTipo.INGRESO,
             Ingreso.fecha_fin.is_(None),
+            Ingreso.vigente(),
         )
         .order_by(Ingreso.fecha_inicio.desc())
         .all()
@@ -955,6 +1015,19 @@ def _procesar_forzar_egreso(
                     else f"Ingreso id={cmd.ingreso_id} es de tipo {objetivo.tipo}"
                 ),
             )
+        if objetivo.anulado_at is not None:
+            return _finalizar(
+                session,
+                inv,
+                resultado=RESULTADO_INGRESO_ANULADO,
+                respuesta=construir_respuesta_ingreso_anulado(objetivo.id),
+                camara_texto_solicitado=camara_texto_solicitado,
+                motivo=cmd.motivo,
+                camara=objetivo.camara,
+                momento_solicitado=momento_solicitado,
+                ingreso=objetivo,
+                error_detalle=f"anulado el {objetivo.anulado_at} por {objetivo.anulado_por}",
+            )
         if objetivo.fecha_fin is not None:
             return _finalizar(
                 session,
@@ -1205,6 +1278,18 @@ def registrar_egreso_web(
         )
     camara = objetivo.camara
     botella = objetivo.cromo_botella
+    if objetivo.anulado_at is not None:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_INGRESO_ANULADO,
+            respuesta=f"El ingreso #{objetivo.id} está anulado; no se puede cerrar.",
+            camara=camara,
+            botella=botella,
+            ingreso=objetivo,
+            error_detalle=f"anulado el {objetivo.anulado_at} por {objetivo.anulado_por}",
+            **comunes,
+        )
     if objetivo.fecha_fin is not None:
         return _finalizar(
             session,
@@ -1258,31 +1343,513 @@ def registrar_egreso_web(
     )
 
 
+# ── Mover / anular un ingreso desde el portal (admin) ──────────────────────────────────────────
+#
+# Plan `docs/superpowers/plans/2026-10-23-correccion-ingresos-portal.md`, decisiones 3 a 5. Mismo
+# contrato que `registrar_egreso_web` (el operador elige la fila exacta; **una** fila de auditoría
+# `origen='web'` por invocación, incluidos los rechazos), con una diferencia: el cambio y su auditoría
+# se confirman en un **único** `commit()` (`_finalizar(atomico=True)`); si falla, no queda ninguno. Ninguna de las dos toca `Camara.estado` persistido (el estado
+# derivado se corrige solo por el filtro `Ingreso.vigente()`) ni reabre el `IngresoSinMatch` que
+# hubiera resuelto el ingreso: si el ingreso nunca ocurrió, no hay caso que reabrir.
+
+MOTIVO_MIN = 3
+MOTIVO_MAX = 500
+_LARGO_ANULADO_POR = 128
+_LARGO_ACTOR_WEB = 64
+
+
+def _motivo_valido(motivo: str | None) -> str | None:
+    """`motivo` sin espacios de borde si mide entre `MOTIVO_MIN` y `MOTIVO_MAX`; si no, `None`."""
+    limpio = (motivo or "").strip()
+    return limpio if MOTIVO_MIN <= len(limpio) <= MOTIVO_MAX else None
+
+
+def _invocacion_web(comando: str, comando_crudo: str, usuario: str) -> _Invocacion:
+    return _Invocacion(
+        comando=comando,
+        comando_crudo=comando_crudo,
+        actor_slack_user_id=None,
+        actor_nombre=_truncar(usuario, _LARGO_ACTOR_NOMBRE),
+        canal_id=None,
+        thread_ts=None,
+        mensaje_ts=None,
+        origen=ORIGEN_WEB,
+        actor_web_usuario=_truncar(usuario, _LARGO_ACTOR_WEB),
+    )
+
+
+def _intervenciones_abiertas_vinculadas(session: Session, ingreso_id: int) -> list[FomonIntervencion]:
+    """Intervenciones de FO Monitor vinculadas al ingreso que todavía no terminaron. "Abierta" es
+    `motor.ESTADOS_ABIERTOS` (el mismo criterio con el que el motor agrupa y atribuye); `CERRADA` y
+    `CANCELADA` son finales y no se tocan."""
+    return (
+        session.query(FomonIntervencion)
+        .join(FomonIntervencionIngreso, FomonIntervencionIngreso.intervencion_id == FomonIntervencion.id)
+        .filter(
+            FomonIntervencionIngreso.ingreso_id == ingreso_id,
+            FomonIntervencion.estado.in_(FOMON_ESTADOS_ABIERTOS),
+        )
+        .all()
+    )
+
+
+def _otros_vinculados_vigentes(session: Session, intervencion_id: int, ingreso_id: int) -> list[Ingreso]:
+    """Los demás ingresos vigentes de la intervención ("Botella 1 y 2" en el mismo hilo agrupa
+    varias filas en una sola intervención — `motor.detectar_ingresos`)."""
+    return (
+        session.query(Ingreso)
+        .join(FomonIntervencionIngreso, FomonIntervencionIngreso.ingreso_id == Ingreso.id)
+        .filter(
+            FomonIntervencionIngreso.intervencion_id == intervencion_id,
+            Ingreso.id != ingreso_id,
+            Ingreso.vigente(),
+        )
+        .all()
+    )
+
+
+# Una consulta en estos estados ya salió hacia burritoIA (TIMEOUT = se envió y no contestó a tiempo).
+# ERROR no cuenta: `enviar_consultas` lo pone cuando la publicación falló.
+_ESTADOS_CONSULTA_ENVIADA = ("ENVIADA", "RESPONDIDA", "TIMEOUT")
+
+
+def _consultas_ya_enviadas(session: Session, intervencion_id: int) -> bool:
+    return (
+        session.query(FomonConsulta.id)
+        .filter(
+            FomonConsulta.intervencion_id == intervencion_id,
+            FomonConsulta.estado.in_(_ESTADOS_CONSULTA_ENVIADA),
+        )
+        .first()
+        is not None
+    )
+
+
+def _cancelar_consultas_pendientes(session: Session, intervencion_id: int, motivo: str) -> None:
+    """Las consultas `PENDIENTE` todavía no salieron: se cancelan para que `enviar_consultas` no las
+    mande — mismo patrón que `motor._cancelar_pre_vencidas`."""
+    pendientes = (
+        session.query(FomonConsulta)
+        .filter(FomonConsulta.intervencion_id == intervencion_id, FomonConsulta.estado == "PENDIENTE")
+        .all()
+    )
+    for consulta in pendientes:
+        consulta.estado = "CANCELADA"
+        consulta.error = motivo
+
+
+def _otras_abiertas_en_camara(session: Session, camara_id: int, intervencion_id: int) -> list[FomonIntervencion]:
+    return (
+        session.query(FomonIntervencion)
+        .filter(
+            FomonIntervencion.camara_id == camara_id,
+            FomonIntervencion.id != intervencion_id,
+            FomonIntervencion.estado.in_(FOMON_ESTADOS_ABIERTOS),
+        )
+        .all()
+    )
+
+
+def _cancelar_intervencion_fomon(session: Session, interv: FomonIntervencion, ahora: datetime) -> None:
+    """Pasa la intervención a `CANCELADA` (estado final que el motor nunca vuelve a levantar: ningún
+    paso del `tick` filtra por él) con `cerrada_at`, como `CERRADA`, y cancela sus consultas
+    `PENDIENTE`. Las `ENVIADA` siguen su curso: su respuesta se guarda como cualquier otra, pero
+    `avanzar_intervenciones` ya no la procesa."""
+    interv.estado = "CANCELADA"
+    interv.cerrada_at = ahora
+    interv.proximo_evento_en = None
+    _cancelar_consultas_pendientes(session, interv.id, "ingreso_anulado")
+
+
+# Estado "en curso" → "pendiente" de la misma fase: `planificar_consultas` sólo crea consultas para
+# `PRE_PENDIENTE`/`POST_PENDIENTE`. Sin esta vuelta atrás, una `PRE_EN_CURSO` con sus consultas
+# canceladas pasaría en el próximo tick a `EN_CURSO` sin línea base.
+_VOLVER_A_PENDIENTE = {"PRE_EN_CURSO": "PRE_PENDIENTE", "POST_EN_CURSO": "POST_PENDIENTE"}
+# Estados en los que la PRE todavía se va a medir con el alcance nuevo.
+_ESTADOS_PRE = ("PRE_PENDIENTE", "PRE_EN_CURSO")
+
+
+def _reubicar_intervencion_fomon(
+    session: Session,
+    interv: FomonIntervencion,
+    *,
+    camara_id: int,
+    botella_n_id: int | None,
+    ahora: datetime,
+) -> None:
+    """Lleva una intervención abierta (sin consultas ya enviadas) a la cámara destino recalculando su
+    alcance con la misma función que la etapa PRE (`fo_monitor.alcance.resolver_alcance`, sólo
+    consultas a la DB, sin red) y reemplazando la lista congelada de cables/servicios.
+
+    - Las consultas `PENDIENTE` (armadas con el alcance viejo) se cancelan; las nuevas las crea
+      `motor.planificar_consultas` en el próximo tick, porque la intervención vuelve a
+      `PRE_PENDIENTE`/`POST_PENDIENTE` (los demás estados abiertos no tienen consultas en vuelo y
+      el motor planifica la fase siguiente con el alcance nuevo).
+    - Siempre se limpia `aviso_ts`/`aviso_canal`, para que nada más salga en el hilo de la cámara
+      vieja (ese aviso queda en Slack: no se edita desde acá). En `PRE_PENDIENTE`, el próximo tick
+      publica un aviso raíz nuevo con la cámara correcta (`planificar_consultas`). Después de la PRE
+      (`EN_CURSO`, `SIN_EGRESO`, `POST_*`) el motor sólo publica la raíz en fase PRE y `_avisar` no
+      hace nada sin `aviso_ts`: esa intervención ya no avisa por Slack; sus resultados siguen en el
+      panel de FO Monitor.
+    - Después de la PRE, si el alcance nuevo tiene servicios, `sin_linea_base=True`: nunca se midió
+      la PRE de esos servicios (sin consultas enviadas), igual que el motor cuando la PRE no da
+      mediciones válidas.
+    - La botella objetivo sale de `resolver_alcance`: la elegida si es vigente del destino; si no se
+      eligió ninguna, la Botella 1 (`botella_1_inferida` según corresponda), igual que al crearla.
+    - `atribucion_compartida` se marca como en `crear_intervencion` si el destino ya tiene otra
+      intervención abierta."""
+    _cancelar_consultas_pendientes(session, interv.id, "alcance_recalculado")
+    session.query(FomonIntervencionServicio).filter(
+        FomonIntervencionServicio.intervencion_id == interv.id
+    ).delete(synchronize_session=False)
+    alcance = resolver_alcance(session, camara_id, botella_n_id)
+    interv.camara_id = camara_id
+    interv.botella_objetivo_n_id = alcance.botella_objetivo_n_id
+    interv.botella_1_inferida = alcance.botella_1_inferida
+    congelar_alcance(session, interv, alcance)
+    if interv.estado not in _ESTADOS_PRE and alcance.servicios_unicos():
+        interv.sin_linea_base = True
+    interv.aviso_ts = None
+    interv.aviso_canal = None
+    nuevo_estado = _VOLVER_A_PENDIENTE.get(interv.estado)
+    if nuevo_estado is not None:
+        interv.estado = nuevo_estado
+        interv.proximo_evento_en = ahora
+    otras = _otras_abiertas_en_camara(session, camara_id, interv.id)
+    interv.atribucion_compartida = bool(otras)
+    for otra in otras:
+        otra.atribucion_compartida = True
+
+
+def mover_ingreso_web(
+    session: Session,
+    *,
+    ingreso_id: int,
+    camara_destino_id: int,
+    cromo_botella_destino_n_id: int | None,
+    motivo: str,
+    usuario: str,
+    ahora: datetime | None = None,
+) -> ResultadoCorreccion:
+    """Mueve un `Ingreso` (cualquier `tipo`) a otra Cámara: el movimiento existió, pero quedó
+    registrado en la cámara equivocada (Fontaine ID mal tipeado, reescritura en el hilo, "Forzar
+    ingreso" con la cámara errónea).
+
+    - `cromo_botella_id` pasa a `NULL` salvo que se elija una `CromoBotella` **vigente** cuya
+      `camara_id` sea el destino.
+    - No se mueve un ingreso anulado ni a la misma cámara con la misma botella.
+    - Un ingreso abierto se mueve abierto: `fecha_inicio`/`fecha_fin` no cambian.
+    - FO Monitor: cada intervención abierta vinculada se reubica en el destino con el alcance
+      recalculado (`_reubicar_intervencion_fomon`), salvo que tenga otros ingresos vigentes que
+      sigan en otra cámara (`OTROS_INGRESOS_VIGENTES`; mover también esos la reubica) o que ya
+      haya consultado a burritoIA con el alcance viejo (`CONSULTAS_YA_ENVIADAS`): ésas quedan como
+      están y vuelven en `intervenciones_fomon_omitidas`.
+
+    La auditoría guarda el destino en `camara_id_resuelta`/`cromo_botella_id_resuelta` y el origen
+    en `camara_id_anterior`/`cromo_botella_id_anterior`. `ahora` es inyectable para tests."""
+    ahora_utc = _como_utc(ahora if ahora is not None else datetime.now(timezone.utc))
+    assert ahora_utc is not None
+    sufijo_botella = f" botella {cromo_botella_destino_n_id}" if cromo_botella_destino_n_id is not None else ""
+    inv = _invocacion_web(
+        COMANDO_MOVER_INGRESO,
+        f"[web] Mover ingreso #{ingreso_id} a cámara {camara_destino_id}{sufijo_botella}",
+        usuario,
+    )
+    comunes: dict[str, Any] = {
+        "camara_texto_solicitado": f"camara_id={camara_destino_id}{sufijo_botella}",
+        "motivo": motivo,
+    }
+
+    objetivo = session.query(Ingreso).filter(Ingreso.id == ingreso_id).first()
+    if objetivo is None:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_INGRESO_NO_ENCONTRADO,
+            respuesta=f"No existe el ingreso #{ingreso_id}.",
+            error_detalle=f"Ingreso id={ingreso_id} inexistente",
+            **comunes,
+        )
+    anterior = {
+        "camara_id_anterior": objetivo.camara_id,
+        "cromo_botella_id_anterior": objetivo.cromo_botella_id,
+    }
+    if objetivo.anulado_at is not None:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_INGRESO_ANULADO,
+            respuesta=f"El ingreso #{objetivo.id} está anulado; no se puede mover.",
+            ingreso=objetivo,
+            error_detalle=f"anulado el {objetivo.anulado_at} por {objetivo.anulado_por}",
+            **anterior,
+            **comunes,
+        )
+    motivo_limpio = _motivo_valido(motivo)
+    if motivo_limpio is None:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_MOTIVO_INVALIDO,
+            respuesta=f"El motivo tiene que tener entre {MOTIVO_MIN} y {MOTIVO_MAX} caracteres.",
+            ingreso=objetivo,
+            error_detalle=f"motivo de {len((motivo or '').strip())} caracteres",
+            **anterior,
+            **comunes,
+        )
+    comunes["motivo"] = motivo_limpio
+
+    destino = session.get(Camara, camara_destino_id)
+    if destino is None:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_CAMARA_NO_ENCONTRADA,
+            respuesta=f"No existe la cámara destino #{camara_destino_id}.",
+            ingreso=objetivo,
+            error_detalle=f"Camara id={camara_destino_id} inexistente",
+            **anterior,
+            **comunes,
+        )
+    if destino.camara_padre_id is not None:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_DESTINO_NO_RAIZ,
+            respuesta=(
+                f"La cámara destino #{destino.id} es una botella dentro de la cámara "
+                f"#{destino.camara_padre_id}; elegí la cámara raíz."
+            ),
+            camara=destino,
+            ingreso=objetivo,
+            error_detalle=f"Camara id={destino.id} tiene camara_padre_id={destino.camara_padre_id}",
+            **anterior,
+            **comunes,
+        )
+
+    botella: CromoBotella | None = None
+    if cromo_botella_destino_n_id is not None:
+        botella = session.get(CromoBotella, cromo_botella_destino_n_id)
+        problema = None
+        if botella is None:
+            problema = f"CromoBotella n_id={cromo_botella_destino_n_id} inexistente"
+        elif not botella.vigente:
+            problema = f"CromoBotella n_id={botella.n_id} no vigente"
+        elif botella.camara_id != destino.id:
+            problema = f"CromoBotella n_id={botella.n_id} pertenece a camara_id={botella.camara_id}"
+        if problema is not None:
+            return _finalizar(
+                session,
+                inv,
+                resultado=RESULTADO_BOTELLA_INVALIDA,
+                respuesta="La botella elegida no es una botella vigente de la cámara destino.",
+                camara=destino,
+                ingreso=objetivo,
+                error_detalle=problema,
+                **anterior,
+                **comunes,
+            )
+    nuevo_botella_n_id = botella.n_id if botella is not None else None
+
+    if objetivo.camara_id == destino.id and objetivo.cromo_botella_id == nuevo_botella_n_id:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_MISMO_DESTINO,
+            respuesta=f"El ingreso #{objetivo.id} ya está en esa cámara con esa botella.",
+            camara=destino,
+            botella=botella,
+            ingreso=objetivo,
+            error_detalle="destino igual al origen",
+            **anterior,
+            **comunes,
+        )
+
+    # Sólo las columnas: la relación `camara` no se reasigna para no pasar por la colección
+    # `Camara.ingresos` (cascade `delete-orphan`); `commit()` expira y recarga ambas.
+    objetivo.camara_id = destino.id
+    objetivo.cromo_botella_id = nuevo_botella_n_id
+
+    actualizadas: list[int] = []
+    omitidas: list[IntervencionFomonOmitida] = []
+    for interv in _intervenciones_abiertas_vinculadas(session, objetivo.id):
+        otros = _otros_vinculados_vigentes(session, interv.id, objetivo.id)
+        if any(o.camara_id != destino.id for o in otros):
+            omitidas.append(IntervencionFomonOmitida(interv.id, OMISION_OTROS_INGRESOS_VIGENTES))
+            continue
+        if _consultas_ya_enviadas(session, interv.id):
+            omitidas.append(IntervencionFomonOmitida(interv.id, OMISION_CONSULTAS_YA_ENVIADAS))
+            continue
+        _reubicar_intervencion_fomon(
+            session, interv, camara_id=destino.id, botella_n_id=nuevo_botella_n_id, ahora=ahora_utc
+        )
+        actualizadas.append(interv.id)
+
+    # Un único commit: el cambio (ingreso + FO Monitor) y su auditoría, juntos.
+    resultado = _finalizar(
+        session,
+        inv,
+        resultado=RESULTADO_OK_INGRESO_MOVIDO,
+        respuesta=f"Ingreso #{objetivo.id} movido a la cámara {destino.nombre}.",
+        camara=destino,
+        botella=botella,
+        ingreso=objetivo,
+        atomico=True,
+        **anterior,
+        **comunes,
+    )
+    if actualizadas or omitidas:
+        logger.info(
+            "Mover ingreso #%s: intervenciones FO Monitor actualizadas=%s omitidas=%s",
+            objetivo.id,
+            actualizadas,
+            omitidas,
+        )
+    resultado.intervenciones_fomon = actualizadas
+    resultado.intervenciones_fomon_omitidas = omitidas
+    return resultado
+
+
+def anular_ingreso_web(
+    session: Session,
+    *,
+    ingreso_id: int,
+    motivo: str,
+    usuario: str,
+    ahora: datetime | None = None,
+) -> ResultadoCorreccion:
+    """Baja lógica de un `Ingreso` (cualquier `tipo`) que nunca ocurrió: setea `anulado_at` (UTC),
+    `anulado_por` y `anulado_motivo`; la fila se conserva y todo lector que decide estado la
+    excluye vía `Ingreso.vigente()`. Un ingreso ya anulado no se vuelve a anular.
+
+    FO Monitor: cada intervención abierta vinculada pasa a `CANCELADA` (ver
+    `_cancelar_intervencion_fomon`), salvo que le queden otros ingresos vigentes — esos sí
+    ocurrieron y se siguen verificando (`OTROS_INGRESOS_VIGENTES` en `intervenciones_fomon_omitidas`).
+
+    `ahora` es inyectable para tests."""
+    ahora_utc = _como_utc(ahora if ahora is not None else datetime.now(timezone.utc))
+    assert ahora_utc is not None
+    inv = _invocacion_web(COMANDO_ANULAR_INGRESO, f"[web] Anular ingreso #{ingreso_id}", usuario)
+    comunes: dict[str, Any] = {"camara_texto_solicitado": f"#{ingreso_id}", "motivo": motivo}
+
+    objetivo = session.query(Ingreso).filter(Ingreso.id == ingreso_id).first()
+    if objetivo is None:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_INGRESO_NO_ENCONTRADO,
+            respuesta=f"No existe el ingreso #{ingreso_id}.",
+            error_detalle=f"Ingreso id={ingreso_id} inexistente",
+            **comunes,
+        )
+    camara = objetivo.camara
+    botella = objetivo.cromo_botella
+    if objetivo.anulado_at is not None:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_INGRESO_ANULADO,
+            respuesta=f"El ingreso #{objetivo.id} ya está anulado.",
+            camara=camara,
+            botella=botella,
+            ingreso=objetivo,
+            error_detalle=f"anulado el {objetivo.anulado_at} por {objetivo.anulado_por}",
+            **comunes,
+        )
+    motivo_limpio = _motivo_valido(motivo)
+    if motivo_limpio is None:
+        return _finalizar(
+            session,
+            inv,
+            resultado=RESULTADO_MOTIVO_INVALIDO,
+            respuesta=f"El motivo tiene que tener entre {MOTIVO_MIN} y {MOTIVO_MAX} caracteres.",
+            camara=camara,
+            botella=botella,
+            ingreso=objetivo,
+            error_detalle=f"motivo de {len((motivo or '').strip())} caracteres",
+            **comunes,
+        )
+    comunes["motivo"] = motivo_limpio
+
+    objetivo.anulado_at = ahora_utc
+    objetivo.anulado_por = _truncar(usuario, _LARGO_ANULADO_POR)
+    objetivo.anulado_motivo = motivo_limpio
+
+    canceladas: list[int] = []
+    omitidas: list[IntervencionFomonOmitida] = []
+    for interv in _intervenciones_abiertas_vinculadas(session, objetivo.id):
+        if _otros_vinculados_vigentes(session, interv.id, objetivo.id):
+            omitidas.append(IntervencionFomonOmitida(interv.id, OMISION_OTROS_INGRESOS_VIGENTES))
+            continue
+        _cancelar_intervencion_fomon(session, interv, ahora_utc)
+        canceladas.append(interv.id)
+
+    # Un único commit: la baja lógica (+ FO Monitor) y su auditoría, juntas.
+    resultado = _finalizar(
+        session,
+        inv,
+        resultado=RESULTADO_OK_INGRESO_ANULADO,
+        respuesta=f"Ingreso #{objetivo.id} anulado.",
+        camara=camara,
+        botella=botella,
+        momento_efectivo=ahora_utc,
+        ingreso=objetivo,
+        atomico=True,
+        **comunes,
+    )
+    if canceladas or omitidas:
+        logger.info(
+            "Anular ingreso #%s: intervenciones FO Monitor canceladas=%s omitidas=%s",
+            objetivo.id,
+            canceladas,
+            omitidas,
+        )
+    resultado.intervenciones_fomon = canceladas
+    resultado.intervenciones_fomon_omitidas = omitidas
+    return resultado
+
+
 __all__ = [
     "CAMARA_TEXTO_DEL_HILO",
     "CAMARA_TEXTO_NO_PARSEADO",
+    "COMANDO_ANULAR_INGRESO",
     "COMANDO_FORZAR_EGRESO",
     "COMANDO_FORZAR_INGRESO",
+    "COMANDO_MOVER_INGRESO",
     "ContextoHilo",
     "FUENTE_MOMENTO_EXPLICITO",
     "FUENTE_MOMENTO_HILO",
+    "IntervencionFomonOmitida",
+    "MOTIVO_MAX",
+    "MOTIVO_MIN",
+    "OMISION_CONSULTAS_YA_ENVIADAS",
+    "OMISION_OTROS_INGRESOS_VIGENTES",
     "ORIGEN_SLACK",
     "ORIGEN_WEB",
+    "RESULTADO_BOTELLA_INVALIDA",
     "RESULTADO_CAMARA_AMBIGUA",
     "RESULTADO_CAMARA_NO_ENCONTRADA",
+    "RESULTADO_DESTINO_NO_RAIZ",
     "RESULTADO_EGRESO_ANTERIOR_AL_INGRESO",
     "RESULTADO_ERROR_INTERNO",
     "RESULTADO_HILO_SIN_FORMULARIO",
+    "RESULTADO_INGRESO_ANULADO",
     "RESULTADO_INGRESO_NO_ENCONTRADO",
     "RESULTADO_INGRESO_YA_CERRADO",
+    "RESULTADO_MISMO_DESTINO",
     "RESULTADO_MOMENTO_INVALIDO",
+    "RESULTADO_MOTIVO_INVALIDO",
     "RESULTADO_OK_EGRESO_ASENTADO",
     "RESULTADO_OK_EGRESO_CERRADO",
     "RESULTADO_OK_INGRESO",
+    "RESULTADO_OK_INGRESO_ANULADO",
+    "RESULTADO_OK_INGRESO_MOVIDO",
     "RESULTADO_PENDIENTE_FECHA",
     "RESULTADO_SIN_INGRESO_ABIERTO",
     "RESULTADO_VARIOS_INGRESOS_ABIERTOS",
     "ResultadoCorreccion",
+    "anular_ingreso_web",
+    "mover_ingreso_web",
     "procesar_comando_correccion",
     "registrar_egreso_web",
     "resolver_contexto_hilo",

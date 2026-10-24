@@ -102,14 +102,15 @@ Módulos admin actuales bajo `/admin`:
 | `ingesta/camaras` | `AdminIngestaCamaras` |
 | `:pathMatch(.*)*` | redirect `/admin` — **CATCH-ALL, debe ser la última** |
 
-### Archivos huérfanos — NO usar como referencia de rutas
+### Huérfanos históricos (ya eliminados)
 
-| Archivo | Estado | Motivo |
-|---|---|---|
-| `web/frontend/src/admin/router/index.ts` | **Huérfano** | Nunca importado por ningún entry point activo |
-| `web/frontend/src/admin/main.ts` | **Huérfano** | `index.html` solo referencia `src/main.ts`; este archivo existe pero no está conectado |
+`web/frontend/src/admin/router/index.ts` y `web/frontend/src/admin/main.ts` eran un router y un
+entry point sin conectar. Se eliminaron en `9bb86f6` (2026-08-05); verificado otra vez el
+2026-10-20: ningún `.vue`/`.ts` de `src/` queda sin importar. `src/admin/` sigue existiendo, pero
+sólo con vistas, componentes y API client que importa el router unificado.
 
-> **TRAMPA FRECUENTE**: modificar `src/admin/router/index.ts` creyendo que es el router del panel admin. No tiene efecto en runtime. El único router es `src/router/index.ts`.
+> **Si reaparece un router o un `main.ts` bajo `src/admin/`, no tiene efecto en runtime.** El único
+> router es `src/router/index.ts` y el único entry point es `src/main.ts`.
 
 ---
 
@@ -171,7 +172,7 @@ El `router.beforeEach` en `src/router/index.ts` usa `useSession()` de `src/compo
 - Verifica `state.value.authenticated` — si no, redirige a `/login`.
 - Verifica `state.value.role === 'admin'` para rutas con `meta.requiresAdmin` — si no, redirige a `/`.
 
-No hay guard separado en el router huérfano; toda lógica de sesión vive en `src/router/index.ts`.
+No hay guard separado; toda lógica de sesión vive en `src/router/index.ts`.
 
 ---
 
@@ -200,9 +201,9 @@ Si el módulo necesita aparecer en la navegación lateral, `navLabel`, `navOrder
 
 ## Guardrails
 
-1. **No modificar** `src/admin/router/index.ts` para agregar rutas operativas — no tiene efecto en runtime.
+1. **No crear** un segundo router (p. ej. `src/admin/router/index.ts`): las rutas van en `src/router/index.ts`.
 2. **No crear** `src/admin/main.ts` como entry point alternativo sin actualizar `index.html` y `vite.config.ts`.
-3. **No importar** el router huérfano desde ningún componente nuevo.
+3. **No importar** un router que no sea `src/router/index.ts` desde ningún componente.
 4. **Siempre** colocar el catch-all `':pathMatch(.*)*'` como último elemento de los `children` de `/admin`.
 5. **Siempre** usar lazy imports (`() => import(...)`) para componentes de ruta en el router unificado.
 6. **Librerías con Web Worker resuelto en runtime (MapLibre GL ≥ 6, y cualquiera que haga

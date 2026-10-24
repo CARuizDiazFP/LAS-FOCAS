@@ -476,7 +476,14 @@ async def test_listar_por_servicio_id_y_resumen_de_servicio(entorno):
     base = await inc.resumen_de_servicio(sesion, sid)
     assert base["cuarentena"] >= 1 and base["en_revision"] >= 1
     # Aceptar el caso de cuarentena lo saca del conteo de cuarentena.
-    caso = (await inc.listar(sesion, servicio_id=sid, tipo="ISLA_FUSION"))["items"][0]
+    # El caso propio por su `objeto_n_id` sintético: `servicio_id=sid` (el min(id) real de dev)
+    # también devuelve casos ISLA_FUSION ajenos, y tomar el [0] aceptaba uno que podía no estar
+    # en cuarentena (delta 0 en lugar de -1).
+    caso = next(
+        i
+        for i in (await inc.listar(sesion, servicio_id=sid, tipo="ISLA_FUSION"))["items"]
+        if i["objeto_n_id"] == 999917801
+    )
     await inc.cambiar_estado(sesion, [caso["id"]], "ACEPTADA", "test")
     despues = await inc.resumen_de_servicio(sesion, sid)
     assert despues["cuarentena"] == base["cuarentena"] - 1

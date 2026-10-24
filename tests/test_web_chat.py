@@ -2,10 +2,9 @@
 # Ubicación de archivo: tests/test_web_chat.py
 # Descripción: Pruebas básicas del endpoint del chat del servicio Web
 
-import os
-from pathlib import Path
-import sys
 
+
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
@@ -34,7 +33,19 @@ def test_chat_message_returns_json(monkeypatch) -> None:
         return IntentResponse(intent="Consulta", confidence=0.9, provider="heuristic", normalized_text=text)
 
     from web.app import main as web_main  # type: ignore[import]
+    from web.app.routers import chat as chat_router  # type: ignore[import]
     web_main.classify_text = _fake_classify
+
+    # Sin sesión ya no responde (401, ver test_web_chat_errores_depends): se simula un usuario y se
+    # corta la persistencia (que sólo loguea un warning si falla).
+    monkeypatch.setenv("TESTING", "true")
+    from web.app import comun  # usuario_chat lee la sesión vía comun._require_auth (única fuente)
+    monkeypatch.setattr(comun, "_require_auth", lambda request: ("tester", "user"))
+
+    def _sin_db(*_a, **_k):
+        raise OSError("sin base en este test")
+
+    monkeypatch.setattr(chat_router, "psycopg", SimpleNamespace(connect=_sin_db))
 
     res = client.post("/api/chat/message", data={"text": "¿Cómo genero el SLA?"})
     assert res.status_code == 200

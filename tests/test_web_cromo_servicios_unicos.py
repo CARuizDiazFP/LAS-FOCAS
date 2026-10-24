@@ -56,7 +56,8 @@ from fastapi.testclient import TestClient  # type: ignore
 
 from core.password import hash_password
 from web.app import main as web_main
-from web.app.main import _ResultadoRefrescoLote, app
+from web.app.main import app
+from web.app.routers.cromo import _ResultadoRefrescoLote
 
 
 class _Cur:
@@ -521,7 +522,7 @@ def test_refrescar_prov_sin_vencidos_no_dispara_el_lote(monkeypatch):
     monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local_secuencia(sesiones))
 
     lote_fake = AsyncMock(side_effect=AssertionError("no debería llamarse: no hay vencidos"))
-    monkeypatch.setattr(web_main, "_ejecutar_refresco_prov_lote", lote_fake)
+    monkeypatch.setattr(web_main.cromo, "_ejecutar_refresco_prov_lote", lote_fake)
 
     client = TestClient(app)
     csrf = _login(client, "user", "userpass")
@@ -564,7 +565,7 @@ def test_refrescar_prov_con_vencidos_completado(monkeypatch):
     monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local_secuencia(sesiones))
 
     lote_fake = AsyncMock(return_value=_ResultadoRefrescoLote(fallidos=[]))
-    monkeypatch.setattr(web_main, "_ejecutar_refresco_prov_lote", lote_fake)
+    monkeypatch.setattr(web_main.cromo, "_ejecutar_refresco_prov_lote", lote_fake)
 
     client = TestClient(app)
     csrf = _login(client, "user", "userpass")
@@ -604,7 +605,7 @@ def test_refrescar_prov_con_fallidos_es_parcial(monkeypatch):
 
     fallidos = [{"servicio_id_externo": "SRV-001", "motivo": "timeout o error de comunicación con PROV"}]
     lote_fake = AsyncMock(return_value=_ResultadoRefrescoLote(fallidos=fallidos))
-    monkeypatch.setattr(web_main, "_ejecutar_refresco_prov_lote", lote_fake)
+    monkeypatch.setattr(web_main.cromo, "_ejecutar_refresco_prov_lote", lote_fake)
 
     client = TestClient(app)
     csrf = _login(client, "user", "userpass")
@@ -634,7 +635,7 @@ def test_refrescar_prov_502_si_prov_no_configurado(monkeypatch):
     monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
 
     lote_fake = AsyncMock(side_effect=ProvConfigError("falta configurar PROV_BASE_URL"))
-    monkeypatch.setattr(web_main, "_ejecutar_refresco_prov_lote", lote_fake)
+    monkeypatch.setattr(web_main.cromo, "_ejecutar_refresco_prov_lote", lote_fake)
 
     client = TestClient(app)
     csrf = _login(client, "user", "userpass")
@@ -712,7 +713,7 @@ def test_ejecutar_refresco_prov_lote_deadline_corta_y_marca_no_resueltos(monkeyp
     refresco_prov_module = _patch_dependencias_lote(monkeypatch, _refrescar_fake)
     monkeypatch.setattr(refresco_prov_module, "DEADLINE_SEGUNDOS", 0.05)
 
-    lote = asyncio.run(web_main._ejecutar_refresco_prov_lote([rapido, lento]))
+    lote = asyncio.run(web_main.cromo._ejecutar_refresco_prov_lote([rapido, lento]))
 
     assert lote.fallidos == [
         {
@@ -743,7 +744,7 @@ def test_ejecutar_refresco_prov_lote_fallo_puntual_no_aborta_el_resto(monkeypatc
 
     # Si la orquestación no tolerara el fallo (ej. `gather` sin `return_exceptions=True`), esta
     # llamada propagaría la `RuntimeError` y el test terminaría en ERROR, no en un assert fallido.
-    lote = asyncio.run(web_main._ejecutar_refresco_prov_lote([primero, segundo, tercero]))
+    lote = asyncio.run(web_main.cromo._ejecutar_refresco_prov_lote([primero, segundo, tercero]))
 
     fallidos_ids = {f["servicio_id_externo"] for f in lote.fallidos}
     assert fallidos_ids == {"SRV-B"}  # primero/tercero se procesaron igual, pese al fallo de segundo
@@ -769,7 +770,7 @@ def test_ejecutar_refresco_prov_lote_fallidos_llevan_motivo_por_servicio(monkeyp
 
     _patch_dependencias_lote(monkeypatch, _refrescar_fake)
 
-    lote = asyncio.run(web_main._ejecutar_refresco_prov_lote([uno, dos]))
+    lote = asyncio.run(web_main.cromo._ejecutar_refresco_prov_lote([uno, dos]))
 
     assert {(f["servicio_id_externo"], f["motivo"]) for f in lote.fallidos} == {
         ("SRV-UNO", "no encontrado en PROV"),
@@ -800,6 +801,6 @@ def test_ejecutar_refresco_prov_lote_corre_una_sola_sync_de_clientes(monkeypatch
 
     monkeypatch.setattr(refresco_prov_module, "sincronizar_clientes_post_ingesta", registrar)
 
-    asyncio.run(web_main._ejecutar_refresco_prov_lote([ok, falla]))
+    asyncio.run(web_main.cromo._ejecutar_refresco_prov_lote([ok, falla]))
 
     assert llamadas == [(["VIEJO", "NUEVO"], "cromo_servicios_unicos_refrescar_prov")]

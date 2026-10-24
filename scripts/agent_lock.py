@@ -165,7 +165,7 @@ def construir_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: C901 - CLI de tooling con tests propios
     parser = construir_parser()
     args = parser.parse_args(argv)
     usar_json = getattr(args, "json", False)

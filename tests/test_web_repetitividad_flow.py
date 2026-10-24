@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import io
-import sys
 from pathlib import Path
 
 import pandas as pd
@@ -15,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from modules.informes_repetitividad.service import ReportConfig, ReportResult  # type: ignore  # noqa: E402
 from web.app import main as web_main  # type: ignore  # noqa: E402
+from web.app.routers import informes as web_informes  # type: ignore  # noqa: E402
 from web.app.main import app  # type: ignore  # noqa: E402
 
 from tests.test_web_admin import _connect_user_ok  # noqa: E402
@@ -42,7 +42,7 @@ def test_flow_repetitividad_success_excel(monkeypatch: pytest.MonkeyPatch, tmp_p
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     config = ReportConfig(reports_dir=reports_dir, soffice_bin=None, maps_enabled=False)
-    monkeypatch.setattr(web_main, "REPORT_SERVICE_CONFIG", config)
+    monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
     docx_path = reports_dir / "reporte.docx"
     docx_path.write_bytes(b"DOCX")
@@ -69,7 +69,7 @@ def test_flow_repetitividad_success_excel(monkeypatch: pytest.MonkeyPatch, tmp_p
         )
 
     monkeypatch.setattr(web_main.asyncio, "to_thread", _fake_to_thread)
-    monkeypatch.setattr(web_main, "generar_informe_desde_excel", _fake_generar_informe)
+    monkeypatch.setattr(web_informes, "generar_informe_desde_excel", _fake_generar_informe)
 
     files = {"file": ("casos.xlsx", io.BytesIO(_excel_bytes()), "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")}
     data = {"mes": 7, "anio": 2024, "csrf_token": csrf}
@@ -96,7 +96,7 @@ def test_flow_repetitividad_success_excel_with_geo(monkeypatch: pytest.MonkeyPat
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     config = ReportConfig(reports_dir=reports_dir, soffice_bin=None, maps_enabled=True)
-    monkeypatch.setattr(web_main, "REPORT_SERVICE_CONFIG", config)
+    monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
     docx_path = reports_dir / "reporte.docx"
     docx_path.write_bytes(b"DOCX")
@@ -120,7 +120,7 @@ def test_flow_repetitividad_success_excel_with_geo(monkeypatch: pytest.MonkeyPat
         )
 
     monkeypatch.setattr(web_main.asyncio, "to_thread", _fake_to_thread)
-    monkeypatch.setattr(web_main, "generar_informe_desde_excel", _fake_generar_informe)
+    monkeypatch.setattr(web_informes, "generar_informe_desde_excel", _fake_generar_informe)
 
     files = {"file": ("casos.xlsx", io.BytesIO(_excel_bytes()), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
     data = {"mes": 7, "anio": 2024, "csrf_token": csrf, "with_geo": "true", "include_pdf": "false"}
@@ -144,7 +144,7 @@ def test_flow_repetitividad_success_db(monkeypatch: pytest.MonkeyPatch, tmp_path
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     config = ReportConfig(reports_dir=reports_dir, soffice_bin=None, maps_enabled=True)
-    monkeypatch.setattr(web_main, "REPORT_SERVICE_CONFIG", config)
+    monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
     df_raw = pd.DataFrame({"numero_reclamo": [1], "cliente": ["Metrotel"], "servicio": ["FO"], "fecha": ["2024-07-01"]})
 
@@ -167,9 +167,9 @@ def test_flow_repetitividad_success_db(monkeypatch: pytest.MonkeyPatch, tmp_path
         )
 
     monkeypatch.setattr(web_main.asyncio, "to_thread", _fake_to_thread)
-    monkeypatch.setattr(web_main, "reclamos_from_db", lambda mes, anio: df_raw)  # noqa: ARG005
-    monkeypatch.setattr(web_main, "db_to_processor_frame", lambda df: df)
-    monkeypatch.setattr(web_main, "generar_informe_desde_dataframe", _fake_generar_informe_dataframe)
+    monkeypatch.setattr(web_informes, "reclamos_from_db", lambda mes, anio: df_raw)  # noqa: ARG005
+    monkeypatch.setattr(web_informes, "db_to_processor_frame", lambda df: df)
+    monkeypatch.setattr(web_informes, "generar_informe_desde_dataframe", _fake_generar_informe_dataframe)
 
     data = {"mes": 7, "anio": 2024, "csrf_token": csrf, "use_db": "true", "with_geo": "true", "include_pdf": "false"}
     response = client.post("/api/flows/repetitividad", data=data)
@@ -189,9 +189,9 @@ def test_flow_repetitividad_db_sin_datos(monkeypatch: pytest.MonkeyPatch, tmp_pa
     csrf = _login_as_user(client, monkeypatch)
 
     config = ReportConfig(reports_dir=tmp_path, soffice_bin=None, maps_enabled=True)
-    monkeypatch.setattr(web_main, "REPORT_SERVICE_CONFIG", config)
-    monkeypatch.setattr(web_main, "reclamos_from_db", lambda mes, anio: pd.DataFrame())  # noqa: ARG005
-    monkeypatch.setattr(web_main, "db_to_processor_frame", lambda df: df)
+    monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
+    monkeypatch.setattr(web_informes, "reclamos_from_db", lambda mes, anio: pd.DataFrame())  # noqa: ARG005
+    monkeypatch.setattr(web_informes, "db_to_processor_frame", lambda df: df)
 
     data = {"mes": 7, "anio": 2024, "csrf_token": csrf, "use_db": "true"}
     response = client.post("/api/flows/repetitividad", data=data)
@@ -217,7 +217,7 @@ def test_flow_repetitividad_validation_error(monkeypatch: pytest.MonkeyPatch, tm
     csrf = _login_as_user(client, monkeypatch)
 
     config = ReportConfig(reports_dir=tmp_path, soffice_bin=None, maps_enabled=False)
-    monkeypatch.setattr(web_main, "REPORT_SERVICE_CONFIG", config)
+    monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
     async def _fake_to_thread(func, *args, **kwargs):  # noqa: ANN001, ANN003
         raise ValueError("Columnas faltantes")
@@ -238,7 +238,7 @@ def test_flow_repetitividad_error_generico(monkeypatch: pytest.MonkeyPatch, tmp_
     csrf = _login_as_user(client, monkeypatch)
 
     config = ReportConfig(reports_dir=tmp_path, soffice_bin=None, maps_enabled=False)
-    monkeypatch.setattr(web_main, "REPORT_SERVICE_CONFIG", config)
+    monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
     async def _fake_to_thread(func, *args, **kwargs):  # noqa: ANN001, ANN003
         raise RuntimeError("boom")
@@ -251,7 +251,9 @@ def test_flow_repetitividad_error_generico(monkeypatch: pytest.MonkeyPatch, tmp_
     resp = client.post("/api/flows/repetitividad", data=data, files=files)
 
     assert resp.status_code == 500
-    assert "No se pudo generar" in resp.json()["error"]
+    # 500 con ref (contrato de errores de la web); el texto de la excepción queda sólo en el log.
+    assert resp.json()["error"].startswith("Error interno (ref ")
+    assert "boom" not in resp.text
 
 
 def test_flow_repetitividad_rechaza_archivo_no_xlsx(monkeypatch: pytest.MonkeyPatch) -> None:

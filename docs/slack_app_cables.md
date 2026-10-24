@@ -394,13 +394,117 @@ despacha desde `_handle_track` en `listener.py`.
 > `db.session`. Ese pool queda atado al loop del primer checkout y reusarlo desde un loop nuevo es
 > el `Future attached to a different loop` con el que este repo ya tropezó.
 
+### Posición vigente y caminos adicionales en `track N` (2026-10-21, sólo dev)
+
+Caso que lo motivó: `track 93150` subía el camino **nuevo** documentado en Cromo, pero el servicio
+sigue yendo por el viejo (migración pendiente). El viejo está entero en Cromo, pero sus pelos llevan
+la etiqueta `FO 44649` (otro servicio, dado de baja): sólo los **conectores** dicen 93150, así que
+nunca era semilla. Ahora, además de las semillas etiquetadas, se siembran las **posiciones
+posibles** del Servicio y el operador puede declarar en el portal cuál es la **posición vigente**
+(regla completa en `docs/infra.md`, "Posición vigente por conector").
+
+- **Qué sube `track N`**: los caminos **VIGENTE** (los de la posición declarada) o, si no hay
+  declaración, los **TRAMO** de siempre. Los caminos **ADICIONAL** se mencionan pero no se suben.
+  Los nombres no cambian: `{servicio} CROMO T{n} pelo {n_id}.txt`.
+- **Línea de adicionales**, sin declaración:
+  `Hay 2 camino(s) óptico(s) adicional(es) por O-1252871-1:1,2 y O-1252734-1:11,12 (pelos con etiqueta 44649). Declarar la posición vigente en el Detalle de Servicio.`
+  En el 93150 nombra **las dos** patcheras extremas del camino viejo (San Martín y Guanahani),
+  porque ambas son posiciones posibles del Servicio: es más largo que el ejemplo del plan, pero
+  correcto (verificado leyendo la DB de dev). Con declaración:
+  `` Posición vigente declarada: O-1252871-1:1,2. Hay 2 camino(s) óptico(s) adicional(es) por …. No se suben: pedí `track 93150 full` para incluirlos. ``
+- **Avisos de posición** (`texto_aviso`, primero en el resumen, con `:warning:`):
+  - retiro: `Se retiró la posición vigente O-1252871-1:2: el pelo del conector cambió en Cromo (declarado 7028863, ahora …).`
+    (también `SIN_PELO`, `CONECTOR_INEXISTENTE`, y `PELO_DANADO`/`CABLE_SIN_USO` cuando hay otro
+    camino completo sano). Regla del par (2026-10-22): el retiro automático arrastra en la misma
+    corrida a las demás declaradas de la misma patchera, con el mismo motivo:
+    `Se retiró la posición vigente O-1252871-1:2 junto con O-1252871-1:1 (mismo par): el pelo del conector cambió en Cromo (…).`
+    Así dos `track 93150` seguidos dan lo mismo (antes el segundo aplicaba un solo hilo). El retiro
+    manual no arrastra. Todo eso va seguido una sola vez de
+    `Se usó el cálculo automático. Declarar la posición vigente en el Detalle de Servicio.`;
+  - se mantiene: `La posición vigente … se mantiene, pero su camino pasa por el pelo X en estado «Dañado» y no hay otro camino completo sano.`;
+  - no usable en esta corrida: `No se pudo usar la posición vigente …: Cromo no resolvió su camino (…)` o
+    `…: su camino no termina en ODF en ambos extremos. Se usó el cálculo automático; la declaración se mantiene.`
+- **Orden del resumen** (`mensaje_resumen`): avisos de posición, segmentación (cuenta tramos, no
+  archivos), esperados contra caminos resueltos (`Se esperaban X trackings y Cromo documenta Y
+  camino(s) óptico(s).`, donde Y = vigentes/tramos + adicionales), adicionales, incompleto y tope.
+- **Sin pelos etiquetados**: la salida temprana "no tiene ningún pelo en Cromo" sólo aplica si
+  tampoco hay posiciones (`tiene_posiciones`). El 93150 pasa a tener tracking aunque ninguno de sus
+  pelos diga 93150.
+- Las fallas de las semillas de posición no marcan el tracking como incompleto.
+- Un camino de posición sólo es adicional si tiene al menos el 25% de los pelos del camino completo
+  más largo del Servicio: en el 102452 los jumpers de 1 pelo del Nodo Dixon (9614673/74) frente a
+  tramos de 47/27/24 pelos ya no se mencionan como adicionales (2026-10-22).
+
+## `@bot track <id> full` — implementado (2026-10-21, sólo dev)
+
+Sube **un `.txt` por camino resuelto**: vigentes/tramos ∪ adicionales. Nunca descarta un tramo,
+aunque termine en un pelo (servicios segmentados como 107556 y 76567), y nunca sube residuales.
+
+```
+@bot track 93150 full
+```
+
+- 93150 sin declaración: 4 archivos, medidos en la Task 0 contra Cromo real:
+  `93150 CROMO T1 pelo 6799280.txt`, `93150 CROMO T2 pelo 6799281.txt` (camino nuevo) y
+  `93150 CROMO A1 pelo <n_id>.txt`, `93150 CROMO A2 pelo <n_id>.txt` (camino viejo; el pelo concreto
+  es el primero de las posiciones que lo resuelve, puede ser 6822050 y no 7028862 — a confirmar en
+  la prueba con Slack).
+- **Nombres**: `{numero_servicio} CROMO T{n}|A{n} pelo {n_id}.txt`, siempre con el número del
+  Servicio en LAS-FOCAS, **nunca** con el at.62 del pelo: el de los pelos viejos del 93150 es `4649`
+  (error de tipeo en Cromo) y el parser legacy de trackings toma el primer número de 4 dígitos o más
+  del nombre. Sin número plausible: `tracking_cromo A{n} pelo {n_id}.txt`.
+- El texto de esperados compara contra los caminos resueltos, no contra los archivos subidos.
+- Mismo aviso previo, misma demora y mismo caché que `track N`.
+
+## `@bot track odf <patchera>:<lista>` — implementado (2026-10-21, sólo dev)
+
+Tracking por **posición de ODF**, sin pasar por un Servicio: un `.txt` por conector pedido.
+
+```
+@bot track odf O-1252871-1:1
+@bot track odf O-1252871-1:1,2
+@bot track odf O-1252871-1:1-2
+@bot track odf O-1252871-1:1,3-4
+@bot track odf 0-1252871-1:1        ← "0-" se acepta como "O-"
+```
+
+- **Lista**: `:1`, `:1,2`, `:1-2`, `:1,3-4`, hasta **8** conectores (`MAX_CONECTORES_TRACK_ODF`;
+  cada pelo en frío cuesta 4,6-14 s y una patchera real tiene hasta 144). El comando se parte por el
+  **último** `:` (hay un nombre real con `:` adentro, "ODF : ODF-CALLE 14 LIMA(PRACTICA) - …") y de
+  la mención sólo se quitan `*` y `` ` `` (13 patcheras reales usan `_`). Una lista inválida
+  responde `` :warning: <motivo> Uso: `track odf O-1252871-1:1`, `:1,2` o `:1-2` (hasta 8 conectores). ``
+- **Patchera**: se compara sin mayúsculas, con `0-`→`O-` y espacios normalizados
+  (`odf_conectores.bandejas_por_nombre`; hay nombres reales con doble espacio).
+  - No encontrada: `` :mag: No encontré la patchera `X` en las ODF ingeridas de Cromo. ``
+  - En más de una bandeja (por ejemplo `O-1249273-1`, "ODF 1", "C1"): lista las candidatas
+    (`• {odf_nombre} (ODF {id}) · patchera {nombre} (bandeja {id})`, hasta 10) y **no elige
+    ninguna**; el comando no tiene hoy forma de desambiguar.
+- **Por conector**:
+  - no existe: `` :mag: `O-1252871-1:9` no existe en esa patchera. ``
+  - sin pelo: `` :information_source: `O-1252871-1:5` no tiene pelo conectado en Cromo, así que no hay tracking. ``
+    Se sigue **un** salto de patch (clase 136); medido: `O-1262507-3:9` llega al pelo 10197026.
+  - Cromo no resuelve: `` :warning: `…` — Cromo no resolvió el camino del pelo X: <motivo>. ``
+  - OK: sube `93150 CROMO O-1252871-1_1 pelo 7028862.txt` con el comentario
+    `` `O-1252871-1:1` · ODF San Martin 137 P5 D · pelo 7028862 (F-PC-CC #1) · conector: 93150 BANCO DE LA PROVINCIA DE BUENOS AIRES (Activo) · etiqueta del pelo: 44649 (Baja) ``.
+    El histórico del conector y la etiqueta del pelo se muestran sólo si son distintos del servicio
+    del conector. Sin servicio el nombre empieza por `sin_servicio CROMO …`: ese `.txt` **no** es
+    ingerible como tracking de un Servicio (el parser legacy tomaría el número de la patchera).
+- Abre Cromo una sola vez y sólo si algún conector tiene pelo. El caché se escribe a nombre del
+  Servicio sólo si el del conector está Activo (si no, `servicio_id=None`). **No** escribe
+  auditoría de huérfanos ni evidencia del árbitro, y no toca la posición vigente.
+- Si Cromo se cae a mitad, se suben las posiciones ya resueltas y después se avisa.
+
 ## Parser de comandos
 
 El listener (`_handle_app_mention`) prueba los parsers en este orden:
 
-0. `extraer_comando_track` (`tracking_servicio.py`) — `"track|tracking <dígitos>"`, anclado a fin de
-   línea. Va **primero** por ser el más específico: los parsers de cable son "golosos" y un
-   "track 67395" caído ahí terminaría buscando un cable llamado "67395".
+0. Los tres de `tracking_servicio.py`, **antes** que los de cable por ser los más específicos (los
+   parsers de cable son "golosos" y un "track 67395" caído ahí terminaría buscando un cable llamado
+   "67395"). Entre ellos, del más específico al más general (2026-10-21):
+   1. `extraer_comando_track_odf` — `"track|tracking odf <patchera>:<lista>"`.
+   2. `extraer_comando_track_full` — `"track|tracking <dígitos> full"` (`_RE_TRACK_FULL`).
+   3. `extraer_comando_track` — `"track|tracking <dígitos>"`, anclado a fin de línea
+      (`_RE_TRACK`, sin cambios: "track 93150 full" no matchea acá).
 
 Los otros cuatro viven en `cable_info.py` (desde la Task 8). Antes de 2 y 3 se aplican
 `extraer_filtro_categoria` y `extraer_filtro_verificable` (2026-09-28): quitan `C<N>` del comienzo
@@ -442,6 +546,10 @@ comandos). Sin ese scope el evento no llega, así que en producción **ningún c
 funciona hoy** — no es una regresión de `track`, es un gap preexistente que `track` hereda.
 
 `files:write` sí está en las dos, así que la subida de archivos no necesita nada nuevo.
+
+Sigue igual al 2026-10-21: `track N full` y `track odf` (y todo lo de posición vigente en Slack)
+quedan **sólo en dev** hasta resolverlo. Además del scope, prod necesita el App-Level token de
+Socket Mode correcto (ver la sección siguiente).
 
 **Antes de habilitar `track` en prod**: agregar `app_mentions:read` a la app de producción,
 reinstalarla en el workspace (un scope nuevo exige reinstalación) y verificar con una mención real

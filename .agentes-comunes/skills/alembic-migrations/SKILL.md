@@ -69,3 +69,11 @@ Guía breve para crear, validar y aplicar migraciones Alembic sin sobrecargar el
    integra después reencadena su primera migración (`down_revision`) sobre el head ya integrado.
    Hallazgo real (2026-10-17, ver `docs/cierres/2026-10-17.md`): `20261014_02` (FO Monitor) estuvo
    3 días aplicada en dev sin integrar y frenó a `claude-tramos` (`20261016_01..04` sobre `20261014_01`).
+7. **Una tabla de auditoría append-only (trigger `BEFORE UPDATE OR DELETE` que hace `RAISE`) no puede
+   tener FKs con `ON DELETE SET NULL` ni `CASCADE`.** El `SET NULL` de una FK se ejecuta como un
+   `UPDATE`: el trigger lo rechaza y **el borrado de la fila referenciada falla**. Eso bloquea, por
+   ejemplo, el merge de Cámaras, que borra la secundaria. En una auditoría inmutable, los ids son
+   históricos: van sin FK y con índice. Hallazgo real (2026-10-23, `app.ingresos_correcciones`, migración
+   `20261023_01`): latente desde `20260923_01`, y se volvía frecuente al registrar `camara_id_anterior`
+   en cada "mover ingreso". Se confirmó recreando la FK en una transacción revertida: el borrado falló
+   con el error "append-only" del trigger.

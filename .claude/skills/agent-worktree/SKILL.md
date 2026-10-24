@@ -146,8 +146,29 @@ python scripts/agent_worktree.py sync  --agent claude-api   # trae origin/dev a 
 pytest -q                                                    # o el subconjunto pertinente
 scripts/check_no_plaintext_secrets.sh
 scripts/sync_agentes_comunes.sh && scripts/check_skill_mirror_drift.sh   # si se tocaron skills
-python scripts/agent_worktree.py ready --agent claude-api    # exige worktree limpio
+python scripts/agent_worktree.py ready --agent claude-api    # worktree limpio + gate de calidad
 ```
+
+**`ready` corre el gate de calidad local** (`scripts/agentes/calidad.py`), porque la CI de GitHub
+sólo corre a mano por falta de créditos de Actions:
+
+1. `ruff check` sobre los `.py` que la rama cambió respecto de `origin/dev` (config en `pyproject.toml`).
+2. `pytest` sobre los **tests focales**: los tests cambiados, `tests/test_<módulo>*.py`, los tests
+   que importan un módulo cambiado (incluido `app.*` para `web/app/*`) y el smoke de
+   `config/quality-gate.json`. Si cambia `web/app/routers/*` o `web/app/comun.py`, se suman los
+   tests que importan `web.app.main` o `app.main`. Si el lint falla, los tests no se corren.
+3. `type-check` (`npm run type-check` en `web/frontend`) cuando cambian `.vue` o `.ts` bajo
+   `web/frontend/src`. Sin `web/frontend/node_modules` se saltea con el motivo "sin node_modules
+   (correr npm ci)" y el gate igual pasa. Por eso, quien toque el frontend en un worktree tiene que
+   correr `npm ci` en `web/frontend` antes de `ready`: los worktrees nacen sin `node_modules`.
+
+Si el gate falla, `ready` sale con código 1, muestra el paso y su salida, y el agente queda en su
+estado. Si pasa, registra `quality_gate_passed` con el sha del HEAD. **`integrate` rechaza un HEAD
+que no pasó el gate**: un commit o un `sync` posterior a `ready` obliga a correrlo de nuevo.
+
+Salida de emergencia (deliberada y auditada como `quality_gate_bypassed`):
+`ready --agent <id> --sin-gate --motivo "<por qué>"`. Sólo para hotfix con producción caída o un
+fallo del gate ajeno al cambio, ya diagnosticado; dejarlo escrito en el cierre de sesión.
 
 ### 5. Integrar (ventana serializada)
 
@@ -161,6 +182,20 @@ desarrollando**: lo único serializado es la escritura sobre `dev`.
 
 Si `dev` avanzó, el push es rechazado por Git y el comando lo informa: volver a `sync` y
 reintentar. En el cierre de sesión, este paso lo ejecuta `cierre-sesion`.
+
+**`integrate` deja al agente en `finished`.** Para un plan de varias tareas que se integran de a una,
+hace falta **un agente y un worktree por bloque** (`start` → `ready` → `integrate` → `cleanup`). No
+se puede seguir en el mismo worktree después de integrar. Los leases **no** se liberan solos al pasar
+a `finished` (`refactor:web-app-main` quedó a nombre de un agente terminado): al cambiar de bloque,
+hay que hacer `release` con el agente viejo y `acquire` con el nuevo. Los archivos SDD (briefs y
+ledger) conviene guardarlos en el scratchpad y no en `.superpowers/` del worktree, que bloquea
+`cleanup`. Real (2026-10-23, plan de 16 tareas, ver `docs/cierres/2026-10-23.md`).
+
+**Varios bloques en paralelo que editan la misma estructura** (por ejemplo, un set de rutas
+pendientes en un test compartido, del que cada rama saca sus entradas): el `sync` del segundo choca
+siempre. Si cada rama sólo quitó entradas, la resolución correcta es la **intersección** de los dos
+lados. Validarla con el test que consume el set, nunca a ojo. Real (2026-10-23, cinco merges
+de `PENDIENTES_DEPENDS`).
 
 **Ejecutar `ready` e `integrate` en comandos separados, nunca encadenados.** Real (2026-09-21): un
 `ready ... ; integrate ...` en una sola invocación de shell fue denegado por el clasificador de

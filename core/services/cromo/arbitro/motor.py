@@ -209,23 +209,11 @@ async def evaluar(
     return resumen
 
 
-async def _evaluar_regla(
-    sesion: AsyncSession,
-    regla: Regla,
-    modo: str,
-    umbral: int,
-    presupuesto: int,
-    alcance: Alcance,
-    disparo: str,
-    contexto: dict[str, Any],
-    resumen: ResumenEvaluacion,
-) -> None:
-    codigo = regla.codigo
-    cuenta = _contadores()
-    resumen.por_regla[codigo] = cuenta
-
-    # Filas abiertas de la regla, bloqueadas hasta el commit del llamador.
-    abiertas: dict[tuple[str, int], CromoPropuesta] = {
+async def _cargar_abiertas(
+    sesion: AsyncSession, codigo: str
+) -> dict[tuple[str, int], CromoPropuesta]:
+    """Filas abiertas de la regla, bloqueadas hasta el commit del llamador."""
+    return {
         (p.objeto_tipo, int(p.objeto_id)): p
         for p in (
             await sesion.execute(
@@ -239,25 +227,12 @@ async def _evaluar_regla(
             )
         ).scalars()
     }
-    propios = frozenset(
-        oid for (_tipo, oid), p in abiertas.items() if p.estado == "EN_OBSERVACION"
-    )
 
-    try:
-        # Savepoint: un error SQL dentro de la regla no aborta la transacción entera.
-        async with sesion.begin_nested():
-            evaluaciones = await regla.evaluar(
-                sesion, alcance, propios=propios, contexto=contexto
-            )
-    except Exception as exc:  # noqa: BLE001 — una regla rota no tumba las demás
-        logger.exception(
-            "action=arbitro_cromo evento=regla_fallida regla=%s error=%s", codigo, type(exc).__name__
-        )
-        # Sólo el tipo: el mensaje puede traer SQL o datos; el traceback completo queda en el log.
-        cuenta["error"] = type(exc).__name__
-        return
 
-    # Una evaluación por objeto: si la regla repite, gana la de mayor confianza.
+def _mejor_por_objeto(
+    codigo: str, evaluaciones: Sequence[Evaluacion]
+) -> dict[tuple[str, int], tuple[Evaluacion, int]]:
+    """Una evaluación por objeto: si la regla repite, gana la de mayor confianza."""
     por_objeto: dict[tuple[str, int], tuple[Evaluacion, int]] = {}
     for ev in evaluaciones:
         clave = (ev.objeto_tipo, int(ev.objeto_id))
@@ -270,64 +245,121 @@ async def _evaluar_regla(
             "action=arbitro_cromo evento=evaluaciones_repetidas regla=%s total=%s objetos=%s",
             codigo, len(evaluaciones), len(por_objeto),
         )
+    return por_objeto
 
+
+def _refrescar_propuesta(
+    fila: CromoPropuesta,
+    ev: Evaluacion,
+    confianza: int,
+    hash_ev: str,
+    disparo: str,
+    ahora: datetime,
+) -> None:
+    if fila.evidencia_hash != hash_ev:
+        fila.nota = None  # evidencia nueva: el último intento fallido ya no aplica
+    fila.accion = ev.accion
+    fila.parametros = _json(dict(ev.parametros))
+    fila.senales = _senales_json(ev)
+    fila.confianza = confianza
+    fila.evidencia_hash = hash_ev
+    fila.disparo = disparo
+    fila.actualizada_en = ahora
+
+
+async def _decidir_observacion(
+    sesion: AsyncSession,
+    fila: CromoPropuesta,
+    ev: Evaluacion,
+    confianza: int,
+    umbral: int,
+    cuenta: dict,
+    resumen: ResumenEvaluacion,
+    ahora: datetime,
+) -> None:
+    """EN_OBSERVACION revisada en una corrida de INGESTA: se confirma o se revierte."""
+    confirma = (
+        confianza >= umbral
+        and not _vetada(ev.senales)
+        and _objetivo(ev.accion, ev.parametros) == _objetivo(fila.accion, fila.parametros)
+    )
+    if confirma:
+        fila.estado = "APLICADA"
+        fila.actualizada_en = ahora
+        cuenta["confirmadas"] += 1
+        resumen.confirmadas.append(int(fila.id))
+    else:
+        await _revertir_observacion(sesion, fila, cuenta, resumen, ahora)
+
+
+def _nueva_propuesta(
+    codigo: str, modo: str, disparo: str, ev: Evaluacion, confianza: int, hash_ev: str
+) -> CromoPropuesta:
+    return CromoPropuesta(
+        regla=codigo,
+        objeto_tipo=ev.objeto_tipo,
+        objeto_id=int(ev.objeto_id),
+        accion=ev.accion,
+        parametros=_json(dict(ev.parametros)),
+        confianza=confianza,
+        senales=_senales_json(ev),
+        evidencia_hash=hash_ev,
+        estado="PROPUESTA",
+        modo_al_evaluar=modo,
+        disparo=disparo,
+    )
+
+
+async def _procesar_evaluaciones(
+    sesion: AsyncSession,
+    regla: Regla,
+    modo: str,
+    umbral: int,
+    disparo: str,
+    abiertas: dict[tuple[str, int], CromoPropuesta],
+    por_objeto: dict[tuple[str, int], tuple[Evaluacion, int]],
+    cuenta: dict,
+    resumen: ResumenEvaluacion,
+    ahora: datetime,
+) -> list[CromoPropuesta]:
+    """Crea, actualiza, confirma o revierte según cada evaluación; devuelve las candidatas."""
+    codigo = regla.codigo
     bloqueadas = await _ultimos_hash_bloqueantes(sesion, codigo, [oid for _t, oid in por_objeto])
-    ahora = _ahora()
     candidatas: list[CromoPropuesta] = []
-
     for clave, (ev, confianza) in por_objeto.items():
         hash_ev = evidencia_hash(ev)
         fila = abiertas.get(clave)
         if fila is not None and fila.estado == "PROPUESTA":
-            if fila.evidencia_hash != hash_ev:
-                fila.nota = None  # evidencia nueva: el último intento fallido ya no aplica
-            fila.accion = ev.accion
-            fila.parametros = _json(dict(ev.parametros))
-            fila.senales = _senales_json(ev)
-            fila.confianza = confianza
-            fila.evidencia_hash = hash_ev
-            fila.disparo = disparo
-            fila.actualizada_en = ahora
+            _refrescar_propuesta(fila, ev, confianza, hash_ev, disparo, ahora)
             cuenta["actualizadas"] += 1
             resumen.actualizadas += 1
             candidatas.append(fila)
         elif fila is not None:  # EN_OBSERVACION
             if disparo != "INGESTA":
                 continue
-            confirma = (
-                confianza >= umbral
-                and not _vetada(ev.senales)
-                and _objetivo(ev.accion, ev.parametros) == _objetivo(fila.accion, fila.parametros)
-            )
-            if confirma:
-                fila.estado = "APLICADA"
-                fila.actualizada_en = ahora
-                cuenta["confirmadas"] += 1
-                resumen.confirmadas.append(int(fila.id))
-            else:
-                await _revertir_observacion(sesion, fila, cuenta, resumen, ahora)
+            await _decidir_observacion(sesion, fila, ev, confianza, umbral, cuenta, resumen, ahora)
         else:
             if bloqueadas.get(clave) == hash_ev:
                 continue
-            nueva = CromoPropuesta(
-                regla=codigo,
-                objeto_tipo=ev.objeto_tipo,
-                objeto_id=int(ev.objeto_id),
-                accion=ev.accion,
-                parametros=_json(dict(ev.parametros)),
-                confianza=confianza,
-                senales=_senales_json(ev),
-                evidencia_hash=hash_ev,
-                estado="PROPUESTA",
-                modo_al_evaluar=modo,
-                disparo=disparo,
-            )
+            nueva = _nueva_propuesta(codigo, modo, disparo, ev, confianza, hash_ev)
             sesion.add(nueva)
             cuenta["nuevas"] += 1
             resumen.nuevas += 1
             candidatas.append(nueva)
+    return candidatas
 
-    # Obsoletas: abiertas dentro del alcance que esta corrida ya no produjo.
+
+async def _marcar_obsoletas(
+    sesion: AsyncSession,
+    alcance: Alcance,
+    disparo: str,
+    abiertas: dict[tuple[str, int], CromoPropuesta],
+    por_objeto: dict[tuple[str, int], tuple[Evaluacion, int]],
+    cuenta: dict,
+    resumen: ResumenEvaluacion,
+    ahora: datetime,
+) -> None:
+    """Obsoletas: abiertas dentro del alcance que esta corrida ya no produjo."""
     for clave, fila in abiertas.items():
         if clave in por_objeto or not alcance.cubre(*clave):
             continue
@@ -339,31 +371,28 @@ async def _evaluar_regla(
         elif disparo == "INGESTA":
             await _revertir_observacion(sesion, fila, cuenta, resumen, ahora)
 
-    await sesion.flush()
 
-    if modo != "AUTO":
-        return
-    # Sólo lo que esta corrida evaluó: una PROPUESTA vieja fuera del alcance no se aplica a ciegas.
-    # `nota` en una PROPUESTA sólo la escribe un intento de aplicar fallido (`AccionNoAplicable`) y
-    # se limpia cuando cambia la evidencia: con nota, el mismo hash volvería a fallar, así que no se
-    # reintenta ni consume presupuesto.
-    aplicables = [
+def _aplicables_auto(candidatas: list[CromoPropuesta], umbral: int) -> list[CromoPropuesta]:
+    """Sólo lo que esta corrida evaluó: una PROPUESTA vieja fuera del alcance no se aplica a ciegas.
+    `nota` en una PROPUESTA sólo la escribe un intento de aplicar fallido (`AccionNoAplicable`) y
+    se limpia cuando cambia la evidencia: con nota, el mismo hash volvería a fallar, así que no se
+    reintenta ni consume presupuesto."""
+    return [
         p for p in candidatas
         if p.confianza >= umbral
         and p.accion != "INFORMAR"
         and p.nota is None
         and not _vetada(p.senales)
     ]
-    if not aplicables:
-        return
-    if len(aplicables) > presupuesto:
-        cuenta["presupuesto_excedido"] = True
-        resumen.presupuesto_excedido.append(codigo)
-        logger.warning(
-            "action=arbitro_cromo evento=presupuesto_excedido regla=%s candidatas=%s presupuesto=%s",
-            codigo, len(aplicables), presupuesto,
-        )
-        return
+
+
+async def _aplicar_auto(
+    sesion: AsyncSession,
+    codigo: str,
+    aplicables: list[CromoPropuesta],
+    cuenta: dict,
+    resumen: ResumenEvaluacion,
+) -> None:
     for propuesta in aplicables:
         propuesta_id = int(propuesta.id)
         try:
@@ -388,6 +417,66 @@ async def _evaluar_regla(
         cuenta["aplicadas_auto"] += 1
         resumen.aplicadas_auto.append(propuesta_id)
     await sesion.flush()
+
+
+async def _evaluar_regla(
+    sesion: AsyncSession,
+    regla: Regla,
+    modo: str,
+    umbral: int,
+    presupuesto: int,
+    alcance: Alcance,
+    disparo: str,
+    contexto: dict[str, Any],
+    resumen: ResumenEvaluacion,
+) -> None:
+    codigo = regla.codigo
+    cuenta = _contadores()
+    resumen.por_regla[codigo] = cuenta
+
+    abiertas = await _cargar_abiertas(sesion, codigo)
+    propios = frozenset(
+        oid for (_tipo, oid), p in abiertas.items() if p.estado == "EN_OBSERVACION"
+    )
+
+    try:
+        # Savepoint: un error SQL dentro de la regla no aborta la transacción entera.
+        async with sesion.begin_nested():
+            evaluaciones = await regla.evaluar(
+                sesion, alcance, propios=propios, contexto=contexto
+            )
+    except Exception as exc:  # noqa: BLE001 — una regla rota no tumba las demás
+        logger.exception(
+            "action=arbitro_cromo evento=regla_fallida regla=%s error=%s", codigo, type(exc).__name__
+        )
+        # Sólo el tipo: el mensaje puede traer SQL o datos; el traceback completo queda en el log.
+        cuenta["error"] = type(exc).__name__
+        return
+
+    por_objeto = _mejor_por_objeto(codigo, evaluaciones)
+    ahora = _ahora()
+    candidatas = await _procesar_evaluaciones(
+        sesion, regla, modo, umbral, disparo, abiertas, por_objeto, cuenta, resumen, ahora
+    )
+    await _marcar_obsoletas(
+        sesion, alcance, disparo, abiertas, por_objeto, cuenta, resumen, ahora
+    )
+    await sesion.flush()
+
+    if modo != "AUTO":
+        return
+    aplicables = _aplicables_auto(candidatas, umbral)
+    if not aplicables:
+        return
+    if len(aplicables) > presupuesto:
+        cuenta["presupuesto_excedido"] = True
+        resumen.presupuesto_excedido.append(codigo)
+        logger.warning(
+            "action=arbitro_cromo evento=presupuesto_excedido regla=%s candidatas=%s presupuesto=%s",
+            codigo, len(aplicables), presupuesto,
+        )
+        return
+    await _aplicar_auto(sesion, codigo, aplicables, cuenta, resumen)
 
 
 async def _revertir_observacion(

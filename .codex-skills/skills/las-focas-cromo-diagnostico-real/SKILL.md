@@ -263,6 +263,16 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    (`assert modulo.__file__.startswith("/tmp/wt")`). Si no lo verifica, puede validar la imagen
    vieja sin darse cuenta. Al terminar, `rm -rf /tmp/wt`. Es lo que mostró, antes de integrar, que el
    94673 daba 2 caminos y que 42351/93154 tenían 34/63 pelos huérfanos (2026-10-05).
+   Dos trampas reales del 2026-10-22:
+   - **Heredoc sin `-i`**: `docker exec -w /tmp/wt lasfocasdev-web python - <<'PY'` sin `-i` no
+     ejecuta nada y sale con código 0 y salida vacía (una declaración "aplicada" no existía en la
+     base). Con heredoc, siempre `docker exec -i`; si el script imprime algo, una salida vacía es un
+     fallo, no un éxito.
+   - **Un solo `asyncio.run` por script si se usa `db.session.AsyncSessionLocal`**: su pool queda
+     atado al primer event loop y un segundo `asyncio.run` revienta en el checkout
+     (`Exception terminating connection` / `different loop`). Hacer todo dentro de un único
+     `main()` o sacar los datos previos con `psql`. Las funciones que ya abren su propio engine con
+     `NullPool` (p. ej. `tracking_servicio.generar_trackings`) sí se pueden llamar en serie.
 
 14. **Toda regla que decida qué camino es tramo (`tracking_service.clasificar_caminos`) se mide
    contra los servicios testigo antes de fijarla, no después.** Esperado hoy: 102452 → 6 tramos
@@ -273,6 +283,37 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    (código del worktree en `/tmp/wt`, `trackings_del_servicio` sin auditar) e imprimir por camino:
    pelos, extremos (tipo, ODF, clase) y si tiene par. Mirar también si el servicio tiene ODF
    confirmadas (`app.servicio_odf_confirmada`): cambian el resultado.
+   Desde 2026-10-22 también siembran las posiciones de ODF del servicio (roles VIGENTE/ADICIONAL,
+   `servicio_posicion_vigente`), así que los testigos suman: **93150** (pk 4) sin declarar → 2 tramos
+   (6799280/81) + 2 adicionales completos (6822050/51, pelos con etiqueta 44649) y `full` = 4; con
+   O-1252871-1:1,2 declarada (`app.servicio_posicion_vigente`) → vigentes 7028862/63 y el camino
+   nuevo como adicional. **42352** (pk 568) → sigue sin semilla (no toma los caminos del 42351).
+   **102452** → sin adicionales (sus jumpers de 1 pelo entre racks del Nodo Dixon caen por el umbral
+   del 25 %). Antes de fijar una regla sobre caminos de posición, imprimir también la etiqueta de los
+   pelos del camino: el hilo 2 del 93150 tiene 4 de 49 pelos con etiqueta 61972 (otro servicio
+   Activo), ruido que un filtro de "cualquier pelo ajeno" convertía en falso negativo.
+   Desde 2026-10-23 se suma **83693** (pk 620): 2 tramos Córdoba 3016 ↔ Pilar, los dos completados
+   con `projview=2` (regla 15); sin el reintento, cada uno termina en el pelo FL-CTB-330:2. En 93154,
+   un residual (7670697) se completa con `projview=1` sin cambiar los 2 tramos.
+
+15. **Un tracking que termina en un pelo suelto se diagnostica comparando `projview`, no leyendo
+   el parser.** `/path` sin `projview` (= `0`, "red completa") **corta** el camino en un pelo con más
+   de una continuación: con la fusión a desinstalar (`stp=31`) y la proyectada (`stp=1`) visibles a la
+   vez, Cromo no elige. `projview=1` sigue la de desinstalación y `projview=2` la proyectada (= el
+   toggle "Red proyectada" de la UI). Real (2026-10-23, `track 47838`): el extremo faltante era el de
+   **Córdoba 3016**, no el de Pilar como decía el reporte. El de Pilar ya estaba al final del `.txt`, y
+   Slack muestra sólo el principio. Receta, sólo lectura:
+   - Pedir `/path` del pelo semilla con `None`, `1` y `2`, y comparar con `_construir_lado` el final
+     de cada lado (las tres respuestas comparten el tramo inicial).
+   - Mirar el `tp[]` del pelo terminal: si tiene destinos que no están en la secuencia, es un corte
+     por proyecto (`detectar_cortes`). Si tiene un único `tp`, el camino termina ahí de verdad (4 de
+     4 casos medidos) y ningún `projview` lo cambia.
+   - No asumir que gana la red proyectada: en el 105553 la proyectada se fue por otra rama, más
+     corta, y la que completaba era la actual. Por eso el tracking exige que el reintento
+     **extienda** el camino (`extiende_camino`).
+   - `stp` medido: 30 en servicio, 31 a desinstalar, 1 proyectado. Apareció también un `21` (camino
+     del 105553) sin interpretar: no marcarlo hasta medirlo.
+   Medición de referencia: `docs/decisiones.md` (2026-10-23), 30 Activos al azar + 83693.
 
 ## Documentación relacionada
 

@@ -573,6 +573,42 @@ Vale también para mocks parciales: si parcheás la función entera que querías
 el parche. Parcheá sólo sus dependencias externas.
 
 
+## Objetos falsos de modelos: usar `spec=`, no `SimpleNamespace` libre (lección 2026-10-22)
+
+Un `SimpleNamespace(...)` acepta cualquier atributo, así que si el código lee un atributo que el modelo
+**no tiene**, el test lo inventa igual y pasa. Real: `_collect_camara_rutas_info` leía
+`ruta.punta_a.sitio`, pero `PuntoTerminal` sólo tiene `sitio_descripcion`. El test del detalle de
+Cámara armaba la punta con `SimpleNamespace(sitio="POP A")`: el bug y el test coincidían, y el endpoint
+habría dado 500 apenas hubiera puntos terminales cargados (en dev y prod la tabla estaba vacía).
+
+- Para doblar un modelo ORM, usar `create_autospec(Modelo, instance=True)` o `MagicMock(spec=Modelo)`
+  con los atributos que el test necesita. Un atributo inexistente da `AttributeError` en el test, no en
+  producción.
+- Si se usa `SimpleNamespace` por simplicidad, que los nombres salgan del modelo (copiar de
+  `db/models/...`), nunca del código bajo prueba.
+- Al encontrar un bug de atributo, buscar el mismo nombre en los fakes de `tests/`
+  (`grep -rn "SimpleNamespace(<attr>=" tests`): el test que no lo detectó suele estar ahí.
+
+## Tests web nuevos: fijar `TESTING` en el módulo y probar el 403 por introspección (lección 2026-10-23)
+
+- Los POST, PUT y PATCH de la SPA saltean el CSRF sólo con `TESTING=true`. Un módulo de tests nuevo
+  que no lo fije depende del entorno de quien corre pytest. Real: con `env -u TESTING` fallaron 5 de
+  30 tests de Servicios y 8 de Cromo, mientras el gate pasaba. Agregar al módulo:
+  ```python
+  @pytest.fixture(autouse=True)
+  def _modo_test(monkeypatch):
+      monkeypatch.setenv("TESTING", "true")
+  ```
+  y verificarlo una vez con `env -u TESTING pytest <archivo>`.
+- **El 403 de las rutas admin se prueba por introspección, no con una lista a mano.** Recorrer
+  `router.routes` y, en cada `route.dependant`, buscar recursivamente `usuario_admin` (ver
+  `test_toda_ruta_admin_da_403_a_un_usuario_comun` en `tests/test_web_servicios_errores_depends.py`).
+  Agregar además `assert len(_RUTAS_ADMIN) >= N` para que el test no pase vacío. La lista a mano
+  cubría 11 de 20 rutas en Servicios y 12 de 33 en Cromo.
+- **Sesión simulada:** usar el fixture `con_sesion("admin" | "user" | None)` (`tests/soporte_sesion.py`),
+  que llama a las dependencias reales con un request falso. No parchear `get_current_user` ni
+  `_require_auth` en el router. Si hace falta, parchear la única fuente, `comun._require_auth`.
+
 ## Checklist Pre-Commit
 
 - [ ] `pytest` pasa sin errores

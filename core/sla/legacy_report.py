@@ -494,7 +494,7 @@ def _rellenar_tabla_principal(tabla: Table, servicios: _ExcelDataset, reclamos: 
     cliente_col = servicios.columns["nombre_cliente"]
     sla_col = servicios.columns["sla"]
     
-    recl_linea_col = reclamos.columns["numero_linea"]
+    reclamos.columns["numero_linea"]  # valida que exista la columna
     recl_horas, origen_horas = _columna_horas_reclamos(reclamos)
     logger.info(
         "action=sla_legacy_report stage=tabla_principal columna_horas=%s origen=%s",
@@ -585,7 +585,6 @@ def _completar_tabla_servicio(
                     else:
                         # Formato: "Label: valor" en la misma celda
                         base = celda.text.split(":")[0].strip(": ")
-                        texto_completo = f"{base}: {valor}" if valor else base
                         
                         # Limpiar contenido actual
                         celda.text = ""
@@ -645,7 +644,7 @@ def _completar_tabla_detalle(
     while len(tabla.rows) > 1:
         tabla._tbl.remove(tabla.rows[1]._tr)
 
-    linea_col = servicios.columns["numero_linea"]
+    servicios.columns["numero_linea"]  # valida que exista la columna
     recl_ticket = reclamos.columns["ticket"]
 
     recl_horas, _ = _columna_horas_reclamos(reclamos)

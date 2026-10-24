@@ -187,7 +187,7 @@ def _deteccion_fakes(monkeypatch, *, en_curso=None, falla_worker=False):
         estado["fallidas"].append(corrida_id)
 
     monkeypatch.setattr(inc, "iniciar_si_no_hay_otra", _iniciar)
-    monkeypatch.setattr(web_main, "_marcar_corrida_fallida", _fallida)
+    monkeypatch.setattr(web_main.cromo, "_marcar_corrida_fallida", _fallida)
     monkeypatch.setattr(web_main.httpx, "AsyncClient", _HttpxFake(falla_worker, estado["enviados"]))
     monkeypatch.setenv("TESTING", "true")
     return estado
@@ -231,7 +231,7 @@ def test_deteccion_estado_devuelve_la_ultima_corrida(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_inconsistencias_del_servicio_es_accesorio(monkeypatch):
-    from web.app.main import _inconsistencias_del_servicio
+    from web.app.routers.cromo import _inconsistencias_del_servicio
 
     async def _ok(_sesion, servicio_id):
         return {"cuarentena": 2, "en_revision": 1}

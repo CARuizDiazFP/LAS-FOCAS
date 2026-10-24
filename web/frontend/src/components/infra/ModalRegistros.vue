@@ -4,7 +4,7 @@
   Descripción: Modal aislado para visualizar registros operativos e históricos parciales de una cámara
 -->
 <template>
-  <dialog ref="dialogEl" class="infra-detail-modal" @click.self="handleClose">
+  <dialog ref="dialogEl" class="infra-detail-modal" @click.self="handleClose" @cancel.prevent="handleClose">
     <section class="infra-detail-modal__content">
       <header class="infra-detail-modal__header">
         <div>
@@ -58,7 +58,17 @@
             <p class="infra-tab-intro__eyebrow">Historial técnico</p>
             <h4>Ingresos ordenados del más reciente al más antiguo</h4>
           </div>
-          <span class="infra-history-chip">{{ sortedIngresos.length }} registro{{ sortedIngresos.length !== 1 ? 's' : '' }}</span>
+          <div class="infra-tab-intro__side">
+            <label v-if="esAdmin" class="infra-registros-toggle">
+              <input
+                type="checkbox"
+                :checked="mostrarAnulados"
+                @change="emit('update:mostrarAnulados', ($event.target as HTMLInputElement).checked)"
+              />
+              Mostrar anulados
+            </label>
+            <span class="infra-history-chip">{{ sortedIngresos.length }} registro{{ sortedIngresos.length !== 1 ? 's' : '' }}</span>
+          </div>
         </div>
 
         <div v-if="sortedIngresos.length === 0" class="infra-detail-empty">Sin ingresos registrados para esta cámara.</div>
@@ -67,8 +77,10 @@
           <AccordionItem
             v-for="ingreso in sortedIngresos"
             :key="ingreso.id"
+            :class="{ 'is-anulado': ingreso.anulado }"
             :model-value="expandedIngresoId === ingreso.id"
             :title="buildIngresoRangeTitle(ingreso)"
+            :description="ingreso.anulado ? descripcionAnulado(ingreso) : undefined"
             @update:model-value="toggleIngreso(ingreso.id, $event)"
           >
             <span
@@ -88,6 +100,10 @@
                 <dd>{{ ingreso.botella_label }}</dd>
               </div>
             </dl>
+            <div v-if="esAdmin && !ingreso.anulado" class="infra-ingreso-acciones">
+              <button class="btn subtle" type="button" @click="abrirMover(ingreso)">Mover</button>
+              <button class="btn danger" type="button" @click="abrirAnular(ingreso)">Anular</button>
+            </div>
           </AccordionItem>
         </div>
       </section>
@@ -162,10 +178,26 @@
       </section>
     </section>
   </dialog>
+
+  <ModalMoverIngreso
+    :open="ingresoAMover !== null"
+    :ingreso="ingresoAMover"
+    @close="ingresoAMover = null"
+    @movido="emit('actualizado')"
+  />
+  <ModalAnularIngreso
+    :open="ingresoAAnular !== null"
+    :ingreso="ingresoAAnular"
+    @close="ingresoAAnular = null"
+    @anulado="emit('actualizado')"
+  />
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import type { IngresoCorregible } from '../../api/servicioSecciones';
+import ModalAnularIngreso from '../servicios/ModalAnularIngreso.vue';
+import ModalMoverIngreso from '../servicios/ModalMoverIngreso.vue';
 import AccordionItem from './AccordionItem.vue';
 
 interface ContextoRegistros {
@@ -204,23 +236,70 @@ interface IngresoItem {
   cromo_botella_id: number | null;
   botella_label: string;
   tipo: string;
+  /** Baja lógica: sólo llegan anulados si un admin los pidió (`mostrarAnulados`). */
+  anulado: boolean;
+  anulado_at: string | null;
+  anulado_por: string | null;
+  anulado_motivo: string | null;
 }
 
-const props = defineProps<{
-  open: boolean;
-  camaraId: number | null;
-  camaraNombre: string;
-  contexto: ContextoRegistros | null;
-  baneos: BaneoItem[];
-  auditoria: AuditoriaItem[];
-  ingresos: IngresoItem[];
-}>();
+const props = withDefaults(
+  defineProps<{
+    open: boolean;
+    camaraId: number | null;
+    camaraNombre: string;
+    contexto: ContextoRegistros | null;
+    baneos: BaneoItem[];
+    auditoria: AuditoriaItem[];
+    ingresos: IngresoItem[];
+    /** Habilita Mover/Anular y "Mostrar anulados" (el backend igual exige admin). */
+    esAdmin?: boolean;
+    mostrarAnulados?: boolean;
+  }>(),
+  { esAdmin: false, mostrarAnulados: false },
+);
 
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{
+  close: [];
+  /** El padre recarga los registros con `incluir_anulados=1` según este valor. */
+  'update:mostrarAnulados': [valor: boolean];
+  /** Se movió o anuló un ingreso: el padre recarga el detalle. */
+  actualizado: [];
+}>();
 const dialogEl = ref<HTMLDialogElement | null>(null);
 const activeTab = ref<'ingresos' | 'baneos'>('baneos');
 const expandedBaneoId = ref<number | null>(null);
 const expandedIngresoId = ref<number | null>(null);
+const ingresoAMover = ref<IngresoCorregible | null>(null);
+const ingresoAAnular = ref<IngresoCorregible | null>(null);
+
+/** El ingreso del listado de la cámara no trae su cámara: es la de este detalle. */
+function aCorregible(item: IngresoItem): IngresoCorregible {
+  return {
+    id: item.id,
+    fecha_inicio: item.fecha_inicio,
+    fecha_fin: item.fecha_fin,
+    tecnico_id: item.tecnico_id,
+    cromo_botella_id: item.cromo_botella_id,
+    botella_label: item.botella_label,
+    tipo: item.tipo,
+    camara_id: props.camaraId,
+    camara_nombre: props.camaraNombre || null,
+  };
+}
+
+function abrirMover(item: IngresoItem): void {
+  ingresoAMover.value = aCorregible(item);
+}
+
+function abrirAnular(item: IngresoItem): void {
+  ingresoAAnular.value = aCorregible(item);
+}
+
+function descripcionAnulado(item: IngresoItem): string {
+  const motivo = item.anulado_motivo?.trim() || 'sin motivo registrado';
+  return `Anulado por ${item.anulado_por ?? 'desconocido'} el ${formatFechaCompleta(item.anulado_at)}: ${motivo}`;
+}
 
 const sortedBaneos = computed(() => {
   return [...props.baneos].sort((left, right) => getTimestamp(right.fecha_inicio) - getTimestamp(left.fecha_inicio));
@@ -269,12 +348,13 @@ function buildBaneoRangeTitle(item: BaneoItem): string {
 }
 
 function buildIngresoRangeTitle(item: IngresoItem): string {
+  const prefijo = item.anulado ? 'ANULADO · ' : '';
   if (item.tipo === 'INTENTO_BLOQUEADO') {
-    return `Intento bloqueado - ${formatFechaCompacta(item.fecha_inicio)}`;
+    return `${prefijo}Intento bloqueado - ${formatFechaCompacta(item.fecha_inicio)}`;
   }
   const ingreso = formatFechaCompacta(item.fecha_inicio);
   const egreso = item.fecha_fin ? formatFechaCompacta(item.fecha_fin) : 'En curso';
-  return `Ingreso - ${ingreso} * Egreso - ${egreso}`;
+  return `${prefijo}Ingreso - ${ingreso} * Egreso - ${egreso}`;
 }
 
 function toggleBaneo(id: number, nextValue: boolean): void {
@@ -285,6 +365,8 @@ function toggleIngreso(id: number, nextValue: boolean): void {
   expandedIngresoId.value = nextValue ? id : null;
 }
 
+/** Clic en el fondo y Escape (evento `cancel`): siempre avisa al padre, para que `open` no quede
+ * en `true` con el diálogo cerrado (si no, la tarjeta "Registros" no lo vuelve a abrir). */
 function handleClose(): void {
   dialogEl.value?.close();
   emit('close');
@@ -335,8 +417,9 @@ watch(
   padding: 0;
 }
 
+/* Scrim derivado del token de fondo (sin rgba literal), igual que los modales de mover/anular. */
 .infra-detail-modal::backdrop {
-  background: rgba(4, 8, 14, 0.74);
+  background: color-mix(in srgb, var(--color-bg) 82%, transparent);
   backdrop-filter: blur(8px);
 }
 
@@ -592,6 +675,38 @@ watch(
 .infra-state-chip.danger {
   background: color-mix(in srgb, var(--error) 18%, transparent);
   color: var(--error);
+}
+
+.infra-tab-intro__side {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.infra-registros-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+/* Ingreso anulado: atenuado entero (título, detalle y descripción con quién/cuándo/por qué). */
+.is-anulado {
+  opacity: 0.6;
+}
+
+.is-anulado:hover,
+.is-anulado:focus-within {
+  opacity: 0.85;
+}
+
+.infra-ingreso-acciones {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .infra-placeholder-grid {

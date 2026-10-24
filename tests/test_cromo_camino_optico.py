@@ -759,9 +759,163 @@ async def test_el_camino_sigue_rechazando_un_pelo_ajeno_al_servicio(monkeypatch)
 
     monkeypatch.setattr(svc, "listar_pelos_semilla", _listar)
     monkeypatch.setattr(svc, "pelo_pertenece_al_servicio", _no_pertenece)
+    _fake_posiciones(monkeypatch)
 
     with pytest.raises(svc.PeloAjenoAlServicio) as exc:
         await svc.resolver_camino_de_servicio(object(), object(), 559, pelo_n_id=999999)
 
     assert "999999" in str(exc.value)
     assert "559" in str(exc.value)
+
+
+# ── Pelos de posición (posible o declarada vigente) en el camino del Servicio ───────────────
+
+
+def _fake_posiciones(monkeypatch, *, posibles=(), validas=(), invalidas=()):
+    """Stubea `servicio_posicion_vigente` sin DB.
+
+    `posibles` son pelos de posiciones posibles, `validas` pelos de declaradas que el inventario
+    sostiene e `invalidas` pelos de declaradas vigentes que `validar_en_db` ya invalidó.
+    `pelo_es_de_posicion` mira las tres, como su SQL (la rama de declaradas no valida).
+    """
+    from types import SimpleNamespace
+
+    from core.services.cromo import servicio_posicion_vigente as pv
+
+    async def _posibles(_sesion, _servicio_id):
+        return [SimpleNamespace(pelo_n_id=p) for p in posibles]
+
+    async def _validas(_sesion, _servicio_id):
+        return [SimpleNamespace(pelo_declarado=p) for p in validas]
+
+    async def _es_de_posicion(_sesion, _servicio_id, pelo_n_id):
+        return pelo_n_id in {*posibles, *validas, *invalidas}
+
+    async def _tiene(_sesion, _servicio_id):
+        return bool(posibles or validas or invalidas)
+
+    monkeypatch.setattr(pv, "posiciones_posibles", _posibles)
+    monkeypatch.setattr(pv, "declaradas_validas", _validas, raising=False)
+    monkeypatch.setattr(pv, "pelo_es_de_posicion", _es_de_posicion)
+    monkeypatch.setattr(pv, "tiene_posiciones", _tiene)
+
+
+def _camino_por_pelo(monkeypatch, svc):
+    pedidos: list[int] = []
+
+    async def _camino_de_pelo(_cliente, _sesion, pelo_n_id, **_k):
+        pedidos.append(pelo_n_id)
+        return svc.CaminoOptico(estado=svc.ESTADO_OK, pelo_n_id=pelo_n_id)
+
+    monkeypatch.setattr(svc, "resolver_camino_de_pelo", _camino_de_pelo)
+    return pedidos
+
+
+@pytest.mark.asyncio
+async def test_el_camino_acepta_un_pelo_de_posicion_sin_semillas_etiquetadas(monkeypatch):
+    """93150: el pelo 7028862 de O-1252871-1:1 lleva la etiqueta 44649 (no es semilla etiquetada)
+    pero es posición del Servicio. El «Detalle» de su tramo VIGENTE o de su adicional pide ese pelo
+    y antes daba 400 (o `SIN_SEMILLA` si el Servicio no tenía etiquetados)."""
+    from core.services.cromo import camino_optico_service as svc
+
+    async def _sin_semillas(*_a, **_k):
+        return []
+
+    async def _no_etiquetado(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(svc, "listar_pelos_semilla", _sin_semillas)
+    monkeypatch.setattr(svc, "pelo_pertenece_al_servicio", _no_etiquetado)
+    _fake_posiciones(monkeypatch, posibles=[7028862, 7028863])
+    pedidos = _camino_por_pelo(monkeypatch, svc)
+
+    camino, semillas = await svc.resolver_camino_de_servicio(object(), object(), 4, pelo_n_id=7028862)
+
+    assert camino.estado == svc.ESTADO_OK
+    assert pedidos == [7028862]
+    assert semillas == []
+
+
+@pytest.mark.asyncio
+async def test_el_camino_acepta_un_pelo_de_posicion_aunque_haya_semillas(monkeypatch):
+    from core.services.cromo import camino_optico_service as svc
+
+    async def _listar(*_a, **_k):
+        return [_semilla_de(6799280)]
+
+    async def _no_etiquetado(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(svc, "listar_pelos_semilla", _listar)
+    monkeypatch.setattr(svc, "pelo_pertenece_al_servicio", _no_etiquetado)
+    _fake_posiciones(monkeypatch, validas=[7028863])
+    pedidos = _camino_por_pelo(monkeypatch, svc)
+
+    camino, _semillas = await svc.resolver_camino_de_servicio(object(), object(), 4, pelo_n_id=7028863)
+
+    assert camino.estado == svc.ESTADO_OK
+    assert pedidos == [7028863]
+
+
+@pytest.mark.asyncio
+async def test_el_camino_rechaza_un_pelo_ajeno_aunque_el_servicio_no_tenga_semillas(monkeypatch):
+    """42352 pidiendo un pelo del 42351 (Activo): ni etiquetado ni de posición. Es 400 (el endpoint
+    traduce `PeloAjenoAlServicio`), no un `SIN_SEMILLA` que esconde el pedido inválido."""
+    from core.services.cromo import camino_optico_service as svc
+
+    async def _sin_semillas(*_a, **_k):
+        return []
+
+    async def _no_etiquetado(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(svc, "listar_pelos_semilla", _sin_semillas)
+    monkeypatch.setattr(svc, "pelo_pertenece_al_servicio", _no_etiquetado)
+    _fake_posiciones(monkeypatch, posibles=[7968412])
+    pedidos = _camino_por_pelo(monkeypatch, svc)
+
+    with pytest.raises(svc.PeloAjenoAlServicio):
+        await svc.resolver_camino_de_servicio(object(), object(), 568, pelo_n_id=6976963)
+
+    assert pedidos == []
+
+
+@pytest.mark.asyncio
+async def test_el_camino_sin_semillas_arranca_de_la_declarada_valida_o_la_primera_posible(monkeypatch):
+    """Sin semillas etiquetadas ni pelo pedido, mismo default que el `.txt`: la declarada válida
+    o, si no hay, la primera posición posible. Una declarada que el inventario ya no sostiene no
+    cuenta."""
+    from core.services.cromo import camino_optico_service as svc
+
+    async def _sin_semillas(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(svc, "listar_pelos_semilla", _sin_semillas)
+    pedidos = _camino_por_pelo(monkeypatch, svc)
+
+    _fake_posiciones(monkeypatch, posibles=[7028862, 7028863], invalidas=[7000001])
+    camino, _ = await svc.resolver_camino_de_servicio(object(), object(), 4)
+    assert camino.estado == svc.ESTADO_OK
+    assert pedidos[-1] == 7028862
+
+    _fake_posiciones(monkeypatch, posibles=[7028862, 7028863], validas=[7028863])
+    await svc.resolver_camino_de_servicio(object(), object(), 4)
+    assert pedidos[-1] == 7028863
+
+
+@pytest.mark.asyncio
+async def test_el_camino_sin_semillas_ni_posiciones_sigue_siendo_sin_semilla_sin_ir_a_cromo(monkeypatch):
+    from core.services.cromo import camino_optico_service as svc
+
+    async def _sin_semillas(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(svc, "listar_pelos_semilla", _sin_semillas)
+    # Sólo una declarada inválida: no es candidata.
+    _fake_posiciones(monkeypatch, invalidas=[7000001])
+    pedidos = _camino_por_pelo(monkeypatch, svc)
+
+    camino, semillas = await svc.resolver_camino_de_servicio(object(), object(), 4)
+
+    assert camino.estado == svc.ESTADO_SIN_SEMILLA
+    assert (pedidos, semillas) == ([], [])

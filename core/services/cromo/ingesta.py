@@ -35,7 +35,7 @@ from core.services.prov.rate_limiter import AsyncRateLimiter
 # SQLAlchemy sólo puede resolverla si el modelo Servicio (db/models/infra.py) ya se registró en
 # Base.metadata — no ocurre solo por importar db.models.cromo. Import explícito, autocontenido:
 # este módulo no debe depender de que quien lo use haya importado infra.py por otro motivo.
-from db.models.infra import Servicio, ServicioOrigenDatos
+from db.models.infra import ServicioOrigenDatos
 from db.models.cromo import (
     CromoBotella,
     CromoCable,

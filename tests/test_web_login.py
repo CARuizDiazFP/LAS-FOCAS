@@ -2,8 +2,6 @@
 # Ubicación de archivo: tests/test_web_login.py
 # Descripción: Pruebas de login (éxito, falla, redirect) y sesión/CSRF
 
-from pathlib import Path
-import sys
 from typing import Any, Optional
 
 

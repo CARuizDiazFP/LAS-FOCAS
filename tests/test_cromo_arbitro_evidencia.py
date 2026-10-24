@@ -107,8 +107,12 @@ async def test_trackings_del_servicio_registra_evidencia(monkeypatch, fuente, ha
         llamadas.append((servicio_id, [e.pelo_n_id for e in entradas], completo, fuente))
 
     monkeypatch.setattr(tracking_service, "declaraciones_del_servicio", _declaraciones)
+    async def _posiciones(_s, _id, _modo):
+        return [], []
+
     monkeypatch.setattr(tracking_service, "numero_del_servicio", _numero)
     monkeypatch.setattr(tracking_service, "semillas_para_tracking", _semillas)
+    monkeypatch.setattr(tracking_service, "posiciones_del_servicio", _posiciones)
     monkeypatch.setattr(tracking_service, "trackings_por_camino", _por_camino)
     monkeypatch.setattr(evidencia, "registrar_y_encolar", _registrar)
 

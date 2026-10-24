@@ -34,7 +34,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from core.services.fo_monitor import avisos
-from core.services.fo_monitor.alcance import resolver_alcance
+from core.services.fo_monitor.alcance import AlcanceIntervencion, resolver_alcance
 from core.services.fo_monitor.estado import (
     PRE_VALIDO_DESPUES,
     estado_intervencion,
@@ -195,7 +195,17 @@ def crear_intervencion(
         otra.atribucion_compartida = True
     for ingreso_id in ingreso_ids:
         session.add(FomonIntervencionIngreso(intervencion_id=interv.id, ingreso_id=ingreso_id))
-    for cable in alcance.cables if alcance else []:
+    if alcance:
+        congelar_alcance(session, interv, alcance)
+    session.flush()
+    return interv
+
+
+def congelar_alcance(session: Session, interv: FomonIntervencion, alcance: AlcanceIntervencion) -> None:
+    """Escribe la lista congelada de cables/servicios (`fomon_intervencion_servicios`) de la
+    intervención. La usan `crear_intervencion` y el mover de ingresos desde el portal
+    (`ingreso_correccion_service.mover_ingreso_web`), que antes borra la lista vieja."""
+    for cable in alcance.cables:
         if not cable.servicios:
             session.add(FomonIntervencionServicio(
                 intervencion_id=interv.id, cable_n_id=cable.n_id, cable_nombre=cable.nombre,
@@ -208,8 +218,6 @@ def crear_intervencion(
                 servicio_pk=s.servicio_id, servicio_id_externo=s.servicio_id_externo,
                 tipo_servicio=s.tipo_servicio, categoria=s.categoria, cliente=s.nombre_cliente or s.cliente,
             ))
-    session.flush()
-    return interv
 
 
 def crear_intervencion_manual(
@@ -307,6 +315,7 @@ def detectar_ingresos(session: Session, cfg: Config, slack: SlackGateway, ahora:
     candidatos = [
         i for i in nuevos
         if i.tipo == IngresoTipo.INGRESO and i.fecha_inicio is not None
+        and i.anulado_at is None  # mismo criterio que `Ingreso.vigente()`; la marca de agua sí cuenta todos
         and (not permitidos or i.canal_id in permitidos)
     ]
     creadas = 0
@@ -347,7 +356,7 @@ def detectar_ingresos(session: Session, cfg: Config, slack: SlackGateway, ahora:
             for ing in grupo:
                 session.add(FomonIntervencionIngreso(intervencion_id=existente.id, ingreso_id=ing.id))
             continue
-        interv = crear_intervencion(
+        crear_intervencion(
             session,
             origen="INGRESO",
             camara_id=cabeza.camara_id,
@@ -390,6 +399,8 @@ def detectar_egresos(session: Session, cfg: Config, slack: SlackGateway, ahora: 
             .filter(FomonIntervencionIngreso.intervencion_id == interv.id)
             .all()
         )
+        # Un vinculado anulado desde el portal nunca ocurrió: no bloquea el paso a POST.
+        ingresos = [i for i in ingresos if i.anulado_at is None]
         cerrados = [i for i in ingresos if i.fecha_fin is not None]
         if ingresos and len(cerrados) == len(ingresos):
             _pasar_a_post(interv, max(i.fecha_fin for i in cerrados), ahora, inferido=False)
@@ -397,7 +408,8 @@ def detectar_egresos(session: Session, cfg: Config, slack: SlackGateway, ahora: 
         huerfano = (
             session.query(Ingreso)
             .filter(Ingreso.tipo == IngresoTipo.EGRESO, Ingreso.camara_id == interv.camara_id,
-                    Ingreso.fecha_fin.isnot(None), Ingreso.fecha_fin > interv.fecha_ingreso)
+                    Ingreso.fecha_fin.isnot(None), Ingreso.fecha_fin > interv.fecha_ingreso,
+                    Ingreso.vigente())
             .order_by(Ingreso.fecha_fin)
             .first()
             if interv.fecha_ingreso

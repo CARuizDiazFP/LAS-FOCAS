@@ -14,7 +14,7 @@ os.environ.setdefault("LLM_PROVIDER", "heuristic")  # Evitar llamadas externas
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[2]))
 
-from nlp_intent.app.service import analyze_intention, settings  # noqa: E402
+from nlp_intent.app.service import analyze_intention  # noqa: E402
 
 
 def _run(coro):

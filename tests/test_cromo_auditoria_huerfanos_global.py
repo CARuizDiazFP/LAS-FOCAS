@@ -81,8 +81,10 @@ def entorno(monkeypatch):
     async def _cancelada(_sesion, _corrida_id):
         return estado["cancelar_en"] is not None and len(llamadas) >= estado["cancelar_en"]
 
-    async def _trackings(_cliente, _sesion, servicio_id, *, corrida_id=None, fuente_evidencia="WEB"):
-        llamadas.append({"servicio_id": servicio_id, "corrida_id": corrida_id})
+    async def _trackings(
+        _cliente, _sesion, servicio_id, *, corrida_id=None, fuente_evidencia="WEB", posiciones="todas"
+    ):
+        llamadas.append({"servicio_id": servicio_id, "corrida_id": corrida_id, "posiciones": posiciones})
         falla = estado["fallas"].get(servicio_id)
         if falla is not None:
             raise falla
@@ -104,6 +106,20 @@ def entorno(monkeypatch):
     )
     monkeypatch.delenv("CROMO_AUDITORIA_MAX_SERVICIOS", raising=False)
     return estado, llamadas
+
+
+@pytest.mark.asyncio
+async def test_global_siembra_solo_posiciones_declaradas(entorno):
+    """La corrida global no suma las posiciones posibles no declaradas: más llamadas a Cromo en 50
+    servicios grandes, y una falla de esas semillas no aporta a la auditoría. Las declaradas sí."""
+    _estado, llamadas = entorno
+    sesion = _Sesion(_Corrida(id=5))
+
+    await glob.auditar_global(object(), sesion, 5)
+
+    assert [x["posiciones"] for x in llamadas] == ["declaradas"] * 3
+    # El fake no tiene `adicionales`: el detalle lo lee con default y cuenta 0.
+    assert all(p["adicionales"] == 0 for p in _eventos(sesion, "PAGINA"))
 
 
 @pytest.mark.asyncio

@@ -286,7 +286,7 @@ def test_iniciar_happy_path_delega_al_worker_y_devuelve_corrida_id(monkeypatch):
 
     assert res.status_code == 202
     assert res.json()["corrida_id"] == 99
-    assert llamadas == [(web_main._CROMO_WORKER_RUN_URL, {"corrida_id": 99, "usuario": "admin"})]
+    assert llamadas == [(web_main.admin_datos._CROMO_WORKER_RUN_URL, {"corrida_id": 99, "usuario": "admin"})]
 
 
 def test_iniciar_propaga_modo_solo_odf_como_params_extra(monkeypatch):
@@ -637,7 +637,7 @@ def test_config_guardar_happy_path_actualiza_y_pide_reload(monkeypatch):
     assert fila.habilitado is True
     assert fila.intervalo_horas == 6
     assert fila.clases == [68, 121]
-    assert llamadas == [(web_main._CROMO_WORKER_RELOAD_URL, None)]
+    assert llamadas == [(web_main.admin_datos._CROMO_WORKER_RELOAD_URL, None)]
 
 
 def test_config_health_offline_si_worker_no_responde(monkeypatch):

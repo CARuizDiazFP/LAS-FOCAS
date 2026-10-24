@@ -143,6 +143,10 @@
       :baneos="registros.baneos"
       :auditoria="registros.auditoria"
       :ingresos="registros.ingresos"
+      :es-admin="isAdmin"
+      :mostrar-anulados="mostrarAnulados"
+      @update:mostrar-anulados="handleMostrarAnulados"
+      @actualizado="handleIngresoCorregido"
       @close="registrosModalOpen = false"
     />
 
@@ -252,6 +256,10 @@ interface RegistrosIngreso {
   cromo_botella_id: number | null;
   botella_label: string;
   tipo: string;
+  anulado: boolean;
+  anulado_at: string | null;
+  anulado_por: string | null;
+  anulado_motivo: string | null;
 }
 
 interface RegistrosPayload {
@@ -282,6 +290,8 @@ const estadoModalOpen = ref(false);
 const aliasModalOpen = ref(false);
 const serviciosModalOpen = ref(false);
 const registrosModalOpen = ref(false);
+/** Sólo admin: el backend ignora `incluir_anulados` para un usuario común. */
+const mostrarAnulados = ref(false);
 const botellasModalOpen = ref(false);
 const unificarModalOpen = ref(false);
 const eliminarConfirmarAbierto = ref(false);
@@ -290,8 +300,12 @@ const eliminarErrorMsg = ref('');
 const eliminarBloqueos = ref<BloqueoEliminacion[]>([]);
 
 const serviciosCount = computed(() => new Set((camara.value?.rutas ?? []).map((ruta) => ruta.servicio_id)).size);
+// Los anulados que un admin pidió ver no suman: la tarjeta cuenta sólo registros vigentes.
 const registrosCount = computed(
-  () => registros.value.baneos.length + registros.value.auditoria.length + registros.value.ingresos.length,
+  () =>
+    registros.value.baneos.length +
+    registros.value.auditoria.length +
+    registros.value.ingresos.filter((ingreso) => !ingreso.anulado).length,
 );
 
 function statusClass(status: string): string {
@@ -324,10 +338,11 @@ async function loadCamaraDetail(): Promise<void> {
   errorMessage.value = '';
   try {
     const camaraId = getCamaraId();
+    const registrosQs = isAdmin.value && mostrarAnulados.value ? '?incluir_anulados=1' : '';
     const [camaraResponse, aliasesResponse, registrosResponse, botellasResponse] = await Promise.all([
       fetch(`/api/infra/camaras/${camaraId}`, { credentials: 'include' }),
       fetch(`/api/infra/camaras/${camaraId}/aliases`, { credentials: 'include' }),
-      fetch(`/api/infra/camaras/${camaraId}/registros`, { credentials: 'include' }),
+      fetch(`/api/infra/camaras/${camaraId}/registros${registrosQs}`, { credentials: 'include' }),
       fetch(`/api/infra/camaras/${camaraId}/botellas`, { credentials: 'include' }),
     ]);
 
@@ -362,6 +377,16 @@ async function handleEstadoActualizado(): Promise<void> {
 async function handleUnificacionCompletada(): Promise<void> {
   // La Cámara secundaria se eliminó tras transferir todo lo heredable a esta — recarga el detalle
   // completo para reflejar Botellas, Cables, alias y estado final ya consolidados.
+  await loadCamaraDetail();
+}
+
+async function handleMostrarAnulados(valor: boolean): Promise<void> {
+  mostrarAnulados.value = valor;
+  await loadCamaraDetail();
+}
+
+async function handleIngresoCorregido(): Promise<void> {
+  // Mover/anular cambia el estado derivado (ingreso activo, estado sugerido) y la lista de ingresos.
   await loadCamaraDetail();
 }
 

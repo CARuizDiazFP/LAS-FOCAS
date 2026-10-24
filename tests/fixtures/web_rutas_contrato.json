@@ -1,0 +1,1402 @@
+[
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/baneos/grupos",
+    "muestra": "/api/admin/baneos/grupos",
+    "endpoint": "baneos_grupos_listar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/baneos/grupos/liberar",
+    "muestra": "/api/admin/baneos/grupos/liberar",
+    "endpoint": "baneos_grupos_liberar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "DELETE",
+    "plantilla": "/api/admin/clientes/alias/{alias_id}",
+    "muestra": "/api/admin/clientes/alias/muestra",
+    "endpoint": "clientes_quitar_alias_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "PATCH",
+    "plantilla": "/api/admin/clientes/categoria",
+    "muestra": "/api/admin/clientes/categoria",
+    "endpoint": "clientes_categoria_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/clientes/fusionar",
+    "muestra": "/api/admin/clientes/fusionar",
+    "endpoint": "clientes_fusionar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/clientes/lista/aplicar",
+    "muestra": "/api/admin/clientes/lista/aplicar",
+    "endpoint": "clientes_lista_aplicar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/clientes/lista/previsualizar",
+    "muestra": "/api/admin/clientes/lista/previsualizar",
+    "endpoint": "clientes_lista_previsualizar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/clientes/por-categoria",
+    "muestra": "/api/admin/clientes/por-categoria",
+    "endpoint": "clientes_por_categoria_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/clientes/sincronizar",
+    "muestra": "/api/admin/clientes/sincronizar",
+    "endpoint": "clientes_sincronizar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/clientes/{cliente_id}/alias",
+    "muestra": "/api/admin/clientes/muestra/alias",
+    "endpoint": "clientes_agregar_alias_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/fo-monitor/config",
+    "muestra": "/api/admin/fo-monitor/config",
+    "endpoint": "fomon_config_leer"
+  },
+  {
+    "tipo": "http",
+    "metodo": "PUT",
+    "plantilla": "/api/admin/fo-monitor/config",
+    "muestra": "/api/admin/fo-monitor/config",
+    "endpoint": "fomon_config_actualizar"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/arbitro-cromo/evaluaciones",
+    "muestra": "/api/admin/infra/arbitro-cromo/evaluaciones",
+    "endpoint": "arbitro_cromo_evaluaciones_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/arbitro-cromo/normalizar",
+    "muestra": "/api/admin/infra/arbitro-cromo/normalizar",
+    "endpoint": "arbitro_cromo_normalizar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/arbitro-cromo/propuestas",
+    "muestra": "/api/admin/infra/arbitro-cromo/propuestas",
+    "endpoint": "arbitro_cromo_propuestas_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/arbitro-cromo/propuestas/aplicar",
+    "muestra": "/api/admin/infra/arbitro-cromo/propuestas/aplicar",
+    "endpoint": "arbitro_cromo_aplicar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/arbitro-cromo/propuestas/rechazar",
+    "muestra": "/api/admin/infra/arbitro-cromo/propuestas/rechazar",
+    "endpoint": "arbitro_cromo_rechazar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/arbitro-cromo/propuestas/revertir",
+    "muestra": "/api/admin/infra/arbitro-cromo/propuestas/revertir",
+    "endpoint": "arbitro_cromo_revertir_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/arbitro-cromo/reglas",
+    "muestra": "/api/admin/infra/arbitro-cromo/reglas",
+    "endpoint": "arbitro_cromo_reglas_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/arbitro-cromo/reglas",
+    "muestra": "/api/admin/infra/arbitro-cromo/reglas",
+    "endpoint": "arbitro_cromo_reglas_actualizar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/botellas/inconsistencias/exportar",
+    "muestra": "/api/admin/infra/botellas/inconsistencias/exportar",
+    "endpoint": "botellas_inconsistencias_exportar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/botellas/operatividad",
+    "muestra": "/api/admin/infra/botellas/operatividad",
+    "endpoint": "botellas_operatividad_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/botellas/viewer",
+    "muestra": "/api/admin/infra/botellas/viewer",
+    "endpoint": "botellas_viewer_listado_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/botellas/viewer/duplicados",
+    "muestra": "/api/admin/infra/botellas/viewer/duplicados",
+    "endpoint": "botellas_viewer_duplicados_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/camaras/pendientes",
+    "muestra": "/api/admin/infra/camaras/pendientes",
+    "endpoint": "admin_camaras_pendientes"
+  },
+  {
+    "tipo": "http",
+    "metodo": "DELETE",
+    "plantilla": "/api/admin/infra/camaras/pendientes/{camara_id}",
+    "muestra": "/api/admin/infra/camaras/pendientes/muestra",
+    "endpoint": "admin_eliminar_camara_pendiente"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/camaras/viewer",
+    "muestra": "/api/admin/infra/camaras/viewer",
+    "endpoint": "camaras_viewer_listado_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/camaras/viewer/duplicados",
+    "muestra": "/api/admin/infra/camaras/viewer/duplicados",
+    "endpoint": "camaras_viewer_duplicados_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/camaras/{camara_id}/aprobar",
+    "muestra": "/api/admin/infra/camaras/muestra/aprobar",
+    "endpoint": "admin_aprobar_camara"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/camaras/{camara_id}/convertir-alias",
+    "muestra": "/api/admin/infra/camaras/muestra/convertir-alias",
+    "endpoint": "admin_convertir_alias"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/camaras/{camara_id}/dar-de-alta",
+    "muestra": "/api/admin/infra/camaras/muestra/dar-de-alta",
+    "endpoint": "admin_dar_de_alta_camara"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/huerfanos",
+    "muestra": "/api/admin/infra/huerfanos",
+    "endpoint": "huerfanos_listar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/huerfanos/auditoria-global",
+    "muestra": "/api/admin/infra/huerfanos/auditoria-global",
+    "endpoint": "huerfanos_auditoria_global_estado_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/huerfanos/auditoria-global",
+    "muestra": "/api/admin/infra/huerfanos/auditoria-global",
+    "endpoint": "huerfanos_auditoria_global_iniciar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/huerfanos/descartar",
+    "muestra": "/api/admin/infra/huerfanos/descartar",
+    "endpoint": "huerfanos_descartar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/huerfanos/normalizar",
+    "muestra": "/api/admin/infra/huerfanos/normalizar",
+    "endpoint": "huerfanos_normalizar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/inconsistencias-cromo",
+    "muestra": "/api/admin/infra/inconsistencias-cromo",
+    "endpoint": "inconsistencias_cromo_listar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/inconsistencias-cromo/aviso-slack",
+    "muestra": "/api/admin/infra/inconsistencias-cromo/aviso-slack",
+    "endpoint": "inconsistencias_cromo_aviso_slack_get_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/inconsistencias-cromo/aviso-slack",
+    "muestra": "/api/admin/infra/inconsistencias-cromo/aviso-slack",
+    "endpoint": "inconsistencias_cromo_aviso_slack_post_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/inconsistencias-cromo/deteccion",
+    "muestra": "/api/admin/infra/inconsistencias-cromo/deteccion",
+    "endpoint": "inconsistencias_cromo_deteccion_estado_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/inconsistencias-cromo/deteccion",
+    "muestra": "/api/admin/infra/inconsistencias-cromo/deteccion",
+    "endpoint": "inconsistencias_cromo_deteccion_iniciar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/inconsistencias-cromo/estado",
+    "muestra": "/api/admin/infra/inconsistencias-cromo/estado",
+    "endpoint": "inconsistencias_cromo_estado_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/inconsistencias-cromo/exportar.xlsx",
+    "muestra": "/api/admin/infra/inconsistencias-cromo/exportar.xlsx",
+    "endpoint": "inconsistencias_cromo_exportar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/ingresos-sin-match",
+    "muestra": "/api/admin/infra/ingresos-sin-match",
+    "endpoint": "admin_ingresos_sin_match"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/ingresos-sin-match/marcar-revisado-masivo",
+    "muestra": "/api/admin/infra/ingresos-sin-match/marcar-revisado-masivo",
+    "endpoint": "admin_marcar_revisado_masivo_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/ingresos-sin-match/{caso_id}/marcar-revisado",
+    "muestra": "/api/admin/infra/ingresos-sin-match/muestra/marcar-revisado",
+    "endpoint": "admin_marcar_revisado_ingreso_sin_match"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/ingresos/{ingreso_id}/anular",
+    "muestra": "/api/admin/infra/ingresos/muestra/anular",
+    "endpoint": "admin_anular_ingreso_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/ingresos/{ingreso_id}/mover",
+    "muestra": "/api/admin/infra/ingresos/muestra/mover",
+    "endpoint": "admin_mover_ingreso_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/servicios-odf/listado",
+    "muestra": "/api/admin/infra/servicios-odf/listado",
+    "endpoint": "servicios_sin_odf_listado_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/asociar",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/asociar",
+    "endpoint": "servicios_sin_odf_asociar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/camino-optico",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/camino-optico",
+    "endpoint": "servicios_sin_odf_camino_optico_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/normalizar",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/camino-optico/normalizar",
+    "endpoint": "servicios_sin_odf_camino_normalizar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/relevar-odf",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/camino-optico/relevar-odf",
+    "endpoint": "servicios_sin_odf_camino_relevar_odf_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/odf-confirmadas",
+    "endpoint": "servicios_odf_confirmadas_listar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/odf-confirmadas",
+    "endpoint": "servicios_odf_confirmar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas/desconfirmar",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/odf-confirmadas/desconfirmar",
+    "endpoint": "servicios_odf_desconfirmar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/pelos-excluidos",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/pelos-excluidos",
+    "endpoint": "servicios_pelo_excluir_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/pelos-excluidos/restaurar",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/pelos-excluidos/restaurar",
+    "endpoint": "servicios_pelo_restaurar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/posicion-vigente",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/posicion-vigente",
+    "endpoint": "servicios_posicion_vigente_listar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/posicion-vigente",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/posicion-vigente",
+    "endpoint": "servicios_posicion_vigente_declarar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/posicion-vigente/retirar",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/posicion-vigente/retirar",
+    "endpoint": "servicios_posicion_vigente_retirar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/senal-direccion",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/senal-direccion",
+    "endpoint": "servicios_sin_odf_senal_direccion_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/sugerencia",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/sugerencia",
+    "endpoint": "servicios_sin_odf_sugerencia_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/infra/servicios-odf/{servicio_id}/trackings-esperados",
+    "muestra": "/api/admin/infra/servicios-odf/muestra/trackings-esperados",
+    "endpoint": "servicios_trackings_esperados_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/ingesta/camaras",
+    "muestra": "/api/admin/ingesta/camaras",
+    "endpoint": "camaras_ingest_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/ingesta/camaras/asociar",
+    "muestra": "/api/admin/ingesta/camaras/asociar",
+    "endpoint": "ingesta_camaras_asociar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/ingesta/cromo",
+    "muestra": "/api/admin/ingesta/cromo",
+    "endpoint": "cromo_ingesta_iniciar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/ingesta/cromo/config",
+    "muestra": "/api/admin/ingesta/cromo/config",
+    "endpoint": "cromo_scheduler_config_obtener_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/ingesta/cromo/config",
+    "muestra": "/api/admin/ingesta/cromo/config",
+    "endpoint": "cromo_scheduler_config_guardar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/ingesta/cromo/config/health",
+    "muestra": "/api/admin/ingesta/cromo/config/health",
+    "endpoint": "cromo_scheduler_health_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/ingesta/cromo/config/trigger",
+    "muestra": "/api/admin/ingesta/cromo/config/trigger",
+    "endpoint": "cromo_scheduler_trigger_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/ingesta/cromo/corridas",
+    "muestra": "/api/admin/ingesta/cromo/corridas",
+    "endpoint": "cromo_ingesta_historico_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/ingesta/cromo/corridas/{corrida_id}",
+    "muestra": "/api/admin/ingesta/cromo/corridas/muestra",
+    "endpoint": "cromo_ingesta_detalle_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/ingesta/cromo/corridas/{corrida_id}/cancelar",
+    "muestra": "/api/admin/ingesta/cromo/corridas/muestra/cancelar",
+    "endpoint": "cromo_ingesta_cancelar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/ingesta/cromo/corridas/{corrida_id}/stream",
+    "muestra": "/api/admin/ingesta/cromo/corridas/muestra/stream",
+    "endpoint": "cromo_ingesta_stream_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/me",
+    "muestra": "/api/admin/me",
+    "endpoint": "admin_me"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/servicios/baneos",
+    "muestra": "/api/admin/servicios/baneos",
+    "endpoint": "servicios_baneos_update"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/servicios/baneos/config",
+    "muestra": "/api/admin/servicios/baneos/config",
+    "endpoint": "servicios_baneos_config_json"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/servicios/baneos/health",
+    "muestra": "/api/admin/servicios/baneos/health",
+    "endpoint": "servicios_baneos_health"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/admin/servicios/baneos/listener",
+    "muestra": "/api/admin/servicios/baneos/listener",
+    "endpoint": "listener_config_get"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/servicios/baneos/listener",
+    "muestra": "/api/admin/servicios/baneos/listener",
+    "endpoint": "listener_config_post"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/servicios/baneos/trigger",
+    "muestra": "/api/admin/servicios/baneos/trigger",
+    "endpoint": "servicios_baneos_trigger"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/servicios/baneos/worker/start",
+    "muestra": "/api/admin/servicios/baneos/worker/start",
+    "endpoint": "servicios_baneos_worker_start"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/admin/users",
+    "muestra": "/api/admin/users",
+    "endpoint": "admin_create_user"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/auth/login",
+    "muestra": "/api/auth/login",
+    "endpoint": "api_auth_login"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/auth/logout",
+    "muestra": "/api/auth/logout",
+    "endpoint": "api_auth_logout"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/auth/session",
+    "muestra": "/api/auth/session",
+    "endpoint": "api_auth_session"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/chat/history",
+    "muestra": "/api/chat/history",
+    "endpoint": "chat_history"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/chat/message",
+    "muestra": "/api/chat/message",
+    "endpoint": "chat_message"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/chat/metrics",
+    "muestra": "/api/chat/metrics",
+    "endpoint": "chat_metrics"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/chat/uploads",
+    "muestra": "/api/chat/uploads",
+    "endpoint": "chat_upload_attachment"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/chat/ws-history",
+    "muestra": "/api/chat/ws-history",
+    "endpoint": "chat_ws_history"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/flows/comparador-fo",
+    "muestra": "/api/flows/comparador-fo",
+    "endpoint": "flow_comparador_fo"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/flows/repetitividad",
+    "muestra": "/api/flows/repetitividad",
+    "endpoint": "flow_repetitividad"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/flows/sla",
+    "muestra": "/api/flows/sla",
+    "endpoint": "flow_sla"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/fo-monitor/basemap/{ruta:path}",
+    "muestra": "/api/fo-monitor/basemap/muestra/sub",
+    "endpoint": "fomon_basemap"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/fo-monitor/cables/{cable_n_id}/ficha",
+    "muestra": "/api/fo-monitor/cables/muestra/ficha",
+    "endpoint": "fomon_ficha_cable"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/fo-monitor/cables/{cable_n_id}/historial",
+    "muestra": "/api/fo-monitor/cables/muestra/historial",
+    "endpoint": "fomon_historial"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/fo-monitor/intervenciones",
+    "muestra": "/api/fo-monitor/intervenciones",
+    "endpoint": "fomon_listar"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/fo-monitor/intervenciones/{intervencion_id}",
+    "muestra": "/api/fo-monitor/intervenciones/muestra",
+    "endpoint": "fomon_detalle"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/fo-monitor/intervenciones/{intervencion_id}/reconocimientos",
+    "muestra": "/api/fo-monitor/intervenciones/muestra/reconocimientos",
+    "endpoint": "fomon_reconocer"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/fo-monitor/mapa/botellas",
+    "muestra": "/api/fo-monitor/mapa/botellas",
+    "endpoint": "fomon_mapa_botellas"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/fo-monitor/mapa/buscar",
+    "muestra": "/api/fo-monitor/mapa/buscar",
+    "endpoint": "fomon_mapa_buscar"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/fo-monitor/mapa/config",
+    "muestra": "/api/fo-monitor/mapa/config",
+    "endpoint": "fomon_mapa_config"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/fo-monitor/mapa/intervenciones",
+    "muestra": "/api/fo-monitor/mapa/intervenciones",
+    "endpoint": "fomon_mapa_intervenciones"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/fo-monitor/mapa/red",
+    "muestra": "/api/fo-monitor/mapa/red",
+    "endpoint": "fomon_mapa_red"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/fo-monitor/mapa/servicios",
+    "muestra": "/api/fo-monitor/mapa/servicios",
+    "endpoint": "fomon_mapa_servicios"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/fo-monitor/verificaciones",
+    "muestra": "/api/fo-monitor/verificaciones",
+    "endpoint": "fomon_verificacion_manual"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/ban/active",
+    "muestra": "/api/infra/ban/active",
+    "endpoint": "get_active_bans_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/ban/create",
+    "muestra": "/api/infra/ban/create",
+    "endpoint": "create_ban_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/ban/lift",
+    "muestra": "/api/infra/ban/lift",
+    "endpoint": "lift_ban_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/botellas/apropiar",
+    "muestra": "/api/infra/botellas/apropiar",
+    "endpoint": "botellas_apropiar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/botellas/apropiar-masivo",
+    "muestra": "/api/infra/botellas/apropiar-masivo",
+    "endpoint": "botellas_apropiar_masivo_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/botellas/buscar",
+    "muestra": "/api/infra/botellas/buscar",
+    "endpoint": "botellas_unificadas_buscar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/botellas/consolidar",
+    "muestra": "/api/infra/botellas/consolidar",
+    "endpoint": "botellas_consolidar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/botellas/eliminar",
+    "muestra": "/api/infra/botellas/eliminar",
+    "endpoint": "botellas_eliminar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/botellas/eliminar-grupo",
+    "muestra": "/api/infra/botellas/eliminar-grupo",
+    "endpoint": "botellas_eliminar_grupo_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "PUT",
+    "plantilla": "/api/infra/botellas/estado",
+    "muestra": "/api/infra/botellas/estado",
+    "endpoint": "botellas_estado_masivo_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "PATCH",
+    "plantilla": "/api/infra/botellas/{n_id}/nombre",
+    "muestra": "/api/infra/botellas/muestra/nombre",
+    "endpoint": "botella_actualizar_nombre_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/botellas/{n_id}/repoblar-cables",
+    "muestra": "/api/infra/botellas/muestra/repoblar-cables",
+    "endpoint": "botella_repoblar_cables_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/botellas/{n_id}/separar-padre",
+    "muestra": "/api/infra/botellas/muestra/separar-padre",
+    "endpoint": "botella_separar_padre_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/camaras",
+    "muestra": "/api/infra/camaras",
+    "endpoint": "search_camaras_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/camaras/buscar",
+    "muestra": "/api/infra/camaras/buscar",
+    "endpoint": "camaras_buscar_ligero_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/camaras/eliminar",
+    "muestra": "/api/infra/camaras/eliminar",
+    "endpoint": "camaras_eliminar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/camaras/merge",
+    "muestra": "/api/infra/camaras/merge",
+    "endpoint": "camaras_merge_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/camaras/merge-grupo",
+    "muestra": "/api/infra/camaras/merge-grupo",
+    "endpoint": "camaras_merge_grupo_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/camaras/merge-masivo",
+    "muestra": "/api/infra/camaras/merge-masivo",
+    "endpoint": "camaras_merge_masivo_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/camaras/{camara_id}",
+    "muestra": "/api/infra/camaras/muestra",
+    "endpoint": "get_camara_detail_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/camaras/{camara_id}/aliases",
+    "muestra": "/api/infra/camaras/muestra/aliases",
+    "endpoint": "get_camara_aliases_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/camaras/{camara_id}/botellas",
+    "muestra": "/api/infra/camaras/muestra/botellas",
+    "endpoint": "get_camara_botellas_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/camaras/{camara_id}/estado",
+    "muestra": "/api/infra/camaras/muestra/estado",
+    "endpoint": "get_camara_estado_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/camaras/{camara_id}/estado",
+    "muestra": "/api/infra/camaras/muestra/estado",
+    "endpoint": "update_camara_estado_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/camaras/{camara_id}/registros",
+    "muestra": "/api/infra/camaras/muestra/registros",
+    "endpoint": "get_camara_registros_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/cromo-botellas/asociar",
+    "muestra": "/api/infra/cromo-botellas/asociar",
+    "endpoint": "cromo_botellas_asociar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo-botellas/huerfanas",
+    "muestra": "/api/infra/cromo-botellas/huerfanas",
+    "endpoint": "cromo_botellas_huerfanas_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo-botellas/{n_id}/estado-asociacion",
+    "muestra": "/api/infra/cromo-botellas/muestra/estado-asociacion",
+    "endpoint": "cromo_botella_estado_asociacion_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/botellas/{botella_n_id}/empalmes",
+    "muestra": "/api/infra/cromo/botellas/muestra/empalmes",
+    "endpoint": "cromo_empalmes_de_botella_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/botellas/{botella_n_id}/servicios",
+    "muestra": "/api/infra/cromo/botellas/muestra/servicios",
+    "endpoint": "cromo_verificador_por_botella_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/botellas/{n_id}/cables-detectados",
+    "muestra": "/api/infra/cromo/botellas/muestra/cables-detectados",
+    "endpoint": "cromo_botella_cables_detectados_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/cables",
+    "muestra": "/api/infra/cromo/cables",
+    "endpoint": "cromo_inventario_cables_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/cables/resolver",
+    "muestra": "/api/infra/cromo/cables/resolver",
+    "endpoint": "cromo_cable_resolver_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/cables/{cable_n_id}/buffers/{numero}/servicios-unicos",
+    "muestra": "/api/infra/cromo/cables/muestra/buffers/muestra/servicios-unicos",
+    "endpoint": "cromo_servicios_unicos_por_buffer_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/cables/{cable_n_id}/servicios",
+    "muestra": "/api/infra/cromo/cables/muestra/servicios",
+    "endpoint": "cromo_verificador_por_cable_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/cables/{cable_n_id}/servicios-unicos",
+    "muestra": "/api/infra/cromo/cables/muestra/servicios-unicos",
+    "endpoint": "cromo_servicios_unicos_por_cable_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/cromo/cables/{cable_n_id}/servicios-unicos/refrescar-prov",
+    "muestra": "/api/infra/cromo/cables/muestra/servicios-unicos/refrescar-prov",
+    "endpoint": "cromo_servicios_unicos_refrescar_prov_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/cables/{n_id}/detalle",
+    "muestra": "/api/infra/cromo/cables/muestra/detalle",
+    "endpoint": "cromo_cable_detalle_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/elementos/{n_id}/vivo",
+    "muestra": "/api/infra/cromo/elementos/muestra/vivo",
+    "endpoint": "cromo_elemento_vivo_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/odfs",
+    "muestra": "/api/infra/cromo/odfs",
+    "endpoint": "cromo_inventario_odfs_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/odfs/{n_id}/detalle",
+    "muestra": "/api/infra/cromo/odfs/muestra/detalle",
+    "endpoint": "cromo_odf_detalle_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/odfs/{odf_n_id}/conectores",
+    "muestra": "/api/infra/cromo/odfs/muestra/conectores",
+    "endpoint": "cromo_conectores_de_odf_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/odfs/{odf_n_id}/servicios",
+    "muestra": "/api/infra/cromo/odfs/muestra/servicios",
+    "endpoint": "cromo_verificador_por_odf_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/pon",
+    "muestra": "/api/infra/cromo/pon",
+    "endpoint": "cromo_inventario_pon_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/servicios/{servicio_id}/camino-optico/caminos",
+    "muestra": "/api/infra/cromo/servicios/muestra/camino-optico/caminos",
+    "endpoint": "cromo_camino_caminos_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/servicios/{servicio_id}/camino-optico/pelos",
+    "muestra": "/api/infra/cromo/servicios/muestra/camino-optico/pelos",
+    "endpoint": "cromo_camino_pelos_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/servicios/{servicio_id}/camino-optico/tracking.txt",
+    "muestra": "/api/infra/cromo/servicios/muestra/camino-optico/tracking.txt",
+    "endpoint": "cromo_camino_tracking_txt_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/servicios/{servicio_id}/odfs",
+    "muestra": "/api/infra/cromo/servicios/muestra/odfs",
+    "endpoint": "cromo_odfs_de_servicio_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/tubos/{tubo_n_id}/servicios",
+    "muestra": "/api/infra/cromo/tubos/muestra/servicios",
+    "endpoint": "cromo_verificador_por_tubo_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/cromo/validar/{n_id}",
+    "muestra": "/api/infra/cromo/validar/muestra",
+    "endpoint": "cromo_validar_datos_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/export/cameras",
+    "muestra": "/api/infra/export/cameras",
+    "endpoint": "export_cameras_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/ingresos/{ingreso_id}/egreso",
+    "muestra": "/api/infra/ingresos/muestra/egreso",
+    "endpoint": "registrar_egreso_ingreso_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/notify/download-eml",
+    "muestra": "/api/infra/notify/download-eml",
+    "endpoint": "generate_eml_file"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/notify/email",
+    "muestra": "/api/infra/notify/email",
+    "endpoint": "send_email_notification_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/notify/email/config",
+    "muestra": "/api/infra/notify/email/config",
+    "endpoint": "get_email_config_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/rutas/{ruta_id}/download",
+    "muestra": "/api/infra/rutas/muestra/download",
+    "endpoint": "download_ruta_tracking"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/rutas/{ruta_id}/tracking",
+    "muestra": "/api/infra/rutas/muestra/tracking",
+    "endpoint": "get_ruta_tracking"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/search",
+    "muestra": "/api/infra/search",
+    "endpoint": "advanced_search_camaras_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "DELETE",
+    "plantilla": "/api/infra/servicios/{servicio_id}/empalmes",
+    "muestra": "/api/infra/servicios/muestra/empalmes",
+    "endpoint": "delete_servicio_empalmes_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/servicios/{servicio_id}/ingresos",
+    "muestra": "/api/infra/servicios/muestra/ingresos",
+    "endpoint": "get_servicio_ingresos_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/servicios/{servicio_id}/odfs",
+    "muestra": "/api/infra/servicios/muestra/odfs",
+    "endpoint": "get_servicio_odfs"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/servicios/{servicio_id}/rutas",
+    "muestra": "/api/infra/servicios/muestra/rutas",
+    "endpoint": "get_servicio_rutas_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/smart-search",
+    "muestra": "/api/infra/smart-search",
+    "endpoint": "smart_search_camaras_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/tracking/{ruta_id}/download",
+    "muestra": "/api/infra/tracking/muestra/download",
+    "endpoint": "download_tracking_alias"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/trackings/analyze",
+    "muestra": "/api/infra/trackings/analyze",
+    "endpoint": "analyze_tracking_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/trackings/resolve",
+    "muestra": "/api/infra/trackings/resolve",
+    "endpoint": "resolve_tracking_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/infra/upload_tracking",
+    "muestra": "/api/infra/upload_tracking",
+    "endpoint": "upload_tracking_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/reports/history",
+    "muestra": "/api/reports/history",
+    "endpoint": "api_reports_history"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/reports/sla",
+    "muestra": "/api/reports/sla",
+    "endpoint": "generar_informe_sla_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/reports/sla-consumo",
+    "muestra": "/api/reports/sla-consumo",
+    "endpoint": "generar_informe_sla_consumo_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "PATCH",
+    "plantilla": "/api/servicios/bulk-categoria",
+    "muestra": "/api/servicios/bulk-categoria",
+    "endpoint": "servicios_categoria_masiva_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/servicios/detail",
+    "muestra": "/api/servicios/detail",
+    "endpoint": "servicios_detail_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/servicios/ingest",
+    "muestra": "/api/servicios/ingest",
+    "endpoint": "servicios_ingest_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/servicios/prov/refrescar",
+    "muestra": "/api/servicios/prov/refrescar",
+    "endpoint": "servicio_prov_refrescar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/servicios/search",
+    "muestra": "/api/servicios/search",
+    "endpoint": "servicios_search_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "PATCH",
+    "plantilla": "/api/servicios/{id}/categoria",
+    "muestra": "/api/servicios/muestra/categoria",
+    "endpoint": "servicio_categoria_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "PATCH",
+    "plantilla": "/api/servicios/{id}/categoria/heredar",
+    "muestra": "/api/servicios/muestra/categoria/heredar",
+    "endpoint": "servicio_categoria_heredar_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "PATCH",
+    "plantilla": "/api/servicios/{id}/verificable",
+    "muestra": "/api/servicios/muestra/verificable",
+    "endpoint": "servicio_verificable_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/servicios/{servicio_id}/baneos",
+    "muestra": "/api/servicios/muestra/baneos",
+    "endpoint": "servicio_baneos_web"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/tools/alarmas-ciena",
+    "muestra": "/api/tools/alarmas-ciena",
+    "endpoint": "tool_alarmas_ciena"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/tools/compare-vlans",
+    "muestra": "/api/tools/compare-vlans",
+    "endpoint": "tool_compare_vlans"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/api/users/change-password",
+    "muestra": "/api/users/change-password",
+    "endpoint": "change_password"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/health",
+    "muestra": "/health",
+    "endpoint": "health"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/health/version",
+    "muestra": "/health/version",
+    "endpoint": "health_version"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/logout",
+    "muestra": "/logout",
+    "endpoint": "logout"
+  },
+  {
+    "tipo": "http",
+    "metodo": "POST",
+    "plantilla": "/mcp/invoke",
+    "muestra": "/mcp/invoke",
+    "endpoint": "mcp_invoke"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/reports/index",
+    "muestra": "/reports/index",
+    "endpoint": "reports_index_redirect"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/reports/{ruta:path}",
+    "muestra": "/reports/muestra/sub",
+    "endpoint": "descargar_informe"
+  },
+  {
+    "tipo": "http",
+    "metodo": "HEAD",
+    "plantilla": "/reports/{ruta:path}",
+    "muestra": "/reports/muestra/sub",
+    "endpoint": "descargar_informe"
+  },
+  {
+    "tipo": "websocket",
+    "metodo": "WEBSOCKET",
+    "plantilla": "/ws/admin-notifications",
+    "muestra": "/ws/admin-notifications",
+    "endpoint": "admin_notifications_endpoint"
+  },
+  {
+    "tipo": "websocket",
+    "metodo": "WEBSOCKET",
+    "plantilla": "/ws/chat",
+    "muestra": "/ws/chat",
+    "endpoint": "chat_endpoint"
+  },
+  {
+    "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/{path:path}",
+    "muestra": "/muestra/sub",
+    "endpoint": "spa_fallback"
+  }
+]

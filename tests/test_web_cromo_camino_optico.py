@@ -107,7 +107,9 @@ def _fake_session(monkeypatch, *, existe: bool = True):
     async def _existe(_sesion, _servicio_id):
         return existe
 
-    monkeypatch.setattr(web_main, "_servicio_existe", _existe)
+    monkeypatch.setattr(web_main.cromo, "_servicio_existe", _existe)
+    # El nombre vive en comun y lo leen el router cromo (camino-optico de Cromo) y el router servicios (camino-optico admin)
+    monkeypatch.setattr(web_main.servicios, "_servicio_existe", _existe)
 
     async def _n_ids(_sesion, ids):
         return {}
@@ -178,6 +180,43 @@ def _fake_semillas(monkeypatch, semillas, *, total_matcheados=None, esperados=1,
 
     monkeypatch.setattr("core.services.cromo.camino_optico_service.caminos_esperados", _esperados)
     monkeypatch.setattr("core.services.cromo.pelos_excluidos.listar_excluidos", _excluidos)
+    # Por defecto el Servicio no tiene posiciones: la sesión es un `object()` y no hay DB.
+    _fake_posiciones(monkeypatch)
+
+
+def _fake_posiciones(monkeypatch, *, posibles=(), declaradas=(), invalidas=()):
+    """Stubea las posiciones del Servicio (`servicio_posicion_vigente`) sin DB.
+
+    `posibles` son pelos de posiciones posibles (en orden), `declaradas` pelos de posiciones
+    declaradas vigentes que el inventario sostiene e `invalidas` pelos de declaradas vigentes que
+    `validar_en_db` ya invalidó (PELO_CAMBIO, SIN_PELO, conector inexistente). `listar_declaradas`
+    devuelve las dos, `declaradas_validas` sólo las primeras; `pelo_es_de_posicion` y
+    `tiene_posiciones` miran todo, como su SQL (la rama de declaradas no valida).
+    """
+    from types import SimpleNamespace
+
+    from core.services.cromo import servicio_posicion_vigente as pv
+
+    async def _posibles(_sesion, _servicio_id):
+        return [SimpleNamespace(pelo_n_id=p) for p in posibles]
+
+    async def _declaradas(_sesion, _servicio_id):
+        return [SimpleNamespace(pelo_declarado=p) for p in (*declaradas, *invalidas)]
+
+    async def _validas(_sesion, _servicio_id):
+        return [SimpleNamespace(pelo_declarado=p) for p in declaradas]
+
+    async def _es_de_posicion(_sesion, _servicio_id, pelo_n_id):
+        return pelo_n_id in {*posibles, *declaradas, *invalidas}
+
+    async def _tiene(_sesion, _servicio_id):
+        return bool(posibles or declaradas or invalidas)
+
+    monkeypatch.setattr(pv, "posiciones_posibles", _posibles)
+    monkeypatch.setattr(pv, "listar_declaradas", _declaradas)
+    monkeypatch.setattr(pv, "declaradas_validas", _validas, raising=False)
+    monkeypatch.setattr(pv, "pelo_es_de_posicion", _es_de_posicion)
+    monkeypatch.setattr(pv, "tiene_posiciones", _tiene)
 
 
 def _fake_tracking(monkeypatch, *, contenido: str = "GENERADO desde Cromo\r\n", nombre: str = "93154 CROMO.txt"):
@@ -363,7 +402,25 @@ def test_pelos_devuelve_lista_vacia_sin_semillas(monkeypatch):
         "total_con_posicion_odf": 0,
         "caminos_esperados": 0,
         "excluidos": [],
+        "tiene_posiciones": False,
     }
+
+
+def test_pelos_informa_tiene_posiciones_a_un_usuario_no_admin(monkeypatch):
+    """Sin semillas etiquetadas pero con posiciones de ODF (el 93150 va por pelos con la etiqueta
+    44649): el endpoint de posiciones es admin, así que `/pelos` (`_require_auth`) dice si hay con
+    qué resolver. Sin esto el panel de un no admin mostraba «no tiene ningún pelo» y ocultaba
+    Resolver / Descargar todos, aunque `/caminos` y el `.txt` sí los resuelven."""
+    _fake_session(monkeypatch)
+    _fake_frescura(monkeypatch)
+    _fake_semillas(monkeypatch, [], esperados=0)
+    _fake_posiciones(monkeypatch, posibles=[7028862, 7028863])
+
+    res = _cliente_user(monkeypatch).get(_url_pelos())
+
+    assert res.status_code == 200
+    assert res.json()["total"] == 0
+    assert res.json()["tiene_posiciones"] is True
 
 
 def test_pelos_distingue_el_universo_matcheado_de_lo_listado(monkeypatch):
@@ -638,6 +695,208 @@ def test_tracking_txt_502_si_cromo_no_responde(monkeypatch):
     assert "Cromo no respondió" in res.json()["error"]
 
 
+# ── .txt de posiciones (posición vigente / caminos adicionales) ──────────────────────────────
+
+
+def _txt_con_registro(monkeypatch, *, nombre: str = "4649 CROMO.txt", numero: Optional[str] = "93150"):
+    """`obtener_tracking` fake que anota con qué `servicio_id` y pelo se pidió. El nombre base
+    simula el at.62 mal cargado de los pelos viejos del 93150 (`4649`)."""
+    from core.services.cromo import tracking_service
+    from core.services.cromo.tracking_service import TrackingGenerado
+
+    pedidos: list[tuple] = []
+
+    async def _obtener(_cliente, _sesion, *, servicio_id, pelo_n_id, forzar=False):
+        pedidos.append((servicio_id, pelo_n_id))
+        return TrackingGenerado(
+            pelo_n_id=pelo_n_id,
+            nombre_archivo=nombre,
+            contenido="GENERADO desde Cromo",
+            desde_cache=True,
+            generado_at=datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc),
+            duracion_ms=1,
+        )
+
+    async def _numero(_sesion, _servicio_id):
+        return numero
+
+    monkeypatch.setattr(tracking_service, "obtener_tracking", _obtener)
+    monkeypatch.setattr(tracking_service, "numero_del_servicio", _numero)
+    return pedidos
+
+
+def _nombre(res) -> str:
+    return res.headers["content-disposition"].split('filename="', 1)[1].rstrip('"')
+
+
+def test_tracking_txt_acepta_pelo_de_posicion_aunque_tenga_otra_etiqueta(monkeypatch):
+    """93150: el pelo 7028862 de O-1252871-1:1 lleva la etiqueta 44649 (no es semilla etiquetada)
+    pero es posición posible. Se baja, sin servicio en el caché (no está declarado) y con el número
+    del Servicio en el nombre, nunca con el at.62 `4649`."""
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(6799280)])
+    _fake_posiciones(monkeypatch, posibles=[7028862])
+    pedidos = _txt_con_registro(monkeypatch)
+
+    res = _cliente_user(monkeypatch).get(_url_txt(), params={"pelo_n_id": 7028862})
+
+    assert res.status_code == 200
+    assert _nombre(res) == "93150 CROMO pelo 7028862.txt"
+    assert "4649" not in _nombre(res).replace("7028862", "")
+    assert pedidos == [(None, 7028862)]
+
+
+def test_tracking_txt_pelo_declarado_se_cachea_con_el_servicio(monkeypatch):
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(6799280)])
+    _fake_posiciones(monkeypatch, posibles=[7028862], declaradas=[7028862])
+    pedidos = _txt_con_registro(monkeypatch)
+
+    res = _cliente_user(monkeypatch).get(_url_txt(), params={"pelo_n_id": 7028862, "tramo": 1})
+
+    assert res.status_code == 200
+    assert _nombre(res) == "93150 CROMO T1 pelo 7028862.txt"
+    assert pedidos == [(SERVICIO, 7028862)]
+
+
+def test_tracking_txt_adicional_se_nombra_con_numero_del_servicio(monkeypatch):
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(6799280)])
+    _fake_posiciones(monkeypatch, posibles=[7028862])
+    _txt_con_registro(monkeypatch)
+    client = _cliente_user(monkeypatch)
+
+    adicional = client.get(_url_txt(), params={"pelo_n_id": 7028862, "adicional": 2})
+    # También un adicional etiquetado (un TRAMO que pasó a ADICIONAL por la declaración).
+    etiquetado = client.get(_url_txt(), params={"pelo_n_id": 6799280, "adicional": 1})
+
+    assert _nombre(adicional) == "93150 CROMO A2 pelo 7028862.txt"
+    assert _nombre(etiquetado) == "93150 CROMO A1 pelo 6799280.txt"
+
+
+def test_tracking_txt_tramo_de_pelo_de_posicion_no_cae_al_at62(monkeypatch):
+    """Sin número del Servicio el respaldo del tramo es el at.62 del pelo; para un pelo que sólo es
+    de posición ese at.62 es justamente el que está mal (`4649`)."""
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(6799280)])
+    _fake_posiciones(monkeypatch, posibles=[7028862])
+    _txt_con_registro(monkeypatch, numero=None)
+    client = _cliente_user(monkeypatch)
+
+    tramo = client.get(_url_txt(), params={"pelo_n_id": 7028862, "tramo": 1})
+    suelto = client.get(_url_txt(), params={"pelo_n_id": 7028862})
+
+    assert _nombre(tramo) == "tracking_cromo T1 pelo 7028862.txt"
+    assert _nombre(suelto) == "tracking_cromo_pelo_7028862.txt"
+
+
+def test_tracking_txt_tramo_y_adicional_juntos_400(monkeypatch):
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(6799280)])
+    _txt_con_registro(monkeypatch)
+
+    res = _cliente_user(monkeypatch).get(
+        _url_txt(), params={"pelo_n_id": 6799280, "tramo": 1, "adicional": 1}
+    )
+
+    assert res.status_code == 400
+    assert "tramo o un adicional" in res.json()["error"]
+
+
+def test_tracking_txt_sin_semillas_con_posiciones_no_da_409(monkeypatch):
+    """Sin semillas etiquetadas (9 servicios reales, con el filtro aplicado) el default es la
+    posición declarada o, si no hay, la primera posible."""
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [])
+    _fake_posiciones(monkeypatch, posibles=[7028862, 7028863])
+    pedidos = _txt_con_registro(monkeypatch)
+    client = _cliente_user(monkeypatch)
+
+    res = client.get(_url_txt())
+
+    assert res.status_code == 200
+    assert _nombre(res) == "93150 CROMO pelo 7028862.txt"
+    assert pedidos == [(None, 7028862)]
+
+    _fake_posiciones(monkeypatch, posibles=[7028862, 7028863], declaradas=[7028863])
+    declarada = client.get(_url_txt())
+
+    assert declarada.status_code == 200
+    assert pedidos[-1] == (SERVICIO, 7028863)
+
+
+def test_tracking_txt_default_ignora_la_declarada_que_el_inventario_ya_no_sostiene(monkeypatch):
+    """El conector declarado cambió de pelo en Cromo (PELO_CAMBIO pendiente de retiro, todavía sin
+    `/caminos` ni track). Sin semillas etiquetadas, el default no puede bajar el camino del pelo
+    viejo con el número del Servicio ni cachearlo con `servicio_id` (re-atribuiría la fila a la
+    traza y a la API v1): cae a la primera posición posible, sin servicio."""
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [])
+    _fake_posiciones(monkeypatch, posibles=[7028862], invalidas=[7000001])
+    pedidos = _txt_con_registro(monkeypatch)
+
+    res = _cliente_user(monkeypatch).get(_url_txt())
+
+    assert res.status_code == 200
+    assert pedidos == [(None, 7028862)]
+
+
+def test_tracking_txt_sin_semillas_y_solo_declarada_invalida_da_409(monkeypatch):
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [])
+    _fake_posiciones(monkeypatch, invalidas=[7000001])
+    pedidos = _txt_con_registro(monkeypatch)
+
+    res = _cliente_user(monkeypatch).get(_url_txt())
+
+    assert res.status_code == 409
+    assert res.json()["estado"] == ESTADO_SIN_SEMILLA
+    assert pedidos == []
+
+
+def test_tracking_txt_pelo_de_declarada_invalida_no_se_atribuye_al_servicio(monkeypatch):
+    """Pedido explícito del pelo viejo de una declarada invalidada: si ya no es posición del
+    Servicio es ajeno (400); si sigue siendo posición posible se baja, pero sin servicio en caché."""
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [_semilla(6799280)])
+    pedidos = _txt_con_registro(monkeypatch)
+    client = _cliente_user(monkeypatch)
+
+    _fake_posiciones(monkeypatch, posibles=[7028862], invalidas=[7000001])
+    ajeno = client.get(_url_txt(), params={"pelo_n_id": 7000001})
+
+    assert ajeno.status_code == 400
+    assert "no pertenece" in ajeno.json()["error"]
+    assert pedidos == []
+
+    _fake_posiciones(monkeypatch, posibles=[7000001], invalidas=[7000001])
+    posible = client.get(_url_txt(), params={"pelo_n_id": 7000001})
+
+    assert posible.status_code == 200
+    assert pedidos == [(None, 7000001)]
+
+
+def test_tracking_txt_400_pelo_ajeno_aunque_el_servicio_no_tenga_semillas(monkeypatch):
+    """Pedido explícito de un pelo que no es del Servicio: 400, aunque no haya semillas (42352)."""
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+    _fake_semillas(monkeypatch, [])
+
+    res = _cliente_user(monkeypatch).get(_url_txt(), params={"pelo_n_id": 6976963})
+
+    assert res.status_code == 400
+    assert "no pertenece" in res.json()["error"]
+
+
 # ── GET .../servicios-odf/{id}/camino-optico (JSON + auditoría) ──────────────
 
 
@@ -811,7 +1070,13 @@ def test_caminos_devuelve_los_tramos_y_los_residuales(monkeypatch):
     assert set(cuerpo) == {
         "tramos", "residuales", "esperados_declarados", "odf_confirmadas", "completo", "errores",
         "no_cubiertos", "tope_llamadas", "segmentos", "inconsistencias",
+        "adicionales", "caminos_resueltos", "posicion_vigente",
     }
+    assert cuerpo["adicionales"] == [] and cuerpo["caminos_resueltos"] == 2
+    assert cuerpo["posicion_vigente"] == {
+        "declarada": False, "aplicada": False, "posiciones": "", "avisos": [],
+    }
+    assert cuerpo["tramos"][0]["rol"] == "TRAMO" and cuerpo["tramos"][0]["completo"] is False
     assert cuerpo["esperados_declarados"] == 3 and cuerpo["completo"] is True
     assert [c["n"] for c in cuerpo["tramos"]] == [1, 2]
     assert [c["pelo_n_id"] for c in cuerpo["tramos"]] == [6799772, 6799773]
@@ -1132,3 +1397,109 @@ def test_caminos_expone_todas_las_odfs_de_tramos_y_residuales_con_nombre_y_clase
     assert cuerpo["no_cubiertos"] == 1
     assert cuerpo["tope_llamadas"] is False
     assert cuerpo["segmentos"] == 1
+
+
+def test_caminos_expone_adicionales_completos_y_posicion_vigente(monkeypatch):
+    """93150 con O-1252871-1:1,2 declarada: los vigentes son el camino viejo (7028862/63) y el nuevo
+    (6799280) queda como adicional descargable, con por qué posición sale y con qué etiqueta. Los
+    ids de ODF de los adicionales también se normalizan a n_id."""
+    from core.services.cromo import servicio_odf_confirmacion as svc
+    from core.services.cromo.servicio_posicion_vigente import AvisoPosicion
+    from core.services.cromo.tracking_service import (
+        EstadoPosicion,
+        ExtremoCamino,
+        InfoAdicional,
+        ResumenCamino,
+        TrackingGenerado,
+        TrackingsDelServicio,
+    )
+
+    _fake_session(monkeypatch)
+    _fake_cromo_client(monkeypatch)
+
+    def _odf(id_cromo, odf_id, patchera, conector):
+        return ExtremoCamino(
+            tipo="CONECTOR_ODF", id_cromo=id_cromo, clase=136, odf_id=odf_id, odf_clase=69,
+            odf_nombre=f"ODF {odf_id}", patchera_nombre=patchera, conector_numero=conector,
+        )
+
+    def _t(pelo, nombre, rol, resumen):
+        return TrackingGenerado(
+            pelo_n_id=pelo, nombre_archivo=nombre, contenido="", desde_cache=True,
+            generado_at=datetime(2026, 10, 21, tzinfo=timezone.utc), duracion_ms=None,
+            pelos_camino=frozenset({pelo, pelo + 1}), extremos=resumen, rol=rol,
+        )
+
+    viejo = ResumenCamino(
+        inicio=_odf(8604882, 6644560, "O-1252871-1", "1"), fin=_odf(1, 6644536, "O-1252734-1", "11")
+    )
+    nuevo = ResumenCamino(
+        inicio=_odf(2, 6642000, "O-1239921-1", "19"), fin=_odf(3, 6642001, "O-1239922-1", "1"),
+        odfs=(6642555,),
+    )
+    vigente = _t(7028862, "93150 CROMO T1 pelo 7028862.txt", "VIGENTE", viejo)
+    adicional = _t(6799280, "93150 CROMO A1 pelo 6799280.txt", "ADICIONAL", nuevo)
+    aviso = AvisoPosicion(
+        conector_n_id=8604883, posicion="O-1252871-1:2", codigo="PELO_DANADO", retirada=False,
+        declaracion_id=2, pelo_declarado=7028863, detalle={"pelo": 7028900, "estado": "Cortado"},
+    )
+    _fake_trackings_del_servicio(
+        monkeypatch,
+        TrackingsDelServicio(
+            tramos=[vigente], residuales=[], errores=[], completo=True,
+            adicionales=[adicional],
+            info_adicionales=[
+                InfoAdicional(
+                    pelo_n_id=6799280, origen="ETIQUETADO",
+                    posiciones=(("O-1239922-1", "1"),), etiquetas=("93150",),
+                )
+            ],
+            caminos_resueltos=[vigente, adicional],
+            posicion=EstadoPosicion(
+                declaradas=[object()], aplicada=True, etiqueta="O-1252871-1:1,2", avisos=[aviso]
+            ),
+        ),
+    )
+    vistos: list[int] = []
+
+    async def _n_ids(_sesion, ids):
+        vistos.extend(ids)
+        return {}
+
+    monkeypatch.setattr(svc, "n_ids_de_odfs", _n_ids)
+    cuerpo = _cliente_user(monkeypatch).get(
+        f"/api/infra/cromo/servicios/{SERVICIO}/camino-optico/caminos"
+    ).json()
+
+    assert cuerpo["tramos"][0]["rol"] == "VIGENTE" and cuerpo["tramos"][0]["completo"] is True
+    (a,) = cuerpo["adicionales"]
+    assert set(a) == {
+        "n", "pelo_n_id", "nombre_archivo", "pelos_en_camino", "extremos", "odfs", "desde_cache",
+        "completo", "origen", "posiciones", "etiquetas",
+    }
+    assert a["n"] == 1 and a["pelo_n_id"] == 6799280
+    assert a["nombre_archivo"] == "93150 CROMO A1 pelo 6799280.txt"
+    assert a["pelos_en_camino"] == 2 and a["desde_cache"] is True and a["completo"] is True
+    assert a["origen"] == "ETIQUETADO"
+    assert a["posiciones"] == "O-1239922-1:1" and a["etiquetas"] == ["93150"]
+    assert a["extremos"]["a"]["patchera_nombre"] == "O-1239921-1"
+    assert [o["odf_n_id"] for o in a["odfs"]] == [6642555, 6642000, 6642001]
+    assert cuerpo["caminos_resueltos"] == 2
+    assert {6642000, 6642001, 6642555} <= set(vistos)
+    assert cuerpo["posicion_vigente"] == {
+        "declarada": True,
+        "aplicada": True,
+        "posiciones": "O-1252871-1:1,2",
+        "avisos": [
+            {
+                "conector_n_id": 8604883,
+                "posicion": "O-1252871-1:2",
+                "codigo": "PELO_DANADO",
+                "retirada": False,
+                "texto": (
+                    "La posición vigente O-1252871-1:2 se mantiene, pero su camino pasa por el pelo "
+                    "7028900 en estado «Cortado» y no hay otro camino completo sano."
+                ),
+            }
+        ],
+    }

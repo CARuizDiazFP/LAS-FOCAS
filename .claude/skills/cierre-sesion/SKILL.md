@@ -102,12 +102,17 @@ reservado para cuando se declare explícitamente.
     python scripts/agent_worktree.py sync      --agent <agent-id>   # trae origin/dev a la rama
     # resolver conflictos DENTRO del worktree propio y volver a validar con PRUEBAS FOCALES
     # (ver "Validación hacia dev" abajo) + drift de mirrors si se tocaron skills
-    python scripts/agent_worktree.py ready     --agent <agent-id>   # exige worktree limpio
+    python scripts/agent_worktree.py ready     --agent <agent-id>   # worktree limpio + gate de calidad
     python scripts/agent_worktree.py integrate --agent <agent-id>   # toma git:integrate-dev
     python scripts/agent_worktree.py finish    --agent <agent-id>   # libera los leases propios
     python scripts/agent_worktree.py cleanup   --agent <agent-id> --borrar-rama
+    # `integrate` publica la rama en origin y `--borrar-rama` sólo borra la local: borrar la
+    # remota, verificando antes que ya está en dev
+    git fetch origin && git merge-base --is-ancestor origin/<rama> origin/dev \
+      && git push origin --delete <rama>
     ```
-    `integrate` adquiere `git:integrate-dev`, publica la rama, hace fast-forward de `dev`, actualiza
+    Sin ese último paso las ramas remotas se acumulan (real: 22 ya mergeadas, borradas a mano el
+    2026-10-20). `integrate` adquiere `git:integrate-dev`, publica la rama, hace fast-forward de `dev`, actualiza
     el checkout de control y libera el lease. Si `dev` avanzó mientras tanto, el push es rechazado
     por Git y el comando lo informa: repetir `sync` y reintentar. Si la integración falla, el agente
     queda en `blocked` y **el worktree no se elimina**. `cleanup` sólo remueve el worktree si está
@@ -124,6 +129,12 @@ reservado para cuando se declare explícitamente.
     builds de imágenes se reservan para el **despliegue productivo**: correrlos acá alarga la ventana
     de `git:integrate-dev` y bloquea a las demás sesiones sin aportar a la integración en `dev`.
     Registrar en el cierre qué pruebas focales se corrieron y su resultado real.
+
+    **`ready` ya corre el gate de calidad local** (lint de los `.py` cambiados + tests focales,
+    ver `agent-worktree` §4) e `integrate` rechaza un HEAD que no lo pasó. Copiar al cierre el
+    `resumen` del gate que devuelve `ready`. Si fue necesario `ready --sin-gate --motivo "..."`,
+    el cierre lo declara como riesgo con el motivo; nunca usarlo para esquivar un test que falla
+    por el propio cambio.
 
     **Recursos Docker efímeros de la sesión.** Antes de `cleanup`, eliminar los contenedores, redes
     y volúmenes de prueba que la sesión creó. Todo recurso temporal se crea etiquetado

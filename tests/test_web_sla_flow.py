@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import io
-import sys
 from pathlib import Path
 
 import pandas as pd
@@ -14,6 +13,7 @@ from fastapi.testclient import TestClient
 
 
 from web.app import main as web_main  # type: ignore  # noqa: E402
+from web.app.routers import informes as web_informes  # type: ignore  # noqa: E402
 from web.app.main import app  # type: ignore  # noqa: E402
 
 from tests.test_web_admin import _connect_user_ok  # noqa: E402
@@ -92,6 +92,15 @@ def _login_as_user(client: TestClient, monkeypatch, password: str = "userpass") 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok(password))
     res = client.post("/api/auth/login", json={"username": "user", "password": password})
     return res.json()["csrf"]
+
+
+@pytest.fixture(autouse=True)
+def _reportes_en_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Aísla los informes: las constantes se calculan al importar, el env no alcanza."""
+    from core.services import sla as sla_service_mod
+
+    monkeypatch.setattr(sla_service_mod, "REPORTS_DIR", tmp_path / "reports")
+    monkeypatch.setattr(web_informes, "REPORTS_DIR", tmp_path / "reports")
 
 
 def test_sla_flow_success_with_two_excel_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

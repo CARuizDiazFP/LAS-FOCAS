@@ -222,11 +222,11 @@ Si algún Dockerfile hijo ya crea un usuario con el mismo UID que se va a agrega
 `lasfocasdev-api` y `lasfocasdev-web` corren ambos `uvicorn app.main:app` desde el mismo path interno `/app/app/main.py` (sólo cambia el puerto: 8000 vs 8080) — pero cada imagen copia ahí un archivo fuente **distinto** del repo:
 
 - `lasfocasdev-api` → `api/app/main.py` ("LAS-FOCAS API", auth por API key, rutas `reports`/`ingest`/`infra`/`servicios` para consumidores externos/scripts).
-- `lasfocasdev-web` → `web/app/main.py` (backend de la SPA Vue 3, auth por sesión/CSRF — la mayoría de los endpoints `/api/infra/...`/`/api/admin/...` que se tocan en el día a día).
+- `lasfocasdev-web` → `web/app/main.py` + `web/app/routers/` (backend de la SPA Vue 3, auth por sesión/CSRF — la mayoría de los endpoints `/api/infra/...`/`/api/admin/...` que se tocan en el día a día).
 
 **Síntoma real** (2026-08-12, verificando un endpoint nuevo de `web/app/main.py`): un `docker exec lasfocasdev-api curl ...` contra un endpoint de la SPA devuelve 404 con `{"detail":"Not Found"}` — no porque la ruta esté mal, sino porque ese contenedor corre otra app FastAPI completa. `GET /openapi.json` en `lasfocasdev-api` no lista ningún `/api/infra/...` de la SPA (misma prueba rápida para confirmar cuál es cuál: `docker inspect <contenedor> --format '{{.Config.Cmd}}'` da el mismo comando en los dos, pero `docker exec <contenedor> grep -n 'Ubicación de archivo' /app/app/main.py` muestra el path real distinto).
 
-**Regla**: para verificar wiring de un endpoint de `web/app/main.py` (nuevo o modificado), apuntar siempre a `lasfocasdev-web`:
+**Regla**: para verificar wiring de un endpoint de `web/app/main.py` o `web/app/routers/` (nuevo o modificado), apuntar siempre a `lasfocasdev-web`:
 
 ```bash
 docker exec lasfocasdev-web curl -s http://localhost:8080/api/infra/...
@@ -256,7 +256,7 @@ Después de eso, los `docker cp` de archivos individuales dentro de `scripts/` v
 
 `web/Dockerfile` **no copia `web/` entero**: copia `web/app`, `web/tools` y cada módulo suelto por
 nombre (`web/chat_ws.py`, `web/admin_ws.py`, `web/fo_monitor_routes.py`). Un archivo nuevo en `web/`
-importado desde `web/app/main.py` pasa todos los tests en el host (el venv ve el repo completo) y
+importado desde `web/app/main.py` o `web/app/routers/` pasa todos los tests en el host (el venv ve el repo completo) y
 rompe el contenedor: `ModuleNotFoundError: No module named 'web.<modulo>'` en el arranque, el web
 queda en restart loop y `/health` cae. Lo mismo con los Dockerfiles de workers en `deploy/docker/`,
 que copian sólo los submódulos de `modules/` que necesitan.
@@ -265,6 +265,14 @@ que copian sólo los submódulos de `modules/` que necesitan.
 los `COPY` del Dockerfile del servicio; **después del rebuild**, esperar `healthy` (no sólo
 `Started`) y mirar `docker logs --tail 30` antes de dar el rebuild por bueno. Hallazgo real
 (2026-10-14, FO Monitor, ver `docs/cierres/2026-10-17.md`): el web de dev estuvo caído unos minutos.
+
+**La variante inversa también rompe el contenedor:** un módulo suelto de `web/` (`fo_monitor_routes.py`,
+`chat_ws.py`, `admin_ws.py`) que importa `web.app...`. En la imagen, `web/app` se copia como `app`,
+así que `web.app` no existe y el web no arranca (`ModuleNotFoundError: No module named 'web.app'`),
+aunque la suite completa pase. Usar `try: from web.app.x import ... except ModuleNotFoundError:
+from app.x import ...`. Lo vigila `tests/test_web_imports_layout_contenedor.py`. Real (2026-10-23,
+ver `docs/cierres/2026-10-23.md`): el web de dev estuvo caído unos minutos después de un rebuild con
+la suite en verde (4482 passed).
 
 ## Antes de una verificación E2E real de cierre: reconstruir, no asumir que el contenedor está al día
 

@@ -1,7 +1,7 @@
 <!--
   Nombre de archivo: CromoCaminoPanel.vue
   Ubicación de archivo: web/frontend/src/components/infra/CromoCaminoPanel.vue
-  Descripción: Panel reutilizable del camino óptico de Cromo — semillas, resolución cancelable, estadísticas, auditoría de consistencia y secuencia de nodos
+  Descripción: Panel reutilizable del camino óptico de Cromo — semillas, posición vigente declarada, resolución cancelable, estadísticas, auditoría de consistencia y secuencia de nodos
 -->
 <template>
   <section class="cromo-camino">
@@ -10,9 +10,10 @@
       <!-- Un solo botón con dos acciones: la principal resuelve los tramos del Servicio (lo que
            se descarga y lo que hace `@bot track`); el menú abre el detalle nodo a nodo del pelo
            elegido (secuencia, estadísticas y consistencia). Antes eran dos botones sueltos con
-           nombres casi iguales ("Resolver camino" / "Resolver caminos"). -->
+           nombres casi iguales ("Resolver camino" / "Resolver caminos"). Sin semillas etiquetadas
+           igual se puede resolver si hay posiciones de ODF: el backend arranca de ellas. -->
       <div
-        v-if="camino.tieneSemilla.value && servicioId !== null"
+        v-if="(camino.tieneSemilla.value || camino.tienePosiciones.value) && servicioId !== null"
         ref="menuEl"
         class="cromo-camino__accion"
       >
@@ -56,7 +57,10 @@
     </header>
 
     <p v-if="camino.cargandoPelos.value" class="cromo-camino__nota">Buscando pelos…</p>
-    <p v-else-if="!camino.tieneSemilla.value" class="cromo-camino__nota">
+    <p
+      v-else-if="!camino.tieneSemilla.value && !camino.tienePosiciones.value"
+      class="cromo-camino__nota"
+    >
       Este Servicio no tiene ningún pelo en Cromo, así que no hay camino que resolver.
     </p>
 
@@ -90,7 +94,10 @@
 
     <!-- Caminos del Servicio: tantos como pelos suyos en un mismo cable u ODF (regla de
          operaciones). Cuáles son lo resuelve el backend contra Cromo, igual que `@bot track`. -->
-    <div v-if="camino.tieneSemilla.value" class="cromo-camino__caminos">
+    <div
+      v-if="camino.tieneSemilla.value || camino.caminosResueltos.value"
+      class="cromo-camino__caminos"
+    >
       <!-- Sólo lo que declaró el operador: la moda de pelos por cable de `/pelos` no es una
            expectativa (un servicio segmentado tiene más trackings que esa moda). -->
       <p class="cromo-camino__nota">
@@ -100,6 +107,11 @@
         <template v-if="camino.caminosResueltos.value">
           <template v-if="camino.esperadosDeclarados.value != null"> · </template>
           resueltos: <strong>{{ camino.tramos.value.length }}</strong>
+          <!-- Con adicionales, lo que documenta Cromo (y baja `track N full`) es más que los tramos. -->
+          <template v-if="camino.adicionales.value.length">
+            · caminos resueltos: <strong>{{ camino.cantidadCaminosResueltos.value }}</strong>
+            ({{ camino.adicionales.value.length }} adicional(es))
+          </template>
         </template>
         <template v-if="camino.caminosResueltos.value && camino.segmentos.value > 1">
           · Servicio segmentado en {{ camino.segmentos.value }} tramos
@@ -107,8 +119,117 @@
         </template>
       </p>
     </div>
+
+    <!-- Posición vigente: los conectores de ODF de los que sale el tracking del Servicio. Queda
+         FUERA del gate de caminos resueltos porque es lo que se declara ANTES de resolverlos (el
+         93150 no tiene semillas útiles hasta que se declara su posición). Sólo un admin. -->
+    <div v-if="mostrarBloquePosicion" class="cromo-camino__declaracion">
+      <p class="cromo-camino__nota">
+        Posición vigente
+        <template v-if="camino.cargandoPosiciones.value"> · cargando…</template>
+        <template v-else-if="camino.posicionesDeclaradas.value.length === 0">
+          · sin declarar (el tracking se calcula solo)
+        </template>
+      </p>
+      <ul v-if="camino.posicionesDeclaradas.value.length" class="cromo-camino__lista">
+        <li v-for="d in camino.posicionesDeclaradas.value" :key="d.id">
+          <span>
+            ODF {{ d.odf_nombre ?? d.odf_n_id ?? '?' }} · {{ d.posicion }}
+            <template v-if="d.pelo_n_id_actual ?? d.pelo_n_id_declarado">
+              · pelo {{ d.pelo_n_id_actual ?? d.pelo_n_id_declarado }}
+            </template>
+            <span class="cromo-camino__confirmada">
+              <i class="ph ph-check-circle" aria-hidden="true"></i>
+              vigente
+            </span>
+            <span v-if="d.declarado_por" class="cromo-camino__odf-meta">
+              · {{ d.declarado_por }}
+            </span>
+          </span>
+          <span class="cromo-camino__acciones">
+            <button
+              class="btn subtle"
+              type="button"
+              :disabled="camino.guardandoDeclaracion.value"
+              title="Deja de usar esta posición: el Servicio vuelve al cálculo automático"
+              @click="camino.retirarPosicion(servicioId!, d.conector_n_id)"
+            >
+              Retirar
+            </button>
+          </span>
+        </li>
+      </ul>
+      <!-- El inventario ingerido ya no sostiene la declaración: la próxima resolución la retira
+           si hay otro camino sano. Acá sólo se informa. -->
+      <p
+        v-for="d in camino.posicionesDeclaradas.value.filter((x) => !x.valida)"
+        :key="`aviso-${d.id}`"
+        class="cromo-camino__aviso"
+      >
+        <i class="ph ph-warning" aria-hidden="true"></i>
+        <span>{{ d.posicion }}: {{ d.aviso }}</span>
+      </p>
+
+      <template v-if="posiblesDeclarables.length">
+        <div class="cromo-camino__esperados">
+          <select
+            v-model="conectorElegido"
+            class="cromo-camino__input is-ancho"
+            aria-label="Posición de ODF a declarar como vigente"
+            :disabled="camino.guardandoDeclaracion.value"
+          >
+            <option :value="null">Elegí una posición de ODF…</option>
+            <option v-for="p in posiblesDeclarables" :key="p.conector_n_id" :value="p.conector_n_id">
+              {{ etiquetaPosible(p) }}
+            </option>
+          </select>
+          <button
+            class="btn subtle"
+            type="button"
+            :disabled="conectorElegido === null || camino.guardandoDeclaracion.value"
+            @click="declararPosicion"
+          >
+            Declarar
+          </button>
+        </div>
+        <label v-if="parSugerido" class="cromo-camino__esperados cromo-camino__nota">
+          <input v-model="incluirPar" type="checkbox" />
+          Incluir también {{ parSugerido.posicion }} (otro hilo)
+        </label>
+        <p v-if="posicionElegida?.servicio_activo_ajeno" class="cromo-camino__aviso">
+          <i class="ph ph-warning" aria-hidden="true"></i>
+          <span>
+            El pelo de {{ posicionElegida.posicion }} también matchea el servicio Activo
+            {{ posicionElegida.servicio_activo_ajeno }}: confirmá que la posición es de este Servicio.
+          </span>
+        </p>
+      </template>
+      <p
+        v-else-if="!camino.cargandoPosiciones.value && !camino.errorPosiciones.value"
+        class="cromo-camino__nota"
+      >
+        No hay otras posiciones de ODF con pelo para declarar.
+      </p>
+      <p v-if="camino.declaracionCambio.value" class="cromo-camino__nota">
+        Lo declarado se aplica al volver a resolver los caminos.
+      </p>
+      <p v-if="camino.errorPosiciones.value" class="cromo-camino__error">
+        {{ camino.errorPosiciones.value }}
+      </p>
+    </div>
+
     <p v-if="camino.errorCaminos.value" class="cromo-camino__error">
       {{ camino.errorCaminos.value }}
+    </p>
+    <!-- Cómo se aplicó la posición vigente en esta resolución (pelo dañado, pelo que cambió, si
+         la corrida la retiró). Es aviso, no error: el tracking igual salió. -->
+    <p
+      v-for="a in camino.estadoPosicion.value?.avisos ?? []"
+      :key="`posicion-${a.conector_n_id}-${a.codigo}`"
+      class="cromo-camino__aviso"
+    >
+      <i class="ph ph-warning" aria-hidden="true"></i>
+      <span>{{ a.texto }}</span>
     </p>
     <!-- Un tramo por `.txt`: cada fila baja el suyo; "Descargar todos" baja uno por tramo en
          serie desde el botón de la vista. -->
@@ -116,6 +237,10 @@
       <li v-for="t in camino.tramos.value" :key="t.pelo_n_id">
         <span>
           {{ etiquetaTramo(t) }}
+          <span v-if="t.rol === 'VIGENTE'" class="cromo-camino__confirmada">
+            <i class="ph ph-check-circle" aria-hidden="true"></i>
+            vigente
+          </span>
           <span v-if="t.desde_cache" class="cromo-camino__odf-meta">· en caché</span>
         </span>
         <span v-if="servicioId !== null" class="cromo-camino__acciones">
@@ -140,6 +265,51 @@
         </span>
       </li>
     </ul>
+    <!-- Adicionales: caminos completos que Cromo también documenta y no son vigentes ni tramos.
+         Cada uno baja su `.txt` (`A{n}`, como `track N full`); "Descargar todos" no los incluye. -->
+    <template v-if="camino.adicionales.value.length">
+      <p class="cromo-camino__nota">
+        Caminos adicionales (Cromo también los documenta; "Descargar todos" baja sólo los
+        vigentes/tramos)
+      </p>
+      <ul class="cromo-camino__lista">
+        <li v-for="a in camino.adicionales.value" :key="a.pelo_n_id">
+          <span>
+            {{ etiquetaAdicional(a) }}
+            <span class="cromo-camino__odf-meta">
+              {{ [
+                a.posiciones,
+                a.etiquetas.length ? `etiqueta ${a.etiquetas.join(', ')}` : null,
+                a.desde_cache ? 'en caché' : null,
+              ]
+                .filter(Boolean)
+                .map((x) => `· ${x}`)
+                .join(' ') }}
+            </span>
+          </span>
+          <span v-if="servicioId !== null" class="cromo-camino__acciones">
+            <button
+              class="btn subtle"
+              type="button"
+              :disabled="ocupado"
+              title="Detalle nodo a nodo de este camino"
+              @click="detallePelo(a.pelo_n_id)"
+            >
+              Detalle
+            </button>
+            <button
+              class="btn subtle"
+              type="button"
+              :disabled="camino.descargando.value || camino.resolviendoCaminos.value"
+              :title="a.nombre_archivo"
+              @click="camino.descargarAdicional(servicioId, a)"
+            >
+              Descargar
+            </button>
+          </span>
+        </li>
+      </ul>
+    </template>
     <!-- Lo que declara el operador sobre el tracking: cuántos espera y qué ODF son del recorrido.
          Un camino que termina en una ODF confirmada y no es ruido chico es tramo. Sólo un admin escribe. -->
     <div v-if="camino.caminosResueltos.value" class="cromo-camino__declaracion">
@@ -206,7 +376,11 @@
           </li>
         </ul>
       </template>
-      <p v-if="camino.declaracionCambio.value" class="cromo-camino__nota">
+      <!-- Con el bloque de posición vigente a la vista la nota ya está ahí. -->
+      <p
+        v-if="camino.declaracionCambio.value && !mostrarBloquePosicion"
+        class="cromo-camino__nota"
+      >
         Lo declarado se aplica al volver a resolver los caminos.
       </p>
       <p v-if="camino.errorDeclaracion.value" class="cromo-camino__error">
@@ -417,7 +591,10 @@ import { RouterLink } from 'vue-router';
 import {
   type OdfConfirmada,
   type OdfDelCamino,
+  type PosicionPosible,
   type RolOdfConfirmada,
+  etiquetaAdicional,
+  etiquetaPosicion,
   etiquetaTramo,
 } from '../../api/cromoPath';
 import type { OdfDelTramo, useCromoPath } from '../../composables/useCromoPath';
@@ -426,10 +603,15 @@ import CromoConsistenciaPanel from './CromoConsistenciaPanel.vue';
 import CromoPathSecuencia from './CromoPathSecuencia.vue';
 import CromoPeloSelector from './CromoPeloSelector.vue';
 
-const props = defineProps<{
-  camino: ReturnType<typeof useCromoPath>;
-  servicioId: number | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    camino: ReturnType<typeof useCromoPath>;
+    servicioId: number | null;
+    /** Bloque "Posición vigente". Apagado por defecto: el modal de asociación de ODF no lo muestra. */
+    mostrarPosicionVigente?: boolean;
+  }>(),
+  { mostrarPosicionVigente: false },
+);
 
 const { state: sesion } = useSession();
 // Mismo criterio que el resto del SPA: el rol viaja en la sesión, no hay un `isAdmin` propio.
@@ -494,6 +676,54 @@ async function guardarEsperados(): Promise<void> {
   }
   const ok = await props.camino.declararEsperados(props.servicioId, cantidad);
   if (!ok) esperadosEditado.value = props.camino.esperadosDeclarados.value ?? '';
+}
+
+// --- Posición vigente ---
+const mostrarBloquePosicion = computed(
+  () => props.mostrarPosicionVigente && esAdmin.value && props.servicioId !== null,
+);
+/** Se ofrecen las no declaradas y con pelo: un conector sin pelo no tiene de dónde sacar el camino. */
+const posiblesDeclarables = computed<PosicionPosible[]>(() =>
+  props.camino.posicionesPosibles.value.filter((p) => !p.declarada && p.pelo_n_id !== null),
+);
+const conectorElegido = ref<number | null>(null);
+const posicionElegida = computed<PosicionPosible | null>(
+  () => posiblesDeclarables.value.find((p) => p.conector_n_id === conectorElegido.value) ?? null,
+);
+/** El otro hilo del par, si todavía se puede declarar (no declarado y con pelo). */
+const parSugerido = computed<PosicionPosible | null>(() => {
+  const par = posicionElegida.value?.par_sugerido_n_id;
+  if (par == null) return null;
+  return posiblesDeclarables.value.find((p) => p.conector_n_id === par) ?? null;
+});
+/** Tildado por defecto: un servicio FO casi siempre son dos hilos contiguos. */
+const incluirPar = ref(true);
+watch(conectorElegido, () => {
+  incluirPar.value = true;
+});
+// Si se recargan las posiciones (otro Servicio, retiro en la corrida) y la elegida ya no se
+// ofrece, el select vuelve a vacío en vez de quedar apuntando a nada.
+watch(posiblesDeclarables, (lista) => {
+  if (conectorElegido.value !== null && !lista.some((p) => p.conector_n_id === conectorElegido.value)) {
+    conectorElegido.value = null;
+  }
+});
+
+/** Etiqueta del selector: la de la posición más el servicio Activo ajeno cuyo pelo también matchea. */
+function etiquetaPosible(posicion: PosicionPosible): string {
+  const texto = etiquetaPosicion(posicion);
+  return posicion.servicio_activo_ajeno
+    ? `${texto} · servicio Activo ${posicion.servicio_activo_ajeno}`
+    : texto;
+}
+
+async function declararPosicion(): Promise<void> {
+  const elegida = posicionElegida.value;
+  if (props.servicioId === null || !elegida) return;
+  const conectores = [elegida.conector_n_id];
+  if (incluirPar.value && parSugerido.value) conectores.push(parSugerido.value.conector_n_id);
+  const ok = await props.camino.declararPosicion(props.servicioId, conectores);
+  if (ok) conectorElegido.value = null;
 }
 
 /** Normalizar escribe inventario, así que el panel sólo dispara: el servicio decide qué corregir. */
@@ -691,6 +921,13 @@ defineSlots<{
   background: var(--color-surface);
   color: var(--color-text);
   font-size: 12px;
+}
+
+.cromo-camino__input.is-ancho {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .cromo-camino__acciones {

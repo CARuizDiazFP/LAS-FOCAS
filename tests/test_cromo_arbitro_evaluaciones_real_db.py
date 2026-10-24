@@ -17,7 +17,7 @@ pytestmark = requiere_postgres_real
 
 
 @pytest.mark.asyncio
-async def test_cierra_solo_en_curso_anteriores_al_arranque(entorno):
+async def test_cierra_solo_en_curso_anteriores_al_arranque(entorno):  # noqa: F811 - fixture importada
     sesion, conn = entorno
     inicio = datetime.now(timezone.utc)
     ins = (

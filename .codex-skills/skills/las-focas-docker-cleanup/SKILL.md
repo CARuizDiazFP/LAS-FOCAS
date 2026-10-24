@@ -187,6 +187,28 @@ Este skill proporciona comandos seguros para liberar espacio de Docker **sin eli
 
 > **NUNCA ejecutar `docker volume prune`** - Los volúmenes contienen datos persistentes (PostgreSQL, uploads, etc.)
 
+## 🔒 Host compartido dev + prod: imágenes protegidas
+
+El servidor (`srv-xdc-apps-focal-01`) corre **en el mismo daemon Docker** el stack de prod
+(`lasfocas-*`) y el de dev (`lasfocasdev-*`). Por eso acá **no existe un "host de dev" donde un
+prune agresivo sea inofensivo**: `docker image prune -a` y `docker system prune -a` borran toda
+imagen sin contenedor, y en este host eso incluye (real, 2026-10-23, ver `docs/cierres/2026-10-23.md`):
+
+| Imagen | Por qué no tiene contenedor | Qué rompe si se borra |
+|---|---|---|
+| `lasfocas-<svc>:rollback`, `:pre-deploy-YYYYMMDD`, `:pre-hotfix-YYYYMMDD` | Son el rollback de prod | Se pierde la vuelta atrás del último deploy/hotfix |
+| `focas-base:latest` | Es imagen base, no se ejecuta | Falla el build de `nlp_intent` y `fo_monitor_worker` (`FROM focas-base:latest`) |
+
+Regla: las imágenes **sólo se retiran por tag exacto** (`docker image rm <repo>:<tag>`), con OK del
+usuario por cada tag de rollback, y nunca la base ni el rollback vigente (el más reciente por
+servicio). `docker image prune -f` sin `-a` (sólo dangling) sigue siendo seguro.
+
+```bash
+# Inventario: imágenes sin contenedor, marcando las protegidas
+docker images --format '{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.Size}}\t{{.CreatedSince}}' | sort
+docker ps -a --format '{{.Image}}' | sort -u     # las que SÍ están en uso
+```
+
 ## 📊 Categorías de Limpieza
 
 | Categoría | Riesgo | Recuperable |
@@ -277,14 +299,17 @@ docker container prune -f
 docker network prune -f
 ```
 
-### Nivel 2: Limpieza Agresiva de Imágenes
+### Nivel 2: Retiro de Imágenes Sin Uso (por tag exacto)
+
+> `docker image prune -a -f` está **prohibido en este host** (ver "Host compartido dev + prod"):
+> borra los rollback de prod y `focas-base`. Retirar por tag exacto lo que el usuario aprobó.
 
 ```bash
-# Eliminar TODAS las imágenes no usadas por contenedores activos
-# ⚠️ Esto forzará pulls/rebuilds en próximo deploy
-docker image prune -a -f
+# Rollbacks superados (hay uno más nuevo del mismo servicio) — confirmar uno por uno
+docker image rm lasfocas-api:pre-hotfix-20261019 lasfocas-web:pre-hotfix-20261019
 
-# Verificar espacio liberado
+# Verificar espacio liberado (las imágenes comparten capas: lo liberado suele ser menor
+# que la suma de los SIZE de `docker images`)
 docker system df
 ```
 
@@ -303,18 +328,16 @@ docker builder prune --filter "until=168h" -f
 
 ### Limpieza Combinada (Todo Excepto Volúmenes)
 
-> **No usar en el host productivo**: `docker system prune -a` borra toda imagen sin contenedor,
-> incluida la imagen `rollback` que exige la política de retención (sección siguiente). En prod,
-> retirar imágenes sólo por ID exacto según esa política.
+> **Prohibida en este host**: el servidor de dev **es** el host productivo (mismo daemon Docker).
+> `docker system prune -a` borra toda imagen sin contenedor, incluidos los rollback de prod y
+> `focas-base`. Usar los niveles 1 y 3 y el nivel 2 por tag exacto.
 
 ```bash
-# ⚠️ IMPORTANTE: Este comando NO incluye volúmenes
-# El flag --volumes está OMITIDO intencionalmente
-
-docker system prune -a -f
-
-# Verificar que los volúmenes siguen intactos
-docker volume ls
+# Equivalente seguro: todo lo no persistente, sin imágenes con tag
+docker image prune -f        # sólo dangling
+docker container prune -f
+docker builder prune -f
+docker network prune -f
 ```
 
 ## 📋 Script de Limpieza Interactivo
@@ -423,6 +446,12 @@ if [ -n "$OLD_RB" ] && [ "$OLD_RB" != "$NEW_RB" ]; then
 fi
 ```
 
+**Práctica real vigente (2026-10-23)**: los deploys y hotfix no rotan un único `:rollback`, sino que
+etiquetan con fecha (`lasfocas-<svc>:pre-deploy-YYYYMMDD`, `:pre-hotfix-YYYYMMDD`) y esos tags se
+acumulan. Tratarlos como rollback: el más reciente por servicio **no se toca**; los superados se
+retiran por tag exacto con OK del usuario. Unificar la convención (`:rollback` vs. tags con fecha)
+es una decisión pendiente, no la resuelve una limpieza.
+
 Nunca `docker system prune`, `docker image prune -a` ni `docker volume prune` en prod para esta
 rotación. Si el current nuevo no valida, volver al rollback (`docker tag lasfocas-$SVC:rollback
 lasfocas-$SVC:latest` + `up -d`) **antes** de retirar nada.
@@ -433,6 +462,10 @@ lasfocas-$SVC:latest` + `up -d`) **antes** de retirar nada.
 # ❌ NUNCA EJECUTAR - Eliminaría datos de PostgreSQL, uploads, etc.
 docker volume prune
 docker system prune --volumes
+
+# ❌ NUNCA EJECUTAR EN ESTE HOST - Borraría rollbacks de prod y focas-base (host compartido)
+docker image prune -a
+docker system prune -a
 
 # ❌ NUNCA EJECUTAR - Eliminaría contenedores activos
 docker rm -f $(docker ps -aq)
@@ -460,8 +493,8 @@ docker system df
 |------------|--------|
 | Semanal | `docker image prune -f` + `docker container prune -f` |
 | Después de deploys | `docker builder prune --filter "until=24h" -f` |
-| Mensual | `docker image prune -a -f` (en horario de mantenimiento) |
-| Emergencia (disco >90%) | Script completo de limpieza |
+| Mensual | Retirar rollbacks superados por tag exacto (nunca `image prune -a`) |
+| Emergencia (disco >85%) | Script de limpieza + consumidores fuera del repo (`disk-analysis` §7) |
 
 ## 🔗 Skills Relacionados
 

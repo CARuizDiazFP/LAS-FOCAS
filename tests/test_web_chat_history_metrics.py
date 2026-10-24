@@ -2,23 +2,23 @@
 # Ubicación de archivo: tests/test_web_chat_history_metrics.py
 # Descripción: Pruebas de endpoints /api/chat/history y /api/chat/metrics y conversation_id
 
-from pathlib import Path
-import sys
 import os
 
 os.environ.setdefault("TESTING", "true")
 
 
 from fastapi.testclient import TestClient  # type: ignore
-from web.app.main import app, INTENT_COUNTER  # type: ignore
+from web.app.main import app  # type: ignore
+from web.app.routers.chat import INTENT_COUNTER  # type: ignore
 
 client = TestClient(app)
 
 
 def test_chat_history_and_metrics(monkeypatch):
     # Forzar usuario autenticado
-    from web.app import main as web_main
-    monkeypatch.setattr(web_main, "get_current_user", lambda request: "tester")
+    from web.app.routers import chat as web_main
+    from web.app import comun  # usuario_chat lee la sesión vía comun._require_auth (única fuente)
+    monkeypatch.setattr(comun, "_require_auth", lambda request: ("tester", "user"))
 
     # Mocks de persistencia en memoria
     messages: list[dict] = []

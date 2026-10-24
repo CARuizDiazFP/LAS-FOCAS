@@ -147,6 +147,47 @@ MAX_NODOS_POR_LADO = 500
 # Fragmento fijo de la advertencia de lado truncado; `arbitro.evidencia.camino_truncado` lo busca.
 MARCA_LADO_CORTADO = "se cortó en"
 
+# `stp` de cada objeto del `/path`: su estado de proyecto. Medido real 2026-10-23 sobre el camino
+# del Servicio 83693 (pelo 6721024): 30 en todo lo que está en servicio, 31 en la fusión que la UI de
+# Cromo rotula "Proyectado Desinstalación" y 1 en la fusión que sólo aparece con "Red proyectada".
+# Otros valores no se interpretan: el nodo queda sin marca.
+STP_PROYECTADO = 1
+STP_PROYECTADO_DESINSTALACION = 31
+
+
+@dataclass(slots=True, frozen=True)
+class CorteDeCamino:
+    """Extremo del camino que termina en un pelo con conexiones que Cromo no recorrió.
+
+    Real (Servicio 83693, 2026-10-23): FL-CTB-330:2 tiene tres fusiones en `tp[]` —la vigente, una
+    a desinstalar y una proyectada—. Con dos continuaciones posibles `/path` no elige ninguna y el
+    camino termina en ese pelo; con `projview=1` sigue la que está a desinstalar y con `projview=2`
+    la proyectada. Un servicio que termina en un pelo de verdad no tiene `tp` sin recorrer, así que
+    esto es lo que separa un corte por proyecto de un final real.
+    """
+
+    lado: str
+    pelo_n_id: int
+    cable_nombre: Optional[str]
+    numero_pelo: Optional[str]
+    sin_recorrer: tuple[int, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class CompletadoConRed:
+    """Un camino que `/path` devolvía cortado y se completó pidiéndolo con otro `projview`.
+
+    Lo arma `tracking_service.completar_camino_cortado`; el `.txt` lo declara en la cabecera.
+    `botella` es el empalme donde seguía la fibra (el del corte) y `alternativa`, las ODF de
+    extremo de la otra vista de red si también completaba el camino pero en otro lugar.
+    """
+
+    projview: int
+    corte: CorteDeCamino
+    botella: Optional[str]
+    metros_agregados: float
+    alternativa: Optional[str] = None
+
 
 @dataclass(slots=True)
 class VinculoLocal:
@@ -215,6 +256,8 @@ class NodoCamino:
     splitter_salidas: Optional[int] = None
     tendido: Optional[str] = None  # "Aereo" / "Subsuelo" / "Canalizado"
     vinculo_local: Optional[VinculoLocal] = None
+    # Estado de proyecto del objeto (`stp` crudo). Ver `STP_PROYECTADO`.
+    stp: Optional[int] = None
 
 
 @dataclass(slots=True)
@@ -292,6 +335,11 @@ class CaminoOptico:
     advertencias: list[str] = field(default_factory=list)
     duracion_ms: Optional[int] = None
     payload_raw: Optional[dict[str, Any]] = None
+    # `projview` con que se pidió el camino (`None` = el default de Cromo) y los extremos que
+    # terminan en un pelo con conexiones sin recorrer (`detectar_cortes`).
+    projview: Optional[int] = None
+    cortes: list[CorteDeCamino] = field(default_factory=list)
+    completado: Optional[CompletadoConRed] = None
 
 
 def _desenvolver_dict(payload: Any) -> dict[int, dict[str, Any]]:
@@ -356,6 +404,13 @@ def _tipo_de_clase(clase: Optional[int], catalogo: Mapping[int, str]) -> str:
     if clase is None:
         return TIPO_CLASE_DESCONOCIDA
     return catalogo.get(clase) or _CLASES_FALLBACK.get(clase) or f"CLASE_{clase}"
+
+
+def _entero(valor: Any) -> Optional[int]:
+    try:
+        return int(valor) if valor is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _a_float(valor: Optional[str]) -> Optional[float]:
@@ -609,6 +664,7 @@ def _construir_lado(
             tipo=_tipo_de_clase(clase, catalogo),
             nombre=crudo.get("name"),
             repetido=id_cromo in vistos,
+            stp=_entero(crudo.get("stp")),
         )
         vistos.add(id_cromo)
 
@@ -641,6 +697,41 @@ def _construir_lado(
         nodos.append(nodo)
 
     return nodos, no_resueltos
+
+
+def detectar_cortes(
+    dic: Mapping[int, Mapping[str, Any]],
+    raiz: Optional[NodoCamino],
+    lado_a: list[NodoCamino],
+    lado_b: list[NodoCamino],
+) -> list[CorteDeCamino]:
+    """Extremos que terminan en un pelo cuyo `tp[]` tiene destinos fuera del camino. Pura.
+
+    El último nodo de cada lado (o la raíz, si el lado vino vacío) es el extremo. Si es un pelo y
+    alguno de sus `tp` no está en la secuencia, Cromo no siguió esa conexión: el camino se cortó ahí
+    por la vista de red, no porque la fibra termine. Ver `CorteDeCamino`.
+    """
+    en_camino = {n.id_cromo for n in (*lado_a, *lado_b)}
+    if raiz is not None:
+        en_camino.add(raiz.id_cromo)
+    cortes: list[CorteDeCamino] = []
+    for lado, nodos in (("A", lado_a), ("B", lado_b)):
+        extremo = nodos[-1] if nodos else raiz
+        if extremo is None or extremo.clase != _CLASE_PELO:
+            continue
+        crudo = dic.get(extremo.id_cromo) or {}
+        sin_recorrer = tuple(t for t in _ids_de_tp(crudo) if t not in en_camino)
+        if sin_recorrer:
+            cortes.append(
+                CorteDeCamino(
+                    lado=lado,
+                    pelo_n_id=extremo.id_cromo,
+                    cable_nombre=extremo.cable_nombre,
+                    numero_pelo=extremo.numero_pelo,
+                    sin_recorrer=sin_recorrer,
+                )
+            )
+    return cortes
 
 
 def calcular_estadisticas(
@@ -1418,14 +1509,22 @@ async def resolver_camino_de_pelo(
     vincular_local: bool = True,
     auditar: bool = True,
     incluir_raw: bool = False,
+    projview: Optional[int] = None,
 ) -> CaminoOptico:
     """Resuelve el camino óptico de un pelo. UNA llamada a Cromo, cero requests por nodo.
 
     Nunca persiste nada: el resultado se descarta al responder el request, igual que
     `live_lookup_service`. Cromo se consulta sólo por GET.
+
+    `projview` se manda a Cromo sólo si no es `None` (ver `CromoClient.get_camino_optico`). El
+    tracking lo usa para reintentar un camino cortado por un proyecto (`CaminoOptico.cortes`).
     """
     inicio = perf_counter()
-    payload = await cliente.get_camino_optico(pelo_n_id)
+    # Sin `projview` se llama igual que siempre: los fakes de cliente de los tests no lo aceptan.
+    if projview is None:
+        payload = await cliente.get_camino_optico(pelo_n_id)
+    else:
+        payload = await cliente.get_camino_optico(pelo_n_id, projview=projview)
     duracion_ms = int((perf_counter() - inicio) * 1000)
 
     dic = _desenvolver_dict(payload)
@@ -1477,7 +1576,14 @@ async def resolver_camino_de_pelo(
     if vincular_local:
         await _vincular_local(sesion, lado_a + lado_b)
 
-    raiz_nodo = NodoCamino(orden=-1, lado="RAIZ", id_cromo=id_raiz or pelo_n_id, clase=_CLASE_PELO, tipo=TIPO_PELO)
+    raiz_nodo = NodoCamino(
+        orden=-1,
+        lado="RAIZ",
+        id_cromo=id_raiz or pelo_n_id,
+        clase=_CLASE_PELO,
+        tipo=TIPO_PELO,
+        stp=_entero(raiz.get("stp")),
+    )
     _completar_contexto_pelo(raiz_nodo, raiz, dic)
 
     odfs = odfs_del_camino(lado_a, lado_b)
@@ -1515,6 +1621,8 @@ async def resolver_camino_de_pelo(
         advertencias=advertencias,
         duracion_ms=duracion_ms,
         payload_raw=payload if incluir_raw else None,
+        projview=projview,
+        cortes=detectar_cortes(dic, raiz_nodo, lado_a, lado_b),
     )
 
 
@@ -1579,19 +1687,17 @@ async def resolver_camino_de_servicio(
 
     Una sola llamada a `/path` por invocación: sin fan-out. Pedir otra semilla es una acción
     explícita del operador con `pelo_n_id`.
+
+    El pelo también puede ser el de una posición del Servicio (posible o declarada vigente,
+    `servicio_posicion_vigente`), con el mismo criterio que el `.txt`: el 93150 va por pelos con la
+    etiqueta 44649, y el «Detalle» de sus tramos VIGENTE y de sus adicionales pide justamente esos
+    pelos. Sin semillas etiquetadas ni pelo pedido se arranca de la posición declarada válida o, si
+    no hay, de la primera posible; `SIN_SEMILLA` queda para el Servicio sin ninguna de las dos.
     """
+    # Import diferido: `servicio_posicion_vigente` importa este módulo.
+    from core.services.cromo import servicio_posicion_vigente as posicion_vigente
+
     semillas = await listar_pelos_semilla(sesion, servicio_id)
-    if not semillas:
-        return (
-            CaminoOptico(
-                estado=ESTADO_SIN_SEMILLA,
-                motivo=(
-                    "El Servicio no tiene ningún pelo en `cromo_servicio_match`, así que "
-                    "`/path` no tiene input posible."
-                ),
-            ),
-            [],
-        )
 
     if pelo_n_id is not None:
         # Pertenencia por consulta directa, NO contra `semillas`: esa lista viene truncada en 20 y
@@ -1600,14 +1706,37 @@ async def resolver_camino_de_servicio(
         # dev: el pelo 6754728 matchea por el histórico y tiene conector de ODF, pero de 95 pelos
         # matcheados cae en el puesto 31 y se rechazaba como ajeno. Es el mismo criterio que ya
         # usa el endpoint del `.txt`; el guard sigue vivo, pero contra el dato y no contra la
-        # ventana que se listó.
-        if not await pelo_pertenece_al_servicio(sesion, servicio_id, pelo_n_id):
+        # ventana que se listó. Va antes de `SIN_SEMILLA`: un pelo ajeno pedido desde un Servicio
+        # sin semillas etiquetadas (el 42352 pidiendo uno del 42351) es un pedido inválido.
+        if not await pelo_pertenece_al_servicio(
+            sesion, servicio_id, pelo_n_id
+        ) and not await posicion_vigente.pelo_es_de_posicion(sesion, servicio_id, pelo_n_id):
             raise PeloAjenoAlServicio(
                 f"El pelo {pelo_n_id} no pertenece al Servicio {servicio_id}."
             )
         elegido = pelo_n_id
-    else:
+    elif semillas:
         elegido = semillas[0].pelo_n_id
+    else:
+        # Sin semillas etiquetadas: la posición declarada que el inventario sostiene o, si no hay,
+        # la primera posible. Una declarada que `validar_en_db` ya invalidó no es candidata.
+        candidatos = [
+            d.pelo_declarado for d in await posicion_vigente.declaradas_validas(sesion, servicio_id)
+        ] or posicion_vigente.pelos_de_posiciones(
+            await posicion_vigente.posiciones_posibles(sesion, servicio_id)
+        )
+        if not candidatos:
+            return (
+                CaminoOptico(
+                    estado=ESTADO_SIN_SEMILLA,
+                    motivo=(
+                        "El Servicio no tiene ningún pelo en `cromo_servicio_match` ni posiciones "
+                        "de ODF, así que `/path` no tiene input posible."
+                    ),
+                ),
+                [],
+            )
+        elegido = candidatos[0]
 
     camino = await resolver_camino_de_pelo(
         cliente, sesion, elegido, incluir_raw=incluir_raw
@@ -1694,6 +1823,11 @@ __all__ = [
     "TIPO_NO_RESUELTO",
     "TIPO_PELO",
     "CaminoOptico",
+    "CompletadoConRed",
+    "CorteDeCamino",
+    "STP_PROYECTADO",
+    "STP_PROYECTADO_DESINSTALACION",
+    "detectar_cortes",
     "DiscrepanciaAt62",
     "EstadisticasCamino",
     "NodoCamino",

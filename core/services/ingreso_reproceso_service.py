@@ -123,6 +123,8 @@ def _ya_registrado(session: Session, caso: IngresoSinMatch, camara_id: int, bote
         Ingreso.thread_ts == caso.thread_ts,
         Ingreso.camara_id == camara_id,
         Ingreso.tipo == tipo,
+        # Un ingreso anulado desde el portal nunca ocurrió: no cuenta como "ya registrado".
+        Ingreso.vigente(),
     )
     query = query.filter(Ingreso.cromo_botella_id.is_(None) if botella_id is None else Ingreso.cromo_botella_id == botella_id)
     return query.first()

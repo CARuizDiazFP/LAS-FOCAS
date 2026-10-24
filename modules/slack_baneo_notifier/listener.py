@@ -10,7 +10,7 @@ con uno de los tres estados posibles.
 Desde 2026-08-13 también escucha menciones directas (`app_mention`) para los comandos de Cables/
 Servicios de Cromo especificados en `docs/slack_app_cables.md` — misma Slack App/tokens que el
 listener de ingresos, sólo un evento distinto de Slack. Implementados: "track <id de servicio>",
-"Info cable <nombre>",
+"track <id> full" y "track odf <patchera>:<conectores>" (2026-10-21), "Info cable <nombre>",
 "Verificar cable <nombre> B<N>" e "Info cable <nombre> B<N>"; desde la Task 8 del plan "Corrección
 ingresos + Servicios" (2026-09-23) también "Servicios <nombre>" y "Servicios <nombre> B<N>" (IDs de
 servicio únicos con marca de frescura PROV, ver `cable_info.py`) — y desde la Task 9 del mismo plan,
@@ -45,7 +45,7 @@ from core.services.camara_estado_service import (
     miembros_del_grupo,
     obtener_ultimo_motivo_baneo_manual,
 )
-from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo
+from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo, buscar_por_id_legacy
 from core.services.camara_sugerencias import sugerir_camaras
 from core.services.nodos_catalogo import corresponde_a_nodo
 from core.services.cromo.detalle import pelos_de_tubo_sync
@@ -88,14 +88,21 @@ from modules.slack_baneo_notifier.cable_info import (
     filtrar_servicios,
     resolver_tubo_por_numero,
 )
-from modules.slack_baneo_notifier.tracking_servicio import extraer_comando_track
+from modules.slack_baneo_notifier.tracking_servicio import (
+    ComandoTrackOdf,
+    extraer_comando_track,
+    extraer_comando_track_full,
+    extraer_comando_track_odf,
+)
 from modules.slack_baneo_notifier.camara_search import (
     AmbiguousSearchError,
+    NumeroNoCoincideError,
     detectar_multi_bot,
     extraer_nombre_camara,
     extraer_slack_user_id_autorizacion,
     extraer_tipo_movimiento,
     limpiar_ruido_operativo,
+    normalizar_candidato,
 )
 from modules.slack_baneo_notifier.correccion_ingreso import (
     MomentoInvalidoError,
@@ -120,7 +127,42 @@ _CANAL_ID_DEFAULT = ""  # Se completa desde config_servicios en DB
 # match). Dígitos puros, opcionalmente precedidos de "empalme" o "#". Mínimo 3 dígitos a propósito:
 # evita falsos positivos con respuestas cortas tipo "sí"/"ok"/números de piso — un `fusion_n_id`
 # real de Cromo tiene muchos más dígitos (ver ejemplos en `core/services/cromo/empalmes.py`).
-_RE_SEGUIMIENTO_EMPALME = re.compile(r"^\s*(?:empalme\s*)?#?(\d{3,})\s*$", re.IGNORECASE)
+#
+# Desde 2026-10-23 también las formas reales con que el operador valida el ingreso con el Fontaine
+# ID: "id: 1228619", "id 1228619", "ingreso ok, id: 1228619" (sin distinguir mayúsculas). El número
+# se prueba primero como Fontaine ID y después como ID de empalme (`_procesar_seguimiento_empalme`).
+_RE_SEGUIMIENTO_EMPALME = re.compile(
+    r"^\s*(?:(?:in|e)greso\s+ok\s*[,.;:]?\s*)?(?:(?:empalme|id)\s*:?\s*)?#?(\d{3,})\s*$", re.IGNORECASE
+)
+# Forma con que el operador da el Fontaine ID ("id: N", "ingreso ok, id: N", "egreso ok, id: N").
+# Si ese número no resuelve, el caso NO se cierra (ver `_procesar_seguimiento_empalme`).
+_RE_FORMA_FONTAINE = re.compile(r"(?i)^\s*(?:(?:in|e)greso\s+ok\b|id\b)")
+# Validación del operador con texto alrededor ("Ingreso ok, ID 1228619.", "ingreso ok, id: 1228619
+# abriendo puerta"): si el mensaje empieza con "(in|e)greso ok", el ID se busca en cualquier parte.
+_RE_VALIDACION_OPERADOR = re.compile(r"(?i)^\s*(?:in|e)greso\s+ok\b")
+_RE_ID_EN_TEXTO = re.compile(r"(?i)\bid\s*:?\s*(\d{4,7})\b")
+# Hay `id_legacy` cortos (13 en dev: 7274-7330 y 138453-138458, todos túneles): un número SUELTO
+# sólo se prueba como Fontaine ID con los 7 dígitos del formato real; los cortos, sólo con la forma
+# explícita ("id: N", "(in|e)greso ok, id: N").
+_DIGITOS_FONTAINE_SUELTO = 7
+
+
+def _numero_de_seguimiento(texto: str) -> tuple[str | None, bool]:
+    """``(número, forma_fontaine)`` de una respuesta de seguimiento en hilo, o ``(None, False)``."""
+    if _RE_VALIDACION_OPERADOR.match(texto):
+        match = _RE_ID_EN_TEXTO.search(texto)
+        if match:
+            return match.group(1), True
+    match = _RE_SEGUIMIENTO_EMPALME.match(texto)
+    if not match:
+        return None, False
+    return match.group(1), bool(_RE_FORMA_FONTAINE.match(texto))
+
+# Pedido común de los avisos de sin match / ambiguo (decisión del usuario 2026-10-23: "informa y
+# solicita escribir la cámara dentro del mismo hilo").
+_PEDIDO_REESCRIBIR = (
+    "Escribí la cámara correcta en este hilo (o el operador puede responder con el Fontaine ID)."
+)
 
 # Detecta el trigger "Revalidar ingreso" como respuesta en el hilo de un caso `IngresoSinMatch`
 # pendiente (sin match o ambiguo/genérico) — reintenta la búsqueda con el código ACTUAL contra el
@@ -128,6 +170,41 @@ _RE_SEGUIMIENTO_EMPALME = re.compile(r"^\s*(?:empalme\s*)?#?(\d{3,})\s*$", re.IG
 # `_procesar_revalidacion_ingreso`). Anclado igual que `_RE_SEGUIMIENTO_EMPALME` para no interpretar
 # la frase si aparece como parte de otro texto más largo.
 _RE_REVALIDAR_INGRESO = re.compile(r"^\s*revalidar\s+ingreso\s*$", re.IGNORECASE)
+
+# Comandos conocidos que una persona puede escribir en un hilo y que nunca son una Cámara reescrita
+# (ver `_procesar_reescritura_camara`): una mención al bot (comandos de Cables/track vía
+# `app_mention`), "Forzar …", "Revalidar …" y los comandos de Cables/Servicios sin mención.
+_RE_COMANDO_CONOCIDO = re.compile(
+    r"(?i)^\s*(?:<[@!]|forzar\b|revalidar\b|track\b|info\s+cable\b|verificar\s+cable\b|servicios\b)"
+)
+
+# Heurística de "esto parece un nombre de Cámara" para la reescritura en el hilo (fix de la revisión
+# 2026-10-23: con la heurística anterior, 13 de 22 respuestas humanas reales de 6 hilos de prod —
+# "ingreso ok, abriendo puerta", "Listo gracias", ":+1:"— habrían recibido "sigue sin match").
+# Se quitan emojis/entidades de Slack y el prefijo con que el operador valida ("ingreso ok, sin id,
+# nombre: …"); queda un nombre si tiene 2+ tokens significativos (3+ caracteres o un número de 2+
+# dígitos) que no sean el tipo, y además un número de 3+ dígitos (una altura; "llego en 20 minutos"
+# no lo es) o empieza con un tipo de elemento ("Cra camacua 80"). Medido contra `app.camaras` de
+# dev: acepta el 93% de los nombres; "sala 1" y "Poste 1 frente" quedan afuera.
+_RE_EMOJI_O_ENTIDAD = re.compile(r":[\w+\-]+:|<[^>]*>")
+_RE_PREFIJO_VALIDACION = re.compile(
+    r"(?i)^\s*(?:in|e)greso\s+ok\b[\s,.;:]*(?:sin\s+id\b[\s,.;:]*)?(?:nombre\s*:\s*)?"
+)
+_TIPOS_ELEMENTO = ("cra", "camara", "bot", "botella", "poste", "tza", "nodo", "empalme", "odf", "pon")
+_RE_EMPIEZA_CON_TIPO = re.compile(rf"(?i)^\s*(?:c[aá]mara|{'|'.join(_TIPOS_ELEMENTO)})\b")
+
+
+def nombre_reescrito(texto: str) -> str | None:
+    """El nombre de Cámara que una persona escribió en el hilo, o `None` si es charla."""
+    limpio = _RE_PREFIJO_VALIDACION.sub("", _RE_EMOJI_O_ENTIDAD.sub(" ", texto or ""))
+    limpio = limpiar_ruido_operativo(re.sub(r"\s+", " ", limpio).strip())
+    norm = normalizar_candidato(limpio)
+    tokens = [t for t in norm.split() if (len(t) >= 3 or re.fullmatch(r"\d{2,}", t)) and t not in _TIPOS_ELEMENTO]
+    if len(tokens) < 2:
+        return None
+    if re.search(r"\d{3,}", norm) or _RE_EMPIEZA_CON_TIPO.match(limpio):
+        return limpio
+    return None
 
 # Ventana de vigencia de una fila `PENDIENTE_FECHA` (`core/services/ingreso_correccion_service.py`,
 # Task 5) para que una respuesta de seguimiento con sólo `DD-MM-AAAA HH:MM` se interprete como la
@@ -289,6 +366,7 @@ class IngresoListener:
                 "⚠️ No pude confirmar automáticamente la cámara *{}* contra el inventario — "
                 "quedó registrada para revisión manual (puede ser un error de tipeo o una "
                 "diferencia de formato). *Podés continuar con el ingreso con normalidad.* "
+                f"{_PEDIDO_REESCRIBIR} "
                 "Si conocés el ID de empalme más cercano, respondé en este mismo hilo sólo "
                 "con el número. Si más adelante se corrige el nombre en el inventario, "
                 "respondé *\"Revalidar ingreso\"* en este hilo para reintentarlo."
@@ -513,14 +591,23 @@ class IngresoListener:
         caso `IngresoSinMatch` pendiente (invitado por `_construir_respuesta_camara` cuando no
         matcheó ninguna cámara).
 
+        Desde 2026-10-23 el número se prueba primero como Fontaine ID (`buscar_por_id_legacy`) y,
+        si no existe, como ID de empalme. Por Fontaine ID registra el movimiento y confirma
+        (`_registrar_por_fontaine`); por ID de empalme cierra el caso sin registrar, como antes
+        (`resuelto_via_empalme`). Un Fontaine ID
+        repetido en Cámaras distintas nunca elige: responde y deja el caso pendiente. Si no
+        resuelve por ninguno: con la forma del Fontaine ID ("id: N", "ingreso ok, id: N") el caso
+        queda pendiente (se puede reescribir la Cámara); con un número suelto o "empalme N", se
+        marca como antes de 2026-10-23.
+
         Devuelve `True` cuando el mensaje fue tratado como intento de seguimiento (el caller debe
         cortar ahí, no seguir al flujo normal) y `False` cuando no aplica: el texto no matchea el
         patrón numérico, o matchea pero no hay un caso `IngresoSinMatch` pendiente para este hilo
         (puede ser cualquier otro mensaje numérico del canal sin relación — no se trata como un
         intento de empalme fallido).
         """
-        match = _RE_SEGUIMIENTO_EMPALME.match(texto)
-        if not match:
+        numero, forma_fontaine = _numero_de_seguimiento(texto)
+        if numero is None:
             return False
 
         from db.models.infra import IngresoSinMatch
@@ -530,6 +617,7 @@ class IngresoListener:
             .filter(
                 IngresoSinMatch.thread_ts == thread_ts_evento,
                 IngresoSinMatch.resuelto_via_empalme == False,  # noqa: E712
+                IngresoSinMatch.resuelto_via_revalidacion == False,  # noqa: E712
             )
             .order_by(IngresoSinMatch.id.desc())
             .first()
@@ -537,32 +625,83 @@ class IngresoListener:
         if caso is None:
             return False
 
-        fusion_n_id = int(match.group(1))
+        fusion_n_id = int(numero)
         logger.info(
-            "Seguimiento de empalme detectado en hilo %s: fusion_n_id=%s (caso IngresoSinMatch id=%s)",
+            "Seguimiento de empalme detectado en hilo %s: numero=%s (caso IngresoSinMatch id=%s)",
             thread_ts_evento,
-            fusion_n_id,
+            numero,
             caso.id,
         )
 
-        botella = resolver_botella_por_fusion_sync(session, fusion_n_id)
+        # Primero como Fontaine ID (`cromo_botellas.id_legacy`), después como ID de empalme.
+        prueba_fontaine = forma_fontaine or len(numero) == _DIGITOS_FONTAINE_SUELTO
+        try:
+            por_fontaine = buscar_por_id_legacy(numero, session) if prueba_fontaine else None
+        except AmbiguousSearchError as exc:
+            # `id_legacy` repetido: nunca se elige. El caso queda pendiente (sin marcar) para que
+            # se pueda reescribir la Cámara o revalidar.
+            vinetas = "\n".join(f"• {c}" for c in exc.candidatos)
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts_evento,
+                text=(
+                    f"⚠️ El Fontaine ID *{numero}* corresponde a más de una botella:\n{vinetas}\n"
+                    "No puedo elegir una. Escribí la cámara correcta en este hilo. "
+                    "*Podés continuar con el ingreso con normalidad.*"
+                ),
+                mrkdwn=True,
+            )
+            return True
+
+        if por_fontaine is not None:
+            return self._registrar_por_fontaine(
+                caso, por_fontaine, numero, session, client, channel, thread_ts_evento
+            )
+
+        # Sólo como ID de empalme: cierra el caso SIN registrar movimiento, como antes de 2026-10-23.
         camara = None
+        botella = resolver_botella_por_fusion_sync(session, fusion_n_id)
         if botella is not None and botella.camara_id is not None:
             from db.models.infra import Camara
 
             camara = session.query(Camara).filter(Camara.id == botella.camara_id).one_or_none()
 
         if camara is not None:
-            resultado_acceso = self._evaluar_estado_acceso_camara(camara, session)
-            respuesta = resultado_acceso.texto
-        else:
             logger.info(
-                "Empalme #%s no resolvió una botella con cámara asociada (caso id=%s)",
-                fusion_n_id,
+                "Seguimiento resuelto por ID de empalme %s → camara_id=%s (caso id=%s)", numero, camara.id, caso.id
+            )
+            resultado_acceso = self._evaluar_estado_acceso_camara(camara, session)
+            respuesta = f"Resuelto por ID de empalme *{numero}*.\n{resultado_acceso.texto}"
+        elif forma_fontaine:
+            # Fontaine ID que no resuelve (ni como empalme): el caso queda pendiente, así se puede
+            # reescribir la Cámara o reintentar con otro ID en el mismo hilo.
+            logger.info(
+                "Fontaine ID %s no resolvió (tampoco como empalme) — caso id=%s sigue pendiente",
+                numero,
+                caso.id,
+            )
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts_evento,
+                text=(
+                    f"⚠️ No encontré el Fontaine ID *{numero}* (tampoco es un ID de empalme). "
+                    "El ingreso sigue sin match: escribí la cámara correcta en este hilo o "
+                    "revisá el ID. *Podés continuar con el ingreso con normalidad.*"
+                ),
+                mrkdwn=True,
+            )
+            return True
+        else:
+            # Número suelto o "empalme N" que no resuelve: mismo comportamiento que antes de
+            # 2026-10-23 (se marca el caso como atendido por empalme).
+            logger.info(
+                "Número %s no resolvió como Fontaine ID ni como empalme con cámara asociada (caso id=%s)",
+                numero,
                 caso.id,
             )
             respuesta = (
-                f"⚠️ No pude ubicar una botella asociada al ID de empalme *{fusion_n_id}*. "
+                f"⚠️ No pude ubicar una botella asociada al ID de empalme *{fusion_n_id}* "
+                "(tampoco es un Fontaine ID). "
                 "*Podés continuar con el ingreso con normalidad.*"
             )
 
@@ -575,6 +714,56 @@ class IngresoListener:
             text=respuesta,
             mrkdwn=True,
         )
+        return True
+
+    def _registrar_por_fontaine(
+        self,
+        caso: Any,
+        resultado: Any,
+        numero: str,
+        session: Any,
+        client: Any,
+        channel: str,
+        thread_ts_evento: str,
+    ) -> bool:
+        """El Fontaine ID resolvió a una Cámara (decisión del usuario 2026-10-23: "Registrar y
+        confirmar"). Registra el movimiento del caso por el mismo camino que la reescritura y la
+        revalidación (`_registrar_y_cerrar_caso`: tipo y horario del mensaje original,
+        `resuelto_via_revalidacion`, `ingreso_id`) y confirma nombrando la Cámara y el ID usado,
+        para que el operador vea enseguida si lo tipeó mal. Un Nodo se ignora en silencio, igual
+        que en la reescritura y en el flujo normal."""
+        camara = resultado.camara
+        nombre_elemento = resultado.botella.nombre if resultado.botella is not None else camara.nombre
+        if corresponde_a_nodo(nombre_elemento or "", session) or corresponde_a_nodo(camara.nombre or "", session):
+            logger.info("Fontaine ID %s resolvió a un Nodo ('%s') — ignorado (caso id=%s)", numero, camara.nombre, caso.id)
+            return True
+
+        ingreso, resultado_acceso = self._registrar_y_cerrar_caso(caso, resultado, session, client)
+        logger.info(
+            "action=ingreso_fontaine_id caso_id=%s id_legacy=%s camara_id=%s ingreso_id=%s",
+            caso.id,
+            numero,
+            camara.id,
+            getattr(ingreso, "id", None),
+        )
+        # Ningún comando del bot corrige un movimiento ya registrado en otra cámara, así que la
+        # confirmación informa sólo el resultado (decisión del usuario 2026-10-23: sin frases que
+        # deriven a un administrador).
+        if ingreso is None:
+            respuesta = (
+                f"✅ *{camara.nombre}* (Fontaine ID {numero}), pero el mensaje original no traía el "
+                "campo 'Ingreso o Egreso': no se registró ningún movimiento.\n"
+                f"{resultado_acceso.texto}"
+            )
+        else:
+            tipo = extraer_tipo_movimiento(caso.texto_mensaje or "") or "Ingreso"
+            if resultado_acceso.bloqueado and tipo == "Ingreso":
+                encabezado = f"⚠️ Registré el intento de ingreso (bloqueado) en *{camara.nombre}*"
+            else:
+                encabezado = f"✅ Registré el {tipo.lower()} en *{camara.nombre}*"
+            respuesta = f"{encabezado} (Fontaine ID {numero}).\n{resultado_acceso.texto}"
+
+        client.chat_postMessage(channel=channel, thread_ts=thread_ts_evento, text=respuesta, mrkdwn=True)
         return True
 
     def _procesar_revalidacion_ingreso(
@@ -677,10 +866,45 @@ class IngresoListener:
             )
             return True
 
+        respuesta = self._cerrar_caso_con_resultado(caso, resultado, session, client, "✅ Revalidado")
+        client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts_evento,
+            text=respuesta,
+            mrkdwn=True,
+        )
+        return True
+
+    def _cerrar_caso_con_resultado(
+        self, caso: Any, resultado: Any, session: Any, client: Any, encabezado: str
+    ) -> str:
+        """Cierra un `IngresoSinMatch` con una cámara ya resuelta (revalidación o reescritura de la
+        Cámara en el hilo): registra el movimiento del mensaje ORIGINAL con su horario original,
+        marca `resuelto_via_revalidacion`, enlaza `ingreso_id` y devuelve el texto de respuesta."""
+        ingreso, resultado_acceso = self._registrar_y_cerrar_caso(caso, resultado, session, client)
+        if ingreso is not None:
+            return (
+                f"{encabezado} — *{resultado.camara.nombre}* matcheó correctamente. Se registró "
+                f"el movimiento con el horario original ({caso.created_at:%d/%m/%Y %H:%M}).\n"
+                f"{resultado_acceso.texto}"
+            )
+        return (
+            f"{encabezado} — *{resultado.camara.nombre}* matcheó correctamente, pero el "
+            "mensaje original no traía el campo 'Ingreso o Egreso' así que no se registró "
+            "ningún movimiento.\n"
+            f"{resultado_acceso.texto}"
+        )
+
+    def _registrar_y_cerrar_caso(
+        self, caso: Any, resultado: Any, session: Any, client: Any
+    ) -> tuple[Any, _ResultadoAccesoCamara]:
+        """Núcleo compartido de revalidación, reescritura y Fontaine ID: registra el movimiento del
+        mensaje ORIGINAL del caso (su tipo y su horario), marca `resuelto_via_revalidacion` y enlaza
+        `ingreso_id`. Devuelve `(ingreso | None, resultado_acceso)`."""
         resultado_acceso = self._evaluar_estado_acceso_camara(resultado.camara, session)
         ingreso = self._registrar_movimiento_si_corresponde(
             resultado,
-            caso.texto_mensaje,
+            caso.texto_mensaje or "",
             session,
             client,
             bloqueado=resultado_acceso.bloqueado,
@@ -693,28 +917,104 @@ class IngresoListener:
         if ingreso is not None:
             caso.ingreso_id = ingreso.id
         session.commit()
+        return ingreso, resultado_acceso
 
-        if ingreso is not None:
-            respuesta = (
-                f"✅ Revalidado — *{resultado.camara.nombre}* matcheó correctamente. Se registró "
-                f"el movimiento con el horario original ({caso.created_at:%d/%m/%Y %H:%M}).\n"
-                f"{resultado_acceso.texto}"
-            )
-        else:
-            respuesta = (
-                f"✅ Revalidado — *{resultado.camara.nombre}* matcheó correctamente, pero el "
-                "mensaje original no traía el campo 'Ingreso o Egreso' así que no se registró "
-                "ningún movimiento.\n"
-                f"{resultado_acceso.texto}"
-            )
+    def _procesar_reescritura_camara(
+        self,
+        texto: str,
+        thread_ts_evento: str,
+        session: Any,
+        client: Any,
+        channel: str,
+        actor_slack_user_id: str | None,
+        event: dict[str, Any] | None = None,
+    ) -> bool:
+        """Una persona reescribe la Cámara en el hilo de un `IngresoSinMatch` pendiente (2026-10-23,
+        decisión del usuario: "si la escriben correctamente hace match, si no la escriben queda sin
+        match"). Último eslabón de la cadena de respuestas en hilo: después del seguimiento de
+        empalme, la revalidación y la corrección.
 
-        client.chat_postMessage(
-            channel=channel,
-            thread_ts=thread_ts_evento,
-            text=respuesta,
-            mrkdwn=True,
+        Devuelve `False` (sigue el flujo) si el autor no es una persona (sin `user`, con `bot_id`, o
+        con un `subtype` que no sea `thread_broadcast` — evita loops entre bots), el texto es un
+        comando conocido o no hay caso pendiente en el hilo. Con caso pendiente:
+
+        - texto que no parece un nombre (`nombre_reescrito`) o que es un Nodo (`corresponde_a_nodo`,
+          mismo criterio que el flujo normal): charla del hilo, se ignora en silencio (`True`);
+        - match único: cierra el caso por el mismo camino que "Revalidar ingreso" y confirma;
+        - sin match o ambiguo: responde que sigue sin match y deja el caso como está.
+
+        Nunca asigna una cámara parecida. Sin migración: el texto reescrito queda en el log
+        `action=ingreso_reescritura_camara`."""
+        event = event or {}
+        if (
+            not actor_slack_user_id
+            or event.get("bot_id")
+            or event.get("subtype") not in (None, "thread_broadcast")
+            or _RE_COMANDO_CONOCIDO.match(texto)
+            or self._es_fecha_suelta(texto)
+        ):
+            return False
+
+        from db.models.infra import IngresoSinMatch
+
+        caso = (
+            session.query(IngresoSinMatch)
+            .filter(
+                IngresoSinMatch.thread_ts == thread_ts_evento,
+                IngresoSinMatch.resuelto_via_empalme == False,  # noqa: E712
+                IngresoSinMatch.resuelto_via_revalidacion == False,  # noqa: E712
+            )
+            .order_by(IngresoSinMatch.id.desc())
+            .first()
         )
+        if caso is None:
+            return False
+
+        nombre = nombre_reescrito(texto)
+        if nombre is None or corresponde_a_nodo(nombre, session):
+            logger.debug("Respuesta en hilo %s ignorada (no es una cámara): %r", thread_ts_evento, texto)
+            return True
+
+        candidatos: list[str] = []
+        try:
+            resultado = buscar_camara_o_botella_cromo(nombre, session)
+        except AmbiguousSearchError as exc:
+            resultado, candidatos = None, exc.candidatos
+
+        if resultado is None or resultado.camara is None:
+            logger.info(
+                "action=ingreso_reescritura_camara evento=sin_match caso_id=%s usuario=%s texto=%r",
+                caso.id,
+                actor_slack_user_id,
+                nombre,
+            )
+            respuesta = f"⚠️ *{nombre}* sigue sin match en el inventario. El ingreso queda sin match."
+            if candidatos:
+                vinetas = "\n".join(f"• {c}" for c in candidatos)
+                respuesta += f"\n¿Quisiste decir:\n{vinetas}\nPodés volver a escribirla en este hilo."
+        else:
+            logger.info(
+                "action=ingreso_reescritura_camara evento=match caso_id=%s usuario=%s texto=%r camara_id=%s",
+                caso.id,
+                actor_slack_user_id,
+                nombre,
+                resultado.camara.id,
+            )
+            respuesta = self._cerrar_caso_con_resultado(
+                caso, resultado, session, client, "✅ Cámara corregida"
+            )
+
+        client.chat_postMessage(channel=channel, thread_ts=thread_ts_evento, text=respuesta, mrkdwn=True)
         return True
+
+    @staticmethod
+    def _es_fecha_suelta(texto: str) -> bool:
+        """`DD-MM-AAAA HH:MM` suelta (válida o no): respuesta del flujo de fecha pendiente, nunca
+        una Cámara reescrita."""
+        try:
+            return extraer_momento_solo(texto) is not None
+        except MomentoInvalidoError:
+            return True
 
     # ── Corrección manual: "Forzar ingreso"/"Forzar egreso" (Task 6) ────────────────────────
 
@@ -895,6 +1195,114 @@ class IngresoListener:
         )
         return True
 
+    def _responder_numero_no_coincide(
+        self,
+        exc: NumeroNoCoincideError,
+        session: Any,
+        client: Any,
+        channel: str,
+        thread_ts: str | None,
+        texto: str,
+    ) -> None:
+        """Respuesta de `_handle_message` cuando el número escrito no coincide con ninguna cámara."""
+        # Desde 2026-10-23: el número escrito no coincide con ninguna cámara, pero sin él hay
+        # parecidas. Se registra el `IngresoSinMatch` igual que un ambiguo y las parecidas sólo
+        # se sugieren — nunca se asigna una (decisión del usuario). El técnico puede reescribir
+        # la cámara en el hilo, o el operador responder con el Fontaine ID.
+        caso = self._registrar_caso_sin_match(session, exc.nombre_raw, channel, thread_ts, texto)
+        vinetas = "\n".join(f"• {c}" for c in exc.candidatos)
+        aviso = (
+            f":warning: No encontré *{exc.nombre_raw}* con ese número. ¿Quisiste decir:\n"
+            f"{vinetas}\n"
+            f"{_PEDIDO_REESCRIBIR} "
+            "*Podés continuar con el ingreso con normalidad.*"
+        )
+        logger.info(
+            "Número sin coincidencia para '%s': sugerencias=%s — registrado IngresoSinMatch id=%s",
+            exc.nombre_raw,
+            exc.candidatos,
+            caso.id,
+        )
+        client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=aviso, mrkdwn=True)
+
+    def _responder_busqueda_ambigua(
+        self,
+        exc: AmbiguousSearchError,
+        session: Any,
+        client: Any,
+        channel: str,
+        thread_ts: str | None,
+        texto: str,
+    ) -> None:
+        """Respuesta de `_handle_message` ante un nombre ambiguo o demasiado genérico."""
+        # Los candidatos ya vienen fusionados (Camara + CromoBotella) y acotados a 3 desde la
+        # Tarea 1 (`AmbiguousSearchError.__init__`) — se listan como viñetas de texto plano.
+        candidatos_texto = ""
+        if exc.candidatos:
+            vinetas = "\n".join(f"• {c}" for c in exc.candidatos)
+            candidatos_texto = f"\nCandidatos:\n{vinetas}"
+
+        # Desde 2026-09-07: a diferencia del caso "sin match" (que ya crea una fila arriba en
+        # `_construir_respuesta_camara`), el caso ambiguo/genérico históricamente no persistía
+        # nada — quedaba sin ningún rastro auditable ni forma de revalidarlo más adelante (ver
+        # `docs/decisiones.md` entrada 2026-09-07). Ahora también crea un `IngresoSinMatch`,
+        # revalidable con la frase "Revalidar ingreso" en este mismo hilo.
+        caso = self._registrar_caso_sin_match(session, exc.nombre_raw, channel, thread_ts, texto)
+
+        if exc.cantidad == 0:
+            aviso = (
+                f":warning: El nombre *'{exc.nombre_raw}'* es demasiado genérico "
+                "para identificar una cámara. Por favor, especificá la dirección "
+                "completa o el número exacto. Recuerdo para accesos a Nodos anteponer la Palabra 'Nodo' (ej: 'Nodo Pilar')."
+                f"{candidatos_texto}\n"
+                f"{_PEDIDO_REESCRIBIR} "
+                "*Podés continuar con el ingreso con normalidad.* Si más adelante se corrige "
+                "el nombre en el inventario, respondé *\"Revalidar ingreso\"* en este hilo "
+                "para reintentarlo."
+            )
+        else:
+            aviso = (
+                f":warning: Tu solicitud *'{exc.nombre_raw}'* es ambigua y coincide "
+                f"con *{exc.cantidad}* cámaras en el sistema. Por favor, especificá "
+                "la dirección o el número exacto."
+                f"{candidatos_texto}\n"
+                f"{_PEDIDO_REESCRIBIR} "
+                "*Podés continuar con el ingreso con normalidad.* Si más adelante se corrige "
+                "el nombre en el inventario, respondé *\"Revalidar ingreso\"* en este hilo "
+                "para reintentarlo."
+            )
+        logger.info(
+            "Búsqueda ambigua para '%s': cantidad=%d candidatos=%s — registrado IngresoSinMatch id=%s",
+            exc.nombre_raw,
+            exc.cantidad,
+            exc.candidatos,
+            caso.id,
+        )
+        client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=aviso,
+            mrkdwn=True,
+        )
+
+    def _registrar_caso_sin_match(
+        self, session: Any, nombre_raw: str, channel: str, thread_ts: str | None, texto: str
+    ) -> Any:
+        """Persiste el `IngresoSinMatch` de un caso ambiguo (o de número que no coincide), para que
+        quede auditable y revalidable en el hilo."""
+        from db.models.infra import IngresoSinMatch
+
+        caso = IngresoSinMatch(
+            texto_original=nombre_raw,
+            origen="slack",
+            contexto=channel or None,
+            thread_ts=thread_ts,
+            texto_mensaje=texto,
+        )
+        session.add(caso)
+        session.commit()
+        return caso
+
     def _handle_message(self, event: dict[str, Any], client: Any) -> None:
         """Procesa un mensaje entrante y responde en el mismo hilo."""
         # Ignorar ediciones para no procesar dos veces el mismo ingreso
@@ -998,6 +1406,12 @@ class IngresoListener:
                     mensaje_ts=event.get("ts") or "",
                 ):
                     return
+                # Último (2026-10-23): una persona reescribe la Cámara en el hilo de un caso sin
+                # match — ninguno de los anteriores lo reconoció como suyo.
+                if self._procesar_reescritura_camara(
+                    texto, event_thread_ts, session, client, channel, actor_slack_user_id, event
+                ):
+                    return
 
             # Filtro de Workflow ID: si está activo, solo procesar mensajes de Workflows configurados
             if solo_workflows:
@@ -1061,64 +1475,11 @@ class IngresoListener:
                 mrkdwn=True,
             )
 
+        except NumeroNoCoincideError as exc:
+            # Antes que `AmbiguousSearchError`: es subclase y tiene respuesta propia.
+            self._responder_numero_no_coincide(exc, session, client, channel, thread_ts, texto)
         except AmbiguousSearchError as exc:
-            # Los candidatos ya vienen fusionados (Camara + CromoBotella) y acotados a 3 desde la
-            # Tarea 1 (`AmbiguousSearchError.__init__`) — se listan como viñetas de texto plano.
-            candidatos_texto = ""
-            if exc.candidatos:
-                vinetas = "\n".join(f"• {c}" for c in exc.candidatos)
-                candidatos_texto = f"\nCandidatos:\n{vinetas}"
-
-            # Desde 2026-09-07: a diferencia del caso "sin match" (que ya crea una fila arriba en
-            # `_construir_respuesta_camara`), el caso ambiguo/genérico históricamente no persistía
-            # nada — quedaba sin ningún rastro auditable ni forma de revalidarlo más adelante (ver
-            # `docs/decisiones.md` entrada 2026-09-07). Ahora también crea un `IngresoSinMatch`,
-            # revalidable con la frase "Revalidar ingreso" en este mismo hilo.
-            from db.models.infra import IngresoSinMatch
-
-            caso = IngresoSinMatch(
-                texto_original=exc.nombre_raw,
-                origen="slack",
-                contexto=channel or None,
-                thread_ts=thread_ts,
-                texto_mensaje=texto,
-            )
-            session.add(caso)
-            session.commit()
-
-            if exc.cantidad == 0:
-                aviso = (
-                    f":warning: El nombre *'{exc.nombre_raw}'* es demasiado genérico "
-                    "para identificar una cámara. Por favor, especificá la dirección "
-                    "completa o el número exacto. Recuerdo para accesos a Nodos anteponer la Palabra 'Nodo' (ej: 'Nodo Pilar')."
-                    f"{candidatos_texto}\n"
-                    "*Podés continuar con el ingreso con normalidad.* Si más adelante se corrige "
-                    "el nombre en el inventario, respondé *\"Revalidar ingreso\"* en este hilo "
-                    "para reintentarlo."
-                )
-            else:
-                aviso = (
-                    f":warning: Tu solicitud *'{exc.nombre_raw}'* es ambigua y coincide "
-                    f"con *{exc.cantidad}* cámaras en el sistema. Por favor, especificá "
-                    "la dirección o el número exacto."
-                    f"{candidatos_texto}\n"
-                    "*Podés continuar con el ingreso con normalidad.* Si más adelante se corrige "
-                    "el nombre en el inventario, respondé *\"Revalidar ingreso\"* en este hilo "
-                    "para reintentarlo."
-                )
-            logger.info(
-                "Búsqueda ambigua para '%s': cantidad=%d candidatos=%s — registrado IngresoSinMatch id=%s",
-                exc.nombre_raw,
-                exc.cantidad,
-                exc.candidatos,
-                caso.id,
-            )
-            client.chat_postMessage(
-                channel=channel,
-                thread_ts=thread_ts,
-                text=aviso,
-                mrkdwn=True,
-            )
+            self._responder_busqueda_ambigua(exc, session, client, channel, thread_ts, texto)
         except Exception as exc:
             logger.error("Error procesando mensaje de ingreso: %s", exc, exc_info=True)
         finally:
@@ -1164,9 +1525,21 @@ class IngresoListener:
         thread_ts = event.get("thread_ts") or event.get("ts")
         channel = event.get("channel", "")
 
+        # Familia "track", en orden odf → full → normal (las regex se excluyen entre sí: anclan con
+        # `$` y "odf" no es un número), y toda la familia antes de los parsers golosos de cable.
+        comando_odf = extraer_comando_track_odf(texto)
+        if comando_odf is not None:
+            self._handle_track_odf(comando_odf, client, channel, thread_ts)
+            return
+
+        numero_full = extraer_comando_track_full(texto)
+        if numero_full is not None:
+            self._handle_track(numero_full, client, channel, thread_ts, full=True)
+            return
+
         numero_track = extraer_comando_track(texto)
         if numero_track is not None:
-            self._handle_track(numero_track, client, channel, thread_ts)
+            self._handle_track(numero_track, client, channel, thread_ts, full=False)
             return
 
         comando_buffer = extraer_comando_cable_buffer(texto)
@@ -1224,9 +1597,10 @@ class IngresoListener:
             session.close()
 
     def _handle_track(
-        self, numero: str, client: Any, channel: str, thread_ts: str
+        self, numero: str, client: Any, channel: str, thread_ts: str, *, full: bool = False
     ) -> None:
         """"track <id>" — sube al hilo los `.txt` de tracking del Servicio, generados desde Cromo.
+        Con `full=True` ("track <id> full") sube también los caminos adicionales.
 
         El ID puede ser el vigente, el de primera línea o uno histórico: `resolver_servicio` mira
         las tres identidades.
@@ -1266,18 +1640,19 @@ class IngresoListener:
         finally:
             session.close()
 
+        que = "el tracking completo (`full`)" if full else "el tracking"
         client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
             text=(
-                f":satellite: Generando el tracking de `{id_vigente}` — {cliente_nombre}. "
+                f":satellite: Generando {que} de `{id_vigente}` — {cliente_nombre}. "
                 "Si no está en caché puede tardar un rato."
             ),
             mrkdwn=True,
         )
 
         try:
-            resultado = generar_trackings(servicio_pk)
+            resultado = generar_trackings(servicio_pk, full=full)
         except Exception as exc:
             logger.error("Error generando tracking de %s: %s", servicio_pk, exc, exc_info=True)
             client.chat_postMessage(
@@ -1320,6 +1695,71 @@ class IngresoListener:
         aviso = mensaje_resumen(resultado)
         if aviso:
             client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=aviso, mrkdwn=True)
+
+    def _handle_track_odf(
+        self, comando: ComandoTrackOdf, client: Any, channel: str, thread_ts: str
+    ) -> None:
+        """"track odf <patchera>:<conectores>" — sube al hilo el `.txt` de cada posición pedida,
+        con un comentario que dice de qué Servicio es el conector y qué etiqueta lleva el pelo.
+
+        No es el tracking de un Servicio: no audita huérfanos ni registra evidencia. Una patchera
+        que está en varias bandejas se lista y no se elige; los conectores sin pelo o sin camino se
+        avisan uno por uno.
+        """
+        from modules.slack_baneo_notifier.tracking_servicio import (
+            ESTADO_PATCHERA_AMBIGUA,
+            ESTADO_PATCHERA_NO_ENCONTRADA,
+            generar_tracking_posiciones,
+            texto_candidatas,
+            texto_posicion_sin_archivo,
+            texto_uso_track_odf,
+        )
+
+        def responder(texto: str) -> None:
+            client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=texto, mrkdwn=True)
+
+        if comando.error is not None:
+            responder(texto_uso_track_odf(comando.error))
+            return
+
+        pedido = f"{comando.patchera}:{','.join(str(n) for n in comando.conectores)}"
+        responder(f":satellite: Buscando `{pedido}` en Cromo. Si no está en caché puede tardar un rato.")
+        try:
+            resultado = generar_tracking_posiciones(comando.patchera, comando.conectores)
+        except Exception as exc:
+            logger.error("Error generando track odf %s: %s", pedido, exc, exc_info=True)
+            responder(f":x: No se pudo generar el tracking de `{pedido}`.")
+            return
+
+        if resultado.estado == ESTADO_PATCHERA_NO_ENCONTRADA:
+            responder(f":mag: No encontré la patchera `{comando.patchera}` en las ODF ingeridas de Cromo.")
+            return
+        if resultado.estado == ESTADO_PATCHERA_AMBIGUA:
+            responder(texto_candidatas(comando.patchera, resultado.candidatas))
+            return
+
+        # Con la bandeja resuelta se muestra su nombre real ("0-…" tipeado → "O-…" de Cromo).
+        patchera = resultado.bandeja.bandeja_nombre if resultado.bandeja else comando.patchera
+        for posicion in resultado.posiciones:
+            if posicion.archivo is None:
+                aviso = texto_posicion_sin_archivo(patchera, posicion)
+                if aviso:
+                    responder(aviso)
+                continue
+            try:
+                client.files_upload_v2(
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    content=posicion.archivo.contenido,
+                    filename=posicion.archivo.nombre,
+                    title=posicion.archivo.nombre,
+                    initial_comment=posicion.descripcion,
+                )
+            except Exception as exc:
+                logger.error("Error subiendo %s: %s", posicion.archivo.nombre, exc, exc_info=True)
+                responder(f":x: No pude subir `{posicion.archivo.nombre}`.")
+        if resultado.mensaje:
+            responder(f":warning: {resultado.mensaje}")
 
     def _handle_cable_buffer(
         self, comando: tuple[str, str, int], client: Any, channel: str, thread_ts: str

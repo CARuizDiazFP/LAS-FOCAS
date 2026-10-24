@@ -5,7 +5,7 @@
 
 import logging
 from pathlib import Path
-from core.maps.static_map import build_static_map_png, MapStyle
+from core.maps.static_map import build_static_map_png
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

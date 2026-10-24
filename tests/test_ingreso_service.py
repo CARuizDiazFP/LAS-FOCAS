@@ -53,6 +53,13 @@ def _assert_filtro_igualdad(filtros, columna_attr: str, valor_esperado) -> None:
     raise AssertionError(f"No se encontró un filtro para la columna '{columna_attr}'")
 
 
+def _assert_filtro_vigente(filtros) -> None:
+    """Verifica que los filtros incluyan `Ingreso.vigente()` (`anulado_at IS NULL`): un ingreso
+    anulado desde el portal nunca ocurrió y no puede decidir estado. La prueba de comportamiento
+    real está en `tests/test_ingresos_anulados_real_db.py`; ésta corre sin Postgres."""
+    _assert_filtro_null_safe(filtros, "anulado_at", None)
+
+
 def _camara(camara_id: int = 10) -> Camara:
     return Camara(id=camara_id, nombre="Cra Test CF")
 
@@ -158,6 +165,7 @@ def test_egreso_con_ingreso_abierto_matching_cierra_esa_fila_sin_crear_una_nueva
     # Sin este filtro, un Intento bloqueado (mismo fecha_fin IS NULL) podría cerrarse como si fuera
     # un Ingreso real — ver registrar_intento_bloqueado() más abajo.
     _assert_filtro_igualdad(filtros, "tipo", IngresoTipo.INGRESO)
+    _assert_filtro_vigente(filtros)
     session.query.return_value.filter.return_value.order_by.assert_called_once()
 
 
@@ -591,3 +599,43 @@ def test_cerrar_ingreso_forzado_rechaza_una_fila_ya_cerrada() -> None:
 
     assert cerrado.fecha_fin == datetime(2026, 9, 22, 15, 0, tzinfo=timezone.utc)
     session.commit.assert_not_called()
+
+
+def test_cerrar_ingreso_forzado_rechaza_una_fila_anulada() -> None:
+    session = MagicMock()
+    anulado = Ingreso(
+        id=907,
+        camara_id=10,
+        tipo=IngresoTipo.INGRESO,
+        fecha_inicio=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
+        fecha_fin=None,
+        anulado_at=datetime(2026, 9, 22, 13, 0, tzinfo=timezone.utc),
+        anulado_por="admin1",
+        anulado_motivo="nunca ocurrió",
+    )
+
+    with pytest.raises(ValueError, match="anulado"):
+        cerrar_ingreso_forzado(
+            session, ingreso=anulado, momento=datetime(2026, 9, 22, 18, 0, tzinfo=timezone.utc)
+        )
+
+    assert anulado.fecha_fin is None
+    session.commit.assert_not_called()
+
+
+def test_registrar_egreso_historico_filtra_vigentes() -> None:
+    from core.services.ingreso_service import registrar_egreso_historico
+
+    session = MagicMock()
+    session.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+
+    registrar_egreso_historico(
+        session,
+        camara=_camara(),
+        botella=None,
+        tecnico_nombre="Rider Fernández",
+        slack_user_id=None,
+        momento=datetime(2026, 9, 22, 18, 0, tzinfo=timezone.utc),
+    )
+
+    _assert_filtro_vigente(session.query.return_value.filter.call_args[0])

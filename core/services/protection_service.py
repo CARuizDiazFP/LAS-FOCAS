@@ -16,24 +16,22 @@ Características:
 from __future__ import annotations
 
 import logging
+import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from db.models.infra import (
     Camara,
     CamaraEstado,
     CamaraEstadoAuditoria,
-    Empalme,
     IncidenteBaneo,
     Ingreso,
     IngresoTipo,
     RutaServicio,
     Servicio,
-    ruta_empalme_association,
 )
 
 logger = logging.getLogger(__name__)
@@ -368,10 +366,11 @@ class ProtectionService:
             )
             
         except Exception as exc:
-            logger.exception("action=create_ban_error error=%s", exc)
+            ref = secrets.token_hex(4)
+            logger.exception("action=create_ban_error error=%s ref=%s", exc, ref)
             return BanResult(
                 success=False,
-                error=str(exc),
+                error=f"Error interno (ref {ref})",
                 message="Error inesperado al crear el baneo",
             )
 
@@ -534,11 +533,12 @@ class ProtectionService:
             )
             
         except Exception as exc:
-            logger.exception("action=lift_ban_error incidente_id=%d error=%s", incidente_id, exc)
+            ref = secrets.token_hex(4)
+            logger.exception("action=lift_ban_error incidente_id=%d error=%s ref=%s", incidente_id, exc, ref)
             return LiftResult(
                 success=False,
                 incidente_id=incidente_id,
-                error=str(exc),
+                error=f"Error interno (ref {ref})",
                 message="Error inesperado al levantar el baneo",
             )
 
@@ -737,6 +737,7 @@ class ProtectionService:
             Ingreso.camara_id == camara.id,
             Ingreso.tipo == IngresoTipo.INGRESO,
             Ingreso.fecha_fin == None,  # noqa: E711
+            Ingreso.vigente(),
         ).first()
 
         if ingreso_activo:

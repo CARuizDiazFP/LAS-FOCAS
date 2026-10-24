@@ -8,11 +8,11 @@ import json
 import os
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect, status
 
-from core.chatbot import ChatMessage, ChatOrchestrator, ChatEvent, DatabaseChatStorage
+from core.chatbot import ChatMessage, ChatOrchestrator, DatabaseChatStorage
 from core.mcp import get_default_registry
 
 

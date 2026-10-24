@@ -4,10 +4,13 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Optional
 
 from core.services.cromo.camino_optico_service import (
+    STP_PROYECTADO,
+    STP_PROYECTADO_DESINSTALACION,
     TIPO_CONECTOR_ODF,
     TIPO_FUSION,
     TIPO_NO_RESUELTO,
@@ -90,20 +93,94 @@ def nombre_archivo_tramo(servicio_numero: Optional[str], numero_tramo: int, pelo
     return f"tracking_cromo T{numero_tramo} pelo {pelo_n_id}.txt"
 
 
+def nombre_archivo_adicional(servicio_numero: Optional[str], numero: int, pelo_n_id: int) -> str:
+    """Nombre del `.txt` de un camino adicional: `"{servicio} CROMO A{n} pelo {n_id}.txt"`.
+
+    Mismo molde que `nombre_archivo_tramo`, con `A` en vez de `T` para que un camino bajado como
+    adicional no pise al tramo del mismo pelo. `servicio_numero` es siempre el número del Servicio
+    en LAS-FOCAS, nunca el at.62 del pelo: medido en dev (2026-10-21) el de los pelos viejos del
+    93150 es `4649`, y el parser legacy toma el primer número de 4 dígitos o más del nombre.
+    """
+    if _at62_plausible(servicio_numero):
+        return f"{servicio_numero} CROMO A{numero} pelo {pelo_n_id}.txt"
+    return f"tracking_cromo A{numero} pelo {pelo_n_id}.txt"
+
+
+_NO_SEGURO_EN_NOMBRE = re.compile(r"[^A-Za-z0-9-]+")
+
+
+def _segmento_seguro(valor: str) -> str:
+    # Sin espacios adentro: así ningún pedazo del nombre arma un alias `<4 dígitos> <letra+dígitos>`.
+    return _NO_SEGURO_EN_NOMBRE.sub("_", valor).strip("_")
+
+
+def nombre_archivo_posicion(
+    servicio_numero: Optional[str], bandeja: Optional[str], conector: str, pelo_n_id: int
+) -> str:
+    """Nombre del `.txt` de una posición de ODF (`track odf`): `"93150 CROMO O-1252871-1_1 pelo X.txt"`.
+
+    La patchera y el conector se sanean (medido en dev: hay nombres de patchera con coma y con
+    `:`). Sin un número de Servicio plausible el nombre empieza por `sin_servicio`: el parser legacy
+    tomaría como servicio el primer número de la patchera, así que ese `.txt` no es ingerible como
+    tracking de un Servicio (asumido y cubierto por un test).
+    """
+    posicion = f"{_segmento_seguro(bandeja or '') or 'ODF'}_{_segmento_seguro(str(conector))}"
+    prefijo = servicio_numero if _at62_plausible(servicio_numero) else "sin_servicio"
+    return f"{prefijo} CROMO {posicion} pelo {pelo_n_id}.txt"
+
+
+# Sufijo que la UI de Cromo agrega al elemento según su estado de proyecto (visto en su web:
+# "Empalme 6631033: Cra. Guardia Vieja 3302 C.F.(OE 360747)  - Proyectado Desinstalación").
+_MARCA_PROYECTO = {
+    STP_PROYECTADO: "  - Proyectado",
+    STP_PROYECTADO_DESINSTALACION: "  - Proyectado Desinstalación",
+}
+
+
+def _marca(nodo: NodoCamino) -> str:
+    return _MARCA_PROYECTO.get(nodo.stp, "") if nodo.stp is not None else ""
+
+
 def _linea_tramo(nodo: NodoCamino, acum_geo: float, acum_real: float) -> str:
     return (
         f"{nodo.cable_nombre or '?'}: {nodo.numero_pelo or '?'} "
         f"({nodo.tubo_color or '?'} / {_ordinal_humano(nodo.tubo_orden)} - "
         f"{_ordinal_humano(nodo.orden_pelo)}) --> {_numero(nodo.distancia_geo_m)} / "
-        f"{_numero(acum_geo)} mts * {_numero(acum_real)} mts"
+        f"{_numero(acum_geo)} mts * {_numero(acum_real)} mts{_marca(nodo)}"
     )
 
 
 def _linea_terminal(nodo: NodoCamino, acum_geo: float, acum_real: float) -> str:
     return (
         f"{nodo.patchera_nombre or nodo.odf_nombre or '?'}: {nodo.conector_numero or '?'} "
-        f"--> Sin longitud / {_numero(acum_geo)} mts * {_numero(acum_real)} mts"
+        f"--> Sin longitud / {_numero(acum_geo)} mts * {_numero(acum_real)} mts{_marca(nodo)}"
     )
+
+
+def _cabecera_completado(camino: CaminoOptico) -> list[str]:
+    """Líneas `#` que declaran un camino completado con otra vista de red, o ninguna."""
+    completado = camino.completado
+    if completado is None:
+        return []
+    corte = completado.corte
+    donde = f"{corte.cable_nombre or '?'}:{corte.numero_pelo or '?'}"
+    if completado.botella:
+        donde += f" ({completado.botella})"
+    if completado.projview == 2:
+        vista = "red proyectada"
+        marcas = 'Los elementos marcados "Proyectado" pueden no estar ejecutados en campo.'
+    else:
+        vista = "red actual"
+        marcas = 'Los elementos marcados "Proyectado Desinstalación" siguen en campo pero se van a retirar.'
+    lineas = [
+        f"# ATENCIÓN: el camino por omisión de Cromo se cortaba en {donde}, un pelo con más de una"
+        " continuación.",
+        f"# Se completó con la {vista} de Cromo (projview={completado.projview}), que agrega "
+        f"{_numero(completado.metros_agregados)} mts. {marcas}",
+    ]
+    if completado.alternativa:
+        lineas.append(f"# Alternativa: {completado.alternativa}.")
+    return lineas
 
 
 def secuencia_para_tracking(camino: CaminoOptico) -> list[NodoCamino]:
@@ -146,6 +223,7 @@ def renderizar_tracking_txt(camino: CaminoOptico, *, generado_en: datetime) -> s
         f"# Servicio at.62={camino.servicio_at62 or 's/d'} · at.61={camino.servicio_at61 or 's/d'}",
         "# El camino es un elemento vivo: cambia ante cortes y reruteos. Cromo es la fuente de la verdad.",
         "# Cromo no publica la atenuación por API: las líneas de tramo NO llevan la columna dB.",
+        *_cabecera_completado(camino),
         "",
         f"Cable: {(raiz.cable_nombre if raiz else None) or '?'}",
         f"{_FLECHA_IZQ} TUBO: {(raiz.tubo_color if raiz else None) or '?'} / "
@@ -170,7 +248,9 @@ def renderizar_tracking_txt(camino: CaminoOptico, *, generado_en: datetime) -> s
                 lineas.extend(["", _SEPARADOR_GUION, cuerpo[0], "", _SEPARADOR_GUION])
                 continue
         elif nodo.tipo == TIPO_FUSION:
-            cuerpo = [f"Empalme {nodo.botella_id or nodo.id_cromo}: {nodo.botella_nombre or 's/d'}"]
+            cuerpo = [
+                f"Empalme {nodo.botella_id or nodo.id_cromo}: {nodo.botella_nombre or 's/d'}{_marca(nodo)}"
+            ]
         elif nodo.tipo == TIPO_CONECTOR_ODF:
             # El legacy emite también la ODF como un `Empalme <id_odf>: <nombre>`, y va del lado
             # que mira al interior del camino: al principio del archivo después del terminal, al

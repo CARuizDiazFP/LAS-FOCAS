@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -247,7 +247,7 @@ async def _buscar_servicio_por_id(db: AsyncSession, id_consultado: str) -> Servi
 
 
 @router.post("/ingest", response_model=IngestServiciosResponse)
-async def ingest_servicios(
+async def ingest_servicios(  # noqa: C901 - API interna; se conserva por decisión del usuario
     file: UploadFile = File(..., description="Archivo XLSX/CSV con servicios SLA"),
     db: AsyncSession = Depends(get_async_db),
 ) -> IngestServiciosResponse:
@@ -880,7 +880,7 @@ async def refrescar_servicio_desde_prov(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProvClientError as exc:
         logger.error("action=servicios_prov_refrescar evento=error_cliente id=%s error=%s", id_consultado, exc)
-        raise HTTPException(status_code=502, detail=f"No se pudo consultar PROV: {exc}") from exc
+        raise HTTPException(status_code=502, detail="No se pudo consultar PROV") from exc
 
     async with AsyncSessionLocal() as db_write:
         svc = await _buscar_servicio_por_id(db_write, id_consultado)

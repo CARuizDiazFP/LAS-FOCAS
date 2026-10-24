@@ -7,7 +7,6 @@ son objetos raíz (`parent` ausente), traen `ll` y `pts`, y publican el mismo ju
 
 from __future__ import annotations
 
-import pytest
 
 from core.services.cromo.parser import parse_pon_elemento
 

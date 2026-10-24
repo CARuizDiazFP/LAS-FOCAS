@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import re
 from .config import settings
 from modules.common.faq_data import match_faq
 from .providers import openai_provider, ollama_provider, heuristic

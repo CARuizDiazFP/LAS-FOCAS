@@ -6,13 +6,14 @@ from __future__ import annotations
 
 import io
 import logging
+import secrets
 import smtplib
 from dataclasses import dataclass
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import pandas as pd
 
@@ -156,25 +157,28 @@ class EmailService:
                 error="Credenciales de correo inválidas",
             )
         except smtplib.SMTPRecipientsRefused as exc:
-            logger.error("action=send_email error=recipients_refused detail=%s", exc)
+            ref = secrets.token_hex(4)
+            logger.error("action=send_email error=recipients_refused detail=%s ref=%s", exc, ref)
             return EmailResult(
                 success=False,
                 message="Destinatarios rechazados",
-                error=f"El servidor rechazó los destinatarios: {exc}",
+                error=f"El servidor rechazó los destinatarios (ref {ref})",
             )
         except smtplib.SMTPException as exc:
-            logger.error("action=send_email error=smtp_error detail=%s", exc)
+            ref = secrets.token_hex(4)
+            logger.error("action=send_email error=smtp_error detail=%s ref=%s", exc, ref)
             return EmailResult(
                 success=False,
                 message="Error al enviar correo",
-                error=str(exc),
+                error=f"No se pudo enviar el email (ref {ref})",
             )
         except Exception as exc:
-            logger.exception("action=send_email error=unexpected detail=%s", exc)
+            ref = secrets.token_hex(4)
+            logger.exception("action=send_email error=unexpected detail=%s ref=%s", exc, ref)
             return EmailResult(
                 success=False,
                 message="Error inesperado al enviar correo",
-                error=str(exc),
+                error=f"No se pudo enviar el email (ref {ref})",
             )
 
     # ------------------------------------------------------------------ #

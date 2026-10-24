@@ -43,7 +43,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR.parent) not in sys.path:  # pragma: no cover - inicialización
     sys.path.insert(0, str(SCRIPT_DIR.parent))
 
-from scripts.agentes import gitops, rutas  # noqa: E402
+from scripts.agentes import calidad, gitops, rutas  # noqa: E402
 from scripts.agentes.consola import configurar_logging, emitir, emitir_json  # noqa: E402
 from scripts.agentes.estado import (  # noqa: E402
     TTL_AGENTE_MINUTOS,
@@ -64,6 +64,10 @@ TTL_INTEGRACION_MINUTOS = 20
 
 RAMA_INTEGRACION = "dev"
 REMOTO = "origin"
+
+# Eventos que `ready` deja y `integrate` exige para el HEAD que se integra.
+EVENTO_GATE_OK = "quality_gate_passed"
+EVENTO_GATE_SALTEADO = "quality_gate_bypassed"
 
 # Archivos/directorios locales del checkout de control que el worktree necesita para
 # operar (todos ignorados por Git). Se enlazan, nunca se copian.
@@ -109,6 +113,8 @@ RUNTIME_IGNORADO_RAIZ = (
     ARCHIVO_METADATA,
     "web/frontend/node_modules",
     "web/frontend/dist",
+    # Scratch del flujo con subagentes (ledgers, briefs, reportes): se descarta al cerrar.
+    ".superpowers",
 )
 RUNTIME_IGNORADO_CUALQUIER_NIVEL = ("__pycache__", ".pytest_cache", ".ruff_cache")
 
@@ -594,8 +600,49 @@ def comando_ready(entorno: Entorno, args: argparse.Namespace) -> dict[str, objec
             f"el worktree {ruta} no está limpio; confirmar o descartar los cambios antes de "
             "declararlo listo para integrar."
         )
-    entorno.registro.cambiar_estado(args.agent, "ready_to_merge", detalle="validaciones locales OK")
-    return {"agent_id": args.agent, "status": "ready_to_merge", "rama": agente.branch}
+    cabeza = gitops.sha("HEAD", ruta)
+
+    if args.sin_gate:
+        if not args.motivo.strip():
+            raise ErrorCLI("--sin-gate exige --motivo: la salida de emergencia queda auditada.")
+        entorno.registro.registrar_evento(
+            EVENTO_GATE_SALTEADO, agent_id=args.agent, detalle=f"{cabeza} | {args.motivo.strip()}"
+        )
+        entorno.registro.cambiar_estado(
+            args.agent, "ready_to_merge", detalle=f"gate SALTEADO: {args.motivo.strip()}"
+        )
+        return {"agent_id": args.agent, "status": "ready_to_merge", "rama": agente.branch, "gate": "salteado"}
+
+    resultado = calidad.ejecutar_gate(ruta, _referencia_dev(ruta))
+    if not resultado.ok:
+        paso = resultado.fallido
+        assert paso is not None
+        raise ErrorCLI(
+            f"el gate de calidad falló en '{paso.nombre}' (exit {paso.exit_code}); el agente sigue "
+            f"en su estado actual.\n$ {' '.join(paso.comando)}\n{paso.salida}"
+        )
+    entorno.registro.registrar_evento(EVENTO_GATE_OK, agent_id=args.agent, detalle=cabeza)
+    entorno.registro.cambiar_estado(args.agent, "ready_to_merge", detalle=f"gate OK: {resultado.resumen()}")
+    return {
+        "agent_id": args.agent,
+        "status": "ready_to_merge",
+        "rama": agente.branch,
+        "gate": resultado.como_dict(),
+    }
+
+
+def _referencia_dev(ruta: Path) -> str:
+    """``origin/dev`` si el remoto existe en ``ruta``; si no, la rama local ``dev``."""
+    remota = f"{REMOTO}/{RAMA_INTEGRACION}"
+    return remota if gitops.existe_ref(remota, ruta) else RAMA_INTEGRACION
+
+
+def _gate_aprobado(registro: Registro, agent_id: str, cabeza: str) -> bool:
+    """``True`` si el último gate (pasado o salteado) de ``agent_id`` fue sobre ``cabeza``."""
+    for evento in registro.eventos(agent_id=agent_id, limite=500):
+        if evento["evento"] in (EVENTO_GATE_OK, EVENTO_GATE_SALTEADO):
+            return evento["detalle"].split(" | ", 1)[0] == cabeza
+    return False
 
 
 # ------------------------------------------------------------------ integración
@@ -615,13 +662,15 @@ def comando_integrate(entorno: Entorno, args: argparse.Namespace) -> dict[str, o
             "no opera sobre dev/main."
         )
 
+    if not _gate_aprobado(entorno.registro, args.agent, gitops.sha("HEAD", ruta)):
+        raise ErrorCLI(
+            f"el HEAD de {agente.branch} no pasó el gate de calidad (o cambió después de 'ready'). "
+            f"Ejecutar primero: agent_worktree.py ready --agent {args.agent}"
+        )
+
     if gitops.existe_remoto(REMOTO, ruta):
         gitops.fetch(ruta, REMOTO)
-    referencia_dev = (
-        f"{REMOTO}/{RAMA_INTEGRACION}"
-        if gitops.existe_ref(f"{REMOTO}/{RAMA_INTEGRACION}", ruta)
-        else RAMA_INTEGRACION
-    )
+    referencia_dev = _referencia_dev(ruta)
     if not gitops.es_ancestro(referencia_dev, "HEAD", ruta):
         raise ErrorCLI(
             f"{referencia_dev} avanzó y no es ancestro de {agente.branch}. "
@@ -686,7 +735,9 @@ def _actualizar_control(entorno: Entorno) -> str:
     """Deja el checkout de control al día con ``dev`` sin arriesgar trabajo local."""
     control = entorno.control
     try:
-        if not gitops.esta_limpio(control):
+        # Sólo los cambios trackeados bloquean: un archivo sin trackear no impide un --ff-only y,
+        # si el merge fuera a pisarlo, Git aborta solo (el merge de abajo lo reporta como omitido).
+        if gitops.tiene_cambios_trackeados(control):
             return "omitido: el checkout de control tiene cambios sin confirmar"
         if gitops.rama_actual(control) != RAMA_INTEGRACION:
             return f"omitido: el control no está en {RAMA_INTEGRACION}"
@@ -982,7 +1033,7 @@ def _limpiar(entorno: Entorno, agente: Agente, *, borrar_rama: bool) -> dict[str
 # ----------------------------------------------------------------------- doctor
 
 
-def comando_doctor(entorno: Entorno, args: argparse.Namespace) -> dict[str, object]:
+def comando_doctor(entorno: Entorno, args: argparse.Namespace) -> dict[str, object]:  # noqa: C901 - CLI de tooling con tests propios
     """Detecta inconsistencias entre registro, Git y disco. No corrige nada."""
     control = entorno.control
     hallazgos: list[dict[str, str]] = []
@@ -1191,8 +1242,14 @@ def construir_parser() -> argparse.ArgumentParser:
     sincro = sub.add_parser("sync", help="Incorporar dev a la rama del agente dentro de su worktree", **sub_kwargs)
     sincro.add_argument("--agent", required=True)
 
-    listo = sub.add_parser("ready", help="Marcar al agente como listo para integrar", **sub_kwargs)
+    listo = sub.add_parser(
+        "ready", help="Correr el gate de calidad (lint + tests focales) y marcar listo para integrar", **sub_kwargs
+    )
     listo.add_argument("--agent", required=True)
+    listo.add_argument(
+        "--sin-gate", action="store_true", help="Salida de emergencia: no correr el gate (exige --motivo, queda auditado)"
+    )
+    listo.add_argument("--motivo", default="", help="Por qué se saltea el gate (obligatorio con --sin-gate)")
 
     integrar = sub.add_parser("integrate", help="Integrar la rama del agente a dev (ventana serializada)", **sub_kwargs)
     integrar.add_argument("--agent", required=True)

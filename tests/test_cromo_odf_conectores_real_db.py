@@ -106,3 +106,82 @@ async def test_conectores_de_odf_resuelve_cliente_de_la_fila_vigente_no_la_super
     assert conector.nombre_cliente == "Cliente Conector Test"
     assert conector.estado_servicio == "Activo"
     assert conector.servicio_id_externo == _NUMERO_ORIGEN_VIGENTE
+
+
+# ── `track odf`: datos reales de dev, sólo lectura ───────────────────────────
+# Patcheras reales medidas el 2026-10-21: O-1252871-1 es una sola bandeja (8604881, ODF San Martin
+# 137 P5 D, la del 93150); O-1249273-1 está en dos ODF distintas.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nombre", ["O-1252871-1", "o-1252871-1", "0-1252871-1", " O-1252871-1 "])
+async def test_bandejas_por_nombre_patchera_unica(nombre):
+    from core.services.cromo.odf_conectores import bandejas_por_nombre
+
+    async with AsyncSessionLocal() as sesion:
+        bandejas = await bandejas_por_nombre(sesion, nombre)
+
+    assert [(b.bandeja_n_id, b.bandeja_nombre, b.odf_n_id) for b in bandejas] == [
+        (8604881, "O-1252871-1", 6644560)
+    ]
+    assert bandejas[0].odf_nombre == "ODF San Martin 137 P5 D"
+
+
+@pytest.mark.asyncio
+async def test_bandejas_por_nombre_patchera_ambigua_lista_las_dos():
+    from core.services.cromo.odf_conectores import bandejas_por_nombre
+
+    async with AsyncSessionLocal() as sesion:
+        bandejas = await bandejas_por_nombre(sesion, "O-1249273-1")
+
+    assert len(bandejas) == 2
+    assert {b.odf_n_id for b in bandejas} == {6644107, 9193140}
+
+
+@pytest.mark.asyncio
+async def test_conectores_de_bandeja_del_93150():
+    from core.services.cromo.odf_conectores import conectores_de_bandeja
+
+    async with AsyncSessionLocal() as sesion:
+        conectores = await conectores_de_bandeja(sesion, 8604881, ["1", "2", "5"])
+
+    por_numero = {c.numero_conector: c for c in conectores}
+    assert set(por_numero) == {"1", "2", "5"}
+    uno = por_numero["1"]
+    assert (uno.n_id, uno.pelo_n_id, uno.cable_nombre) == (8604882, 7028862, "F-PC-CC")
+    assert (uno.servicio_pk, uno.servicio_numero, uno.estado_servicio) == (4, "93150", "Activo")
+    assert uno.nombre_cliente == "BANCO DE LA PROVINCIA DE BUENOS AIRES"
+    assert (uno.historico_numero, uno.historico_estado) == ("44649", "Baja")
+    assert (uno.etiqueta_numero, uno.etiqueta_estado) == ("44649", "Baja")
+    assert por_numero["2"].pelo_n_id == 7028863
+    cinco = por_numero["5"]
+    assert cinco.pelo_n_id is None and cinco.pelo_efectivo is None
+    assert cinco.servicio_pk is None and cinco.etiqueta_numero is None
+
+
+@pytest.mark.asyncio
+async def test_conectores_de_bandeja_sigue_un_salto_de_patch():
+    """O-1262507-3:9 (conector 8628719) no tiene pelo pero tiene patch al 8628742, que sí."""
+    from core.services.cromo.odf_conectores import conectores_de_bandeja
+
+    async with AsyncSessionLocal() as sesion:
+        (conector,) = await conectores_de_bandeja(sesion, 8628710, ["9"])
+
+    assert conector.n_id == 8628719
+    assert conector.pelo_n_id is None
+    assert conector.patch_conector_n_id == 8628742
+    assert conector.patch_pelo_n_id == 10197026
+    assert conector.pelo_efectivo == 10197026
+
+
+@pytest.mark.asyncio
+async def test_conectores_de_bandeja_con_odf_da_lo_mismo():
+    from core.services.cromo.odf_conectores import conectores_de_bandeja
+
+    async with AsyncSessionLocal() as sesion:
+        sin_odf = await conectores_de_bandeja(sesion, 8604881, ["1", "2", "5"])
+        con_odf = await conectores_de_bandeja(sesion, 8604881, ["1", "2", "5"], odf_n_id=6644560)
+        otra_odf = await conectores_de_bandeja(sesion, 8604881, ["1"], odf_n_id=6644107)
+
+    assert con_odf == sin_odf
+    assert otra_odf == []

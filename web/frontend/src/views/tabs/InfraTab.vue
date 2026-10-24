@@ -29,13 +29,18 @@
     <input ref="trackingFileInputEl" type="file" accept=".txt" style="display:none" @change="handleTrackingFile">
 
     <!-- Modal: Protocolo de Protección (ban) — Wizard 3 pasos -->
-    <dialog ref="banModalEl" class="infra-generic-modal ban-wizard-modal" @click.self="closeBanModal">
+    <dialog
+      ref="banModalEl"
+      class="infra-generic-modal ban-wizard-modal"
+      @click.self="closeBanModal()"
+      @cancel.prevent="closeBanModal()"
+    >
       <div class="modal-inner">
 
         <!-- Header fijo -->
         <div class="modal-header-row">
           <h3 class="modal-title">🔴 Protocolo de Protección</h3>
-          <button class="close-btn" :disabled="banLoading" @click="closeBanModal">×</button>
+          <button class="close-btn" :disabled="banLoading" @click="closeBanModal()">×</button>
         </div>
 
         <!-- Stepper visual -->
@@ -63,7 +68,7 @@
           <label class="form-label">Motivo (opcional)</label>
           <textarea v-model="banForm.motivo" rows="2" placeholder="Corte de fibra en Av. Corrientes..."></textarea>
           <div class="modal-actions">
-            <button class="btn subtle" @click="closeBanModal">Cancelar</button>
+            <button class="btn subtle" @click="closeBanModal()">Cancelar</button>
             <button
               class="btn primary"
               :disabled="!banForm.servicio_afectado_id.trim()"
@@ -194,11 +199,11 @@
     </dialog>
 
     <!-- Modal: Resolución de tracking (flujo Portero 2 fases) -->
-    <dialog ref="trackingResolveModalEl" class="infra-generic-modal tracking-resolve-modal" @click.self="closeUploadModal">
+    <dialog ref="trackingResolveModalEl" class="infra-generic-modal tracking-resolve-modal" @click.self="closeUploadModal()" @cancel.prevent="closeUploadModal()">
       <div class="modal-inner">
         <div class="modal-header-row">
           <h3 class="modal-title">📁 Subir Tracking</h3>
-          <button class="close-btn" @click="closeUploadModal">×</button>
+          <button class="close-btn" @click="closeUploadModal()">×</button>
         </div>
         <div v-if="uploadAnalyzing" class="upload-analyzing">
           ⏳ Analizando <strong>{{ fileName }}</strong>...
@@ -223,7 +228,7 @@
               <button class="btn primary" :disabled="uploadResolving" @click="resolveTracking('CREATE_NEW', {})">
                 {{ uploadResolving ? 'Procesando...' : 'Crear nuevo servicio' }}
               </button>
-              <button class="btn subtle" @click="closeUploadModal">Cancelar</button>
+              <button class="btn subtle" @click="closeUploadModal()">Cancelar</button>
             </div>
           </template>
 
@@ -231,7 +236,7 @@
           <template v-else-if="analyzeResult.status === 'IDENTICAL'">
             <p class="resolve-hint">El archivo es idéntico a una ruta existente. Sin cambios necesarios.</p>
             <div class="modal-actions">
-              <button class="btn subtle" @click="closeUploadModal">Cerrar</button>
+              <button class="btn subtle" @click="closeUploadModal()">Cerrar</button>
             </div>
           </template>
 
@@ -273,7 +278,7 @@
                 :disabled="uploadResolving"
                 @click="resolveTracking('ADD_STRAND', { target_ruta_id: resolveTargetRutaId })"
               >{{ uploadResolving ? '...' : '🧵 Nuevo Pelo' }}</button>
-              <button class="btn subtle" @click="closeUploadModal">Cancelar</button>
+              <button class="btn subtle" @click="closeUploadModal()">Cancelar</button>
             </div>
           </template>
 
@@ -295,7 +300,7 @@
               <button class="btn subtle" :disabled="uploadResolving" @click="resolveTracking('CREATE_NEW', {})">
                 {{ uploadResolving ? '...' : 'Crear como nuevo' }}
               </button>
-              <button class="btn subtle" @click="closeUploadModal">Cancelar</button>
+              <button class="btn subtle" @click="closeUploadModal()">Cancelar</button>
             </div>
           </template>
 
@@ -316,7 +321,7 @@
               <button class="btn subtle" :disabled="uploadResolving" @click="resolveTracking('CREATE_NEW', {})">
                 {{ uploadResolving ? '...' : 'Crear como nuevo' }}
               </button>
-              <button class="btn subtle" @click="closeUploadModal">Cancelar</button>
+              <button class="btn subtle" @click="closeUploadModal()">Cancelar</button>
             </div>
           </template>
 
@@ -324,7 +329,7 @@
           <template v-else>
             <p class="resolve-error">{{ analyzeResult.error ?? 'Error desconocido durante el análisis.' }}</p>
             <div class="modal-actions">
-              <button class="btn subtle" @click="closeUploadModal">Cerrar</button>
+              <button class="btn subtle" @click="closeUploadModal()">Cerrar</button>
             </div>
           </template>
         </template>
@@ -332,11 +337,11 @@
     </dialog>
 
     <!-- Modal: Baneos Activos -->
-    <dialog ref="activeBansModalEl" class="infra-generic-modal active-bans-modal" @click.self="closeActiveBansModal">
+    <dialog ref="activeBansModalEl" class="infra-generic-modal active-bans-modal" @click.self="closeActiveBansModal()" @cancel.prevent="closeActiveBansModal()">
       <div class="modal-inner">
         <div class="modal-header-row">
           <h3 class="modal-title">🔒 Baneos Activos</h3>
-          <button class="close-btn" @click="closeActiveBansModal">×</button>
+          <button class="close-btn" @click="closeActiveBansModal()">×</button>
         </div>
 
         <!-- Cargando -->
@@ -399,18 +404,18 @@
         </template>
 
         <div class="modal-actions" style="margin-top:8px">
-          <button class="btn subtle" @click="closeActiveBansModal">Cerrar</button>
+          <button class="btn subtle" @click="closeActiveBansModal()">Cerrar</button>
           <button class="btn primary small" :disabled="activeBansLoading" @click="loadActiveBans">↻ Actualizar</button>
         </div>
       </div>
     </dialog>
 
     <!-- Sub-modal: Dar Aviso por email -->
-    <dialog ref="avisoModalEl" class="infra-generic-modal aviso-modal" @click.self="closeAvisoModal">
+    <dialog ref="avisoModalEl" class="infra-generic-modal aviso-modal" @click.self="closeAvisoModal()" @cancel.prevent="closeAvisoModal()">
       <div class="modal-inner" v-if="avisoIncidente">
         <div class="modal-header-row">
           <h3 class="modal-title">📧 Dar Aviso — {{ avisoIncidente.ticket_asociado || 'Sin ticket' }}</h3>
-          <button class="close-btn" @click="closeAvisoModal">×</button>
+          <button class="close-btn" @click="closeAvisoModal()">×</button>
         </div>
         <div v-if="avisoLoadingTemplate" class="aviso-loading-template">⏳ Cargando plantilla...</div>
         <template v-else>
@@ -433,7 +438,7 @@
             </label>
           </div>
           <div class="modal-actions">
-            <button class="btn subtle" :disabled="avisoSending" @click="closeAvisoModal">Cancelar</button>
+            <button class="btn subtle" :disabled="avisoSending" @click="closeAvisoModal()">Cancelar</button>
             <button
               class="btn primary small"
               :disabled="avisoSending"
@@ -450,11 +455,11 @@
     </dialog>
 
     <!-- Modal: Limpiar servicio -->
-    <dialog ref="limpiarModalEl" class="infra-generic-modal" @click.self="closeLimpiarModal">
+    <dialog ref="limpiarModalEl" class="infra-generic-modal" @click.self="closeLimpiarModal()" @cancel.prevent="closeLimpiarModal()">
       <div class="modal-inner">
         <div class="modal-header-row">
           <h3 class="modal-title">🗑 Limpiar Servicio</h3>
-          <button class="close-btn" @click="closeLimpiarModal">×</button>
+          <button class="close-btn" @click="closeLimpiarModal()">×</button>
         </div>
         <p class="modal-desc danger-text">⚠️ Operación destructiva e irreversible. Se eliminarán todas las asociaciones de empalmes y rutas del servicio.</p>
         <label class="form-label">ID del servicio <span class="req">*</span></label>
@@ -465,7 +470,7 @@
             :disabled="limpiarLoading || !limpiarServicioId.trim()"
             @click="submitLimpiar"
           >{{ limpiarLoading ? 'Limpiando...' : 'Limpiar servicio' }}</button>
-          <button class="btn subtle" @click="closeLimpiarModal">Cancelar</button>
+          <button class="btn subtle" @click="closeLimpiarModal()">Cancelar</button>
         </div>
       </div>
     </dialog>
@@ -595,7 +600,7 @@
       <div v-else class="fop-grid">
         <article
           v-for="camara in camaras"
-          :key="camara.id"
+          :key="camara.id as string"
           class="fop-camara-card"
           :data-estado="camara.estado ?? 'LIBRE'"
           :data-inconsistente="camara.inconsistente ? 'true' : 'false'"
@@ -894,6 +899,8 @@ function openBanModal() {
   banModalEl.value?.showModal();
 }
 
+// Siempre se llama con paréntesis: con `@click="closeBanModal"` Vue pasaría el MouseEvent como
+// `force` (truthy) y el modal se cerraría durante "Activando...", saltándose la guarda.
 function closeBanModal(force = false) {
   if (banLoading.value && !force) return;
   banModalEl.value?.close();
@@ -1155,7 +1162,10 @@ async function openAvisoModal(inc: IncidenteActivo) {
   avisoModalEl.value?.showModal();
 }
 
-function closeAvisoModal() {
+// Siempre se llama con paréntesis (el evento no debe llegar como `force`). Durante el envío no
+// cierra salvo `force`; sendAviso() fuerza porque avisoSending recién baja en su `finally`.
+function closeAvisoModal(force = false) {
+  if (avisoSending.value && !force) return;
   avisoModalEl.value?.close();
   avisoIncidente.value = null;
 }
@@ -1190,7 +1200,7 @@ async function sendAviso() {
     if (!res.ok || !(data as { success: boolean }).success) {
       throw new Error((data as Record<string, string>).error ?? (data as Record<string, string>).detail ?? `Error ${res.status}`);
     }
-    closeAvisoModal();
+    closeAvisoModal(true);
     showToast('success', 'Aviso enviado', `Notificación enviada a ${toList.length} destinatario${toList.length !== 1 ? 's' : ''}`);
   } catch (e: unknown) {
     showToast('error', 'Error al enviar aviso', e instanceof Error ? e.message : String(e));

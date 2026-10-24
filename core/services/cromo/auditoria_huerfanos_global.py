@@ -215,8 +215,15 @@ async def auditar_global(
                 "pelos": pelos,
             }
             try:
+                # Sólo las posiciones declaradas: las posibles no declaradas suman llamadas a Cromo
+                # en servicios grandes y no aportan a la auditoría (sus pelos no son del Servicio).
                 resultado = await trackings_del_servicio(
-                    cliente, sesion, servicio_id, corrida_id=corrida_id, fuente_evidencia="AUDITORIA_GLOBAL"
+                    cliente,
+                    sesion,
+                    servicio_id,
+                    corrida_id=corrida_id,
+                    fuente_evidencia="AUDITORIA_GLOBAL",
+                    posiciones="declaradas",
                 )
                 fallos_cromo_seguidos = 0
                 auditoria = resultado.auditoria
@@ -229,6 +236,7 @@ async def auditar_global(
                         "OK" if auditoria is not None else "ERROR"
                     ),
                     tramos=len(resultado.tramos),
+                    adicionales=len(getattr(resultado, "adicionales", None) or ()),
                     residuales=len(resultado.residuales),
                     completo=resultado.completo,
                     nuevos=auditoria.nuevos if auditoria else None,
