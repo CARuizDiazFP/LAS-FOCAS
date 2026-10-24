@@ -94,8 +94,12 @@ Resultados de la PoC real (2026-10-14, `scripts/fo_monitor_poc_burrito.py`, regi
   `fomon_config_auditoria`): ventana del piloto, tope diario de **mensajes** a burritoIA (400, día
   en hora AR), lote, timeouts, concurrencia, versión de prompt y **`canales_ingreso`** (canales cuyos
   ingresos se verifican; default sólo `C08UB8ML3LP`).
-- **Geometría**: `python scripts/fo_monitor_generar_geo.py` (incremental por `vmax`; ~24 s la
-  primera vez para 33.659 cables). Correrlo después de cada ingesta de cables Cromo.
+- **Geometría**: se actualiza sola al cerrar OK (u `OK_CON_ERRORES`) una ingesta Cromo `COMPLETA`,
+  `SOLO_CABLES`, `SOLO_CABLES_BAJADA` o `SOLO_CABLES_TERCEROS` (`MODOS_GEOMETRIA_FO` en
+  `core/services/cromo/ingesta.py`; post-commit y best-effort, log `evento=geometria_fo_actualizada`
+  / `geometria_fo_fallida`). Es incremental por `vmax` (sólo cables nuevos o modificados, y purga los
+  no vigentes): < 1 s sin cambios. `python scripts/fo_monitor_generar_geo.py` queda para la carga
+  inicial (~24 s para 33.659 cables) o `--forzar` si cambia el algoritmo de simplificación.
 - **Mapa base offline**: `scripts/fo_monitor_descargar_basemap.sh` (dry-run por defecto;
   `--aplicar --destino <checkout>/data/fo_monitor`). Recorte AMBA z15 = 66 MB + 14 MB de fuentes. Se
   monta de sólo lectura en el web (`FOMON_BASEMAP_DIR`). Sin el archivo, el mapa usa raster OSM.

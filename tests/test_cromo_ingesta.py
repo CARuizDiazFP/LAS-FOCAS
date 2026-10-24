@@ -34,6 +34,25 @@ async def _fase_noop(*_args, **_kwargs) -> None:
     """Fase que no hace nada, para los tests de orquestación que no la ejercitan."""
 
 
+@dataclass
+class _GeometriaFoFake:
+    llamadas: list
+    original: Any
+
+
+@pytest.fixture(autouse=True)
+def geometria_fo(monkeypatch) -> _GeometriaFoFake:
+    """`_actualizar_geometria_fo` abre su propia `SessionLocal` sync: ningún test de orquestación
+    puede pegarle a la DB real. Registra los `corrida_id` y conserva la función real."""
+    fake = _GeometriaFoFake(llamadas=[], original=ingesta._actualizar_geometria_fo)
+
+    async def _registrar(corrida_id: int) -> None:
+        fake.llamadas.append(corrida_id)
+
+    monkeypatch.setattr(ingesta, "_actualizar_geometria_fo", _registrar)
+    return fake
+
+
 class _NestedCM:
     """Emula `AsyncSession.begin_nested()`: no absorbe la excepción, igual que el savepoint real."""
 
@@ -577,6 +596,106 @@ async def test_post_ingesta_encola_arbitro(monkeypatch, modo, encola):
         assert llamadas == [(Alcance("TODO"), "INGESTA", f"corrida:{corrida.id}")]
     else:
         assert llamadas == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "modo, actualiza",
+    [
+        ("COMPLETA", True),
+        ("SOLO_CABLES", True),
+        ("SOLO_CABLES_BAJADA", True),
+        ("SOLO_CABLES_TERCEROS", True),
+        ("SOLO_ODF", False),
+        ("SOLO_PELOS_INNER", False),
+    ],
+)
+async def test_post_ingesta_actualiza_geometria_fo_solo_en_modos_de_cables(
+    monkeypatch, geometria_fo, modo, actualiza
+):
+    """Sólo los modos que escriben `pts_raw`/`vigente` de cables refrescan el mapa de FO Monitor."""
+    from core.services.cromo import inconsistencias_cromo
+
+    sesion = _SesionFakeCorrida()
+    _fases_noop(monkeypatch)
+    monkeypatch.setattr(ingesta, "MODOS_ACOTADOS", {
+        m: ingesta._ModoAcotado((51,), _fase_noop) for m in ingesta.MODOS_ACOTADOS
+    })
+
+    async def _detector(*a, **k):
+        return None
+
+    monkeypatch.setattr(inconsistencias_cromo, "detectar_post_ingesta", _detector)
+
+    corrida = await ingesta.ejecutar_ingesta(
+        cliente=object(), sesion=sesion, usuario="tester", psize=5, modo=modo
+    )
+
+    assert corrida.estado == "OK"
+    assert geometria_fo.llamadas == ([corrida.id] if actualiza else [])
+
+
+@pytest.mark.asyncio
+async def test_post_ingesta_no_actualiza_geometria_fo_si_la_corrida_fallo(monkeypatch, geometria_fo):
+    sesion = _SesionFakeCorrida()
+    _fases_noop(monkeypatch)
+
+    async def _rompe(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ingesta, "fase_cables", _rompe)
+
+    corrida = await ingesta.ejecutar_ingesta(cliente=object(), sesion=sesion, usuario="tester", psize=5)
+
+    assert corrida.estado == "FALLIDA" and geometria_fo.llamadas == []
+
+
+class _SessionLocalFake:
+    def __enter__(self):
+        return "sesion-sync"
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_actualizar_geometria_fo_usa_sesion_propia_y_loguea_el_resumen(monkeypatch, geometria_fo, caplog):
+    from core.services.fo_monitor import geometria
+    from db import session as db_session
+
+    recibidas: list = []
+
+    def _actualizar(session, **_kw):
+        recibidas.append(session)
+        return geometria.ResumenGeo(actualizados=3, sin_geometria=1, marcados_calidad=0, purgados=2)
+
+    monkeypatch.setattr(geometria, "actualizar_geometrias", _actualizar)
+    monkeypatch.setattr(db_session, "SessionLocal", _SessionLocalFake)
+
+    with caplog.at_level("INFO", logger=ingesta.logger.name):
+        await geometria_fo.original(77)
+
+    assert recibidas == ["sesion-sync"]
+    assert "evento=geometria_fo_actualizada corrida_id=77 actualizados=3" in caplog.text
+    assert "purgados=2" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_actualizar_geometria_fo_nunca_levanta(monkeypatch, geometria_fo, caplog):
+    """Best-effort: un error de la geometría queda en el log y no tumba la ingesta ya cerrada."""
+    from core.services.fo_monitor import geometria
+    from db import session as db_session
+
+    def _rompe(session, **_kw):
+        raise RuntimeError("pyproj roto")
+
+    monkeypatch.setattr(geometria, "actualizar_geometrias", _rompe)
+    monkeypatch.setattr(db_session, "SessionLocal", _SessionLocalFake)
+
+    with caplog.at_level("WARNING", logger=ingesta.logger.name):
+        await geometria_fo.original(78)
+
+    assert "evento=geometria_fo_fallida corrida_id=78" in caplog.text
 
 
 # ── Procesamiento de un objeto (savepoint real, tolerancia a errores) ──────

@@ -2251,6 +2251,40 @@ MODO_COMPLETA = "COMPLETA"
 # La lista que valida el endpoint web. Vive acá, con las fases, y no duplicada en `web/app/main.py`.
 MODOS_INGESTA: tuple[str, ...] = (MODO_COMPLETA, *MODOS_ACOTADOS)
 
+# Modos cuyas fases escriben `pts_raw`/`vigente` de cables 51/52/59/60: sólo tras estos se refresca la
+# geometría del mapa de FO Monitor. `SOLO_PELOS_INNER` barre cables pero no toca su trazado.
+MODOS_GEOMETRIA_FO: tuple[str, ...] = (
+    MODO_COMPLETA, "SOLO_CABLES", "SOLO_CABLES_BAJADA", "SOLO_CABLES_TERCEROS"
+)
+
+
+async def _actualizar_geometria_fo(corrida_id: int) -> None:
+    """Refresca `app.fomon_cable_geo` (incremental por `vmax`, purga los no vigentes) tras una ingesta
+    de cables. La lógica es sync: corre en un hilo con su propia `SessionLocal`, sin compartir la
+    `AsyncSession` de la corrida. Best-effort: nunca lanza."""
+    try:
+        from core.services.fo_monitor.geometria import actualizar_geometrias  # import diferido: pyproj
+        from db.session import SessionLocal
+
+        def _correr():
+            with SessionLocal() as session:
+                return actualizar_geometrias(session)
+
+        r = await asyncio.to_thread(_correr)
+        logger.info(
+            "action=cromo_ingesta evento=geometria_fo_actualizada corrida_id=%s actualizados=%d "
+            "sin_geometria=%d marcados_calidad=%d purgados=%d",
+            corrida_id,
+            r.actualizados,
+            r.sin_geometria,
+            r.marcados_calidad,
+            r.purgados,
+        )
+    except Exception:  # noqa: BLE001 - nunca hace fallar la ingesta
+        logger.warning(
+            "action=cromo_ingesta evento=geometria_fo_fallida corrida_id=%s", corrida_id, exc_info=True
+        )
+
 
 async def ejecutar_ingesta(
     cliente: CromoClient,
@@ -2452,6 +2486,8 @@ async def continuar_corrida(
                 corrida_id_final,
                 exc_info=True,
             )
+        if modo in MODOS_GEOMETRIA_FO:
+            await _actualizar_geometria_fo(corrida_id_final)
         try:
             await sesion.refresh(corrida)
         except Exception:  # noqa: BLE001
@@ -2479,6 +2515,7 @@ __all__ = [
     "CLASES_CAJA_PON",
     "PON_ELEMENTO_CAMPOS",
     "MODOS_ACOTADOS",
+    "MODOS_GEOMETRIA_FO",
     "MODOS_INGESTA",
     "MODO_COMPLETA",
     "fase_splitters",
