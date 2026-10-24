@@ -27,7 +27,11 @@ Usar esta skill cuando el usuario pida:
    ser una rama efímera activa (prefijo `feat/`, `fix/`, `docs/`, `chore/`, `refactor/` o `test/` —
    nunca `dev` ni `main`, ver `dev-workflow`), y `git rev-parse --show-toplevel` debe ser el checkout
    real de trabajo del proyecto, no un worktree aislado (de investigación, de un agente en
-   `isolation: "worktree"`, o de prod). Ver guardrail 6 — esto es una regla dura, no una preferencia.
+   `isolation: "worktree"`, o de prod). El worktree de agente registrado con
+   `scripts/agent_worktree.py start` (bajo `LAS-FOCAS-agentes/`, el que coincide con el
+   `worktree_path` de `agent_worktree.py status`) **es** el checkout real de trabajo de esa sesión:
+   commitear ahí, nunca en el checkout de control. Ver guardrail 6 — esto es una regla dura, no una
+   preferencia.
 2. Ejecutar inspección con CLI de git para comparar el estado local contra `dev`:
    - `git fetch origin dev`
    - `git status --short --branch`
@@ -77,7 +81,11 @@ Usar esta skill cuando el usuario pida:
    una investigación o tarea aislada (`superpowers:using-git-worktrees`, `isolation: "worktree"` de
    un agente, `EnterWorktree`). Los prompts e investigaciones de este proyecto usan siempre ese
    worktree (sobre una rama efímera, ver `dev-workflow`); si el directorio actual no es ese worktree,
-   detenerse y decírselo al usuario en vez de commitear donde sea que se esté parado.
+   detenerse y decírselo al usuario en vez de commitear donde sea que se esté parado. Desde el
+   aislamiento multi-agente (2026-09-14, `CLAUDE.md` → "Cómo debe trabajar"), ese worktree es el del
+   agente registrado por `agent_worktree.py` (ver `agent-worktree`); el checkout de control queda en
+   `dev` sólo para integrar (aclarado 2026-10-24: el texto anterior se leía como prohibición literal
+   del worktree de agente).
 7. Si el working tree mezcla trabajo de la sesión actual con trabajo previo sin commitear de otro
    origen (otra sesión, otro agente), no bundlear todo en un commit por default: preguntar al usuario
    cómo separar (confirmado 2026-08-25: la opción preferida suele ser 2+ commits separados, uno por

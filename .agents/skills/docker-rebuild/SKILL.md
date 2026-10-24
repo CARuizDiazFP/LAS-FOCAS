@@ -176,6 +176,12 @@ docker exec lasfocasdev-web rm -rf /tmp/wt          # siempre al terminar
   `docker cp scripts/<script>.py lasfocasdev-web:/tmp/`, y correrlo con `PYTHONPATH=/app`.
 - Es para verificación: el contenedor sigue sirviendo su imagen. Después de integrar, reconstruir
   igual (ver "Verificar que el contenedor sirve TU código").
+- **No cargar un solo archivo con `importlib.util.spec_from_file_location`** como atajo: sin
+  registrarlo antes en `sys.modules`, cualquier `@dataclass` del módulo revienta con
+  `AttributeError: 'NoneType' object has no attribute '__dict__'` (real, 2026-10-24, `ingesta.py`). Usar
+  el patrón `tar` + `PYTHONPATH` de arriba, que importa el paquete con su nombre real.
+- La primera corrida en frío de una consulta sobre tablas grandes puede tardar 10× más que las
+  siguientes (real: 21,8 s → 0,4 s / 0,1 s). Repetir antes de sacar conclusiones de tiempo.
 - Para prod, el mismo patrón sirve empaquetado en un script operativo que el usuario lanza con
   `nohup` desde la VM (precedente: `/home/support-focal-01/ingesta_prod_terceros_pon.sh`, cinco
   cargas de Cromo encadenadas, ~3 h).
