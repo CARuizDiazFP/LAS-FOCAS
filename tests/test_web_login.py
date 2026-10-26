@@ -5,6 +5,7 @@
 from typing import Any, Optional
 
 
+import pytest
 from fastapi.testclient import TestClient  # type: ignore
 from core.password import hash_password
 from web.app.main import app  # type: ignore
@@ -111,3 +112,12 @@ def test_session_endpoint_sin_sesion():
     data = res.json()
     assert data["authenticated"] is False
     assert data["role"] is None
+
+
+@pytest.mark.parametrize(
+    "cuerpo",
+    [b"{no es json", b"[1, 2]", b'{"username": 123, "password": "x"}', b'{"username": "u", "password": "' + b"x" * 300 + b'"}'],
+)
+def test_login_body_invalido_da_400(cuerpo: bytes) -> None:
+    res = TestClient(app).post("/api/auth/login", content=cuerpo, headers={"content-type": "application/json"})
+    assert (res.status_code, res.json()) == (400, {"ok": False, "error": "Body inválido"})

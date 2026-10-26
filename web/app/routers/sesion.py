@@ -13,6 +13,7 @@ from typing import Any, Dict
 import psycopg
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel, Field
 
 from core.password import hash_password, verify_password
 
@@ -103,15 +104,24 @@ def _verificar_credenciales(username: str, password: str) -> tuple[Any, bool]:
     return row, password_ok
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(default="", max_length=150)
+    password: str = Field(default="", max_length=256)
+
+
 @router.post("/api/auth/login")
 async def api_auth_login(request: Request) -> JSONResponse:
-    """Login vía JSON. Devuelve sesión o error."""
+    """Login vía JSON. Devuelve sesión o error.
+
+    El body se valida a mano (y no como parámetro) para conservar el 400 `Body inválido` que muestra
+    la pantalla de login en lugar del 422 de FastAPI.
+    """
     try:
-        body = await request.json()
-        username = str(body.get("username", "")).strip()
-        password = str(body.get("password", ""))
-    except Exception:
+        body = LoginRequest.model_validate(await request.json())
+    except Exception:  # noqa: BLE001 — JSON inválido, no-objeto, tipos o largos fuera de rango
         return JSONResponse({"ok": False, "error": "Body inválido"}, status_code=400)
+    username = body.username.strip()
+    password = body.password
 
     ip = _client_ip(request)
     if _login_rate_limit_exceeded(ip, username):
