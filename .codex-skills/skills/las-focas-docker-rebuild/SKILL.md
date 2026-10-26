@@ -303,7 +303,7 @@ grep -A6 '^networks:' deploy/compose.yml                                        
 
 Si difieren (ej. código ya migrado a `/24` pero la red viva sigue en `/16` de una migración pendiente — ver `docs/mantenimiento_redes_produccion.md`), Compose intenta recrear la red en el primer `up` que detecte el drift, **aunque se pida un solo servicio**. Si otros contenedores siguen conectados, la eliminación de la red falla a mitad de camino y deja esos contenedores desconectados (DNS de servicio roto entre ellos, sin un error obvio) — pasó en prod el 2026-08-11 con un `up -d api` que dejó a `api`/`postgres` sin poder resolverse mutuamente. Se reconecta a mano con `docker network connect --alias <nombre_servicio> <red> <contenedor>` (el alias de servicio no se restaura solo).
 
-**Regla**: si hay drift de subred pendiente, no hacer `up` incremental de un servicio — usar `./Start` (down + up completo de los 6 servicios), que recrea la red limpia sin dejar nada a mitad de camino.
+**Regla**: si hay drift de subred pendiente, no hacer `up` incremental de un servicio — hacer `down --remove-orphans` (sin `-v`) del proyecto y después `up -d`, con los pasos de `docs/mantenimiento_redes_produccion.md`. `./Start` **no** sirve para esto desde 2026-10-26: ya no hace `down`, así que no recrea la red.
 
 ## Antes de agregar `useradd`/`USER` a `deploy/docker/base.Dockerfile`
 
@@ -439,8 +439,9 @@ with mock.patch.object(app_module, "verify_password", return_value=True):  # só
 ## Script de Inicio Rápido
 
 ```bash
-./Start                    # Prod: down --remove-orphans + up -d --build + healthchecks
-./scripts/start_dev.sh     # Dev: idem, con --env-file .env.dev incluido
+./scripts/start_dev.sh     # Dev: stack lasfocasdev, con --env-file .env.dev incluido
+./Start --dry-run          # Prod: muestra el plan; ejecutarlo sólo con autorización del usuario
+                           # (build + migraciones + up -d sin down global; pide tipear 'lasfocas')
 ```
 
 ## Consideraciones

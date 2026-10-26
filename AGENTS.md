@@ -45,10 +45,12 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 ## Build y Test
 
 - Virtualenv: `source .venv/bin/activate` (activar antes de pytest, pip-audit, alembic y scripts Python)
-- Arranque principal desde la raíz: `./Start`
-- Iteración rápida: `./Start --no-down`
-- Rebuild selectivo: `./Start --rebuild-api`, `./Start --rebuild-frontend`
-- Fallback Docker: `docker compose -f deploy/compose.yml up -d|build|logs -f`
+- Arranque de **desarrollo**: `./scripts/start_dev.sh` (stack `lasfocasdev`, `deploy/docker-compose.dev.yml`
+  con `--env-file .env.dev`; ver skill `docker-rebuild`).
+- `./Start` es el lanzador de **producción** (proyecto `lasfocas`): **un agente no lo ejecuta** sin
+  autorización explícita del usuario en la misma sesión. Sin `down` global, pide tipear `lasfocas`
+  (o `--yes-prod`), migra antes de recrear y no corta una corrida de Cromo en curso. Para ver qué
+  haría: `./Start --dry-run`. Procedimiento completo: `docs/despliegue_produccion.md`.
 - Tests: `pytest`, `pytest -v -k "<filtro>"`, `pytest tests/test_sla_module.py`
 - Para evitar llamadas reales a LLM en tests: `LLM_PROVIDER=heuristic pytest -q`
 - Los tests de integración (`*_real_db.py`, rutas de Servicios) se **saltean solos** si no hay un

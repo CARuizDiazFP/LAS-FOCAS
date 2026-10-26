@@ -1578,8 +1578,11 @@ Notas:
 
 ## Migraciones Alembic y Start
 
-- El script `./Start` ejecuta las migraciones Alembic dentro del contenedor `api` luego de que PostgreSQL esté healthy.
-- Para alinear credenciales, `Start` construye `ALEMBIC_URL` a partir de `.env` (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST`, `POSTGRES_PORT`).
+- El script `./Start` (lanzador de producción) ejecuta las migraciones con la imagen nueva de `api`
+  (`compose run --rm --no-deps api`) cuando PostgreSQL está healthy y **antes** de recrear los
+  servicios de aplicación; si fallan, no recrea nada.
+- `ALEMBIC_URL` se arma dentro de ese contenedor con el secreto `db_password_v1` y las variables
+  `POSTGRES_*`: la contraseña no pasa por la línea de comandos del host.
 - Asegurate de revisar `deploy/env.sample` y crear `.env` acorde; las credenciales deben reemplazarse por valores seguros propios. En dev, preferir `.secrets/Dev_db_password_v1.txt` para la contraseña de PostgreSQL.
 
 #### Códigos de error resumidos

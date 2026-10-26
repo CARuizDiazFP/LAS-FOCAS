@@ -69,17 +69,12 @@ Todos los comandos se ejecutan desde la raíz del repo en el host de producción
 
 > **Recordatorio operativo (ver `docs/decisiones.md`, entrada 2026-07-29):** cualquier `docker compose` manual sobre `deploy/compose.yml` debe llevar siempre `--env-file .env` explícito, o Compose puede recrear `postgres` con variables vacías.
 
-### Opción recomendada: usar el wrapper `./Start`
+> **`./Start` ya no sirve para este procedimiento (2026-10-26).** Cuando se ejecutó esta ventana,
+> `./Start` hacía `down --remove-orphans` del proyecto entero, y eso recreaba la red. Desde el
+> 2026-10-26 no hace `down` (sólo `up -d`, que recrea lo que cambió) para no dejar workers de prod
+> apagados, así que **no** recrea la red. Un cambio de subred se hace con los pasos manuales de abajo.
 
-`./Start` (sin flags) ya encapsula correctamente el flujo `down --remove-orphans` → `up -d --build` → espera de Postgres healthy → migraciones Alembic → healthchecks de todos los servicios, con `--env-file .env` incluido:
-
-```bash
-./Start
-```
-
-Esto es equivalente a los pasos manuales de abajo, pero con las validaciones y esperas ya probadas en este repo. Es la vía preferida salvo que se necesite control granular paso a paso.
-
-### Opción manual (paso a paso, para control granular o troubleshooting)
+### Procedimiento manual
 
 **1) Apagar los servicios afectados** (sin `-v`: no toca `postgres_data` ni el resto de los volúmenes):
 
