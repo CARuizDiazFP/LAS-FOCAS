@@ -238,7 +238,44 @@ def _copiar_campos(destino: Any, origen: Any, campos: tuple[str, ...]) -> None:
         setattr(destino, campo, getattr(origen, campo))
 
 
-async def upsert_versionado(sesion: AsyncSession, modelo_cls: type, dominio_obj: Any, campos: tuple[str, ...]) -> str:
+# Tope de ids por `IN (...)`: asyncpg admite hasta 32.767 parámetros por sentencia.
+_LOTE_PRECARGA = 5000
+
+
+async def precargar_por_n_id(sesion: AsyncSession, modelo_cls: type, n_ids: Iterable[Optional[int]]) -> dict[int, Any]:
+    """Trae en una sola query (por lote) las filas de `modelo_cls` cuyos `n_id` están en `n_ids`.
+
+    Los upserts reciben el dict como `precargados`: un `n_id` ausente del dict es una fila que no
+    existe, sin volver a preguntarle a la base. Medido en dev (2026-10-26): sin precarga, cada tubo,
+    pelo, fusión y splitter costaba su propio `SELECT` (y un autoflush por cada objeto nuevo).
+    El dict debe vivir dentro del mismo savepoint que los upserts que lo usan: si el savepoint se
+    revierte, las filas que agregó dejan de existir.
+    """
+    pendientes = sorted({n_id for n_id in n_ids if n_id is not None})
+    encontrados: dict[int, Any] = {}
+    for inicio in range(0, len(pendientes), _LOTE_PRECARGA):
+        lote = pendientes[inicio : inicio + _LOTE_PRECARGA]
+        filas = (await sesion.execute(select(modelo_cls).where(modelo_cls.n_id.in_(lote)))).scalars().all()
+        encontrados.update((fila.n_id, fila) for fila in filas)
+    return encontrados
+
+
+async def _buscar_existente(
+    sesion: AsyncSession, modelo_cls: type, n_id: Any, precargados: Optional[dict[int, Any]]
+) -> Any:
+    if precargados is None:
+        return await sesion.get(modelo_cls, n_id)
+    return precargados.get(n_id)
+
+
+async def upsert_versionado(
+    sesion: AsyncSession,
+    modelo_cls: type,
+    dominio_obj: Any,
+    campos: tuple[str, ...],
+    *,
+    precargados: Optional[dict[int, Any]] = None,
+) -> str:
     """Clasifica y upsertea un objeto con `vmax` (botella o cable). CREADA | ACTUALIZADA | SIN_CAMBIOS | OMITIDA.
 
     En SIN_CAMBIOS no se toca ningún campo de datos, sólo `ultima_ingesta` — así una vista parcial
@@ -250,9 +287,12 @@ async def upsert_versionado(sesion: AsyncSession, modelo_cls: type, dominio_obj:
     barrido directo (Fase 2). Sin `vmax` no hay señal de versión: si la fila ya existe se trata como
     SIN_CAMBIOS (nunca se pisa con datos parciales); si no existe todavía, se omite (`version_id`/`vmax`
     son NOT NULL) — Fase 2, que corre antes y sin este límite en producción, la va a crear igual.
+
+    `precargados` (opcional, de `precargar_por_n_id`) reemplaza el `sesion.get()` por objeto; la
+    fila creada se agrega al dict para que un segundo arribo del mismo `n_id` la encuentre.
     """
     ahora = datetime.now(timezone.utc)
-    existente = await sesion.get(modelo_cls, dominio_obj.n_id)
+    existente = await _buscar_existente(sesion, modelo_cls, dominio_obj.n_id, precargados)
 
     if dominio_obj.vmax is None:
         if existente is not None:
@@ -265,6 +305,8 @@ async def upsert_versionado(sesion: AsyncSession, modelo_cls: type, dominio_obj:
         _copiar_campos(nuevo, dominio_obj, campos)
         nuevo.ultima_ingesta = ahora
         sesion.add(nuevo)
+        if precargados is not None:
+            precargados[dominio_obj.n_id] = nuevo
         return "CREADA"
 
     if existente.vmax == dominio_obj.vmax:
@@ -278,18 +320,27 @@ async def upsert_versionado(sesion: AsyncSession, modelo_cls: type, dominio_obj:
     return "ACTUALIZADA"
 
 
-async def upsert_simple(sesion: AsyncSession, modelo_cls: type, dominio_obj: Any, campos: tuple[str, ...]) -> None:
+async def upsert_simple(
+    sesion: AsyncSession,
+    modelo_cls: type,
+    dominio_obj: Any,
+    campos: tuple[str, ...],
+    *,
+    precargados: Optional[dict[int, Any]] = None,
+) -> None:
     """Upsert de tubo/pelo/fusión: sin `vmax` propio, se sobrescribe siempre. Sin clasificación ni evento
     individual — el diseño (docs/Doc Privada/ingesta_cromo.md §7.1) sólo clasifica botella y cable;
-    tubo/pelo/fusión "viajan" con su padre.
+    tubo/pelo/fusión "viajan" con su padre. `precargados`: igual que en `upsert_versionado`.
     """
     ahora = datetime.now(timezone.utc)
-    existente = await sesion.get(modelo_cls, dominio_obj.n_id)
+    existente = await _buscar_existente(sesion, modelo_cls, dominio_obj.n_id, precargados)
     if existente is None:
         nuevo = modelo_cls(n_id=dominio_obj.n_id)
         _copiar_campos(nuevo, dominio_obj, campos)
         nuevo.ultima_ingesta = ahora
         sesion.add(nuevo)
+        if precargados is not None:
+            precargados[dominio_obj.n_id] = nuevo
         return
     _copiar_campos(existente, dominio_obj, campos)
     existente.ultima_ingesta = ahora
@@ -647,10 +698,12 @@ async def _procesar_cable_tercero_directo(
             accion = await upsert_versionado(sesion, CromoCable, cable, CABLE_CAMPOS)
             await _reactivar_si_estaba_de_baja(sesion, corrida_id, cable)
             tubos, pelos, errores = cromo_parser.extraer_tubos_y_pelos(obj)
+            tubos_existentes = await precargar_por_n_id(sesion, CromoTubo, (t.n_id for t in tubos))
             for tubo in tubos:
-                await upsert_simple(sesion, CromoTubo, tubo, TUBO_CAMPOS)
+                await upsert_simple(sesion, CromoTubo, tubo, TUBO_CAMPOS, precargados=tubos_existentes)
+            pelos_existentes = await precargar_por_n_id(sesion, CromoPelo, (p.n_id for p in pelos))
             for pelo in pelos:
-                await upsert_simple(sesion, CromoPelo, pelo, PELO_CAMPOS)
+                await upsert_simple(sesion, CromoPelo, pelo, PELO_CAMPOS, precargados=pelos_existentes)
             contadores.leidas += 1
             contadores.contar(accion)
             await registrar_evento(sesion, corrida_id, cable.n_id, cable.clase, accion)
@@ -1192,8 +1245,13 @@ async def _procesar_odf_directo(
 
             if conectores:
                 await resolver_servicio_conectores(sesion, conectores)
+                conectores_existentes = await precargar_por_n_id(
+                    sesion, CromoOdfConector, (c.n_id for c in conectores)
+                )
                 for conector in conectores:
-                    await upsert_simple(sesion, CromoOdfConector, conector, CONECTOR_ODF_CAMPOS)
+                    await upsert_simple(
+                        sesion, CromoOdfConector, conector, CONECTOR_ODF_CAMPOS, precargados=conectores_existentes
+                    )
     except Exception as exc:  # noqa: BLE001 - tolerancia deliberada: un objeto no aborta la página
         contadores.errores += 1
         n_id = obj.get("n_id") or obj.get("id")
@@ -1427,34 +1485,46 @@ async def _procesar_botella_completa(
                     sesion, corrida_id, arbol.botella.n_id, arbol.botella.clase, accion_botella
                 )
 
+            fusiones_existentes = await precargar_por_n_id(sesion, CromoFusion, (f.n_id for f in arbol.fusiones))
             for fusion in arbol.fusiones:
                 fusion.botella_n_id = alias_service.resolver_referencia(fusion.botella_n_id, alias_por_origen)
-                await upsert_simple(sesion, CromoFusion, fusion, _FUSION_CAMPOS)
+                await upsert_simple(sesion, CromoFusion, fusion, _FUSION_CAMPOS, precargados=fusiones_existentes)
 
+            cables_existentes = await precargar_por_n_id(sesion, CromoCable, (c.n_id for c in arbol.cables))
             for cable in arbol.cables:
                 # Duplicación deliberada (§6.1): el mismo cable llega una vez por cada botella extremo.
                 # El segundo arribo es un upsert sin cambios — control de consistencia gratuito.
                 cable.extremo_a_n_id = alias_service.resolver_referencia(cable.extremo_a_n_id, alias_por_origen)
                 cable.extremo_b_n_id = alias_service.resolver_referencia(cable.extremo_b_n_id, alias_por_origen)
-                accion_cable = await upsert_versionado(sesion, CromoCable, cable, CABLE_CAMPOS)
+                accion_cable = await upsert_versionado(
+                    sesion, CromoCable, cable, CABLE_CAMPOS, precargados=cables_existentes
+                )
                 contadores.leidas += 1
                 contadores.contar(accion_cable)
                 await registrar_evento(sesion, corrida_id, cable.n_id, CLASE_CABLE, accion_cable)
 
+            tubos_existentes = await precargar_por_n_id(sesion, CromoTubo, (t.n_id for t in arbol.tubos))
             for tubo in arbol.tubos:
-                await upsert_simple(sesion, CromoTubo, tubo, TUBO_CAMPOS)
+                await upsert_simple(sesion, CromoTubo, tubo, TUBO_CAMPOS, precargados=tubos_existentes)
+            pelos_existentes = await precargar_por_n_id(sesion, CromoPelo, (p.n_id for p in arbol.pelos))
             for pelo in arbol.pelos:
-                await upsert_simple(sesion, CromoPelo, pelo, PELO_CAMPOS)
+                await upsert_simple(sesion, CromoPelo, pelo, PELO_CAMPOS, precargados=pelos_existentes)
 
             # Splitters y sus puertos: vienen en el MISMO `inner[]` del barrido, sin una sola
             # llamada extra a Cromo. Hasta 2026-09-17 se descartaban como "clase inesperada"
             # mientras `empalmes.py` deducía el ratio por fan-out (18 aciertos de 30 botellas
             # medidas, y nunca un ratio correcto cuando el splitter existía).
+            splitters_existentes = await precargar_por_n_id(sesion, CromoSplitter, (s.n_id for s in arbol.splitters))
             for splitter in arbol.splitters:
                 splitter.botella_n_id = alias_service.resolver_referencia(
                     splitter.botella_n_id, alias_por_origen
                 )
-                await upsert_simple(sesion, CromoSplitter, splitter, SPLITTER_CAMPOS)
+                await upsert_simple(
+                    sesion, CromoSplitter, splitter, SPLITTER_CAMPOS, precargados=splitters_existentes
+                )
+            puertos_existentes = await precargar_por_n_id(
+                sesion, CromoSplitterPuerto, (p.n_id for p in arbol.puertos_splitter)
+            )
             for puerto in arbol.puertos_splitter:
                 puerto.botella_n_id = alias_service.resolver_referencia(
                     puerto.botella_n_id, alias_por_origen
@@ -1463,7 +1533,7 @@ async def _procesar_botella_completa(
                 # `at.62`. Escribirlo como NULL preserva esa distinción contra el `[]` de un
                 # puerto realmente libre, que sólo puede venir de `/inner`.
                 await upsert_simple(
-                    sesion, CromoSplitterPuerto, puerto, SPLITTER_PUERTO_CAMPOS
+                    sesion, CromoSplitterPuerto, puerto, SPLITTER_PUERTO_CAMPOS, precargados=puertos_existentes
                 )
 
             # La marca se pone cuando el payload TRAJO el árbol, haya o no splitters adentro: su
@@ -2546,6 +2616,7 @@ __all__ = [
     "fase_reconciliacion",
     "fase_servicios",
     "iniciar_corrida",
+    "precargar_por_n_id",
     "registrar_evento",
     "sincronizar_contadores",
     "upsert_forzado",

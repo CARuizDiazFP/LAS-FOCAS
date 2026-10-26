@@ -263,6 +263,26 @@ class TestInfraServiceAnalyze:
 # TESTS: INFRA SERVICE - RESOLVE (básicos)
 # =============================================================================
 
+class TestFindServiceByTerminals:
+    """`_find_service_by_terminals`: una ruta con tracking ilegible ya no se descarta en silencio."""
+
+    def test_error_de_parseo_se_loguea_y_se_cuenta_sin_cortar_la_busqueda(self, mock_session, caplog):
+        ilegible = MagicMock(spec=RutaServicio, id=7, raw_file_content="basura")
+        mock_session.query.return_value.filter.return_value.join.return_value.filter.return_value.all.return_value = [
+            ilegible
+        ]
+        service = InfraService(mock_session)
+
+        with patch(
+            "core.parsers.tracking_parser.extract_tracking_terminals", side_effect=ValueError("formato roto")
+        ), caplog.at_level("WARNING", logger="core.services.infra_service"):
+            resultado = service._find_service_by_terminals(("O-1-1", "1"), None, exclude_service_id="999")
+
+        assert resultado is None
+        assert "evento=error_parseo ruta_id=7 error=formato roto" in caplog.text
+        assert "rutas_ilegibles=1" in caplog.text
+
+
 class TestInfraServiceResolve:
     """Tests para InfraService.resolve_tracking()."""
 

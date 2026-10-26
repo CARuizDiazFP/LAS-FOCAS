@@ -10,6 +10,7 @@ import pytest
 
 from core.services.cromo.camara_padre_service import extraer_base_cromo, resolver_o_crear_padre_cromo
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
+from tests.test_camara_hierarchy_service import simular_raices
 
 
 @pytest.fixture(autouse=True)
@@ -83,7 +84,7 @@ def test_resolver_o_crear_padre_cromo_fallback_nombre_exacto_crea_padre_libre() 
     misma política (2026-08-13: LIBRE por defecto), ninguna señal operativa real de por medio en
     ningún caso."""
     session = MagicMock()
-    session.query.return_value.filter.return_value.all.return_value = []
+    simular_raices(session, [])
 
     resultado = resolver_o_crear_padre_cromo(session, "Av Rivadavia 6041")
 
@@ -98,7 +99,7 @@ def test_resolver_o_crear_padre_cromo_crea_padre_nuevo_libre() -> None:
     empalmes/rutas propios todavía, así que no puede haber un IncidenteBaneo activo real que la
     afecte en el momento del alta."""
     session = MagicMock()
-    session.query.return_value.filter.return_value.all.return_value = []
+    simular_raices(session, [])
 
     resultado = resolver_o_crear_padre_cromo(session, "Botella 2 Combate de los pozos 1881 CF")
 
@@ -114,7 +115,7 @@ def test_resolver_o_crear_padre_cromo_reusa_camara_legado_existente_y_hereda_su_
     session = MagicMock()
     padre_real = Camara(id=42, nombre="Combate de los pozos 1881 CF", estado=CamaraEstado.BANEADA, camara_padre_id=None)
     padre_real.botellas = [Camara(id=43, nombre="Combate de los pozos 1881 Bot 3 CF")]
-    session.query.return_value.filter.return_value.all.return_value = [padre_real]
+    simular_raices(session, [padre_real])
 
     resultado = resolver_o_crear_padre_cromo(session, "Botella 2 Combate de los pozos 1881 CF")
 

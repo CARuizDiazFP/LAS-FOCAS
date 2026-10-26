@@ -111,7 +111,7 @@ Invocar con `/nombre-comando [argumentos opcionales]`.
 | `/repo-updater` | Audita diff, actualiza docs/PR y docs temáticas, genera commit técnico y hace push a la rama efímera activa | alcance o contexto del cambio |
 | `/generar-pr-diario` | Crea o actualiza `docs/PR/YYYY-MM-DD.md` con cambios, comandos ejecutados, impacto y riesgos | fecha `YYYY-MM-DD` (por defecto hoy) |
 | `/mantenimiento-disco` | Diagnostica uso de disco/Docker/logs y ejecuta limpieza segura con confirmación | umbrales opcionales (disco %, logs MB) |
-| `/migracion-alembic` | Crea migración Alembic reversible (autogenerate o manual), valida y aplica | descripción del cambio de esquema |
+| `/migracion-alembic` | Crea migración Alembic reversible (manual: `target_metadata = None` deja el autogenerate vacío), valida y aplica | descripción del cambio de esquema |
 | `/nuevo-modulo` | Andamia módulo SPA Vue 3 completo: vista, componentes, composable, API client y ruta | nombre del módulo y objetivo funcional |
 | `/revisar-seguridad` | Auditoría integral: secretos, CVEs de dependencias, SAST, red/contenedores | alcance (`full`, `secrets`, `dependencies`, etc.) |
 | `/crear-skill` | Crea o evoluciona skills/agentes/prompts del ecosistema agéntico con stack y seguridad obligatorios | objetivo y alcance de la skill |

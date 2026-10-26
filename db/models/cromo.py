@@ -100,7 +100,11 @@ class CromoIngestaEvento(Base):
     """Evento puntual de una corrida (por objeto): creado, actualizado, sin cambios, error o referencia colgada."""
 
     __tablename__ = "cromo_ingesta_eventos"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        # Creado por la migración 20260805_01; declarado acá para que el modelo refleje la base.
+        Index("ix_cromo_eventos_corrida", "corrida_id", "id"),
+        {"schema": "app"},
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     corrida_id = Column(
