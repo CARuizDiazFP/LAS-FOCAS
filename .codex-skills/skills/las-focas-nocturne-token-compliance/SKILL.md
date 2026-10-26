@@ -150,6 +150,10 @@ token copiado a mano (se desincroniza en cuanto alguien cambie el token).
    `router-view` cuenta como `view`. Antes de borrar un `@keyframes` global, buscar
    `animation: <nombre>` en los `.vue`: hay componentes que usan `spin` sin definirlo (el global vive
    en `tokens.css`).
+   Para revisar una limpieza grande de CSS, usar `git diff --diff-algorithm=histogram`: el diff por
+   defecto alinea mal los bloques y muestra cientos de "inserciones" de reglas que no cambiaron (real:
+   461 con el diff por defecto contra 7 con histogram). Prueba objetiva: cada bloque `selector{...}` de
+   la hoja nueva tiene que existir textualmente en la vieja, salvo los editados a propósito.
 
 ## Verificación sin navegador disponible
 

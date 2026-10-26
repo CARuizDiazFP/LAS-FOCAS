@@ -179,13 +179,15 @@ la ruta en el router **y** el ítem en `AppShell.vue`.
    `dist/assets/` contenga el `*-worker-*.js`. MapLibre 6 tampoco tiene export default (`import * as
    maplibregl`) y sus tipos (`kdbush`) requieren TS ≥ 5.7 → `skipLibCheck: true` con TS 5.5.
    Hallazgo real (2026-10-14, `FoMonitorMap.vue`, ver `docs/cierres/2026-10-17.md`).
-7. **Build desde un worktree con `node_modules` enlazado del checkout de control**: el
-   `node_modules` del control no tiene `maplibre-gl` ni `@protomaps/basemaps` (dependencias de FO
-   Monitor), así que `vite build` falla por algo ajeno a la tarea. Para verificar una tarea de UI sin
-   tocar ese `node_modules`, usar un `vite.config` temporal **fuera del repo** que externalice
-   `maplibre-gl`, `@protomaps/basemaps` y `pmtiles`, con `--outDir` en `/tmp`; nunca comitear el
-   symlink ni el config temporal. La imagen Docker de `web` sí instala todo (build real ahí). Real
-   2026-10-19 (pestañas del árbitro, ver `docs/cierres/2026-10-19.md`).
+7. **Build desde un worktree: `npm ci` adentro, no el `node_modules` del control.** El
+   `node_modules` del checkout de control no tiene `maplibre-gl`, `pmtiles` ni `@protomaps/basemaps`
+   (FO Monitor), así que enlazarlo hace fallar `vue-tsc` (la auditoría del 2026-10-24 midió 27 errores ajenos) y
+   `vite build`. Desde el
+   2026-10-26 la vía es `npm ci --no-audit --no-fund` dentro de `web/frontend/` del worktree: unos
+   3 s, instala el lockfile completo y queda excluido de git (`info/exclude`). Desde ese día
+   `npm run build` es `vue-tsc --noEmit && vite build`, así que un solo comando verifica tipos y
+   plantillas. El aviso de `agent_worktree.py start` ("enlazar desde el control") es anterior.
+   El `vite.config` temporal que externalizaba MapLibre (2026-10-19) ya no hace falta.
 
 ## Relación con otras skills
 
