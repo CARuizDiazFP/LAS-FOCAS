@@ -1111,7 +1111,7 @@ class BotellasEstadoMasivoRequestModel(BaseModel):
 
 
 @router.put("/api/infra/botellas/estado")
-async def botellas_estado_masivo_web(
+def botellas_estado_masivo_web(
     request: Request,
     body: BotellasEstadoMasivoRequestModel,
     usuario: UsuarioSesion = Depends(usuario_admin),
@@ -1212,6 +1212,16 @@ async def botellas_viewer_listado_web(
         return error_interno("botellas_viewer_listado", exc)
 
 
+def _detectar_grupos_duplicados_en_sesion_propia() -> list[Any]:
+    """Detección de Botellas duplicadas con una `Session` abierta y cerrada en el mismo hilo (se
+    llama con `asyncio.to_thread`): una `Session` no debe cruzar entre el event loop y otro hilo."""
+    from core.services.botella_duplicados_service import detectar_grupos_duplicados_botellas
+    from db.session import SessionLocal
+
+    with SessionLocal() as session:
+        return detectar_grupos_duplicados_botellas(session)
+
+
 @router.get("/api/admin/infra/botellas/viewer/duplicados", dependencies=[Depends(usuario_admin)])
 async def botellas_viewer_duplicados_web(refrescar: bool = False) -> JSONResponse:
     """Grupos de Botellas (Cromo + legado) candidatas a duplicado dentro de la misma Cámara padre.
@@ -1243,43 +1253,48 @@ async def botellas_viewer_duplicados_web(refrescar: bool = False) -> JSONRespons
         from core.services.cromo.verificador import tiene_cables_asociados_batch_sync
         from db.session import SessionLocal
 
-        with SessionLocal() as session:
-            grupos = None if refrescar else await leer_cache_duplicados()
-            if grupos is None:
-                grupos = await asyncio.to_thread(detectar_grupos_duplicados_botellas, session)
-                await guardar_cache_duplicados(grupos)
-            ids_cromo = [m.id for g in grupos for m in g.miembros if m.origen == "cromo"]
-            operativos = tiene_cables_asociados_batch_sync(session, ids_cromo)
-            return JSONResponse({
-                "total_grupos": len(grupos),
-                "grupos": [
-                    {
-                        "camara_padre_id": g.camara_padre_id,
-                        "camara_padre_nombre": g.camara_padre_nombre,
-                        "clave_normalizada": g.clave_normalizada,
-                        "criterio": g.criterio,
-                        "estados_en_conflicto": g.estados_en_conflicto,
-                        "estado_mas_restrictivo": g.estado_mas_restrictivo,
-                        "resoluble": g.resoluble,
-                        "sugerencia_placeholders": (
-                            {"id_destino_cromo": s.id_destino_cromo, "ids_origen_cromo": s.ids_origen_cromo}
-                            if (s := sugerir_consolidacion_placeholders(g, operativos))
-                            else None
-                        ),
-                        "miembros": [
-                            {
-                                "origen": m.origen,
-                                "id": m.id,
-                                "nombre": m.nombre,
-                                "estado": m.estado,
-                                "tiene_cables": (m.id in operativos) if m.origen == "cromo" else None,
-                            }
-                            for m in g.miembros
-                        ],
-                    }
-                    for g in grupos
-                ],
-            })
+        # Toda la sesión sync vive en un solo hilo: una `Session` no es thread-safe, y antes se
+        # pasaba a `to_thread` para detectar y después se seguía usando en el event loop.
+        def _detectar_y_operativos(grupos_cache):
+            with SessionLocal() as session:
+                grupos = grupos_cache if grupos_cache is not None else detectar_grupos_duplicados_botellas(session)
+                ids_cromo = [m.id for g in grupos for m in g.miembros if m.origen == "cromo"]
+                return grupos, tiene_cables_asociados_batch_sync(session, ids_cromo)
+
+        grupos_cache = None if refrescar else await leer_cache_duplicados()
+        grupos, operativos = await asyncio.to_thread(_detectar_y_operativos, grupos_cache)
+        if grupos_cache is None:
+            await guardar_cache_duplicados(grupos)
+        return JSONResponse({
+            "total_grupos": len(grupos),
+            "grupos": [
+                {
+                    "camara_padre_id": g.camara_padre_id,
+                    "camara_padre_nombre": g.camara_padre_nombre,
+                    "clave_normalizada": g.clave_normalizada,
+                    "criterio": g.criterio,
+                    "estados_en_conflicto": g.estados_en_conflicto,
+                    "estado_mas_restrictivo": g.estado_mas_restrictivo,
+                    "resoluble": g.resoluble,
+                    "sugerencia_placeholders": (
+                        {"id_destino_cromo": s.id_destino_cromo, "ids_origen_cromo": s.ids_origen_cromo}
+                        if (s := sugerir_consolidacion_placeholders(g, operativos))
+                        else None
+                    ),
+                    "miembros": [
+                        {
+                            "origen": m.origen,
+                            "id": m.id,
+                            "nombre": m.nombre,
+                            "estado": m.estado,
+                            "tiene_cables": (m.id in operativos) if m.origen == "cromo" else None,
+                        }
+                        for m in g.miembros
+                    ],
+                }
+                for g in grupos
+            ],
+        })
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
@@ -1293,7 +1308,7 @@ class BotellasOperatividadRequestModel(BaseModel):
 
 
 @router.post("/api/admin/infra/botellas/operatividad", dependencies=[Depends(usuario_admin)])
-async def botellas_operatividad_web(body: BotellasOperatividadRequestModel) -> JSONResponse:
+def botellas_operatividad_web(body: BotellasOperatividadRequestModel) -> JSONResponse:
     """Cuáles de los n_ids Cromo dados tienen al menos un cable asociado (extremo_a/b) — señal
     "operativa" para el flujo de consolidación manual con IDs tipeados a mano (sin pasar por un grupo
     ya detectado). Una sola query batcheada, sin N+1."""
@@ -1338,51 +1353,56 @@ async def botellas_apropiar_web(
         from core.services.botella_merge_service import ApropiacionBotellaError, apropiar_legado_a_cromo
         from db.session import SessionLocal
 
-        with SessionLocal() as session:
-            try:
-                resultado = apropiar_legado_a_cromo(
-                    session, legado_id=body.legado_id, cromo_n_id=body.cromo_n_id, usuario=username,
-                )
-            except ApropiacionBotellaError as exc:
-                session.rollback()
-                raise ErrorDeDominio(str(exc)) from exc
+        # Sync (Session): corre en un hilo para no frenar el event loop; las colas (async) quedan afuera.
+        def _en_hilo():
+            with SessionLocal() as session:
+                try:
+                    resultado = apropiar_legado_a_cromo(
+                        session, legado_id=body.legado_id, cromo_n_id=body.cromo_n_id, usuario=username,
+                    )
+                except ApropiacionBotellaError as exc:
+                    session.rollback()
+                    raise ErrorDeDominio(str(exc)) from exc
 
-            session.commit()
-            logger.info(
-                "action=botellas_apropiar user=%s legado_id=%s cromo_n_id=%s camara_padre_id=%s "
-                "estado_final=%s cables=%d empalmes=%d ingresos=%d aliases=%d",
-                username,
-                resultado.legado_id,
-                resultado.cromo_n_id,
-                resultado.camara_padre_id,
-                resultado.estado_final,
-                resultado.cables_migrados,
-                resultado.empalmes_migrados,
-                resultado.ingresos_migrados,
-                resultado.aliases_migrados,
-            )
-            await encolar_recalculo_duplicados_botellas(
-                motivo=f"apropiar legado_id={resultado.legado_id} cromo_n_id={resultado.cromo_n_id} usuario={username}"
-            )
-            await _encolar_arbitro(
-                "BOTELLAS", [resultado.cromo_n_id], f"apropiar cromo_n_id={resultado.cromo_n_id}"
-            )
-            return JSONResponse({
-                "ok": True,
-                "legado_id": resultado.legado_id,
-                "legado_nombre": resultado.legado_nombre,
-                "cromo_n_id": resultado.cromo_n_id,
-                "cromo_nombre": resultado.cromo_nombre,
-                "camara_padre_id": resultado.camara_padre_id,
-                "camara_padre_nombre": resultado.camara_padre_nombre,
-                "botellas_legado_migradas": resultado.botellas_legado_migradas,
-                "cromo_reasignadas": resultado.cromo_reasignadas,
-                "cables_migrados": resultado.cables_migrados,
-                "empalmes_migrados": resultado.empalmes_migrados,
-                "ingresos_migrados": resultado.ingresos_migrados,
-                "aliases_migrados": resultado.aliases_migrados,
-                "estado_final": resultado.estado_final,
-            })
+                session.commit()
+                return resultado
+
+        resultado = await asyncio.to_thread(_en_hilo)
+        logger.info(
+            "action=botellas_apropiar user=%s legado_id=%s cromo_n_id=%s camara_padre_id=%s "
+            "estado_final=%s cables=%d empalmes=%d ingresos=%d aliases=%d",
+            username,
+            resultado.legado_id,
+            resultado.cromo_n_id,
+            resultado.camara_padre_id,
+            resultado.estado_final,
+            resultado.cables_migrados,
+            resultado.empalmes_migrados,
+            resultado.ingresos_migrados,
+            resultado.aliases_migrados,
+        )
+        await encolar_recalculo_duplicados_botellas(
+            motivo=f"apropiar legado_id={resultado.legado_id} cromo_n_id={resultado.cromo_n_id} usuario={username}"
+        )
+        await _encolar_arbitro(
+            "BOTELLAS", [resultado.cromo_n_id], f"apropiar cromo_n_id={resultado.cromo_n_id}"
+        )
+        return JSONResponse({
+            "ok": True,
+            "legado_id": resultado.legado_id,
+            "legado_nombre": resultado.legado_nombre,
+            "cromo_n_id": resultado.cromo_n_id,
+            "cromo_nombre": resultado.cromo_nombre,
+            "camara_padre_id": resultado.camara_padre_id,
+            "camara_padre_nombre": resultado.camara_padre_nombre,
+            "botellas_legado_migradas": resultado.botellas_legado_migradas,
+            "cromo_reasignadas": resultado.cromo_reasignadas,
+            "cables_migrados": resultado.cables_migrados,
+            "empalmes_migrados": resultado.empalmes_migrados,
+            "ingresos_migrados": resultado.ingresos_migrados,
+            "aliases_migrados": resultado.aliases_migrados,
+            "estado_final": resultado.estado_final,
+        })
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
@@ -1416,7 +1436,6 @@ async def botellas_apropiar_masivo_web(
 
     try:
         from core.services.botella_duplicados_service import (
-            detectar_grupos_duplicados_botellas,
             sugerir_apropiacion,
         )
         from core.services.botella_merge_service import ApropiacionBotellaError, apropiar_legado_a_cromo
@@ -1424,39 +1443,43 @@ async def botellas_apropiar_masivo_web(
 
         grupos = await leer_cache_duplicados()
         if grupos is None:
-            with SessionLocal() as session_deteccion:
-                grupos = await asyncio.to_thread(detectar_grupos_duplicados_botellas, session_deteccion)
+            grupos = await asyncio.to_thread(_detectar_grupos_duplicados_en_sesion_propia)
             await guardar_cache_duplicados(grupos)
 
         resolubles = [(grupo, sugerir_apropiacion(grupo)) for grupo in grupos]
         resolubles = [(grupo, par) for grupo, par in resolubles if par is not None]
 
-        detalle: list[dict[str, Any]] = []
-        for grupo, (legado_id, cromo_n_id) in resolubles:
-            with SessionLocal() as session:
-                try:
-                    resultado = apropiar_legado_a_cromo(
-                        session, legado_id=legado_id, cromo_n_id=cromo_n_id, usuario=username,
-                    )
-                except ApropiacionBotellaError as exc:
-                    session.rollback()
-                    detalle.append({
-                        "exito": False,
-                        "legado_id": legado_id,
-                        "cromo_n_id": cromo_n_id,
-                        "camara_padre_nombre": grupo.camara_padre_nombre,
-                        "error": str(exc),
-                    })
-                    continue
+        # Sync (una Session por grupo): todo el lote corre en un hilo para no frenar el event loop.
+        def _apropiar_resolubles() -> list[dict[str, Any]]:
+            detalle: list[dict[str, Any]] = []
+            for grupo, (legado_id, cromo_n_id) in resolubles:
+                with SessionLocal() as session:
+                    try:
+                        resultado = apropiar_legado_a_cromo(
+                            session, legado_id=legado_id, cromo_n_id=cromo_n_id, usuario=username,
+                        )
+                    except ApropiacionBotellaError as exc:
+                        session.rollback()
+                        detalle.append({
+                            "exito": False,
+                            "legado_id": legado_id,
+                            "cromo_n_id": cromo_n_id,
+                            "camara_padre_nombre": grupo.camara_padre_nombre,
+                            "error": str(exc),
+                        })
+                        continue
 
-                session.commit()
-                detalle.append({
-                    "exito": True,
-                    "legado_id": resultado.legado_id,
-                    "cromo_n_id": resultado.cromo_n_id,
-                    "camara_padre_nombre": resultado.camara_padre_nombre,
-                    "estado_final": resultado.estado_final,
-                })
+                    session.commit()
+                    detalle.append({
+                        "exito": True,
+                        "legado_id": resultado.legado_id,
+                        "cromo_n_id": resultado.cromo_n_id,
+                        "camara_padre_nombre": resultado.camara_padre_nombre,
+                        "estado_final": resultado.estado_final,
+                    })
+            return detalle
+
+        detalle = await asyncio.to_thread(_apropiar_resolubles)
 
         grupos_apropiados = sum(1 for item in detalle if item["exito"])
         grupos_con_error = len(detalle) - grupos_apropiados
@@ -1528,60 +1551,65 @@ async def botellas_consolidar_web(
         )
         from db.session import SessionLocal
 
-        with SessionLocal() as session:
-            try:
-                resultado = consolidar_grupo_botellas(
-                    session,
-                    ids_origen_cromo=body.ids_origen_cromo,
-                    id_destino_cromo=body.id_destino_cromo,
-                    ids_legado=body.ids_legado,
-                    nombre_destino=body.nombre_destino,
-                    motivo=body.motivo,
-                    usuario=username,
-                    force_camera_association=body.force_camera_association,
-                )
-            except (ConsolidacionBotellaError, ApropiacionBotellaError) as exc:
-                session.rollback()
-                raise ErrorDeDominio(str(exc)) from exc
+        # Sync (Session): corre en un hilo para no frenar el event loop; las colas (async) quedan afuera.
+        def _en_hilo():
+            with SessionLocal() as session:
+                try:
+                    resultado = consolidar_grupo_botellas(
+                        session,
+                        ids_origen_cromo=body.ids_origen_cromo,
+                        id_destino_cromo=body.id_destino_cromo,
+                        ids_legado=body.ids_legado,
+                        nombre_destino=body.nombre_destino,
+                        motivo=body.motivo,
+                        usuario=username,
+                        force_camera_association=body.force_camera_association,
+                    )
+                except (ConsolidacionBotellaError, ApropiacionBotellaError) as exc:
+                    session.rollback()
+                    raise ErrorDeDominio(str(exc)) from exc
 
-            session.commit()
-            logger.info(
-                "action=botellas_consolidar user=%s destino=%s origenes=%s legados=%s "
-                "alias_creados=%d alias_actualizados=%d repuntados=%d",
-                username,
-                resultado.id_destino_cromo,
-                body.ids_origen_cromo,
-                body.ids_legado,
-                resultado.alias_creados,
-                resultado.alias_actualizados,
-                len(resultado.alias_repuntados),
-            )
-            await encolar_recalculo_duplicados_botellas(
-                motivo=f"consolidar destino={resultado.id_destino_cromo} usuario={username}"
-            )
-            await _encolar_arbitro(
-                "BOTELLAS",
-                [resultado.id_destino_cromo, *body.ids_origen_cromo],
-                f"consolidar destino={resultado.id_destino_cromo}",
-            )
-            return JSONResponse({
-                "ok": True,
-                "id_destino_cromo": resultado.id_destino_cromo,
-                "alias_creados": resultado.alias_creados,
-                "alias_actualizados": resultado.alias_actualizados,
-                "alias_repuntados": resultado.alias_repuntados,
-                "alias_dependientes_recableados": resultado.alias_dependientes_recableados,
-                "cables_existentes_recableados": resultado.cables_existentes_recableados,
-                "fusiones_existentes_recableadas": resultado.fusiones_existentes_recableadas,
-                "legados_migrados": resultado.legados_migrados,
-                "cables_migrados": resultado.cables_migrados,
-                "empalmes_migrados": resultado.empalmes_migrados,
-                "ingresos_migrados": resultado.ingresos_migrados,
-                "camara_aliases_migrados": resultado.camara_aliases_migrados,
-                "nombre_anterior": resultado.nombre_anterior,
-                "nombre_nuevo": resultado.nombre_nuevo,
-                "legados_con_camara_forzada": resultado.legados_con_camara_forzada,
-            })
+                session.commit()
+                return resultado
+
+        resultado = await asyncio.to_thread(_en_hilo)
+        logger.info(
+            "action=botellas_consolidar user=%s destino=%s origenes=%s legados=%s "
+            "alias_creados=%d alias_actualizados=%d repuntados=%d",
+            username,
+            resultado.id_destino_cromo,
+            body.ids_origen_cromo,
+            body.ids_legado,
+            resultado.alias_creados,
+            resultado.alias_actualizados,
+            len(resultado.alias_repuntados),
+        )
+        await encolar_recalculo_duplicados_botellas(
+            motivo=f"consolidar destino={resultado.id_destino_cromo} usuario={username}"
+        )
+        await _encolar_arbitro(
+            "BOTELLAS",
+            [resultado.id_destino_cromo, *body.ids_origen_cromo],
+            f"consolidar destino={resultado.id_destino_cromo}",
+        )
+        return JSONResponse({
+            "ok": True,
+            "id_destino_cromo": resultado.id_destino_cromo,
+            "alias_creados": resultado.alias_creados,
+            "alias_actualizados": resultado.alias_actualizados,
+            "alias_repuntados": resultado.alias_repuntados,
+            "alias_dependientes_recableados": resultado.alias_dependientes_recableados,
+            "cables_existentes_recableados": resultado.cables_existentes_recableados,
+            "fusiones_existentes_recableadas": resultado.fusiones_existentes_recableadas,
+            "legados_migrados": resultado.legados_migrados,
+            "cables_migrados": resultado.cables_migrados,
+            "empalmes_migrados": resultado.empalmes_migrados,
+            "ingresos_migrados": resultado.ingresos_migrados,
+            "camara_aliases_migrados": resultado.camara_aliases_migrados,
+            "nombre_anterior": resultado.nombre_anterior,
+            "nombre_nuevo": resultado.nombre_nuevo,
+            "legados_con_camara_forzada": resultado.legados_con_camara_forzada,
+        })
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
@@ -1600,9 +1628,8 @@ async def botellas_inconsistencias_exportar_web(usuario: UsuarioSesion = Depends
 
         import pandas as pd
 
-        from core.services.botella_duplicados_service import detectar_grupos_duplicados_botellas
         from core.services.cromo.orfanas_service import buscar_huerfanas
-        from db.session import AsyncSessionLocal, SessionLocal
+        from db.session import AsyncSessionLocal
 
         rows: list[dict[str, Any]] = []
 
@@ -1616,11 +1643,10 @@ async def botellas_inconsistencias_exportar_web(usuario: UsuarioSesion = Depends
                 "Motivo": "Huérfana — sin Cámara padre asociada",
             })
 
-        with SessionLocal() as session:
-            grupos = await leer_cache_duplicados()
-            if grupos is None:
-                grupos = await asyncio.to_thread(detectar_grupos_duplicados_botellas, session)
-                await guardar_cache_duplicados(grupos)
+        grupos = await leer_cache_duplicados()
+        if grupos is None:
+            grupos = await asyncio.to_thread(_detectar_grupos_duplicados_en_sesion_propia)
+            await guardar_cache_duplicados(grupos)
         for g in grupos:
             if g.resoluble:
                 continue
@@ -1692,37 +1718,44 @@ async def botellas_eliminar_web(
         from core.services.camara_botella_delete_service import EliminacionBloqueadaError, eliminar_botella
         from db.session import SessionLocal
 
-        with SessionLocal() as session:
-            try:
-                resultado = eliminar_botella(session, origen=body.origen, id=body.id, usuario=username)
-            except EliminacionBloqueadaError as exc:
-                session.rollback()
-                return JSONResponse(
-                    {"error": str(exc), "bloqueos": _serializar_bloqueos(exc.bloqueos)}, status_code=400
-                )
+        # Sync (Session): corre en un hilo para no frenar el event loop; las colas (async) quedan afuera.
+        def _en_hilo():
+            with SessionLocal() as session:
+                try:
+                    resultado = eliminar_botella(session, origen=body.origen, id=body.id, usuario=username)
+                except EliminacionBloqueadaError as exc:
+                    session.rollback()
+                    return JSONResponse(
+                        {"error": str(exc), "bloqueos": _serializar_bloqueos(exc.bloqueos)}, status_code=400
+                    )
 
-            session.commit()
-            logger.info(
-                "action=botellas_eliminar user=%s origen=%s id=%s camara_padre_eliminada=%s alias_registrado=%s",
-                username,
-                resultado.origen,
-                resultado.id,
-                resultado.camara_padre_eliminada,
-                resultado.alias_registrado,
-            )
-            await encolar_recalculo_duplicados_botellas(
-                motivo=f"eliminar origen={resultado.origen} id={resultado.id} usuario={username}"
-            )
-            # Legado/cámara no tienen n_id Cromo: el alcance BOTELLAS del árbitro sólo habla de n_id.
-            if resultado.origen == "cromo":
-                await _encolar_arbitro("BOTELLAS", [resultado.id], f"eliminar cromo_n_id={resultado.id}")
-            return JSONResponse({
-                "ok": True,
-                "origen": resultado.origen,
-                "id": resultado.id,
-                "camara_padre_eliminada": resultado.camara_padre_eliminada,
-                "alias_registrado": resultado.alias_registrado,
-            })
+                session.commit()
+                return resultado
+
+        resultado = await asyncio.to_thread(_en_hilo)
+        if isinstance(resultado, JSONResponse):  # eliminación bloqueada: 400 con los bloqueos
+            return resultado
+        logger.info(
+            "action=botellas_eliminar user=%s origen=%s id=%s camara_padre_eliminada=%s alias_registrado=%s",
+            username,
+            resultado.origen,
+            resultado.id,
+            resultado.camara_padre_eliminada,
+            resultado.alias_registrado,
+        )
+        await encolar_recalculo_duplicados_botellas(
+            motivo=f"eliminar origen={resultado.origen} id={resultado.id} usuario={username}"
+        )
+        # Legado/cámara no tienen n_id Cromo: el alcance BOTELLAS del árbitro sólo habla de n_id.
+        if resultado.origen == "cromo":
+            await _encolar_arbitro("BOTELLAS", [resultado.id], f"eliminar cromo_n_id={resultado.id}")
+        return JSONResponse({
+            "ok": True,
+            "origen": resultado.origen,
+            "id": resultado.id,
+            "camara_padre_eliminada": resultado.camara_padre_eliminada,
+            "alias_registrado": resultado.alias_registrado,
+        })
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
@@ -1762,41 +1795,46 @@ async def botellas_eliminar_grupo_web(
         )
         from db.session import SessionLocal
 
-        with SessionLocal() as session:
-            try:
-                resultado = eliminar_y_excluir_grupo_cromo(
-                    session, ids_cromo=body.ids_cromo, usuario=username
-                )
-            except EliminacionBloqueadaError as exc:
-                session.rollback()
-                raise ErrorDeDominio(str(exc)) from exc
+        # Sync (Session): corre en un hilo para no frenar el event loop; las colas (async) quedan afuera.
+        def _en_hilo():
+            with SessionLocal() as session:
+                try:
+                    resultado = eliminar_y_excluir_grupo_cromo(
+                        session, ids_cromo=body.ids_cromo, usuario=username
+                    )
+                except EliminacionBloqueadaError as exc:
+                    session.rollback()
+                    raise ErrorDeDominio(str(exc)) from exc
 
-            session.commit()
-            logger.info(
-                "action=botellas_eliminar_grupo user=%s botellas=%s cables=%d fusiones=%d "
-                "aliases=%d no_encontradas=%s",
-                username,
-                resultado.botellas_eliminadas,
-                resultado.cables_eliminados,
-                resultado.fusiones_eliminadas,
-                resultado.aliases_registrados,
-                resultado.no_encontradas,
+                session.commit()
+                return resultado
+
+        resultado = await asyncio.to_thread(_en_hilo)
+        logger.info(
+            "action=botellas_eliminar_grupo user=%s botellas=%s cables=%d fusiones=%d "
+            "aliases=%d no_encontradas=%s",
+            username,
+            resultado.botellas_eliminadas,
+            resultado.cables_eliminados,
+            resultado.fusiones_eliminadas,
+            resultado.aliases_registrados,
+            resultado.no_encontradas,
+        )
+        await encolar_recalculo_duplicados_botellas(
+            motivo=f"eliminar-grupo botellas={resultado.botellas_eliminadas} usuario={username}"
+        )
+        if resultado.botellas_eliminadas:
+            await _encolar_arbitro(
+                "BOTELLAS", body.ids_cromo, f"eliminar-grupo botellas={resultado.botellas_eliminadas}"
             )
-            await encolar_recalculo_duplicados_botellas(
-                motivo=f"eliminar-grupo botellas={resultado.botellas_eliminadas} usuario={username}"
-            )
-            if resultado.botellas_eliminadas:
-                await _encolar_arbitro(
-                    "BOTELLAS", body.ids_cromo, f"eliminar-grupo botellas={resultado.botellas_eliminadas}"
-                )
-            return JSONResponse({
-                "ok": True,
-                "botellas_eliminadas": resultado.botellas_eliminadas,
-                "cables_eliminados": resultado.cables_eliminados,
-                "fusiones_eliminadas": resultado.fusiones_eliminadas,
-                "aliases_registrados": resultado.aliases_registrados,
-                "no_encontradas": resultado.no_encontradas,
-            })
+        return JSONResponse({
+            "ok": True,
+            "botellas_eliminadas": resultado.botellas_eliminadas,
+            "cables_eliminados": resultado.cables_eliminados,
+            "fusiones_eliminadas": resultado.fusiones_eliminadas,
+            "aliases_registrados": resultado.aliases_registrados,
+            "no_encontradas": resultado.no_encontradas,
+        })
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
@@ -1878,7 +1916,7 @@ class CromoBotellasAsociarRequestModel(BaseModel):
 
 
 @router.post("/api/infra/cromo-botellas/asociar")
-async def cromo_botellas_asociar_web(
+def cromo_botellas_asociar_web(
     request: Request,
     body: CromoBotellasAsociarRequestModel,
     usuario: UsuarioSesion = Depends(usuario_sesion),
@@ -3598,18 +3636,23 @@ async def botella_separar_padre_web(
     )
     from db.session import SessionLocal
 
-    with SessionLocal() as session:
-        try:
-            resultado = separar_botella_de_padre(
-                session, botella_n_id=n_id, nombre=body.nombre, motivo=body.motivo, usuario=username
-            )
-        except BotellaNoEncontradaError as exc:
-            session.rollback()
-            raise NoEncontrado(str(exc)) from exc
-        except SeparacionBotellaError as exc:
-            session.rollback()
-            raise ErrorDeDominio(str(exc)) from exc
-        session.commit()
+    # Sync (Session): corre en un hilo para no frenar el event loop; las colas (async) quedan afuera.
+    def _en_hilo():
+        with SessionLocal() as session:
+            try:
+                resultado = separar_botella_de_padre(
+                    session, botella_n_id=n_id, nombre=body.nombre, motivo=body.motivo, usuario=username
+                )
+            except BotellaNoEncontradaError as exc:
+                session.rollback()
+                raise NoEncontrado(str(exc)) from exc
+            except SeparacionBotellaError as exc:
+                session.rollback()
+                raise ErrorDeDominio(str(exc)) from exc
+            session.commit()
+            return resultado
+
+    resultado = await asyncio.to_thread(_en_hilo)
 
     logger.info(
         "action=botella_separar_padre user=%s botella_n_id=%s camara_anterior_id=%s camara_nueva_id=%s",

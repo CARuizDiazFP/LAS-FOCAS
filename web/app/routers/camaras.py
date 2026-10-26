@@ -186,7 +186,7 @@ def _serialize_camara_baneo(item: Any) -> dict[str, Any]:
 
 
 @router.get("/api/infra/camaras")
-async def search_camaras_web(
+def search_camaras_web(
     q: Optional[str] = None,
     estado: Optional[str] = None,
     limit: int = 100,
@@ -298,7 +298,7 @@ async def search_camaras_web(
 
 
 @router.get("/api/infra/camaras/buscar")
-async def camaras_buscar_ligero_web(
+def camaras_buscar_ligero_web(
     q: Optional[str] = None,
     limit: int = 10,
     excluir_id: Optional[int] = None,
@@ -350,7 +350,7 @@ async def camaras_buscar_ligero_web(
 
 
 @router.get("/api/infra/camaras/{camara_id}")
-async def get_camara_detail_web(
+def get_camara_detail_web(
     camara_id: int,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -385,7 +385,7 @@ async def get_camara_detail_web(
 
 
 @router.get("/api/infra/camaras/{camara_id}/aliases")
-async def get_camara_aliases_web(camara_id: int) -> JSONResponse:
+def get_camara_aliases_web(camara_id: int) -> JSONResponse:
     """Obtiene los alias conocidos de una cámara."""
 
     try:
@@ -419,7 +419,7 @@ async def get_camara_aliases_web(camara_id: int) -> JSONResponse:
 
 
 @router.get("/api/infra/camaras/{camara_id}/botellas")
-async def get_camara_botellas_web(
+def get_camara_botellas_web(
     camara_id: int,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -490,7 +490,7 @@ async def get_camara_botellas_web(
 
 
 @router.get("/api/infra/camaras/{camara_id}/registros")
-async def get_camara_registros_web(
+def get_camara_registros_web(
     camara_id: int,
     incluir_anulados: bool = False,
     usuario: UsuarioSesion = Depends(usuario_sesion),
@@ -583,7 +583,7 @@ class BanCreateRequestModel(BaseModel):
 
 
 @router.post("/api/infra/ban/create")
-async def create_ban_web(
+def create_ban_web(
     ban_request: BanCreateRequestModel,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -646,7 +646,7 @@ async def create_ban_web(
 
 
 @router.get("/api/infra/ban/active")
-async def get_active_bans_web(usuario: UsuarioSesion = Depends(usuario_sesion)) -> JSONResponse:
+def get_active_bans_web(usuario: UsuarioSesion = Depends(usuario_sesion)) -> JSONResponse:
     """Obtiene todos los incidentes de baneo activos con conteo de cámaras."""
     
     username, _ = usuario
@@ -714,7 +714,7 @@ class BanLiftRequestModel(BaseModel):
 
 
 @router.post("/api/infra/ban/lift")
-async def lift_ban_web(
+def lift_ban_web(
     lift_request: BanLiftRequestModel,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -779,7 +779,7 @@ async def lift_ban_web(
 
 
 @router.get("/api/admin/baneos/grupos", dependencies=[Depends(usuario_admin)])
-async def baneos_grupos_listar_web(
+def baneos_grupos_listar_web(
     q: Optional[str] = None,
     limit: int = 25,
     offset: int = 0,
@@ -815,7 +815,7 @@ class BaneosLiberarMasivoRequestModel(BaseModel):
 
 
 @router.post("/api/admin/baneos/grupos/liberar")
-async def baneos_grupos_liberar_web(
+def baneos_grupos_liberar_web(
     request: Request,
     body: BaneosLiberarMasivoRequestModel,
     usuario: UsuarioSesion = Depends(usuario_admin),
@@ -880,7 +880,7 @@ class EmailNotifyRequestModel(BaseModel):
 
 
 @router.post("/api/infra/notify/email")
-async def send_email_notification_web(
+def send_email_notification_web(
     email_request: EmailNotifyRequestModel,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -1098,7 +1098,7 @@ DEFAULT_EMAIL_TEMPLATE = """
 
 
 @router.post("/api/infra/notify/download-eml")
-async def generate_eml_file(
+def generate_eml_file(
     eml_request: EmlDownloadRequestModel,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> Response:
@@ -1294,7 +1294,7 @@ async def generate_eml_file(
 # -----------------------------------------------------------------------------
 
 @router.get("/api/infra/export/cameras")
-async def export_cameras_web(
+def export_cameras_web(
     filter_status: Optional[str] = None,
     servicio_id: Optional[str] = None,
     format: str = "csv",
@@ -1362,7 +1362,7 @@ class SearchRequestModel(BaseModel):
 
 
 @router.post("/api/infra/search")
-async def advanced_search_camaras_web(  # noqa: C901 - variante conservada a propósito
+def advanced_search_camaras_web(  # noqa: C901 - variante conservada a propósito
     body: SearchRequestModel,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -1546,7 +1546,7 @@ class SmartSearchRequestModel(BaseModel):
 
 
 @router.get("/api/infra/camaras/{camara_id}/estado", dependencies=[Depends(usuario_admin)])
-async def get_camara_estado_web(camara_id: int) -> JSONResponse:
+def get_camara_estado_web(camara_id: int) -> JSONResponse:
     """Obtiene el contexto operativo del estado de una cámara."""
 
     try:
@@ -1583,7 +1583,7 @@ async def get_camara_estado_web(camara_id: int) -> JSONResponse:
 
 
 @router.post("/api/infra/camaras/{camara_id}/estado")
-async def update_camara_estado_web(
+def update_camara_estado_web(
     request: Request,
     camara_id: int,
     body: CamaraEstadoUpdateRequest,
@@ -1668,7 +1668,7 @@ _EGRESO_WEB_STATUS = {
 
 
 @router.post("/api/infra/ingresos/{ingreso_id}/egreso")
-async def registrar_egreso_ingreso_web(
+def registrar_egreso_ingreso_web(
     request: Request, ingreso_id: int, body: RegistrarEgresoWebRequestModel,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -1800,7 +1800,7 @@ def _respuesta_correccion_ingreso(resultado: Any) -> JSONResponse:
 
 
 @router.post("/api/admin/infra/ingresos/{ingreso_id}/mover")
-async def admin_mover_ingreso_web(
+def admin_mover_ingreso_web(
     request: Request, ingreso_id: int, body: MoverIngresoWebRequestModel,
     usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
@@ -1846,7 +1846,7 @@ async def admin_mover_ingreso_web(
 
 
 @router.post("/api/admin/infra/ingresos/{ingreso_id}/anular")
-async def admin_anular_ingreso_web(
+def admin_anular_ingreso_web(
     request: Request, ingreso_id: int, body: AnularIngresoWebRequestModel,
     usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
@@ -1886,7 +1886,7 @@ async def admin_anular_ingreso_web(
 
 
 @router.get("/api/admin/infra/ingresos-sin-match", dependencies=[Depends(usuario_admin)])
-async def admin_ingresos_sin_match(
+def admin_ingresos_sin_match(
     revisado: Optional[bool] = None, origen: Optional[str] = None,
 ) -> JSONResponse:
     """Lista casos de ingreso (bot de Slack o carga de tracking) cuya cámara no matcheó contra el
@@ -1927,7 +1927,7 @@ async def admin_ingresos_sin_match(
 @router.post(
     "/api/admin/infra/ingresos-sin-match/{caso_id}/marcar-revisado", dependencies=[Depends(usuario_admin)]
 )
-async def admin_marcar_revisado_ingreso_sin_match(caso_id: int) -> JSONResponse:
+def admin_marcar_revisado_ingreso_sin_match(caso_id: int) -> JSONResponse:
     """Marca un caso de ingreso sin match como revisado — no muta ningún dato de infraestructura,
     sólo el flag de triage."""
     try:
@@ -1955,7 +1955,7 @@ class MarcarRevisadoMasivoRequestModel(BaseModel):
 
 
 @router.post("/api/admin/infra/ingresos-sin-match/marcar-revisado-masivo")
-async def admin_marcar_revisado_masivo_web(
+def admin_marcar_revisado_masivo_web(
     request: Request,
     body: MarcarRevisadoMasivoRequestModel,
     usuario: UsuarioSesion = Depends(usuario_admin),
@@ -1991,7 +1991,7 @@ async def admin_marcar_revisado_masivo_web(
 
 
 @router.get("/api/admin/infra/camaras/pendientes", dependencies=[Depends(usuario_admin)])
-async def admin_camaras_pendientes() -> JSONResponse:
+def admin_camaras_pendientes() -> JSONResponse:
     """Lista cámaras auto-registradas en estado PENDIENTE_REVISION."""
     try:
         from db.models.infra import Camara, CamaraEstado
@@ -2020,7 +2020,7 @@ async def admin_camaras_pendientes() -> JSONResponse:
 
 
 @router.post("/api/admin/infra/camaras/{camara_id}/aprobar", dependencies=[Depends(usuario_admin)])
-async def admin_aprobar_camara(camara_id: int) -> JSONResponse:
+def admin_aprobar_camara(camara_id: int) -> JSONResponse:
     """Aprueba una cámara PENDIENTE_REVISION, cambiando su estado a LIBRE."""
     try:
         from db.models.infra import Camara, CamaraEstado
@@ -2061,7 +2061,7 @@ class _ConvertirAliasRequest(BaseModel):
 
 
 @router.post("/api/admin/infra/camaras/{camara_id}/convertir-alias", dependencies=[Depends(usuario_admin)])
-async def admin_convertir_alias(
+def admin_convertir_alias(
     camara_id: int,
     body: _ConvertirAliasRequest,
 ) -> JSONResponse:
@@ -2115,7 +2115,7 @@ class _DarDeAltaRequest(BaseModel):
 
 
 @router.post("/api/admin/infra/camaras/{camara_id}/dar-de-alta", dependencies=[Depends(usuario_admin)])
-async def admin_dar_de_alta_camara(
+def admin_dar_de_alta_camara(
     camara_id: int,
     body: _DarDeAltaRequest,
 ) -> JSONResponse:
@@ -2190,7 +2190,7 @@ async def admin_dar_de_alta_camara(
 
 
 @router.delete("/api/admin/infra/camaras/pendientes/{camara_id}", dependencies=[Depends(usuario_admin)])
-async def admin_eliminar_camara_pendiente(
+def admin_eliminar_camara_pendiente(
     camara_id: int,
 ) -> JSONResponse:
     """Elimina físicamente de la DB una cámara en estado PENDIENTE_REVISION.
@@ -2239,7 +2239,7 @@ async def admin_eliminar_camara_pendiente(
 
 
 @router.get("/api/admin/infra/camaras/viewer", dependencies=[Depends(usuario_admin)])
-async def camaras_viewer_listado_web(
+def camaras_viewer_listado_web(
     q: Optional[str] = None,
     estado: Optional[str] = None,
     limit: int = 60,
@@ -2285,7 +2285,7 @@ async def camaras_viewer_listado_web(
 
 
 @router.get("/api/admin/infra/camaras/viewer/duplicados", dependencies=[Depends(usuario_admin)])
-async def camaras_viewer_duplicados_web() -> JSONResponse:
+def camaras_viewer_duplicados_web() -> JSONResponse:
     """Grupos de Cámaras raíz candidatas a duplicado por nombre normalizado extendido (sin
     similitud difusa). Devuelve TODOS los grupos sin paginar — la cantidad de grupos es órdenes de
     magnitud menor que el total de Cámaras raíz. Ver `core/services/camara_duplicados_service.py`."""
@@ -2324,7 +2324,7 @@ async def camaras_viewer_duplicados_web() -> JSONResponse:
 
 
 @router.post("/api/infra/smart-search")
-async def smart_search_camaras_web(
+def smart_search_camaras_web(
     body: SmartSearchRequestModel,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -2514,7 +2514,7 @@ class CamaraEliminarRequestModel(BaseModel):
 
 
 @router.post("/api/infra/camaras/eliminar")
-async def camaras_eliminar_web(
+def camaras_eliminar_web(
     request: Request,
     body: CamaraEliminarRequestModel,
     usuario: UsuarioSesion = Depends(usuario_admin),
@@ -2585,7 +2585,7 @@ class CamaraMergeRequestModel(BaseModel):
 
 
 @router.post("/api/infra/camaras/merge")
-async def camaras_merge_web(
+def camaras_merge_web(
     request: Request,
     body: CamaraMergeRequestModel,
     usuario: UsuarioSesion = Depends(usuario_admin),
@@ -2665,7 +2665,7 @@ class CamaraMergeGrupoRequestModel(BaseModel):
 
 
 @router.post("/api/infra/camaras/merge-grupo")
-async def camaras_merge_grupo_web(
+def camaras_merge_grupo_web(
     request: Request,
     body: CamaraMergeGrupoRequestModel,
     usuario: UsuarioSesion = Depends(usuario_admin),
@@ -2744,7 +2744,7 @@ class CamaraMergeMasivoRequestModel(BaseModel):
 
 
 @router.post("/api/infra/camaras/merge-masivo")
-async def camaras_merge_masivo_web(
+def camaras_merge_masivo_web(
     request: Request,
     body: CamaraMergeMasivoRequestModel,
     usuario: UsuarioSesion = Depends(usuario_admin),

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import secrets
@@ -172,10 +173,11 @@ async def chat_message(
 
     # Persistencia de memoria conversacional
     user = usuario.username
-    try:
+
+    def _persistir() -> tuple[Any, Any]:
+        # Sync (psycopg): corre en un hilo para no frenar el event loop.
         with psycopg.connect(DB_DSN) as conn:
             conv_id = get_or_create_conversation_for_web_user(conn, user)
-            payload["conversation_id"] = conv_id
             # Guardar mensaje usuario
             insert_message(
                 conn,
@@ -201,8 +203,12 @@ async def chat_message(
                 data.get("provider", "none"),
             )
             # Adjuntar últimos mensajes para el cliente (opcional)
-            history = get_last_messages(conn, conv_id, limit=6)
-            payload["history"] = history
+            return conv_id, get_last_messages(conn, conv_id, limit=6)
+
+    try:
+        conv_id, history = await asyncio.to_thread(_persistir)
+        payload["conversation_id"] = conv_id
+        payload["history"] = history
     except Exception as exc:  # noqa: BLE001
         logger.warning("action=chat_persist error=%s", exc)
     # Métricas
@@ -218,7 +224,7 @@ async def chat_message(
 
 
 @router.get("/api/chat/history")
-async def chat_history(limit: int = 20, usuario: UsuarioSesion = Depends(usuario_chat)) -> JSONResponse:
+def chat_history(limit: int = 20, usuario: UsuarioSesion = Depends(usuario_chat)) -> JSONResponse:
     user = usuario.username
     if limit > 100:
         limit = 100

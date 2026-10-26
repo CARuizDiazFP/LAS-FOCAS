@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Optional
 from unittest.mock import MagicMock
 
@@ -262,22 +263,25 @@ def test_viewer_duplicados_refrescar_computo_corre_en_hilo_separado(monkeypatch)
     monkeypatch.setenv("TESTING", "true")
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
 
+    hilos: dict[str, int] = {}
+
     async def _fake_leer_cache():
+        hilos["event_loop"] = threading.get_ident()
         return None
 
     async def _fake_guardar_cache(grupos):
+        hilos["event_loop"] = threading.get_ident()  # con refrescar=true no se lee la caché
         return None
 
     def _fake_detectar(session):
+        hilos["detectar"] = threading.get_ident()
         return []
 
-    llamadas_to_thread: list = []
     monkeypatch.setattr(web_main.cromo, "leer_cache_duplicados", _fake_leer_cache)
     monkeypatch.setattr(web_main.cromo, "guardar_cache_duplicados", _fake_guardar_cache)
     monkeypatch.setattr(
         "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
     )
-    monkeypatch.setattr(web_main.asyncio, "to_thread", _spy_to_thread(llamadas_to_thread))
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
@@ -285,7 +289,9 @@ def test_viewer_duplicados_refrescar_computo_corre_en_hilo_separado(monkeypatch)
 
     assert res.status_code == 200
     assert res.json()["grupos"] == []
-    assert _fake_detectar in llamadas_to_thread, "el cómputo pesado debe correr via asyncio.to_thread"
+    # El cómputo pesado corre fuera del hilo del event loop (hoy, vía `asyncio.to_thread` con una
+    # Session propia del hilo; antes se pasaba la función directo a `to_thread`).
+    assert hilos["detectar"] != hilos["event_loop"], "el cómputo pesado no debe correr en el event loop"
 
 
 def test_viewer_duplicados_incluye_sugerencia_placeholders_cuando_aplica(monkeypatch):
@@ -525,22 +531,24 @@ def test_apropiar_masivo_cache_miss_computo_corre_en_hilo_separado(monkeypatch):
     monkeypatch.setenv("TESTING", "true")
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
 
+    hilos: dict[str, int] = {}
+
     async def _fake_leer_cache():
+        hilos["event_loop"] = threading.get_ident()
         return None
 
     async def _fake_guardar_cache(grupos):
         return None
 
     def _fake_detectar(session):
+        hilos["detectar"] = threading.get_ident()
         return []
 
-    llamadas_to_thread: list = []
     monkeypatch.setattr(web_main.cromo, "leer_cache_duplicados", _fake_leer_cache)
     monkeypatch.setattr(web_main.cromo, "guardar_cache_duplicados", _fake_guardar_cache)
     monkeypatch.setattr(
         "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
     )
-    monkeypatch.setattr(web_main.asyncio, "to_thread", _spy_to_thread(llamadas_to_thread))
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
@@ -556,7 +564,9 @@ def test_apropiar_masivo_cache_miss_computo_corre_en_hilo_separado(monkeypatch):
         "grupos_con_error": 0,
         "detalle": [],
     }
-    assert _fake_detectar in llamadas_to_thread, "el cómputo pesado debe correr via asyncio.to_thread"
+    # El cómputo pesado corre fuera del hilo del event loop (hoy, vía `asyncio.to_thread` con una
+    # Session propia del hilo; antes se pasaba la función directo a `to_thread`).
+    assert hilos["detectar"] != hilos["event_loop"], "el cómputo pesado no debe correr en el event loop"
 
 
 # ── POST /api/admin/infra/botellas/operatividad ──────────────────────────────
@@ -592,29 +602,33 @@ def test_exportar_inconsistencias_cache_miss_computo_corre_en_hilo_separado(monk
         lambda sesion, limit, offset: _async_resultado_vacio(),
     )
 
+    hilos: dict[str, int] = {}
+
     async def _fake_leer_cache():
+        hilos["event_loop"] = threading.get_ident()
         return None
 
     async def _fake_guardar_cache(grupos):
         return None
 
     def _fake_detectar(session):
+        hilos["detectar"] = threading.get_ident()
         return []
 
-    llamadas_to_thread: list = []
     monkeypatch.setattr(web_main.cromo, "leer_cache_duplicados", _fake_leer_cache)
     monkeypatch.setattr(web_main.cromo, "guardar_cache_duplicados", _fake_guardar_cache)
     monkeypatch.setattr(
         "core.services.botella_duplicados_service.detectar_grupos_duplicados_botellas", _fake_detectar
     )
-    monkeypatch.setattr(web_main.asyncio, "to_thread", _spy_to_thread(llamadas_to_thread))
 
     client = TestClient(app)
     _login(client, "admin", "adminpass")
     res = client.get("/api/admin/infra/botellas/inconsistencias/exportar")
 
     assert res.status_code == 200
-    assert _fake_detectar in llamadas_to_thread, "el cómputo pesado debe correr via asyncio.to_thread"
+    # El cómputo pesado corre fuera del hilo del event loop (hoy, vía `asyncio.to_thread` con una
+    # Session propia del hilo; antes se pasaba la función directo a `to_thread`).
+    assert hilos["detectar"] != hilos["event_loop"], "el cómputo pesado no debe correr en el event loop"
 
 
 async def _async_resultado_vacio():

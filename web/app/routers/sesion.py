@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
 from time import time as now
@@ -87,6 +88,21 @@ async def api_auth_session(request: Request) -> JSONResponse:
     })
 
 
+def _verificar_credenciales(username: str, password: str) -> tuple[Any, bool]:
+    """(fila de `web_users` o `None`, contraseña válida). Sync: corre en el threadpool."""
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT password_hash, role FROM app.web_users WHERE username=%s", (username,))
+            row = cur.fetchone()
+    password_ok = False
+    if row:
+        try:
+            password_ok = verify_password(password, row[0])
+        except Exception as exc:  # noqa: BLE001
+            logger.error("action=api_login bcrypt_error username=%s error=%s", username, exc)
+    return row, password_ok
+
+
 @router.post("/api/auth/login")
 async def api_auth_login(request: Request) -> JSONResponse:
     """Login vía JSON. Devuelve sesión o error."""
@@ -105,19 +121,12 @@ async def api_auth_login(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "Usuario y contraseña requeridos"}, status_code=400)
 
     try:
-        with psycopg.connect(DB_DSN) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT password_hash, role FROM app.web_users WHERE username=%s", (username,))
-                row = cur.fetchone()
-                password_ok = False
-                if row:
-                    try:
-                        password_ok = verify_password(password, row[0])
-                    except Exception as exc:  # noqa: BLE001
-                        logger.error("action=api_login bcrypt_error username=%s error=%s", username, exc)
-                if not row or not password_ok:
-                    logger.warning("action=api_login result=fail username=%s ip=%s", username, ip)
-                    return JSONResponse({"ok": False, "error": "Credenciales inválidas"}, status_code=401)
+        # psycopg sin pool + bcrypt (~250 ms de CPU) en el threadpool: en el event loop congelaban el
+        # panel, el chat y los WebSocket de todos los usuarios durante cada login.
+        row, password_ok = await asyncio.to_thread(_verificar_credenciales, username, password)
+        if not row or not password_ok:
+            logger.warning("action=api_login result=fail username=%s ip=%s", username, ip)
+            return JSONResponse({"ok": False, "error": "Credenciales inválidas"}, status_code=401)
     except Exception as exc:  # noqa: BLE001
         # El texto `action=api_login result=error` no termina en `_error`: se conserva y gana la ref.
         ref = nueva_ref()
@@ -156,7 +165,7 @@ async def admin_me(usuario: UsuarioSesion = Depends(usuario_admin)) -> JSONRespo
 
 
 @router.post("/api/users/change-password")
-async def change_password(
+def change_password(
     request: Request,
     current_password: str = Form(...),
     new_password: str = Form(...),
@@ -191,7 +200,7 @@ ALLOWED_ROLES = {"admin", "ownergroup", "invitado"}
 
 
 @router.post("/api/admin/users")
-async def admin_create_user(
+def admin_create_user(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),

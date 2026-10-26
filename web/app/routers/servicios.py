@@ -61,7 +61,7 @@ def _find_servicio_por_identificador_web(session: Any, servicio_id: str) -> Opti
 
 
 @router.get("/api/infra/servicios/{servicio_id}/rutas")
-async def get_servicio_rutas_web(
+def get_servicio_rutas_web(
     servicio_id: str,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -117,7 +117,7 @@ async def get_servicio_rutas_web(
 
 
 @router.get("/api/infra/servicios/{servicio_id}/odfs")
-async def get_servicio_odfs(
+def get_servicio_odfs(
     servicio_id: str,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -290,7 +290,7 @@ async def get_servicio_odfs(
 
 
 @router.get("/api/infra/servicios/{servicio_id}/ingresos")
-async def get_servicio_ingresos_web(
+def get_servicio_ingresos_web(
     servicio_id: str,
     incluir_anulados: bool = False,
     usuario: UsuarioSesion = Depends(usuario_sesion),
@@ -506,7 +506,7 @@ def _armar_tracking_de_ruta(ruta: Any) -> dict[str, Any]:
 
 
 @router.get("/api/infra/rutas/{ruta_id}/tracking")
-async def get_ruta_tracking(
+def get_ruta_tracking(
     ruta_id: int,
 ) -> JSONResponse:
     """Obtiene el tracking completo de una ruta (secuencia cámara-cable-cámara)."""
@@ -538,7 +538,7 @@ async def get_ruta_tracking(
 
 
 @router.get("/api/infra/rutas/{ruta_id}/download")
-async def download_ruta_tracking(
+def download_ruta_tracking(
     ruta_id: int,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> Response:
@@ -610,7 +610,7 @@ async def download_ruta_tracking(
 
 
 @router.get("/api/infra/tracking/{ruta_id}/download")
-async def download_tracking_alias(
+def download_tracking_alias(
     ruta_id: int,
 ) -> Response:
     """Alias de /api/infra/rutas/{ruta_id}/download para compatibilidad."""
@@ -2221,7 +2221,7 @@ async def servicios_categoria_masiva_web(
 
 
 @router.post("/api/infra/upload_tracking")
-async def upload_tracking_web(
+def upload_tracking_web(
     file: UploadFile = File(...),
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -2246,7 +2246,7 @@ async def upload_tracking_web(
         from db.session import SessionLocal
 
         # Leer contenido
-        content = await file.read()
+        content = file.file.read()  # endpoint sync: corre en el threadpool
         try:
             raw_text = content.decode("utf-8")
         except UnicodeDecodeError:
@@ -2365,7 +2365,7 @@ class TrackingResolveRequestModel(BaseModel):
 
 
 @router.post("/api/infra/trackings/analyze")
-async def analyze_tracking_web(
+def analyze_tracking_web(
     file: UploadFile = File(...),
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -2376,7 +2376,7 @@ async def analyze_tracking_web(
     username, _ = usuario
     
     # Leer contenido del archivo
-    raw_bytes = await file.read()
+    raw_bytes = file.file.read()  # endpoint sync: corre en el threadpool
     try:
         raw_content = raw_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -2442,7 +2442,7 @@ async def analyze_tracking_web(
 
 
 @router.post("/api/infra/trackings/resolve")
-async def resolve_tracking_web(
+def resolve_tracking_web(
     body: TrackingResolveRequestModel,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -2571,7 +2571,7 @@ async def resolve_tracking_web(
 
 
 @router.delete("/api/infra/servicios/{servicio_id}/empalmes")
-async def delete_servicio_empalmes_web(
+def delete_servicio_empalmes_web(
     servicio_id: str,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:

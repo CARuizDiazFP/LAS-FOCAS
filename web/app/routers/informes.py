@@ -79,7 +79,7 @@ async def descargar_informe(ruta: str) -> FileResponse:
 
 
 @router.get("/api/reports/history", dependencies=[Depends(usuario_sesion)])
-async def api_reports_history(
+def api_reports_history(
     type: str | None = None,  # noqa: A002 - nombre público del filtro
     status: str | None = None,
     username: str | None = None,

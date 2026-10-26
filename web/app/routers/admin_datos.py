@@ -73,7 +73,7 @@ async def _reload_slack_worker_config() -> None:
 
 
 @router.get("/api/admin/servicios/baneos/config", dependencies=[Depends(usuario_admin)])
-async def servicios_baneos_config_json() -> JSONResponse:
+def servicios_baneos_config_json() -> JSONResponse:
     """Devuelve la configuración del worker de baneos como JSON. Usado por el SPA Vue."""
     config_data: dict[str, Any] = {
         "intervalo_horas": 4,
@@ -157,7 +157,7 @@ async def servicios_baneos_update(
 
     activo_bool = activo.lower() in ("on", "true", "1", "yes")
 
-    try:
+    def _guardar() -> None:
         with psycopg.connect(DB_DSN) as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -174,6 +174,9 @@ async def servicios_baneos_update(
                         ("slack_baneo_notifier", intervalo_horas, destinos_normalizados, activo_bool, hora_inicio_val),
                     )
                 conn.commit()
+
+    try:
+        await asyncio.to_thread(_guardar)
     except Exception as exc:
         return error_interno("servicios_baneos_config_update", exc)
 
@@ -189,7 +192,8 @@ async def servicios_baneos_worker_start(request: Request):
     if body.get("csrf_token") != request.session.get("csrf"):
         return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
-    try:
+    # Docker SDK sync (HTTP al socket): corre en un hilo para no frenar el event loop.
+    def _arrancar() -> JSONResponse:
         import docker as docker_sdk  # type: ignore[import-untyped]
         client = docker_sdk.from_env()
         try:
@@ -204,6 +208,9 @@ async def servicios_baneos_worker_start(request: Request):
                 {"error": f"Contenedor '{_SLACK_WORKER_CONTAINER_NAME}' no encontrado. Ejecutá ./Start para crearlo."},
                 status_code=404,
             )
+
+    try:
+        return await asyncio.to_thread(_arrancar)
     except Exception as exc:
         return error_interno("servicios_baneos_worker_start", exc)
 
@@ -258,7 +265,7 @@ _LISTENER_SERVICIO = "slack_ingreso_listener"
 
 
 @router.get("/api/admin/servicios/baneos/listener", dependencies=[Depends(usuario_admin)])
-async def listener_config_get() -> JSONResponse:
+def listener_config_get() -> JSONResponse:
     """Devuelve la configuración actual del listener de ingresos."""
     try:
         with psycopg.connect(DB_DSN) as conn:
@@ -308,7 +315,7 @@ async def listener_config_post(
     if len(workflow_ids_norm) > 512:
         return JSONResponse({"error": "workflow_ids no debe superar 512 caracteres"}, status_code=400)
 
-    try:
+    def _guardar() -> None:
         with psycopg.connect(DB_DSN) as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -325,6 +332,9 @@ async def listener_config_post(
                         (_LISTENER_SERVICIO, canal_id_norm, activo_bool, workflow_ids_norm or None, solo_workflows_bool),
                     )
                 conn.commit()
+
+    try:
+        await asyncio.to_thread(_guardar)
     except Exception as exc:
         return error_interno("listener_config_update", exc)
 
@@ -407,7 +417,7 @@ class AsociarSinMatchCamarasRequestModel(BaseModel):
 
 
 @router.post("/api/admin/ingesta/camaras/asociar")
-async def ingesta_camaras_asociar_web(
+def ingesta_camaras_asociar_web(
     request: Request,
     body: AsociarSinMatchCamarasRequestModel,
     usuario: UsuarioSesion = Depends(usuario_admin),
