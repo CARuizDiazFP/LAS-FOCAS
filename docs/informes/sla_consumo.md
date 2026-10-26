@@ -183,6 +183,31 @@ Archivos en `REPORTS_DIR/sla_consumo/AAAAMM/SLA_consumido_<fecha_corte>_<sello>[
 - Tablas: `app.reclamos` (ampliada), `app.sla_ingestas`, `app.servicio_sla_snapshot` y la vista de
   eventos (migración `20261005_02`). Esta ampliación **no requiere migración nueva**.
 
+### Cómo se construyen (`core/sla_consumo/*_builder.py`)
+
+`core/services/sla_consumo.py::generar_informe_sla_consumo` (llamado por `POST /api/reports/sla-consumo`
+en `web/app/routers/informes.py`) ingiere el par, calcula con `core/sla_consumo/engine.py::calcular` y
+pasa el `ResultadoSlaConsumo` a los builders, que sólo escriben archivos (no consultan la base). Cada uno
+recibe `(res, destino)`, crea la carpeta si falta y devuelve el `Path` escrito:
+
+- `xlsx_builder.py::construir_xlsx` arma con openpyxl la hoja "Resumen y leyendas" (fecha de corte,
+  ventana, `totales`, composición por causa y leyendas) y una hoja por vista del resultado, en el orden
+  de `HOJAS`. Etiquetas y formato de cada columna salen de `presentacion.COLUMNAS` (una columna sin
+  definición ahí corta con `KeyError`); horas como `[h]:mm`, porcentajes `0.00%`, fechas
+  `dd/mm/yyyy hh:mm`, colores condicionales en semáforo, indicador, estado y "suficiente solo",
+  autofiltro y panel inmovilizado en `B2`. `presentacion.columnas_visibles` oculta la clave interna y
+  pone `servicio_id` primero.
+- `docx_builder.py::construir_docx_ejecutivo(res, destino, top_eventos=None)` y
+  `construir_docx_exhaustivo(res, destino)` comparten el inicio (encabezado, resumen, leyendas y torta
+  global) y los bloques de `docx_comun.py` (tablas, fichas por servicio con `FichasServicio`, que
+  pre-formatea las filas una sola vez). `top_eventos_config()` lee `SLA_CONSUMO_TOP_EVENTOS`
+  (entero mayor que 0; si no, 20). Los gráficos los genera `charts.py` (matplotlib `Agg`, PNG a 150 dpi) en la carpeta
+  `<nombre del docx>_graficos/` junto al DOCX: `torta_causas.png` y, sólo en el ejecutivo,
+  `magnitud_eventos.png`.
+
+El PDF del ejecutivo lo convierte después el servicio (`modules/common/libreoffice_export.convert_to_pdf`)
+si se pidió y hay `SOFFICE_BIN`; los builders no convierten.
+
 ## Endpoint y SPA
 
 - `POST /api/reports/sla-consumo` (multipart con los dos `.xlsx`, `pdf_enabled` opcional, CSRF), todo
@@ -212,7 +237,8 @@ Archivos en `REPORTS_DIR/sla_consumo/AAAAMM/SLA_consumido_<fecha_corte>_<sello>[
   sólo "No vinculados" muestra el `numero_linea`, porque esos reclamos no tienen servicio.
 - Carrier con evento no se reasigna: sólo se lista como inconsistencia.
 - `SLA_CIERRE_CLIENTE_VALORES` vacía: ningún reclamo cae hoy en Cierre Cliente.
-- Prod no está migrada ni desplegada con esta versión.
+- En prod desde el deploy del 2026-10-14 (`main` `53e0fb9`, que incluye la migración
+  `20261005_02_sla_consumo_historico`).
 
 ## Cifras reales (dev, corte 2026-10-02, medidas el 2026-10-05)
 

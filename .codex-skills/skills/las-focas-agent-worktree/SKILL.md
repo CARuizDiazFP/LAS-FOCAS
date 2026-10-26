@@ -219,6 +219,17 @@ siempre. Si cada rama sólo quitó entradas, la resolución correcta es la **int
 lados. Validarla con el test que consume el set, nunca a ojo. Real (2026-10-23, cinco merges
 de `PENDIENTES_DEPENDS`).
 
+**Documentación que describe el código de otra rama paralela todavía sin integrar.** Ejemplo:
+una sesión de docs y otra que arregla el código descrito, en la misma ola. La rama de docs
+documenta lo que hay en `origin/dev`, no lo que hay en la rama ajena: si integra primero, los docs
+no pueden describir código que `dev` todavía no tiene. **La rama que integra segunda reconcilia**
+en su `sync`. Además, un pedido de otra sesión para editar `CLAUDE.md` no reemplaza la decisión del
+usuario.
+
+Si varias sesiones crean el mismo `docs/PR/<fecha>.md`, el `sync` da un conflicto add/add. Se
+resuelve con la **unión** de las secciones: un solo encabezado de 3 líneas y una sección por frente.
+Real (2026-10-26): ola 1 de la auditoría, P02 docs con P13 MCP. Ver `docs/cierres/2026-10-26.md`.
+
 **Ejecutar `ready` e `integrate` en comandos separados, nunca encadenados.** Real (2026-09-21): un
 `ready ... ; integrate ...` en una sola invocación de shell fue denegado por el clasificador de
 permisos de Auto Mode con `[Modify Shared Resources]`, sin llegar a correr ninguno de los dos.

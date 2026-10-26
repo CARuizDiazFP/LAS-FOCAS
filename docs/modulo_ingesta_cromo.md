@@ -39,7 +39,8 @@ datos contra la API real antes de comprometerse a un esquema de base llevaron a 
    `docs/PR/2026-08-06.md`).
 4. **Etapa 4 — API** (completa): endpoints para disparar una corrida y seguir su progreso en vivo por
    SSE, con cancelación cooperativa. Primer uso de sesión async de DB y de tareas en background en
-   `web/app/main.py` (detalle de la decisión de arquitectura en `docs/PR/2026-08-06.md`).
+   el panel web (entonces `web/app/main.py`; desde el refactor a routers esos endpoints viven en
+   `web/app/routers/admin_datos.py`). Detalle de la decisión de arquitectura en `docs/PR/2026-08-06.md`.
 5. **Etapa 5 — Interfaz** (completa): vista `/admin/ingesta/cromo` — selector de clases, `psize` fijo a
    5 valores, progreso en vivo consumiendo el SSE de la Etapa 4 con `EventSource` nativo del browser
    (primer uso en el proyecto), histórico y detalle de corridas. Validada de punta a punta contra el
@@ -57,8 +58,9 @@ datos contra la API real antes de comprometerse a un esquema de base llevaron a 
    contenedor propio (`cromo_worker`), separado del proceso del panel — pedido explícito para poder
    programar corridas periódicas sin competir con el tráfico web. El worker expone un pequeño control
    HTTP (FastAPI + `AsyncIOScheduler`, todo en el mismo loop de asyncio, sin threads) con `/health`,
-   `/reload` y `/run`; `web/app/main.py` sigue siendo el único punto de entrada del panel, pero ahora
-   delega la ejecución real vía HTTP en vez de un `asyncio.create_task` local. El intervalo, hora de
+   `/reload` y `/run`; el panel web sigue siendo el único punto de entrada (hoy
+   `web/app/routers/admin_datos.py`, `POST /api/admin/ingesta/cromo`), pero ahora delega la ejecución
+   real vía HTTP en vez de un `asyncio.create_task` local. El intervalo, hora de
    inicio, `psize`/`max_paginas`/clases del scheduler se configuran desde una tabla propia
    (`app.cromo_ingesta_config`) editable desde el panel — arranca **deshabilitado por defecto**. De
    paso, dos correcciones reales encontradas al usar la vista contra datos ya ingeridos: un bug de
@@ -145,20 +147,31 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
 
     Desde 2026-09-19 los modos viven en una tabla de datos (`MODOS_ACOTADOS`) que declara qué fase
     corre cada uno y qué clases cuenta, en vez de una cadena de `if modo == "..."`; `MODOS_INGESTA`
-    se deriva de ahí y es lo que valida el endpoint web (antes esa lista estaba duplicada en
-    `web/app/main.py`). Los ocho modos:
+    (`COMPLETA` + las claves de `MODOS_ACOTADOS`) se deriva de ahí y es lo que valida
+    `POST /api/admin/ingesta/cromo` (`web/app/routers/admin_datos.py`, 400 con un modo desconocido;
+    antes esa lista estaba duplicada en el panel). Los diez modos:
 
     | Modo | Fase | Objetos | Duración medida |
     |---|---|---:|---:|
-    | `COMPLETA` | la secuencia de siempre + ODFs | — | — |
-    | `SOLO_ODF` | `fase_odfs` (clase 69) | 7.955 | ~35 min |
+    | `COMPLETA` | `fase_cables` (51) → `fase_cables_terceros` (52/59/60) → `fase_botellas` → `fase_fusiones` → `fase_odfs` (69 y 86) → `fase_reconciliacion` → `fase_servicios` | — | — |
+    | `SOLO_ODF` | `fase_odfs` (clases 69 y 86, `CLASES_ODF`) | 7.955 (clase 69) | ~35 min |
     | `SOLO_SPLITTERS` | `fase_splitters` (133) | 20.238 | ~22 min |
     | `SOLO_PUERTOS_SPLITTER` | `fase_puertos_splitter` (134) | 154.284 | ~91 min |
     | `SOLO_CAJAS_PON` | `fase_cajas_pon` (84/126/127/137/138/139/140) | 13.482 | ~115-120 min |
     | `SOLO_ROSETAS` | `fase_rosetas` (85) | 17.348 | ~17 min |
+    | `SOLO_CABLES` | `fase_cables` (51) + baja lógica de los que Cromo ya no lista (ver "Bajas lógicas de cables") | ~33.100 | ~10 min |
     | `SOLO_CABLES_BAJADA` | `fase_cables_bajada` (66) | 19.030 | ~16 min |
     | `SOLO_CABLES_TERCEROS` | `fase_cables_terceros` (52/59/60) + `fase_servicios` | ~733 | ~4 min |
     | `SOLO_PELOS_INNER` | `fase_pelos_inner`: `/inner` por cable vigente (at.61/62/63) + conciliación de servicios por pelo | 52.507 cables | ~12 h medido (Cromo serializa `/inner`) |
+
+    `SOLO_CABLES` (2026-10-02, cables fantasma) barre sólo la 51 sin esperar una `COMPLETA` entera
+    (botellas son horas); objetos y duración son los aproximados que muestra el selector del SPA
+    (`CROMO_MODOS_INGESTA_INFO` en `web/frontend/src/api/cromo.ts`), no una medición de este documento.
+    Ese selector ofrece nueve de los diez modos: `SOLO_PELOS_INNER` no está; corre por el scheduler
+    semanal (fila `id=2` de `cromo_ingesta_config`) o a mano con `scripts/cromo_barrido_pelos_inner.py`
+    (el endpoint igual lo acepta, porque valida contra `MODOS_INGESTA`). Tras `COMPLETA`, `SOLO_CABLES`, `SOLO_CABLES_BAJADA` y
+    `SOLO_CABLES_TERCEROS` se refresca además la geometría del mapa de FO Monitor (ver
+    "Refresco de geometría de FO Monitor tras la ingesta").
 
     **Pelos por `/inner` (2026-09-30).** El único lugar donde Cromo publica el ID de servicio del pelo
     (`at.62`) y su estado (`at.63`) es `GET /db/objects/{cable}/inner`, una llamada por cable. La fase
@@ -255,7 +268,7 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     pata aislada, nunca a ratio 1. Expone `empalmes_de_botella(sesion, botella_n_id) ->
     ResultadoEmpalmesBotella` (cables de origen + lista de empalmes, cada uno con
     `es_splitter`/`splitter_destinos`/`splitter_ratio`), consumido por
-    `GET /api/infra/cromo/botellas/{n_id}/empalmes` en `web/app/main.py` y por la vista dedicada
+    `GET /api/infra/cromo/botellas/{n_id}/empalmes` en `web/app/routers/cromo.py` y por la vista dedicada
     `EmpalmesBotellaCromoView.vue` (`/infra/cromo/verificador/empalmes?n_id=...`, tabla filtrable por
     Cable Origen — SIN rowspans: cada Splitter es una única fila con sus patas apiladas en una sola
     celda `colspan`, así que la corrección de clasificación no requirió tocar el componente Vue).
@@ -294,7 +307,7 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     existente `app.cromo_clases` (sin duplicar el mapeo clase→etiqueta). 404 de Cromo se traduce a
     `ObjetoNoEncontrado` (mismo contrato que `verificador.py`/`detalle.py`); cualquier otra falla de
     Cromo se deja propagar para que la ruta la mapee a 502. Endpoint
-    `GET /api/infra/cromo/elementos/{n_id}/vivo` en `web/app/main.py`, modal
+    `GET /api/infra/cromo/elementos/{n_id}/vivo` en `web/app/routers/cromo.py`, modal
     `ModalVerificadorCromo.vue` desde el botón "Ver info en Cromo" del detalle de Botella
     (`VerificadorCromoView.vue`). Ver `docs/decisiones.md` (entrada 2026-08-19).
   - `validador_datos_service.py` (2026-08-19): herramienta de Tool Kit "Validar datos DB Cromo" —
@@ -306,7 +319,7 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     siquiera en lectura — los servicios de cada pelo se muestran crudos
     (`servicio_raw`/`servicio_numero`), nunca matcheados contra `app.servicios`. Una clase excluida o
     no soportada no rompe la herramienta — queda en `errores_parseo`, `tipo_objeto="Desconocido"`.
-    Endpoint `GET /api/infra/cromo/validar/{n_id}` en `web/app/main.py` (sin sesión de DB en
+    Endpoint `GET /api/infra/cromo/validar/{n_id}` en `web/app/routers/cromo.py` (sin sesión de DB en
     absoluto), vista dedicada `ValidarDatosCromoView.vue` en `/toolkit/validar-datos-cromo` (Tool
     Kit) — herramienta separada de "Verificador Cromo", confirmado explícitamente con el usuario. Ver
     `docs/decisiones.md` (entrada 2026-08-19, tercera del día). **Regresión real encontrada y
@@ -415,21 +428,23 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   `ModuleNotFoundError` y, con `restart: unless-stopped`, queda en crash-loop — al agregar un import
   nuevo en `core/` hay que revisar qué arrastra a los Dockerfiles de los workers, que copian sólo un
   subconjunto de `modules/`.
-- `web/app/main.py`: endpoints admin (`/api/admin/ingesta/cromo` y sub-rutas) — disparo de corrida
-  (delega la ejecución al worker por HTTP desde la Etapa 7, ya no `asyncio.create_task` local), stream
-  SSE de progreso, histórico, detalle, cancelación, y config del scheduler
-  (`GET`/`POST /api/admin/ingesta/cromo/config`, `.../config/health`, `.../config/trigger`). Sigue el
-  patrón vigente del archivo (`_require_admin`, CSRF contra `request.session`), con imports locales de
-  `core.services.cromo.*` y `db.*` dentro de cada función, como el resto del archivo. También los
-  endpoints del verificador (`/api/infra/cromo/{cables,tubos,botellas}/{n_id}/servicios` — el de
-  botella agrega `cables: [{n_id, nombre, cantidad_servicios}]` desde 2026-08-18), del
-  inventario (`GET /api/infra/cromo/cables`, con `q`/`jerarquia`/`propietario`/`vigente`/`n_id`/
+- `web/app/routers/admin_datos.py`: endpoints admin (`/api/admin/ingesta/cromo` y sub-rutas) —
+  disparo de corrida (delega la ejecución al worker por HTTP desde la Etapa 7, ya no
+  `asyncio.create_task` local), stream SSE de progreso (`.../corridas/{corrida_id}/stream`),
+  histórico, detalle, cancelación, y config del scheduler (`GET`/`POST /api/admin/ingesta/cromo/config`,
+  `.../config/health`, `.../config/trigger`). El router exige sesión (`Depends(usuario_sesion)`) y cada
+  ruta admin agrega `Depends(usuario_admin)` (`web/app/dependencias.py`); el CSRF se valida contra
+  `request.session`, con imports locales de `core.services.cromo.*` y `db.*` dentro de cada handler.
+- `web/app/routers/cromo.py`: endpoints de consulta del verificador
+  (`/api/infra/cromo/{cables,tubos,botellas}/{n_id}/servicios` — el de botella agrega
+  `cables: [{n_id, nombre, cantidad_servicios}]` desde 2026-08-18), del inventario
+  (`GET /api/infra/cromo/cables`, con `q`/`jerarquia`/`propietario`/`vigente`/`n_id`/
   `botella`/`servicio`/`limit`/`offset`, los 3 últimos agregados en la Etapa 9) y del detalle
-  jerárquico (`GET /api/infra/cromo/cables/{n_id}/detalle`, Etapa 9), todos con `_require_auth` en vez
-  de `_require_admin` — son consulta, no administración. Desde 2026-08-28, también
-  `GET /api/infra/cromo/odfs` (mismos filtros que cables, sin `jerarquia`/`propietario` en la UI),
-  `GET /api/infra/cromo/odfs/{n_id}/detalle` y `GET /api/infra/cromo/odfs/{odf_n_id}/servicios`,
-  mismo patrón `_require_auth`.
+  jerárquico (`GET /api/infra/cromo/cables/{n_id}/detalle`, Etapa 9). El router declara
+  `Depends(usuario_sesion)` para todas sus rutas, así que estas piden sólo sesión (no admin) — son
+  consulta, no administración. Desde 2026-08-28, también `GET /api/infra/cromo/odfs` (mismos filtros
+  que cables, sin `jerarquia`/`propietario` en la UI), `GET /api/infra/cromo/odfs/{n_id}/detalle` y
+  `GET /api/infra/cromo/odfs/{odf_n_id}/servicios`, con el mismo criterio de sesión.
 - `web/frontend/src/api/cromo.ts`: cliente API del SPA (wrappers sobre `request`/`requestJson` de
   `src/api/client.ts`) + catálogo estático de clases botella (mismo seed que la migración) + funciones
   del verificador (`verificarServiciosPor{Cable,Tubo,Botella}`, con `CromoVerificacionBotella.cables:
@@ -608,7 +623,7 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
 Hasta esta fecha ningún código daba de baja cables, tubos ni pelos. Un cable que Cromo borraba
 (por ejemplo, al partirlo con una Botella intermedia) seguía vigente acá con sus pelos y servicios.
 Caso real: F-TIG-003-B 9609095, partido el 2026-09-10 en F-TIG-003-A 10277059 y F-TIG-003-B 10277060.
-Relevamiento completo en `docs/relevamiento_cromo_cables_fantasma_2026-10-02.md`.
+Relevamiento completo en `docs/historico/relevamiento_cromo_cables_fantasma_2026-10-02.md`.
 
 - **Señal de borrado (medida contra Cromo real):** `GET /db/objects/{id}` de un borrado responde
   `st=0` (no 404), y `/inner` responde vacío. Se considera borrado cuando la última entrada de
@@ -639,6 +654,32 @@ Relevamiento completo en `docs/relevamiento_cromo_cables_fantasma_2026-10-02.md`
 - **Fix retroactivo:** `scripts/cromo_relevamiento_cables_fantasma.py` (sólo lectura) y
   `scripts/cromo_bajas_cables_fantasma.py`. Este último sigue el orden alta de faltantes →
   pelos `/inner` → baja, con dry-run exacto por defecto.
+
+## Refresco de geometría de FO Monitor tras la ingesta (2026-10-24)
+
+El mapa de FO Monitor dibuja los cables desde `app.fomon_cable_geo` (polilíneas WGS84 reproyectadas
+desde `cromo_cables.pts_raw`; ver [fo_monitor.md](fo_monitor.md)). Hasta esta fecha esa tabla sólo se
+cargaba a mano con `scripts/fo_monitor_generar_geo.py`; ahora `continuar_corrida` la refresca sola al
+final de las corridas que pueden cambiar el trazado o la vigencia de un cable.
+
+- **Qué modos lo disparan:** `MODOS_GEOMETRIA_FO` (`core/services/cromo/ingesta.py`) =
+  `COMPLETA`, `SOLO_CABLES`, `SOLO_CABLES_BAJADA` y `SOLO_CABLES_TERCEROS`: las fases que escriben
+  `pts_raw`/`vigente` de los cables. `SOLO_PELOS_INNER` barre cables pero no toca su trazado, así que
+  no lo dispara.
+- **Cuándo:** sólo si la corrida cerró `OK` u `OK_CON_ERRORES`, después del commit final y del
+  detector de inconsistencias. Una corrida `CANCELADA` o `FALLIDA` no refresca.
+- **Qué hace:** `_actualizar_geometria_fo(corrida_id)` llama a
+  `core/services/fo_monitor/geometria.py::actualizar_geometrias` (la misma función que usa el script
+  manual): carga incremental por `vmax` de los cables vigentes de las clases 51/52/59/60
+  (`CLASES_CABLE`), marca de calidad por extremo lejano y purga de las filas de `fomon_cable_geo` cuyo
+  cable ya no está vigente. La lógica es síncrona: corre en un hilo (`asyncio.to_thread`) con su
+  propia `SessionLocal`, sin compartir la `AsyncSession` de la corrida.
+- **Best-effort:** un fallo nunca hace fallar la ingesta. Se loguea
+  `action=cromo_ingesta evento=geometria_fo_fallida` (warning) y la corrida queda con el estado que ya
+  tenía; si sale bien, `evento=geometria_fo_actualizada` con `actualizados`, `sin_geometria`,
+  `marcados_calidad` y `purgados`.
+- **Tests:** `tests/test_cromo_ingesta.py` (`test_actualizar_geometria_fo_usa_sesion_propia_y_loguea_el_resumen`,
+  `test_actualizar_geometria_fo_nunca_levanta`).
 
 ## Árbitro de Cromo (2026-10-19)
 
@@ -774,6 +815,67 @@ aplica ni se confirma en AUTO.
 - `evidencia_hash` ordena las señales sólo por código. `cromo_servicio_odf_override.propuesta_id`
   no tiene índice (tabla chica).
 - La pestaña Propuestas abre 3 WebSockets y pierde la selección al recargar.
+
+## Otros servicios del dominio Cromo
+
+Módulos de `core/services/cromo/` que no son la ingesta en sí pero consumen o corrigen lo ingerido.
+
+- **`auditoria_huerfanos_global.py`** — auditoría de huérfanos de muchos Servicios en una sola
+  corrida. Corre en `cromo_worker` (que tiene las credenciales de Cromo) como corrida sintética de
+  `cromo_ingesta_corridas` con `params.tipo = AUDITORIA_HUERFANOS`, así que el progreso viaja por el
+  mismo SSE de corridas (un evento `PAGINA` por Servicio). Por cada Servicio llama a
+  `trackings_del_servicio`, que ya audita los residuales: no tiene clasificación propia. Va primero
+  por los Servicios Activos con más pelos, hasta `CROMO_AUDITORIA_MAX_SERVICIOS` (default 50); corta
+  tras 3 fallos de red seguidos contra Cromo, se puede cancelar entre Servicios y un advisory lock
+  impide lanzar dos a la vez. Lo disparan `GET`/`POST /api/admin/infra/huerfanos/auditoria-global`
+  (`web/app/routers/cromo.py`, admin + CSRF; 409 si ya hay una en curso) desde el Viewer de
+  huérfanos (`web/frontend/src/api/huerfanos.ts`), y lo ejecuta `modules/cromo_worker/worker.py`.
+- **`inconsistencias_reporte.py`** — reporte "para corregir en Cromo" del detector de
+  inconsistencias: `que_falta` (texto de lo que hay que arreglar según tipo y evidencia),
+  `generar_xlsx` (una hoja por localidad, sólo estados `PENDIENTE`/`CUARENTENA`/`REPORTADA`) y
+  `avisar_casos_nuevos`, que al terminar una detección con casos nuevos publica siempre en el
+  WebSocket admin (`cromo_inconsistencias_nuevas`) y, si la fila `Cromo Inconsistencias` de
+  `app.config_servicios` está activa y con canales, manda a Slack el XLSX de los casos nuevos (cortado
+  en `CROMO_INCONSISTENCIAS_MAX_FILAS_AVISO`, default 500; en la primera detección sólo el resumen).
+  Best-effort: nunca hace fallar la detección. Lo usan `inconsistencias_cromo.py`, el aviso del
+  árbitro (`arbitro/aviso.py`) y los endpoints `GET /api/admin/infra/inconsistencias-cromo/exportar.xlsx`
+  y `GET`/`POST /api/admin/infra/inconsistencias-cromo/aviso-slack` (`web/app/routers/cromo.py`).
+- **`pelos_excluidos.py`** — exclusión local de pelos de un Servicio, sin tocar Cromo: para los
+  huérfanos que Cromo sigue etiquetando con el Servicio pero que no están en ninguno de sus caminos.
+  Escribe y lista `app.cromo_servicio_pelo_excluido` (`excluir_pelos`, `restaurar_pelo`,
+  `listar_excluidos`); el filtro en sí vive en las queries de `camino_optico_service`
+  (`_SIN_EXCLUIDOS_SQL`), y la exclusión sobrevive a las ingestas. `origen` es `MANUAL` o
+  `AUDITORIA` (cuando sale de "Normalizar" en el Viewer de huérfanos, `auditoria_huerfanos.py`);
+  restaurar un pelo que salió de la auditoría vuelve su fila de `cromo_auditoria_huerfanos` a
+  `PENDIENTE`. Endpoints: `POST /api/admin/infra/servicios-odf/{servicio_id}/pelos-excluidos` y
+  `.../pelos-excluidos/restaurar` (`web/app/routers/servicios.py`, admin), y el listado dentro de
+  `GET /api/infra/cromo/servicios/{servicio_id}/camino-optico/pelos` (`web/app/routers/cromo.py`).
+- **`pon_inventario.py`** — inventario navegable (búsqueda + paginación) de cajas PON y rosetas ya
+  ingeridas, sólo lectura sobre `app.cromo_pon_elementos`. Comparten tabla y función
+  (`buscar_pon_elementos`): lo que las separa es la lista de clases que pide el consumidor. Endpoint
+  `GET /api/infra/cromo/pon` (`web/app/routers/cromo.py`), vista `InventarioPonCromoView.vue` en dos
+  rutas del SPA: `/infra/cromo/pon` (cajas) y `/infra/cromo/rosetas`.
+- **`servicio_odf_confirmacion.py`** — lo que el operador declara a mano sobre los trackings de un
+  Servicio: qué ODF son parte de su recorrido (`app.servicio_odf_confirmada`, rol `EXTREMO` o
+  `TRANSITO`; des-confirmar pone `vigente=false` y conserva la fila) y cuántos trackings espera
+  (`app.servicios.trackings_esperados`). La ODF tiene que tener fila propia en `app.cromo_odfs`.
+  `trackings_del_servicio` (`tracking_service.py`) lo lee con `declaraciones_del_servicio`: un camino
+  que termina en una ODF confirmada y no es ruido chico es `TRAMO` aunque no tenga par; sin nada
+  declarado, todo funciona como antes. No reemplaza
+  `servicio_odf_override_service` (escudo de "servicios sin ODF"). Endpoints en
+  `web/app/routers/servicios.py` (admin): `GET`/`POST /api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas`,
+  `.../odf-confirmadas/desconfirmar` y `.../trackings-esperados`; también lo usan
+  `camino-optico/caminos` (`web/app/routers/cromo.py`), `auditoria_huerfanos.py` y
+  `servicio_posicion_vigente.py`.
+- **`id_dual_resolver.py`** — resolución compartida del "ID dual" de Cromo: un objeto consultado por
+  un id de versión vieja se sigue por `hist[]`/`next_id` hasta la versión vigente
+  (`resolver_cadena_objetos`, tope defensivo `MAX_HOPS_HIST = 5`), y `ids_de_hist` da todos los ids de
+  la cadena. `fetch_objeto` desenvuelve el `{"st": …, "response": {…}}` de
+  `GET /db/objects/{id}` con topología. Lo usan la ingesta (`_resolver_posible_id_dual`: no crear una
+  Botella "cascarón" cuando otro id de la misma cadena ya tiene fila vigente),
+  `repoblacion_service.py`, `botella_creacion_service.py`, `normalizacion_consistencia_service.py` y
+  `scripts/cromo_backfill_repoblar_cables_empalmes.py`. Caso real que lo originó: cable B2-FO-CAR
+  (2026-08-21, `docs/decisiones.md`).
 
 ## Principios de diseño
 
