@@ -234,7 +234,7 @@ grep -A6 '^networks:' deploy/compose.yml                                        
 
 Si difieren (ej. código ya migrado a `/24` pero la red viva sigue en `/16` de una migración pendiente — ver `docs/mantenimiento_redes_produccion.md`), Compose intenta recrear la red en el primer `up` que detecte el drift, **aunque se pida un solo servicio**. Si otros contenedores siguen conectados, la eliminación de la red falla a mitad de camino y deja esos contenedores desconectados (DNS de servicio roto entre ellos, sin un error obvio) — pasó en prod el 2026-08-11 con un `up -d api` que dejó a `api`/`postgres` sin poder resolverse mutuamente. Se reconecta a mano con `docker network connect --alias <nombre_servicio> <red> <contenedor>` (el alias de servicio no se restaura solo).
 
-**Regla**: si hay drift de subred pendiente, no hacer `up` incremental de un servicio — usar `./Start` (down + up completo de los 6 servicios), que recrea la red limpia sin dejar nada a mitad de camino.
+**Regla**: si hay drift de subred pendiente, no hacer `up` incremental de un servicio — hacer `down --remove-orphans` (sin `-v`) del proyecto y después `up -d`, con los pasos de `docs/mantenimiento_redes_produccion.md`. `./Start` **no** sirve para esto desde 2026-10-26: ya no hace `down`, así que no recrea la red.
 
 ## Antes de agregar `useradd`/`USER` a `deploy/docker/base.Dockerfile`
 
@@ -367,11 +367,38 @@ with mock.patch.object(app_module, "verify_password", return_value=True):  # só
         r = client.get("/api/algun/endpoint/real")
 ```
 
+## Medir el contexto de build y fijar tags de imagen (lecciones 2026-10-26, P01)
+
+**El contexto de build se mide contra el checkout de control, no contra el worktree.** Los datos que el
+`.dockerignore` tiene que excluir (`backup_prod.dump`, `tmp/`, `data/`, `web/data/reports`) están ignorados
+por Git: existen sólo en el control, que es desde donde se buildea prod. Medido en el worktree, el contexto
+"ya está limpio" y el chequeo no prueba nada. Para probar un `.dockerignore` nuevo sin tocar el del control,
+usar el ignore por Dockerfile de BuildKit (`<nombre>.Dockerfile.dockerignore` al lado del Dockerfile):
+
+```bash
+S=<scratchpad>; cp <worktree>/.dockerignore $S/medir.Dockerfile.dockerignore
+printf 'FROM focas-base:latest\nCOPY . /ctx\nRUN du -sk /ctx; find /ctx -name "*.dump"\n' > $S/medir.Dockerfile
+docker build --no-cache --progress=plain -f $S/medir.Dockerfile --output type=cacheonly <checkout-de-control>
+```
+
+Con `FROM` una imagen **ya local** (`focas-base:latest`): un `FROM python:3.11-slim-bookworm` la bajó del
+registry porque no estaba en el host, y hubo que borrarla después. El `du -sk /ctx` es la cifra que vale: el
+"transferring context" de BuildKit es incremental y, desde la segunda corrida, sólo muestra el delta.
+
+**Fijar un tag "a la versión que corre" exige comparar digests, no versiones.** `docker exec <c> sh -c 'echo
+$PG_VERSION; cat /etc/alpine-release'` da la versión; `docker buildx imagetools inspect <tag>` da el digest
+del tag en el registry, que se compara con `docker image inspect -f '{{.RepoDigests}}'` local. Real: Redis
+`7.4.11-alpine3.21` ya apuntaba a un rebuild (`57e4…`) distinto del que corría (`ff02…`); se fijó con
+`tag@sha256:<digest>`. Y aunque el digest sea el mismo, **cambiar la referencia `image:` (o el healthcheck)
+cambia el hash de config del servicio: el próximo `up` recrea el contenedor** (`postgres` incluido). Avisarlo
+como impacto del despliegue.
+
 ## Script de Inicio Rápido
 
 ```bash
-./Start                    # Prod: down --remove-orphans + up -d --build + healthchecks
-./scripts/start_dev.sh     # Dev: idem, con --env-file .env.dev incluido
+./scripts/start_dev.sh     # Dev: stack lasfocasdev, con --env-file .env.dev incluido
+./Start --dry-run          # Prod: muestra el plan; ejecutarlo sólo con autorización del usuario
+                           # (build + migraciones + up -d sin down global; pide tipear 'lasfocas')
 ```
 
 ## Consideraciones

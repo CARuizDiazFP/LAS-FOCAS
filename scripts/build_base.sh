@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Nombre de archivo: build_base.sh
 # Ubicación de archivo: scripts/build_base.sh
-# Descripción: Construye la imagen base focas-base:latest usando multi-stage build.
+# Descripción: Construye la imagen base focas-base (tag req-<hash> + alias latest) usando multi-stage build.
 #              Detecta si common-requirements.txt cambió (por hash SHA-256) para evitar
 #              builds innecesarios. Usarlo antes de levantar cualquier stack.
 # Uso: ./scripts/build_base.sh [--force] [-h]
@@ -16,7 +16,9 @@ NC='\033[0m'
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMMON_REQ="$ROOT_DIR/common-requirements.txt"
 BASE_DOCKERFILE="$ROOT_DIR/deploy/docker/base.Dockerfile"
-IMAGE_NAME="focas-base:latest"
+IMAGE_REPO="focas-base"
+# Los Dockerfiles usan `latest` como alias; el tag versionado identifica qué base corre cada imagen.
+IMAGE_NAME="$IMAGE_REPO:latest"
 
 FORCE=false
 
@@ -50,8 +52,11 @@ fi
 
 CURRENT_HASH=$(sha256sum "$COMMON_REQ" | cut -d' ' -f1)
 EXISTING_HASH=$(docker inspect "$IMAGE_NAME" --format '{{index .Config.Labels "focas.requirements.hash"}}' 2>/dev/null || echo "none")
+# Versión por contenido: el mismo common-requirements.txt da el mismo tag (un --force lo mueve a la imagen nueva).
+VERSION_TAG="$IMAGE_REPO:req-${CURRENT_HASH:0:12}"
 
 if [ "$FORCE" = false ] && [ "$CURRENT_HASH" = "$EXISTING_HASH" ]; then
+  docker image inspect "$VERSION_TAG" >/dev/null 2>&1 || docker tag "$IMAGE_NAME" "$VERSION_TAG"
   echo -e "${GREEN}focas-base:latest ya está actualizada (hash ${CURRENT_HASH:0:12}...). Usar --force para reconstruir.${NC}"
   exit 0
 fi
@@ -62,7 +67,8 @@ echo -e "${YELLOW}  Hash de common-requirements.txt: ${CURRENT_HASH:0:12}...${NC
 docker build \
   --build-arg REQUIREMENTS_HASH="$CURRENT_HASH" \
   -t "$IMAGE_NAME" \
+  -t "$VERSION_TAG" \
   -f "$BASE_DOCKERFILE" \
   "$ROOT_DIR"
 
-echo -e "${GREEN}$IMAGE_NAME construida exitosamente.${NC}"
+echo -e "${GREEN}$IMAGE_NAME construida exitosamente (alias de $VERSION_TAG).${NC}"

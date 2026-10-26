@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Nombre de archivo: check_skill_mirror_drift.sh
 # Ubicación de archivo: scripts/check_skill_mirror_drift.sh
 # Descripción: Verifica drift entre .agentes-comunes/skills y todos sus mirrors (.github, .claude, .agents, .gemini, .codex-skills)

@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Nombre de archivo: sync_agentes_comunes.sh
 # Ubicación de archivo: scripts/sync_agentes_comunes.sh
 # Descripción: Sincroniza skills desde .agentes-comunes hacia mirrors de .github, .claude, .agents, .gemini (adaptadores livianos) y .codex-skills

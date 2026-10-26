@@ -18,6 +18,8 @@ if str(ROOT_DIR) not in sys.path:  # pragma: no cover - inicialización
     sys.path.insert(0, str(ROOT_DIR))
 
 os.environ.setdefault("LAS_FOCAS_API_KEY", "test-api-key")
+# web/app/main.py no arranca sin una clave de sesión real (fail-closed); ésta sólo existe en pytest.
+os.environ.setdefault("WEB_SECRET_KEY", "test-web-secret-key-solo-para-pytest")
 
 # Las métricas de intención se persisten en un archivo versionado (web/data/intent_metrics.json);
 # se apunta a un directorio temporal ANTES de importar la app para no ensuciar el árbol del repo.

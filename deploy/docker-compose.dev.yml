@@ -17,7 +17,7 @@ x-logging: &logging-default
 services:
   postgres:
     logging: *logging-default
-    image: postgres:16-alpine
+    image: postgres:16.13-alpine3.23
     container_name: lasfocasdev-postgres
     restart: unless-stopped
     environment:
@@ -43,7 +43,8 @@ services:
 
   redis:
     logging: *logging-default
-    image: redis:7.4-alpine
+    # Digest de la imagen que corre hoy: el tag 7.4.11-alpine3.21 ya apunta a un rebuild posterior.
+    image: redis:7.4.11-alpine3.21@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     container_name: lasfocasdev-redis
     restart: unless-stopped
     command: ["sh", "-c", "redis-server --requirepass \"$$(cat /run/secrets/redis_password_v1)\""]
@@ -132,6 +133,12 @@ services:
       - /tmp
     expose:
       - "2375"
+    # /_ping está permitido por defecto en la imagen (PING=1); wget viene en la base alpine.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2375/_ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     networks:
       - docker_proxy_dev_net
 
@@ -467,7 +474,7 @@ services:
   # (Opcional) pgAdmin dev. Levantar con: docker compose -f deploy/docker-compose.dev.yml --profile pgadmin up -d
   pgadmin:
     logging: *logging-default
-    image: dpage/pgadmin4:8
+    image: dpage/pgadmin4:8.14
     container_name: lasfocasdev-pgadmin
     profiles: ["pgadmin"]
     restart: unless-stopped
@@ -487,6 +494,12 @@ services:
       - "127.0.0.1:5051:80"  # Puerto alternativo: no colisiona con prod (5050)
     depends_on:
       - postgres
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/misc/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     networks:
       - lasfocas_dev_net
 

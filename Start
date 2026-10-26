@@ -1,11 +1,10 @@
+#!/usr/bin/env bash
 # Nombre de archivo: Start
 # Ubicación de archivo: Start
-# Descripción: Script mejorado para reiniciar stack mínimo (DB, NLP, API, Web, Office) con validaciones y healthchecks internos. IP fija 172.18.208.162 requerida en VM.
+# Descripción: Lanzador de PRODUCCIÓN (proyecto lasfocas): build, migraciones y up sin down global, con confirmación explícita. Desarrollo: scripts/start_dev.sh
 
-#!/usr/bin/env bash
 set -euo pipefail
 
-# Colores simples
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -13,45 +12,74 @@ NC='\033[0m'
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$ROOT_DIR/deploy/compose.yml"
-COMPOSE_BASE=(docker compose -f "$COMPOSE_FILE" --env-file "$ROOT_DIR/.env")
+ENV_FILE="$ROOT_DIR/.env"
+COMPOSE_BASE=(docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE")
 
 HOST_IP="172.18.208.162" # Requerido según infraestructura de la VM
+PROYECTO_PROD="lasfocas"
+VOLUMEN_DB="lasfocas_postgres_data"
+# El bot de Telegram está en el perfil por defecto pero no corre en prod: sólo con --with-bot.
+EXCLUIDOS_POR_DEFECTO=(bot)
+# Orden de la guía de despliegue: infraestructura y cromo_worker primero (un worker viejo trata
+# tipos de corrida que no conoce como una ingesta COMPLETA), después el resto.
+PRIMERA_TANDA=(postgres redis docker-socket-proxy cromo_worker)
 
-SERVICES=(postgres nlp_intent api web office slack_baneo_worker)
-CRITICAL=(postgres api web nlp_intent office slack_baneo_worker)
-
-DO_DOWN=true
+YES_PROD=false
+DRY_RUN=false
+WITH_BOT=false
 PURGE=false
 REBUILD_FRONTEND=false
 REBUILD_API=false
+FORZAR_CROMO=false
 NO_COLOR=false
+PEDIDOS=()
 
 usage() {
   cat <<EOF
 Uso: ./Start [opciones]
 
+Opera sobre PRODUCCIÓN: deploy/compose.yml (proyecto '$PROYECTO_PROD') con --env-file .env.
+Para desarrollo usar ./scripts/start_dev.sh. El procedimiento completo de despliegue
+(backup, ventana, rollback) está en docs/despliegue_produccion.md.
+
+Qué hace: construye las imágenes, aplica las migraciones Alembic, levanta los servicios con
+'up -d' (sólo recrea los que cambiaron; no hace 'down' del proyecto) y espera su healthcheck.
+Por defecto levanta el perfil por defecto de compose.yml menos: ${EXCLUIDOS_POR_DEFECTO[*]}.
+
 Opciones:
-  --no-down             No ejecutar 'docker compose down' previo (reutiliza contenedores existentes)
-  --purge               Down + elimina volúmenes e imágenes locales de servicios mínimos
-  --rebuild-frontend    Fuerza rebuild sin cache de la imagen web (frontend npm)
-  --rebuild-api         Fuerza rebuild sin cache de la imagen de la API
+  --yes-prod            Confirma que se opera sobre producción (sin esto pide tipear '$PROYECTO_PROD')
+  --dry-run             Muestra el plan y los comandos sin ejecutar nada
+  --service <nombre>    Sólo ese servicio (repetible); también acepta servicios de perfiles (pgadmin)
+  --with-bot            Incluye el bot de Telegram
+  --rebuild-frontend    Rebuild sin cache de la imagen web
+  --rebuild-api         Rebuild sin cache de la imagen api
+  --forzar-cromo        Recrea cromo_worker aunque haya una corrida de ingesta EN_CURSO (la corta)
+  --purge               PELIGRO: 'down -v' del proyecto entero; BORRA $VOLUMEN_DB.
+                        Pide tipear el nombre del volumen aunque se pase --yes-prod
   --no-color            Deshabilita colores en salida
   -h, --help            Muestra esta ayuda
 
 Ejemplos:
-  ./Start                 Reinicia limpio y levanta stack mínimo
-  ./Start --rebuild-frontend  Fuerza recompilación del frontend
-  ./Start --rebuild-api       Fuerza recompilación de la API
-  ./Start --purge         Reinicio completo (pierde datos de DB)
+  ./Start --dry-run                       Ver qué se levantaría y con qué comandos
+  ./Start                                 Build + migraciones + up (pide confirmación)
+  ./Start --yes-prod --service web        Rebuild y recreación sólo del panel web
+  ./Start --yes-prod --rebuild-frontend   Fuerza recompilación del frontend
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --no-down) DO_DOWN=false ;;
-    --purge) PURGE=true ;;
+    --yes-prod) YES_PROD=true ;;
+    --dry-run) DRY_RUN=true ;;
+    --service)
+      [[ $# -ge 2 ]] || { echo -e "${RED}--service requiere un nombre${NC}"; exit 1; }
+      PEDIDOS+=("$2"); shift ;;
+    --with-bot) WITH_BOT=true ;;
     --rebuild-frontend) REBUILD_FRONTEND=true ;;
     --rebuild-api) REBUILD_API=true ;;
+    --forzar-cromo) FORZAR_CROMO=true ;;
+    --purge) PURGE=true ;;
+    --no-down) echo -e "${YELLOW}--no-down es obsoleta: Start ya no hace 'down'. Se ignora.${NC}" ;;
     --no-color) NO_COLOR=true ;;
     -h|--help) usage; exit 0 ;;
     *) echo -e "${YELLOW}Opción desconocida: $1${NC}"; usage; exit 1 ;;
@@ -61,189 +89,238 @@ done
 
 if $NO_COLOR; then GREEN=''; YELLOW=''; RED=''; NC=''; fi
 
-echo -e "${GREEN}=== LAS-FOCAS :: Start (stack mínimo) ===${NC}"
+# Ejecuta un comando, o lo imprime en --dry-run.
+run() {
+  if $DRY_RUN; then
+    printf '  [dry-run]'; printf ' %q' "$@"; echo
+  else
+    "$@"
+  fi
+}
+
+contiene() {
+  local buscado="$1"; shift
+  local item
+  for item in "$@"; do [[ "$item" == "$buscado" ]] && return 0; done
+  return 1
+}
+
+estado_contenedor() {
+  local cid
+  cid=$("${COMPOSE_BASE[@]}" ps -q "$1" 2>/dev/null | head -n1)
+  [[ -n "$cid" ]] || { echo "ausente"; return 0; }
+  docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || echo "ausente"
+}
+
+echo -e "${GREEN}=== LAS-FOCAS :: Start (PRODUCCIÓN) ===${NC}"
 
 ########################################
-# 1) Verificaciones rápidas del host   #
+# 1) Verificaciones del host           #
 ########################################
 command -v docker >/dev/null 2>&1 || { echo -e "${RED}Docker no está instalado en el PATH${NC}"; exit 1; }
 if ! docker compose version >/dev/null 2>&1; then
   echo -e "${RED}No se encontró 'docker compose' plugin (v2).${NC}"; exit 1
 fi
-
-if [ ! -f "$ROOT_DIR/.env" ]; then
-  echo -e "${YELLOW}No existe .env en la raíz. Creando desde deploy/env.sample...${NC}"
-  cp "$ROOT_DIR/deploy/env.sample" "$ROOT_DIR/.env"
-  echo -e "${YELLOW}Revisá y ajustá credenciales en .env antes de producción.${NC}"
+if [ ! -f "$ENV_FILE" ]; then
+  # Copiar env.sample dejaría prod con credenciales de ejemplo: que lo arme una persona.
+  echo -e "${RED}No existe $ENV_FILE. Crearlo desde deploy/env.sample y completar credenciales.${NC}"
+  exit 1
 fi
 
-########################################
-# 2) Reinicio / Limpieza                #
-########################################
-if $DO_DOWN; then
-  echo -e "${GREEN}Deteniendo stack anterior...${NC}"
-  if $PURGE; then
-    echo -e "${YELLOW}PURGE activado: se eliminarán volúmenes e imágenes locales de servicios mínimos.${NC}"
-    "${COMPOSE_BASE[@]}" down -v --remove-orphans || true
-    # Limpieza de imágenes locales (scope limitado a nombre de proyecto lasfocas)
-    for s in "${SERVICES[@]}"; do
-      img_id=$(docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '/lasfocas/ && /'"$s"'/ {print $2}' | head -n1)
-      if [ -n "$img_id" ]; then docker rmi "$img_id" >/dev/null 2>&1 || true; fi
-    done
-  else
-    "${COMPOSE_BASE[@]}" down --remove-orphans || true
-  fi
-fi
+PROYECTO=$("${COMPOSE_BASE[@]}" config 2>/dev/null | awk '/^name:/ {print $2; exit}')
+[[ -n "$PROYECTO" ]] || { echo -e "${RED}No se pudo leer el nombre del proyecto de $COMPOSE_FILE${NC}"; exit 1; }
 
 ########################################
-# 3) Build & Up                         #
+# 2) Servicios a levantar               #
 ########################################
-echo -e "${GREEN}Verificando/construyendo imagen base focas-base...${NC}"
-"$ROOT_DIR/scripts/build_base.sh"
+mapfile -t POR_DEFECTO < <("${COMPOSE_BASE[@]}" config --services 2>/dev/null)
+mapfile -t TODOS < <("${COMPOSE_BASE[@]}" --profile '*' config --services 2>/dev/null)
 
-UP_CMD=("${COMPOSE_BASE[@]}" up -d --build)
-if $REBUILD_FRONTEND; then
-  echo -e "${YELLOW}Forzando rebuild sin cache para servicio web (frontend)...${NC}"
-  "${COMPOSE_BASE[@]}" build --no-cache web
-fi
-
-echo -e "${GREEN}Levantando servicios mínimos: ${SERVICES[*]}${NC}"
-"${UP_CMD[@]}" "${SERVICES[@]}"
-
-########################################
-# 3.5) Migraciones Alembic              #
-########################################
-# Ejecutar migraciones dentro del contenedor de la API, usando las variables
-# de entorno ya definidas en .env y la url de alembic/env.py (DATABASE_URL/ALEMBIC_URL)
-echo -e "${GREEN}Ejecutando migraciones Alembic...${NC}"
-# Espera activa con límite para Postgres healthy (evita bloqueos)
-MAX_TRIES=40
-DELAY=3
-for i in $(seq 1 $MAX_TRIES); do
-  status=$(docker inspect -f '{{.State.Health.Status}}' lasfocas-postgres 2>/dev/null || echo "unknown")
-  if [ "$status" = "healthy" ]; then
-    echo -e "${GREEN}Postgres healthy.${NC}"
-    break
-  fi
-  echo -e "${YELLOW}Esperando Postgres (estado: $status) $i/$MAX_TRIES...${NC}"
-  sleep $DELAY
-done
-
-# Construir ALEMBIC_URL desde .env si existe
-set +u
-source "$ROOT_DIR/.env" >/dev/null 2>&1 || true
-set -u
-ALEMBIC_URL="postgresql+psycopg://${POSTGRES_USER:-lasfocas}:${POSTGRES_PASSWORD:-cambiar_por_password_seguro}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-lasfocas}"
-
-MIG_OK=false
-if $REBUILD_API; then
-  echo -e "${YELLOW}Forzando rebuild sin cache para servicio API...${NC}"
-  "${COMPOSE_BASE[@]}" build --no-cache api
-fi
-for i in $(seq 1 5); do
-  # Usar el contenedor API ya iniciado para evitar diferencias de entorno de `run`
-  if "${COMPOSE_BASE[@]}" exec -T api sh -lc "ALEMBIC_URL='$ALEMBIC_URL' alembic -c /app/db/alembic.ini upgrade head"; then
-    MIG_OK=true
-    echo -e "${GREEN}Migraciones aplicadas correctamente.${NC}"
-    break
-  else
-    echo -e "${YELLOW}Intento de migración $i/5 fallido. Reintentando en 4s...${NC}"
-    sleep 4
-  fi
-done
-if [ "$MIG_OK" != true ]; then
-  echo -e "${RED}No se pudieron aplicar las migraciones Alembic.${NC}"
-  exit 2
-fi
-
-########################################
-# 4) Health checks                      #
-########################################
-declare -A HEALTH_RESULTS
-
-check_http() {
-  local name="$1" url="$2" max=30 delay=3
-  for i in $(seq 1 $max); do
-    if curl -fsS "$url" >/dev/null 2>&1; then
-      echo -e "${GREEN}OK${NC} $name -> $url"
-      HEALTH_RESULTS[$name]=OK
-      return 0
-    fi
-    echo -e "${YELLOW}Esperando $name (externo) $i/$max...${NC}"; sleep "$delay"
+SERVICES=()
+if [[ ${#PEDIDOS[@]} -gt 0 ]]; then
+  for s in "${PEDIDOS[@]}"; do
+    contiene "$s" "${TODOS[@]}" || { echo -e "${RED}Servicio desconocido: $s${NC}"; exit 1; }
+    SERVICES+=("$s")
   done
-  echo -e "${RED}Timeout $name (${url})${NC}"; HEALTH_RESULTS[$name]=FAIL; return 1
+else
+  $WITH_BOT && EXCLUIDOS_POR_DEFECTO=()
+  for s in "${POR_DEFECTO[@]}"; do
+    contiene "$s" "${EXCLUIDOS_POR_DEFECTO[@]}" || SERVICES+=("$s")
+  done
+fi
+
+TANDA_1=(); TANDA_2=()
+for s in "${SERVICES[@]}"; do
+  if contiene "$s" "${PRIMERA_TANDA[@]}"; then TANDA_1+=("$s"); else TANDA_2+=("$s"); fi
+done
+
+echo "Proyecto:  $PROYECTO"
+echo "Compose:   $COMPOSE_FILE"
+echo "Env file:  $ENV_FILE"
+echo "Servicios: ${SERVICES[*]}"
+$PURGE && echo -e "${RED}PURGE: se ejecutará 'down -v' y se BORRARÁ $VOLUMEN_DB${NC}"
+$DRY_RUN && echo -e "${YELLOW}Modo --dry-run: no se ejecuta nada.${NC}"
+
+########################################
+# 3) Confirmación                       #
+########################################
+confirmar_tipeando() {
+  local esperado="$1" mensaje="$2" respuesta
+  if [ ! -t 0 ]; then
+    echo -e "${RED}$mensaje: hace falta una terminal interactiva para confirmar.${NC}"; exit 1
+  fi
+  read -r -p "$mensaje. Tipeá '$esperado' para continuar: " respuesta
+  [[ "$respuesta" == "$esperado" ]] || { echo -e "${RED}Confirmación incorrecta. Abortado.${NC}"; exit 1; }
 }
 
-# Fallback: intenta localhost primero y si falla reintenta con IP fija
-check_http_dual() {
-  local name="$1" primary="$2" fallback="$3" max=30 delay=3
-  for i in $(seq 1 $max); do
-    if curl -fsS "$primary" >/dev/null 2>&1; then
-      echo -e "${GREEN}OK${NC} $name -> $primary"
-      HEALTH_RESULTS[$name]=OK; return 0
-    fi
-    # A partir del intento 6 probar también fallback
-    if [ $i -ge 6 ]; then
-      if curl -fsS "$fallback" >/dev/null 2>&1; then
-        echo -e "${GREEN}OK${NC} $name -> $fallback (fallback)"
-        HEALTH_RESULTS[$name]=OK; return 0
+if ! $DRY_RUN; then
+  if [[ "$PROYECTO" == "$PROYECTO_PROD" ]] && ! $YES_PROD; then
+    confirmar_tipeando "$PROYECTO_PROD" "Vas a operar sobre PRODUCCIÓN ($PROYECTO_PROD)"
+  fi
+  if $PURGE; then
+    confirmar_tipeando "$VOLUMEN_DB" "--purge BORRA la base de datos ($VOLUMEN_DB) sin vuelta atrás"
+  fi
+fi
+
+########################################
+# 4) Corrida de Cromo en curso          #
+########################################
+# Recrear cromo_worker corta la ingesta en curso (una SOLO_ODF tarda ~3,5 h).
+if contiene cromo_worker "${SERVICES[@]}" && ! $FORZAR_CROMO; then
+  if $DRY_RUN; then
+    echo "  [dry-run] verificaría que no haya corridas EN_CURSO en app.cromo_ingesta_corridas"
+  elif [[ "$(estado_contenedor postgres)" == "healthy" ]]; then
+    consultar() {
+      "${COMPOSE_BASE[@]}" exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "$1"' _ "$1"
+    }
+    if [[ "$(consultar "select to_regclass('app.cromo_ingesta_corridas') is not null")" == "t" ]]; then
+      EN_CURSO=$(consultar "select count(*) from app.cromo_ingesta_corridas where estado='EN_CURSO'") \
+        || { echo -e "${RED}No se pudo consultar app.cromo_ingesta_corridas. Abortado (ver --forzar-cromo).${NC}"; exit 1; }
+      if [[ "$EN_CURSO" != "0" ]]; then
+        echo -e "${RED}Hay $EN_CURSO corrida(s) de Cromo EN_CURSO: recrear cromo_worker la cortaría.${NC}"
+        echo "Esperar a que termine, excluir el servicio (--service ...) o usar --forzar-cromo."
+        exit 1
       fi
     fi
-    echo -e "${YELLOW}Esperando $name (dual) $i/$max...${NC}"; sleep "$delay"
-  done
-  echo -e "${RED}Timeout $name (${primary} / ${fallback})${NC}"; HEALTH_RESULTS[$name]=FAIL; return 1
-}
+  fi
+fi
 
-# Chequeo interno usando Python (urllib) dentro del contenedor, evita dependencia de curl
-check_internal() {
-  local name="$1" service="$2" url="$3" max=30 delay=3
-  for i in $(seq 1 $max); do
-    if "${COMPOSE_BASE[@]}" exec -T "$service" python - "$url" <<'PY' >/dev/null 2>&1; then
-import sys, urllib.request
-url = sys.argv[1]
-try:
-    with urllib.request.urlopen(url, timeout=5) as r:
-        if r.status == 200:
-            sys.exit(0)
-except Exception:
-    pass
-sys.exit(1)
+########################################
+# 5) Purge (opcional)                   #
+########################################
+if $PURGE; then
+  echo -e "${YELLOW}PURGE: down -v del proyecto y borrado de imágenes locales.${NC}"
+  run "${COMPOSE_BASE[@]}" down -v --remove-orphans
+  for s in "${SERVICES[@]}"; do
+    img_id=$(docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | awk '/lasfocas/ && /'"$s"'/ {print $2}' | head -n1)
+    if [ -n "$img_id" ]; then run docker rmi "$img_id" || true; fi
+  done
+fi
+
+########################################
+# 6) Build                              #
+########################################
+echo -e "${GREEN}Verificando/construyendo imagen base focas-base...${NC}"
+run "$ROOT_DIR/scripts/build_base.sh"
+if $REBUILD_FRONTEND && contiene web "${SERVICES[@]}"; then
+  run "${COMPOSE_BASE[@]}" build --no-cache web
+fi
+if $REBUILD_API && contiene api "${SERVICES[@]}"; then
+  run "${COMPOSE_BASE[@]}" build --no-cache api
+fi
+echo -e "${GREEN}Construyendo imágenes: ${SERVICES[*]}${NC}"
+run "${COMPOSE_BASE[@]}" build "${SERVICES[@]}"
+
+########################################
+# 7) Postgres + migraciones Alembic     #
+########################################
+# Las migraciones corren con la imagen nueva de api ANTES de recrear los servicios (mismo orden que
+# docs/despliegue_produccion.md). La contraseña sale del secreto dentro del contenedor: no pasa por
+# la línea de comandos del host.
+echo -e "${GREEN}Asegurando Postgres...${NC}"
+run "${COMPOSE_BASE[@]}" up -d postgres
+if ! $DRY_RUN; then
+  for i in $(seq 1 40); do
+    estado=$(estado_contenedor postgres)
+    [[ "$estado" == "healthy" ]] && { echo -e "${GREEN}Postgres healthy.${NC}"; break; }
+    echo -e "${YELLOW}Esperando Postgres (estado: $estado) $i/40...${NC}"
+    sleep 3
+  done
+  [[ "$(estado_contenedor postgres)" == "healthy" ]] || { echo -e "${RED}Postgres no quedó healthy.${NC}"; exit 2; }
+fi
+
+migrar() {
+  "${COMPOSE_BASE[@]}" run --rm --no-deps -T api python - <<'PY'
+import os
+from urllib.parse import quote
+
+from alembic.config import main
+
+from core.config import get_secret
+
+clave = quote(get_secret("db_password_v1", "POSTGRES_PASSWORD"), safe="")
+os.environ.pop("DATABASE_URL", None)
+os.environ["ALEMBIC_URL"] = (
+    f"postgresql+psycopg://{os.getenv('POSTGRES_USER', 'lasfocas')}:{clave}"
+    f"@{os.getenv('POSTGRES_HOST', 'postgres')}:{os.getenv('POSTGRES_PORT', '5432')}"
+    f"/{os.getenv('POSTGRES_DB', 'lasfocas')}"
+)
+main(argv=["-c", "/app/db/alembic.ini", "upgrade", "head"])
 PY
-      echo -e "${GREEN}OK${NC} $name (interno $service -> $url)"
-      HEALTH_RESULTS[$name]=OK; return 0
-    fi
-    echo -e "${YELLOW}Esperando $name (interno) $i/$max...${NC}"; sleep "$delay"
-  done
-  echo -e "${RED}Timeout $name (interno $service -> $url)${NC}"; HEALTH_RESULTS[$name]=FAIL; return 1
 }
 
-echo -e "${GREEN}Comprobando health de servicios...${NC}"
-check_http    "API"        "http://localhost:8001/health" || true
-# WEB: usar check interno porque el puerto 8080 está bindeado solo a IP fija y firewall bloquea acceso local
-check_internal "WEB"        "web"  "http://localhost:8080/health" || true
-check_internal "NLP"        "nlp_intent"  "http://localhost:8100/health" || true
-check_internal "LibreOffice" "office"     "http://localhost:8090/health" || true
-check_internal "SlackWorker" "slack_baneo_worker" "http://localhost:8095/health" || true
+echo -e "${GREEN}Ejecutando migraciones Alembic...${NC}"
+if $DRY_RUN; then
+  echo "  [dry-run] ${COMPOSE_BASE[*]} run --rm --no-deps -T api python - (alembic upgrade head)"
+else
+  MIG_OK=false
+  for i in $(seq 1 3); do
+    if migrar; then MIG_OK=true; echo -e "${GREEN}Migraciones aplicadas.${NC}"; break; fi
+    echo -e "${YELLOW}Intento de migración $i/3 fallido. Reintentando en 4s...${NC}"; sleep 4
+  done
+  $MIG_OK || { echo -e "${RED}No se pudieron aplicar las migraciones. No se recreó ningún servicio de aplicación.${NC}"; exit 2; }
+fi
 
 ########################################
-# 5) Resumen                            #
+# 8) Up (sin down; recrea lo que cambió) #
 ########################################
-echo -e "\n${GREEN}Resumen de health:${NC}"
-FAIL_COUNT=0
-for comp in API WEB NLP LibreOffice SlackWorker; do
-  state=${HEALTH_RESULTS[$comp]:-FAIL}
-  if [ "$state" = "OK" ]; then
-    echo -e "  $comp: ${GREEN}OK${NC}"
+if [[ ${#TANDA_1[@]} -gt 0 ]]; then
+  echo -e "${GREEN}Levantando: ${TANDA_1[*]}${NC}"
+  run "${COMPOSE_BASE[@]}" up -d "${TANDA_1[@]}"
+fi
+if [[ ${#TANDA_2[@]} -gt 0 ]]; then
+  echo -e "${GREEN}Levantando: ${TANDA_2[*]}${NC}"
+  run "${COMPOSE_BASE[@]}" up -d "${TANDA_2[@]}"
+fi
+
+if $DRY_RUN; then
+  echo -e "${GREEN}Fin del dry-run.${NC}"; exit 0
+fi
+
+########################################
+# 9) Health                             #
+########################################
+# healthy si el servicio declara healthcheck; running si no lo declara.
+echo -e "${GREEN}Comprobando health de servicios...${NC}"
+FALLIDOS=()
+for s in "${SERVICES[@]}"; do
+  estado="?"
+  for i in $(seq 1 40); do
+    estado=$(estado_contenedor "$s")
+    [[ "$estado" == "healthy" || "$estado" == "running" ]] && break
+    sleep 3
+  done
+  if [[ "$estado" == "healthy" || "$estado" == "running" ]]; then
+    echo -e "  $s: ${GREEN}$estado${NC}"
   else
-    echo -e "  $comp: ${RED}FAIL${NC}"; ((FAIL_COUNT++)) || true
+    echo -e "  $s: ${RED}$estado${NC}"; FALLIDOS+=("$s")
   fi
 done
 
-if [ $FAIL_COUNT -gt 0 ]; then
-  echo -e "${RED}Uno o más servicios críticos no pasaron health. Revisar logs con:${NC}"
-  echo "  docker compose -f deploy/compose.yml logs -f"
+if [[ ${#FALLIDOS[@]} -gt 0 ]]; then
+  echo -e "${RED}Servicios sin health OK: ${FALLIDOS[*]}. Revisar con:${NC}"
+  echo "  docker compose -f deploy/compose.yml --env-file .env logs --tail=200 ${FALLIDOS[*]}"
   exit 2
 fi
 
 echo -e "${GREEN}Listo.${NC} UI: http://$HOST_IP:8080/  |  API: http://localhost:8001/docs"
-echo -e "${YELLOW}Nota:${NC} IP fija forzada ($HOST_IP). El proveedor LLM por defecto se resuelve por API externa según .env."

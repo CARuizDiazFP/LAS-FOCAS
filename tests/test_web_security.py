@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from starlette.middleware.sessions import SessionMiddleware
 
 from web.app import main as web_main
@@ -69,3 +70,27 @@ def test_cookie_sesion_declara_flags_seguridad(monkeypatch) -> None:
     assert "httponly" in cookie
     assert "samesite=lax" in cookie
     assert "secure" in cookie
+
+
+@pytest.mark.parametrize("clave", ["", "   ", "cambiar_por_clave_web_segura", "cambiar_por_clave_web_dev_segura"])
+def test_clave_sesion_fail_closed_sin_testing(monkeypatch, clave) -> None:
+    monkeypatch.setattr(web_main, "get_secret", lambda *_args, **_kwargs: clave)
+    monkeypatch.setenv("TESTING", "false")
+
+    with pytest.raises(RuntimeError, match="web_secret_key_v1"):
+        web_main._resolver_web_secret_key()
+
+
+@pytest.mark.parametrize("clave", ["", "cambiar_por_clave_web_segura"])
+def test_clave_sesion_placeholder_permitido_con_testing(monkeypatch, clave) -> None:
+    monkeypatch.setattr(web_main, "get_secret", lambda *_args, **_kwargs: clave)
+    monkeypatch.setenv("TESTING", "true")
+
+    assert web_main._resolver_web_secret_key()
+
+
+def test_clave_sesion_real_se_usa_tal_cual(monkeypatch) -> None:
+    monkeypatch.setattr(web_main, "get_secret", lambda *_args, **_kwargs: "  clave-aleatoria-de-produccion  ")
+    monkeypatch.setenv("TESTING", "false")
+
+    assert web_main._resolver_web_secret_key() == "clave-aleatoria-de-produccion"

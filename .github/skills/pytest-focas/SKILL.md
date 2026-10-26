@@ -215,6 +215,16 @@ Los tests se ejecutan en GitHub Actions (`.github/workflows/ci.yml`):
 - Job `tests`: pytest para API, NLP, Web
 - Falla el CI si los tests no pasan
 
+## Importar `web.app.main` fuera de pytest: clave de sesión fail-closed (lección 2026-10-26)
+
+`web/app/main.py` no arranca (`RuntimeError` al importar) si `web_secret_key_v1`/`WEB_SECRET_KEY` está vacía
+o empieza con `cambiar_por` (los placeholders públicos de `env.sample`). En pytest no se nota:
+`tests/conftest.py` define `WEB_SECRET_KEY` de prueba. Un script o un `python -c "import web.app.main"` desde
+el venv del host **sí** falla: exportar una clave cualquiera que no sea placeholder, o `TESTING=true` (que
+además desactiva CSRF). Dentro de los contenedores no hace falta: leen el secreto real. Para probar el
+fail-closed, parchear `web_main.get_secret` y llamar a `web_main._resolver_web_secret_key()`
+(`tests/test_web_security.py`).
+
 ## Diagnóstico de Fallas: Heurísticas (lecciones 2026-07-30)
 
 Antes de "arreglar" un test que falla, distinguir estos 4 casos — confundirlos hace perder tiempo o esconde bugs reales:

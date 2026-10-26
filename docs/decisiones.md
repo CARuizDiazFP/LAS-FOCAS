@@ -2919,3 +2919,24 @@ su propia ventana de mantenimiento.
 - Medido (30 Activos al azar + 83693): 3 de 31 con corte por proyecto, los 3 completados; 4 terminan en un pelo sin
   señal y el reintento no los cambia.
 
+
+## 2026-10-26 — `./Start` pasa a ser un lanzador de producción seguro
+
+- Contexto: `Start` hacía `down --remove-orphans` del proyecto `lasfocas` y levantaba sólo 6 servicios
+  hardcodeados, así que `cromo_worker`, `botellas_recalculo_worker` y `fo_monitor_worker` quedaban caídos. Con
+  `--purge` hacía `down -v` (borraba `postgres_data` de prod) sin confirmar. `AGENTS.md` lo presentaba como
+  "arranque principal", así que un agente que siguiera la guía reiniciaba prod.
+- Decisión (elegida por el usuario): mantenerlo como lanzador de prod, pero sin `down` global. Los servicios salen
+  del perfil por defecto de `compose.yml`, menos `bot`, que no corre en prod y se suma con `--with-bot`. Exige
+  tipear `lasfocas` (o `--yes-prod`); `--purge` exige además tipear `lasfocas_postgres_data`. No recrea
+  `cromo_worker` si hay una corrida `EN_CURSO`. Migra con la imagen nueva **antes** de recrear los servicios, con
+  la contraseña tomada del secreto dentro del contenedor. Suma `--dry-run`. El arranque de desarrollo es
+  `scripts/start_dev.sh`.
+- Alternativas descartadas: retirar `Start` (se pierde un lanzador con validaciones que el usuario usa);
+  corregir sólo la lista de servicios (el `down` global y el `--purge` sin confirmación seguían siendo el riesgo).
+- Consecuencia: `Start` ya no recrea la red. Un cambio de subred se hace con los pasos manuales de
+  `docs/mantenimiento_redes_produccion.md`.
+- Cookie de sesión: el usuario indicó que prod está detrás de un proxy TLS. `WEB_SESSION_HTTPS_ONLY=true` en el
+  `.env` de prod lo aplica el usuario, y **sólo si todo el acceso pasa por el proxy**: en los logs de
+  `lasfocas-web` hay clientes que entran directo por HTTP a `:8080`, y `WEB_INFERRED_ORIGIN` es
+  `http://172.18.208.162:8080`. Con `Secure`, el acceso directo por HTTP no puede iniciar sesión.
