@@ -12,13 +12,14 @@ las respuestas.
 
 Relevamiento y decisiones: cuestionario de 80 preguntas + aclaraciones A1–A10 (2026-10-13/14).
 
-## Estado (2026-10-17)
+## Estado (2026-10-26)
 
 | Pieza | Estado |
 |---|---|
 | Fases 0–4 (PoC, modelo, worker, API, SPA + mapa base) | Integrado a `dev` y desplegado en **dev** (cierre 2026-10-17) |
 | Piloto en dev | **Inactivo**. Sólo procesaría ingresos de `#baneo-de-camaras-prueba` (`C08UB8ML3LP`) |
-| Producción | **Stand-by hasta nuevo aviso** (sin migrar ni desplegar). El canal productivo `C015UKWP2MS` no está habilitado |
+| Producción — mapa | **Activo** desde el deploy del 2026-10-24 (`main` `a0c2d9c`). `fomon_cable_geo` se cargó a mano con `scripts/fo_monitor_generar_geo.py`; hasta el próximo deploy hay que **re-correrlo a mano tras cada ingesta de cables Cromo**, porque el refresco automático post-ingesta (`2594dabd`) está sólo en `dev` |
+| Producción — auditor burritoIA | **Apagado**. `fo_monitor_worker` existe en prod desde el 2026-10-18, pero la fila `fo_monitor` de `app.config_servicios` tiene `activo=false` y `canales_ingreso` es sólo `C08UB8ML3LP`. El canal productivo `C015UKWP2MS` no está habilitado |
 
 ## Arquitectura
 

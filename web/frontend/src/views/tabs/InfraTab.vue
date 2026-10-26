@@ -641,8 +641,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useSession } from '../../composables/useSession';
 
-const { state, csrf } = useSession();
-const isAdmin = computed(() => (state.value.role ?? '').toLowerCase() === 'admin');
+const { csrf } = useSession();
 
 // --- Toast ---
 interface Toast { id: number; type: string; title: string; message?: string }
@@ -830,14 +829,6 @@ function prevPage(): void {
 onMounted(() => {
   void runSearch();
 });
-
-// --- Camera cards ---
-const RUTA_COLORS: Record<string, string> = {
-  PRINCIPAL: '#3B82F6',
-  BACKUP: '#37BC7D',
-  ALTERNATIVA: '#F54927',
-  CUARTO: '#E61876',
-};
 
 // --- Protocolo de Protección (ban) — Wizard 3 pasos ---
 interface BanFormData {
@@ -1603,7 +1594,7 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
   background: var(--color-surface); box-shadow: var(--shadow-sm);
   transition: box-shadow 0.15s ease;
 }
-.fop-camara-card:hover { box-shadow: 0 0 0 1px var(--color-accent), 0 6px 18px rgba(0, 0, 0, 0.5); }
+.fop-camara-card:hover { box-shadow: 0 0 0 1px var(--color-accent), var(--shadow-md); }
 .infra-camara-row { display: flex; align-items: center; gap: 7px; }
 .infra-camara-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--color-state-idle); }
 .infra-camara-dot.libre { background: var(--color-state-ok); }

@@ -16,20 +16,35 @@ El frontend SPA vive en `web/frontend/` y se compila a `web/frontend/dist/` que 
 [Cliente]  <──HTTP──>  [FastAPI web:8080]
                           │
                           ├─ /assets/*       → Vite build assets (JS/CSS/fonts)
-                          ├─ /reports/*      → archivos de reportes generados
-                          ├─ /api/**         → endpoints REST JSON
+                          ├─ /reports/*      → informes generados (exige sesión)
+                          ├─ /api/**         → endpoints REST JSON (routers por dominio + FO Monitor)
+                          ├─ /ws/chat, /ws/admin-notifications → WebSockets
                           └─ /{path:path}    → SPA catch-all → index.html
 ```
 
 El **catch-all** `GET /{path:path}` sirve `frontend/dist/index.html` para todas las rutas que no coincidan con las montadas antes. Esto permite que Vue Router maneje el routing del lado cliente, incluyendo recargas de página.
 
-> **IMPORTANTE**: El catch-all siempre se define como ÚLTIMA ruta en `main.py`. Si se agregasen rutas nuevas, deben ir ANTES del catch-all.
+> **IMPORTANTE**: El catch-all es la ÚLTIMA ruta de `web/app/main.py`, declarada después de los
+> `app.include_router(...)`. Un endpoint nuevo va en el router de su dominio (`web/app/routers/`), no
+> en `main.py`. Ojo: un `GET` que el panel no expone no da 404, cae en el catch-all y devuelve el
+> `index.html` con 200.
 
 ## Estructura y archivo principal
 
 ```
 web/
-  app/main.py          ← FastAPI app: API REST + SPA serving
+  app/
+    main.py            ← ensamblador: app FastAPI, handlers de error, SessionMiddleware, middleware
+                         de log, montaje de /assets, WebSockets, FO Monitor, include_router y catch-all
+    comun.py           ← helpers compartidos: _require_auth/_require_admin, _validar_csrf, DB_DSN,
+                         rutas de datos (DATA_DIR, UPLOADS_DIR, REPORTS_DIR), BUILD_VERSION, logger
+    dependencias.py    ← Depends(usuario_sesion) / Depends(usuario_admin) → UsuarioSesion
+    errores.py         ← ErrorDeDominio (NoEncontrado 404, DatoInvalido 422, Conflicto 409) y 500 con ref
+    routers/           ← un APIRouter por dominio (tabla abajo)
+  fo_monitor_routes.py ← /api/fo-monitor/* y /api/admin/fo-monitor/config (mount_fo_monitor_routes)
+  chat_ws.py           ← WebSocket /ws/chat
+  admin_ws.py          ← WebSocket /ws/admin-notifications
+  tools/               ← vlan_comparator.py, reset_admin_password.py
   frontend/
     src/               ← código fuente Vue 3 + TypeScript
       assets/styles/   ← tokens CSS globales del panel
@@ -41,10 +56,71 @@ web/
   Dockerfile           ← multi-stage: Node 20 build → Python serve
 ```
 
+### Backend: routers por dominio
+
+`main.py` no declara endpoints de negocio: los incluye en este orden, todos antes del catch-all.
+
+| Router | Dominio | Protección a nivel router |
+|---|---|---|
+| `routers/sesion.py` | `/health`, `/health/version`, login/logout, `/api/admin/me`, cambio de contraseña, alta de usuarios | ninguna (cada ruta decide) |
+| `routers/informes.py` | `/reports/{ruta}`, `/api/reports/*` (SLA, SLA consumido, historial), `/api/flows/*`, `/api/tools/*` (Ciena, VLANs) | ninguna; cada endpoint pide sesión (`/reports/index` es pública) |
+| `routers/chat.py` | `/api/chat/*` y `/mcp/invoke` | `Depends(usuario_chat)`: 401 con `{"error": "No autenticado"}` |
+| `routers/admin_datos.py` | worker/listener de baneos, ingesta de Cámaras y de Cromo, clientes por categoría | `Depends(usuario_sesion)` |
+| `routers/servicios.py` | `/api/servicios/*`, rutas y tracking, ODF de servicios, camino óptico, empalmes | `Depends(usuario_sesion)` |
+| `routers/cromo.py` | inventario Cromo, Botellas, huérfanos, inconsistencias, árbitro | `Depends(usuario_sesion)` |
+| `routers/camaras.py` | Cámaras, baneos, avisos por email, exportación, búsqueda, ingresos | `Depends(usuario_sesion)` |
+
+**Sesión como dependencia.** `dependencias.py` envuelve la regla única de `comun._require_auth` /
+`comun._require_admin`: `usuario_sesion` responde 401 sin sesión y `usuario_admin` agrega 403 si el
+rol no es `admin`. Ambas devuelven un `UsuarioSesion` (NamedTuple `username, role`). Se declaran en el
+`APIRouter(dependencies=[...])` y, si el endpoint usa el usuario, también en la firma (FastAPI la
+evalúa una sola vez por request). En tests se reemplazan con `app.dependency_overrides`.
+
+**Errores.** `main.py` registra dos handlers de `errores.py`: `ErrorDeDominio` (y subclases) →
+`{"error": <mensaje>}` con su status, y cualquier excepción no controlada → 500
+`{"error": "Error interno (ref XXXXXXXX)"}`, con el traceback y la misma ref sólo en el log. Las
+fallas de servicios externos (Cromo, PROV, SMTP) usan `error_servicio_externo(...)`: conservan su
+status y nunca devuelven el texto de la excepción. `HTTPException` y `RequestValidationError` siguen
+con los handlers de FastAPI.
+
+**`routers/admin_datos.py`.** Agrupa los datos operativos que configura el admin:
+
+- Worker de notificaciones de baneos: `GET /api/admin/servicios/baneos/config`,
+  `POST /api/admin/servicios/baneos` (guarda la config y pide al worker de Slack que la relea),
+  `POST .../baneos/worker/start` (arranca el contenedor si está detenido), `POST .../baneos/trigger`
+  (ejecución inmediata), `GET .../baneos/health` (proxy al health del worker) y `GET/POST
+  .../baneos/listener` (config del listener de ingresos).
+- Ingesta de Cámaras desde Excel: `POST /api/admin/ingesta/camaras` y
+  `POST /api/admin/ingesta/camaras/asociar` (resuelve a mano los `IngresoSinMatch` y banea el grupo).
+- Ingesta de Cromo: `POST /api/admin/ingesta/cromo` crea la corrida y la delega al worker
+  (`CROMO_WORKER_BASE_URL`); `GET/POST .../cromo/config`, `GET .../config/health` y
+  `POST .../config/trigger` manejan el scheduler; `GET .../corridas`, `.../corridas/{id}`,
+  `.../corridas/{id}/stream` (SSE de progreso) y `POST .../corridas/{id}/cancelar`.
+- Clientes por categoría: proxies a `/clientes...` del API interno (`INTERNAL_API_BASE_URL`, con API key
+  y `X-Usuario`) — `GET /api/admin/clientes/por-categoria`, `PATCH /api/admin/clientes/categoria`,
+  `POST .../lista/previsualizar` y `.../lista/aplicar`, `POST .../fusionar`,
+  `POST /api/admin/clientes/{cliente_id}/alias`, `DELETE /api/admin/clientes/alias/{alias_id}` y
+  `POST .../sincronizar` (ver `docs/clientes_categoria.md`).
+
+Todo el router exige sesión; las rutas de admin agregan `usuario_admin`. Tres (config del worker de
+baneos vía `POST`, health del worker e ingesta de Cámaras) conservan su chequeo de rol propio para
+responder 403 `{"error": "Solo admin"}`.
+
 ### Shell y navegación modular
 
 - El SPA ahora usa un **App Shell compartido** en `web/frontend/src/components/app-shell/AppShell.vue` para panel y admin.
-- La navegación lateral se organiza por módulos y apunta a rutas dedicadas: `/`, `/infra`, `/servicios`, `/servicios/ID/:idServicio`, `/repetitividad`, `/toolkit/vlan`, `/fo`, `/dwdm/ciena`, `/sla` y `/reports-history`.
+- La navegación lateral está **hardcodeada en `AppShell.vue`** (`primaryLinks` y `sidebarModules`), no
+  sale del `meta` del router. Hoy tiene dos accesos directos y cuatro módulos desplegables:
+  - **Home** (`/`) y **Servicios** (`/servicios`; también queda activo en `/servicios/ID/...`).
+  - **Infraestructura FO**: Dashboard (`/infra`), FO Monitor (`/infra/fo-monitor`), Cables
+    (`/infra/cromo/cables`), Botellas (`/infra/Botellas`), ODFs (`/infra/cromo/odfs`), Cajas PON
+    (`/infra/cromo/pon`) y Rosetas (`/infra/cromo/rosetas`).
+  - **Reportes**: Repetitividad (`/repetitividad`), SLA (`/sla`) e Historial (`/reports-history`).
+  - **DWDM Ciena**: Alarmas Ciena (`/dwdm/ciena`).
+  - **Tool Kit**: Comparador de VLANs (`/toolkit/vlan`), Comparador FO (`/fo`), Verificador Cromo
+    (`/infra/cromo/verificador`) y Validar datos DB Cromo (`/toolkit/validar-datos-cromo`).
+- La administración no está en la lista: se entra por el engranaje "Configuración" del encabezado del
+  sidebar, que sólo es un link (`/admin`) para el rol `admin`; para el resto queda deshabilitado.
 - El header horizontal legacy fue eliminado para ampliar el área de trabajo. Los controles fijos de sesión viven arriba del sidebar: configuración y perfil de usuario.
 - La esquina superior derecha del área principal queda reservada para acciones dinámicas de módulo, sin botones estáticos.
 - El contenedor `#dynamic-module-actions` permite que una vista inyecte acciones con `Teleport`; el mismo bloque expone el slot `module-actions` para usos futuros donde el shell se componga directamente.
@@ -57,10 +133,12 @@ web/
 - Se mantiene compatibilidad con `/?tab=infra|rep|repetitividad|vlan|fo|ciena` mediante redirects hacia las rutas nuevas.
 - La administración incorpora `/admin/ingesta` como **hub de navegación** con tres sub-módulos:
   - `/admin/ingesta/servicios` → carga del Excel de Servicios SLA con barra de progreso.
-  - `/admin/ingesta/cromo` → ingesta del inventario de fibra desde Cromo Red, con progreso en vivo por SSE y un selector de alcance de siete modos (ver `docs/modulo_ingesta_cromo.md`).
+  - `/admin/ingesta/cromo` → ingesta del inventario de fibra desde Cromo Red, con progreso en vivo por SSE y un selector de alcance de nueve modos (`CROMO_MODOS_INGESTA_INFO` en `web/frontend/src/api/cromo.ts`). El backend valida contra `MODOS_INGESTA` de `core/services/cromo/ingesta.py`, que tiene diez: el décimo, `SOLO_PELOS_INNER`, no está en el selector (ver `docs/modulo_ingesta_cromo.md`).
   - `/admin/ingesta/camaras` → ingesta masiva de cámaras críticas desde Excel (col B, sin cabecera) con modal de motivo de baneo y baneo administrativo masivo. Desde el refactor de baneos (2026-08-24) suma un "Revisor Manual": los alias que no matchearon contra el inventario se listan con selección múltiple, para descartarlos (marcar revisado en lote) o asociarlos a mano a una Cámara/Botella existente vía typeahead — la ingesta ya no crea `Camara` nuevas por su cuenta. Detalle completo en `docs/infra.md`, sección "Ingesta Excel de cámaras baneadas".
 
-> **CRITICAL — Arquitectura del router admin**: Existe el archivo `web/frontend/src/admin/router/index.ts` y `web/frontend/src/admin/main.ts`, pero ambos son **código huérfano**. El SPA tiene un único entry point (`src/main.ts` → monta en `#app`) y usa `src/router/index.ts` como router unificado. Las rutas `/admin/*` son **children anidadas** de `{ path: '/admin', component: AppShell }` dentro de ese router. Toda ruta admin nueva debe agregarse en `src/router/index.ts`, no en `src/admin/router/index.ts`.
+El SPA tiene un único entry point (`src/main.ts` → monta en `#app`) y un único router,
+`src/router/index.ts`. Las rutas `/admin/*` son children de `{ path: '/admin', component: AppShell }`
+en ese router; `web/frontend/src/admin/` sólo guarda vistas, componentes y clientes HTTP del área admin.
 
 ### Tokens y estilos compartidos
 
@@ -134,7 +212,7 @@ Todos los endpoints POST que mutan datos validan el CSRF token.
 
 ### Superficies legacy del frontend
 
-- `web/frontend/src/chat/main.ts` sigue existiendo como cliente standalone heredado para WebSocket, pero **no forma parte del bundle actual del SPA** porque `index.html` solo entra por `src/main.ts`.
+- `web/frontend/src/chat/main.ts` (cliente standalone heredado del chat por WebSocket, fuera del bundle) se eliminó el 2026-10-26; el chat del SPA es `views/tabs/ChatTab.vue`.
 - Si se reactiva ese cliente en el futuro, debe sanearse el uso de `innerHTML` antes de volver a exponerlo en runtime.
 
 ## Build Dev del frontend
@@ -163,7 +241,10 @@ Centralizado vía `core.logging.setup_logging`.
 ## Endpoints de datos
 
 - `GET /health` → status simple.
-- `GET /reports/index` → redirección a `/reports-history` (compatibilidad).
+- `GET /reports/index` → redirección a `/reports-history` (compatibilidad, pública).
+- `GET/HEAD /reports/{ruta}` → descarga de un informe generado. Antes era un montaje estático sin
+  sesión; hoy es un endpoint de `routers/informes.py` que exige sesión (401 sin ella) y no sirve nada
+  fuera de la carpeta de reportes (404).
 - `GET /api/reports/history` → histórico persistente de reportes. Devuelve `items` con estado, usuario, período, fuente, duración, metadata segura y salidas; conserva `files` como compatibilidad básica. Requiere auth. Filtros: `type`, `status`, `username`, `month`, `year`, `limit`, `offset`.
 - `POST /api/chat/message` → clasifica texto usando NLP. Requiere CSRF si hay sesión. Rate limit: 30/min.
 - `GET /api/chat/history?limit=N` → últimos N (máx 100) mensajes. Devuelve `conversation_id` y `history`.
@@ -171,6 +252,15 @@ Centralizado vía `core.logging.setup_logging`.
 - `POST /api/users/change-password` → Form: `current_password, new_password, csrf_token`.
 - `POST /api/admin/users` → Crear usuario (admin). Form: `username, password, role?, csrf_token`.
 - `POST /api/reports/sla` → informe SLA. FormData: `mes, anio, periodo_mes?, periodo_anio?, pdf_enabled?, use_db?, files*, csrf_token`. Respuesta: `{ok, message, report_paths: {docx, pdf?}, source}`.
+- `POST /api/reports/sla-consumo` → informe de **SLA consumido** (pestaña "SLA consumido" de `/sla`,
+  `components/sla/SlaConsumoPanel.vue` + `composables/useSlaConsumo.ts`). FormData: `files` (exactamente
+  dos `.xlsx`, Servicios y Reclamos; el tipo se identifica por contenido), `pdf_enabled?`, `csrf_token`.
+  Persiste los reclamos en el histórico y registra la corrida en el historial de reportes con tipo
+  `sla_consumo`. Respuesta: `{ok, message, fecha_corte, ya_ingestado, reclamos_insertados,
+  reclamos_actualizados, reclamos_sin_cambios, totales, report_paths: {xlsx, docx_ejecutivo,
+  docx_exhaustivo, pdf_ejecutivo?, pdf_exhaustivo?}, pdf_omitido?}`. Errores: 400 (no son dos archivos
+  o falta uno de los tipos), 415 (no `.xlsx` o vacío), 422 (Excel no reconocido o duplicado), 500 con
+  ref. Ver `docs/informes/sla_consumo.md`.
 - `POST /api/flows/sla` → flujo SLA completo. FormData: `file?, mes, anio, usar_db?, incluir_pdf?, eventos?, conclusion?, propuesta?, csrf_token`.
 - `POST /api/flows/repetitividad` → flujo Repetitividad. FormData: `file?, mes, anio, include_pdf?, csrf_token, with_geo?, use_db?`. Responde: `{docx, pdf?, map_images, stats, source}`.
 - `POST /api/flows/comparador-fo` → Placeholder (501).
@@ -186,7 +276,7 @@ Centralizado vía `core.logging.setup_logging`.
 - `GET /api/infra/rutas/{rutaId}/tracking` → tracking de una ruta.
 - `GET /api/infra/servicios/{svcId}/odfs` (2026-08-28) → ODFs/empalmes asociados al servicio, vía
   `core/parsers/tracking_parser.py` sobre `raw_file_content` de cada ruta — **no** usa Cromo Red (ver
-  submódulo `/infra/odfs` en `docs/modulo_ingesta_cromo.md`, sistema completamente distinto). Nunca
+  submódulo `/infra/cromo/odfs` en `docs/modulo_ingesta_cromo.md`, sistema completamente distinto). Nunca
   confía en la columna `Empalme.es_transito` de la DB (sólo confiable en un camino de resolución de
   varios) — siempre re-deriva `es_transito` en vivo parseando el archivo. Enriquecimiento de cámara
   en batch (`Empalme.tracking_empalme_id.in_(...)`, una sola query). Devuelve `terminal_a`/
@@ -274,7 +364,7 @@ Cada tarjeta de incidente muestra:
 
 **Acción "📧 Dar Aviso"** — Abre un sub-modal con formulario de email enriquecido:
 - **Destinatarios persistidos**: los campos "Para" y "CC" se restauran automáticamente desde `localStorage` (`focas_baneo_to` / `focas_baneo_cc`). Se guardan al hacer clic en "Enviar Aviso" o "Descargar EML".
-- **Plantilla autocompletada**: el asunto se precarga como `[AVISO] BANEO de Camaras`; el cuerpo se genera con los datos del incidente (ticket, servicios, cámaras, fecha/hora, motivo) usando la plantilla estándar. Si el backend tiene una plantilla guardada en el incidente (`GET /api/infra/ban/{id}`), se usa en su lugar.
+- **Plantilla autocompletada**: el asunto se precarga como `[AVISO] BANEO de Camaras`; el cuerpo se genera con los datos del incidente (ticket, servicios, cámaras, fecha/hora, motivo) usando la plantilla estándar. La vista además intenta `GET /api/infra/ban/{id}` para usar la plantilla guardada en el incidente, pero el servicio `web` **no expone esa ruta** (existe sólo en `api/app/routes/infra.py`): la request cae en el catch-all del SPA, el `res.json()` falla y queda siempre la plantilla local.
 - El textarea del cuerpo es **editable** — el usuario puede modificar el texto antes de enviar.
 - Checkboxes: adjuntar resumen XLS y/o tracking TXT.
 - **Botón "📥 Descargar EML"**: genera y descarga un archivo `.eml` listo para abrir en el cliente de correo, llamando a `POST /api/infra/notify/download-eml` (multipart/form-data con `incident_id`, `recipients`, `subject`, `html_body`). También guarda los destinatarios en localStorage.
@@ -369,17 +459,24 @@ App.vue                ← root component (<RouterView />)
 router/index.ts        ← rutas + navigation guard
 composables/
   useSession.ts        ← estado global de sesión (singleton)
+  use*.ts              ← SLA, SLA consumido, Ciena, camino Cromo, SSE de corridas, polling FO Monitor…
 api/
+  client.ts            ← request/requestJson same-origin con CSRF
   auth.ts              ← wrappers fetch: getSession, login, logout
+  *.ts                 ← un cliente por dominio (servicios, cromo, botellas, foMonitor, huerfanos…)
 components/
   app-shell/
     AppShell.vue       ← shell compartido con controles fijos en sidebar y toolbar dinámica vacía
+  infra/, servicios/, sla/, fo-monitor/ ← componentes por módulo
 views/
   LoginView.vue        ← formulario de login
   PanelView.vue        ← Home/Chat limpio
   CamaraDetailView.vue ← detalle dedicado de cámara FO
-  SlaView.vue          ← vista independiente /sla
+  SlaView.vue          ← vista /sla (pestañas "Informe SLA" y "SLA consumido")
   ReportsHistoryView.vue ← historial de reportes
+  FoMonitorView.vue    ← módulo FO Monitor
+  *CromoView.vue, BotellasInventarioView.vue, ServiciosView.vue, ServicioDetalleView.vue
+  servicios/           ← las cinco secciones del Servicio + ServicioSeccionLayout.vue
   tabs/
     ChatTab.vue        ← chat HTTP
     RepetitividadTab.vue ← informe repetitividad
@@ -388,14 +485,15 @@ views/
     CienaTab.vue       ← alarmas Ciena
     InfraTab.vue       ← dashboard cámaras
 admin/
-  (resto de admin Vue)
+  views/, components/, api/ ← área admin (sin router ni entry propios)
 ```
 
 ### Rutas Vue Router
 
-Tabla regenerada desde `src/router/index.ts` el 2026-09-21: tenía 17 de las 37 rutas reales, y
-faltaban módulos enteros ya en producción (las cinco secciones de Servicio, todo el inventario
-Cromo y los cuatro viewers de admin).
+Tabla revisada contra `src/router/index.ts` el 2026-10-26: 45 rutas con componente más el comodín
+`/admin/:pathMatch(.*)*`, que redirige a `/admin`. (La regeneración del 2026-09-21 había recuperado
+módulos enteros que faltaban; la del 2026-10-26 sumó FO Monitor y los viewers de Huérfanos e
+Inconsistencias Cromo.)
 
 | Ruta | Componente | Auth | Admin |
 |------|------------|------|-------|
@@ -407,6 +505,7 @@ Cromo y los cuatro viewers de admin).
 | `/infra/Camaras/Botellas/ID:id` | AppShell + BotellaDetalleUnificadaView | Sí | No |
 | `/infra/cromo/verificador` | AppShell + VerificadorCromoView | Sí | No |
 | `/infra/cromo/verificador/empalmes` | AppShell + EmpalmesBotellaCromoView | Sí | No |
+| `/infra/fo-monitor` | AppShell + FoMonitorView | Sí | No |
 | `/infra/cromo/verificador/conectores` | AppShell + ConectoresOdfCromoView | Sí | No |
 | `/infra/cromo/cables` | AppShell + InventarioCablesCromoView | Sí | No |
 | `/infra/cromo/cables/ID:nId` | AppShell + CableDetalleCromoView | Sí | No |
@@ -441,6 +540,23 @@ Cromo y los cuatro viewers de admin).
 | `/admin/servicios/clientes-categoria` | AppShell + AdminClientesCategoria | Sí | Sí |
 | `/admin/servicios/viewer/Botellas` | AppShell + AdminBotellasViewer | Sí | Sí |
 | `/admin/servicios/viewer/ServiciosSinOdf` | AppShell + AdminServiciosSinOdfViewer | Sí | Sí |
+| `/admin/servicios/viewer/Huerfanos` | AppShell + AdminHuerfanosViewer | Sí | Sí |
+| `/admin/servicios/viewer/InconsistenciasCromo` | AppShell + AdminInconsistenciasCromoViewer | Sí | Sí |
+| `/admin/:pathMatch(.*)*` | redirect a `/admin` | Sí | Sí |
+
+> Los viewers de `/admin/servicios/viewer/*` son rutas **literales**, una por dashboard (no hay una
+> `viewer/:nombre` paramétrica), y se llega a ellos desde el hub `AdminServiciosViewer.vue`
+> (`/admin/servicios/viewer`). **Huérfanos**: pelos de caminos residuales con causa sugerida y
+> evidencia, normalizar/descartar en lote y auditoría global con progreso por SSE
+> (`/api/admin/infra/huerfanos*`). **Inconsistencias Cromo**: casos de isla de fusiones, cable sin
+> extremo y elemento isla, con revisión en lote (cuarentena, aceptar, reportar, liberar), detección
+> manual por SSE, exportación XLSX y aviso a Slack (`/api/admin/infra/inconsistencias-cromo*`).
+> Ambos viven en `routers/cromo.py`.
+>
+> `/infra/fo-monitor` consume `/api/fo-monitor/*`, que no está en `web/app/routers/` sino en
+> `web/fo_monitor_routes.py` (montado por `mount_fo_monitor_routes(app)`): lectura con sesión,
+> verificación manual y reconocimientos con admin + CSRF, mapa base PMTiles servido con HTTP Range.
+> Detalle en `docs/fo_monitor.md`.
 
 > Las cinco rutas `servicios/ID/:idServicio/<sección>` son **hermanas** de la ficha, no hijas: cada
 > una monta su vista directamente en el `<main>` del shell y comparte presentación por
@@ -459,8 +575,8 @@ Las URLs legacy `/?tab=...` se redirigen antes de resolver la vista protegida pa
 
 ### Composable `useSession`
 
-Singleton module-level. Expone `{state, csrf(), fetchSession(), ensureSession(), setSession(), clearSession()}`.  
-Tras cada actualización de estado setea `window.CSRF_TOKEN` para compatibilidad con `chat/main.ts` (widget de chat embebible, superficie legacy separada del SPA principal). El mini-SPA admin viejo (`admin/main.ts`, `admin/router/index.ts`, `admin/App.vue`, `admin/components/AdminLayout.vue`, que montaba en `#admin-app`) se eliminó por código muerto: las vistas admin viven hoy en el router unificado (`router/index.ts`).
+Singleton module-level. Expone `{state, csrf(), fetchSession(), ensureSession(), setSession(), clearSession(), logoutSession()}`.  
+Tras cada actualización de estado llama a `setCsrfToken()` / `clearCsrfToken()` de `api/client.ts`, que además sincronizan `window.CSRF_TOKEN`. Esa copia existía por `chat/main.ts` (widget de chat legacy), eliminado el 2026-10-26, así que hoy no la lee nadie fuera de `api/client.ts`. El mini-SPA admin viejo (`admin/main.ts`, `admin/router/index.ts`, `admin/App.vue`, `admin/components/AdminLayout.vue`, que montaba en `#admin-app`) se eliminó por código muerto: las vistas admin viven hoy en el router unificado (`router/index.ts`).
 
 ### Camino óptico de Cromo en el Detalle de Servicio
 
@@ -552,18 +668,28 @@ extrajo a `timelineFormato.ts` para que las dos lo compartan.
 
 ## Variables de entorno
 
-- `WEB_SECRET_KEY` → secreto para cookie de sesión (**obligatorio en prod**).
+- `WEB_SECRET_KEY` → secreto para cookie de sesión (**obligatorio en prod**). Se lee con
+  `get_secret("web_secret_key_v1", "WEB_SECRET_KEY", ...)`: primero el Docker Secret, después la variable.
 - `WEB_SESSION_HTTPS_ONLY` → agrega flag `Secure` a la cookie (`false` en dev HTTP; usar `true` detrás de HTTPS/proxy).
 - `WEB_SESSION_MAX_AGE` → vida máxima de la sesión en segundos (default: 28800).
 - `WEB_LOGIN_RATE_LIMIT_MAX` → intentos de login permitidos por ventana (default: 5).
 - `WEB_LOGIN_RATE_LIMIT_WINDOW` → ventana del rate limit en segundos (default: 60).
 - `LOG_LEVEL` → nivel de logging (default: INFO).
 - `NLP_INTENT_URL` → URL del servicio NLP (default: `http://nlp_intent:8100`).
-- `API_BASE` → base de la API externa (default: `http://localhost:8001`).
+- `API_BASE` → la definen los compose (`http://localhost:8090` en dev), pero hoy ningún módulo Python
+  ni TypeScript de `web/` la lee.
 - `TEMPLATES_DIR` → ruta interna a plantillas de informes DOCX (default: `Templates/`).
-- `REPORTS_API_BASE` → base del servicio API para reportes (default: `http://api:8000`).
-- `REPORTS_API_TIMEOUT` → timeout en segundos (default: 60).
-- `DB_DSN` → conexión PostgreSQL.
+- `REPORTS_API_BASE` / `REPORTS_API_TIMEOUT` → base y timeout (default `http://api:8000`, 60 s) que lee
+  `modules/informes_repetitividad/config.py`, importado por `routers/informes.py`.
+- `INTERNAL_API_BASE_URL` → API interna para los proxies de servicios y clientes (default `http://api:8000`).
+- `CROMO_WORKER_BASE_URL` → worker de ingesta Cromo al que se delegan las corridas (default `http://cromo_worker:8096`).
+- `WEB_CHAT_ALLOWED_ORIGINS` (o `WEB_INFERRED_ORIGIN`) → orígenes permitidos para los WebSockets.
+- `FOMON_BASEMAP_DIR` → carpeta del mapa base offline de FO Monitor (default `/app/data/fo_monitor`; los
+  compose montan ahí `../data/fo_monitor` en sólo lectura). La lee `web/fo_monitor_routes.py`, junto con
+  `FOMON_BASEMAP_PMTILES` (archivo, default `amba.pmtiles`) y `FOMON_BASEMAP_MODO` (`local` | `osm`,
+  default `local`; si el `.pmtiles` no está, `/api/fo-monitor/mapa/config` informa `osm`).
+- No hay `DB_DSN` como variable: `comun.py` arma el DSN con `POSTGRES_HOST`, `POSTGRES_PORT`,
+  `POSTGRES_DB`, `POSTGRES_USER` y la contraseña de `get_secret("db_password_v1", "POSTGRES_PASSWORD")`.
 
 ## Docker / Build
 
@@ -589,11 +715,12 @@ Los Vite assets (`dist/assets/`) se sirven en `/assets`. El `DIST_DIR` en `main.
 
 El endpoint `/api/chat/message` persiste mensajes en `app.conversations` / `app.messages`. El payload incluye `conversation_id` y `history` (≤6 mensajes) cuando el usuario está autenticado.
 
-Métricas: `INTENT_COUNTER` en memoria expuesto en `/api/chat/metrics`. Si `METRICS_PERSIST_PATH` está definido, se persiste a JSON atómicamente.
+Métricas: `INTENT_COUNTER` en memoria expuesto en `/api/chat/metrics` (`routers/chat.py`). Se persiste a JSON atómicamente en `METRICS_PERSIST_PATH`, que si no se define vale `data/intent_metrics.json` bajo la raíz del servicio (`DATA_DIR` de `comun.py`).
 
 ## Compose
 
-- Servicio `web` expuesto en `8080:8080`.
-- `api` remapeado a `8001:8000`.
-- El servicio `web` expone `/reports` como estático para descargar resultados.
-- `web` monta `../Templates:/app/Templates:ro` para las plantillas de informes.
+- Prod (`deploy/compose.yml`): `web` publicado en `172.18.208.162:8080:8080`; `api` remapeado a `8001:8000`.
+- Dev (`deploy/docker-compose.dev.yml`): `web` publicado sólo en loopback, `127.0.0.1:8090:8080`.
+- `/reports` ya no es un montaje estático: lo sirve `GET/HEAD /reports/{ruta}` con sesión (ver arriba).
+- `web` monta `../Templates:/app/Templates:ro` para las plantillas de informes y
+  `../data/fo_monitor:/app/data/fo_monitor:ro` para el mapa base de FO Monitor.

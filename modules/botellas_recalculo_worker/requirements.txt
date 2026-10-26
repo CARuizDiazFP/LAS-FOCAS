@@ -4,6 +4,6 @@
 
 # Lo común (redis, sqlalchemy, ...) ya está en focas-base:latest (ver Task 1 de
 # docs/superpowers/plans/2026-08-21-botellas-duplicados-redis-ws.md).
-# Aviso a Slack del árbitro de Cromo (core/services/cromo/arbitro/aviso.py). Mismo rango que
-# modules/slack_baneo_notifier/requirements.txt (una sola versión de slack_sdk en el repo).
-slack_sdk>=3.27.0,<4
+# Aviso a Slack del árbitro de Cromo (core/services/cromo/arbitro/aviso.py). Misma versión que
+# los demás workers (api y web fijan otra, ver web/requirements.txt).
+slack_sdk==3.45.0

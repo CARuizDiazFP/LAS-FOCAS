@@ -15,11 +15,11 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Búsqueda y exportación de Cámaras del panel: `core/services/camaras_consulta.py` (smart search) y `core/services/camaras_exportacion.py`. Las variantes `search_camaras*` y `advanced_search_camaras*` (SPA y API interna) y `smart_search_camaras` y `export_cameras` (API interna) se conservan a propósito: tienen poco uso pero siguen operativas; no se borran sin decisión explícita del usuario.
 - `bot_telegram/`: bot aiogram que consume flujos y servicios; evitar lógica de negocio duplicada.
 - `core/`: configuración, logging, parsers, repositorios y servicios compartidos.
-- `modules/`: implementación específica de informes SLA, repetitividad y utilidades comunes.
+- `modules/`: informes (`informes_sla`, `informes_repetitividad`), utilidades comunes (`common`, incluida la conversión `soffice` de `libreoffice_export.py`) y los workers de fondo: `cromo_worker` (ingesta Cromo Red), `botellas_recalculo_worker` (Botellas duplicadas, cola Redis), `fo_monitor_worker` (FO Monitor) y `slack_baneo_notifier` (bot de Slack, servicio `slack_baneo_worker`). `informes_repetitividad/worker.py` es un placeholder (servicio `repetitividad_worker`, profile `reports-worker`).
 - `db/`: modelos SQLAlchemy async, sesión y migraciones Alembic.
 - `nlp_intent/`: microservicio aislado para clasificación de intención por HTTP.
-- `office_service/`: microservicio de LibreOffice headless para conversiones.
-- `deploy/`: `compose.yml` (producción) y `docker-compose.dev.yml` (desarrollo). Puertos: postgres 5432, api 8001→8000, web 8080, nlp_intent 8100, office 8090, pgadmin 5050.
+- `office_service/`: microservicio de LibreOffice headless (UNO). Su `POST /convert` convierte a PDF desde el 2026-10-26 (multipart; lo usa la herramienta MCP `ConvertirDocAPdf`); los informes siguen convirtiendo con `soffice` por subprocess en su propio contenedor, que en `web`/`api` no tiene LibreOffice (ver agente `office`).
+- `deploy/`: `compose.yml` (producción) y `docker-compose.dev.yml` (desarrollo). Puertos en prod (`deploy/compose.yml`): postgres `127.0.0.1:5432`, api 8001→8000, web `172.18.208.162:8080`, pgadmin `127.0.0.1:5050` (profile `pgadmin`); sólo internos (`expose`): redis 6379, nlp_intent 8100, office 8090/2002, docker-socket-proxy 2375 y el `/health` de los workers (slack_baneo_worker 8095, cromo_worker 8096, botellas_recalculo_worker 8097, fo_monitor_worker 8098). Redis es obligatorio (colas y estado de los workers). Puertos de dev: `docs/entorno_dev.md`.
 - Arquitectura objetivo de nuevas implementaciones: SPA pura con comunicación por API REST (JSON) y WebSocket.
 
 ## Convenciones
@@ -57,7 +57,13 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
   `POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5433 POSTGRES_DB=focas_dev POSTGRES_USER=FOCALBOT \
   POSTGRES_PASSWORD="$(cat .secrets/Dev_db_password_v1.txt)" pytest`. El host `postgres` del
   compose no resuelve desde fuera de la red de Docker. Guard: `tests/soporte_postgres_real.py`.
-- Cobertura esperada para módulos nuevos: al menos 60%
+  Además el guard exige que `current_database()` esté en la allowlist de dev/test (`focas_dev`, `focas_test`;
+  se suman nombres con `TESTS_DB_PERMITIDAS=a,b`). Con cualquier otra DB, la de prod `FOCALDB` incluida, se
+  saltean, porque varios de esos tests hacen `commit()` real.
+- Cobertura esperada para módulos nuevos: al menos 60% (objetivo; hoy no lo fuerza ni la CI ni el gate de `ready`).
+  Medida el 2026-10-26: 76% sobre `core`, `web/app`, `api/app` y `modules`, sin los `real_db`. Por decisión del usuario
+  todavía no hay `--cov-fail-under`.
+- `tests/test_reports_db_mode_optional.py` se saltea salvo `ENABLE_DB_TESTS=1` (además de las variables de Postgres de dev de arriba).
 - **Pruebas focales vs. regresión**: durante la tarea y al cerrar hacia `dev` (`ready`/`integrate`
   de `cierre-sesion`) se corren **sólo las pruebas focales** de los módulos modificados (más
   `bash scripts/check_skill_mirror_drift.sh` si se tocaron skills), para que la ventana del lease
@@ -170,12 +176,18 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - API: `docs/api.md`
 - DB: `docs/db.md`
 - Bot: `docs/bot.md`
+- Mapa del repositorio por dominio (leer primero): `docs/REPOSITORY_MAP.md`
 - Chatbot y MCP: `docs/chatbot.md`, `docs/mcp.md`
 - Web: `docs/web.md`
-- Informes: `docs/informes/sla.md`, `docs/informes/repetitividad.md`, `docs/informes/alarmas_ciena.md`
+- Informes: `docs/informes/sla.md`, `docs/informes/sla_consumo.md`, `docs/informes/repetitividad.md`, `docs/informes/alarmas_ciena.md`
+- Clientes por categoría (fuente de verdad): `docs/clientes_categoria.md`
 - NLP: `docs/nlp/intent.md`
 - Office service: `docs/office_service.md`
 - Infraestructura: `docs/infra.md`
+- FO Monitor: `docs/fo_monitor.md`
+- Bot de Slack (Info/Verificar cable, Servicios, track): `docs/slack_app_cables.md`
+- Entorno de desarrollo: `docs/entorno_dev.md`
+- Despliegue a producción: `docs/despliegue_produccion.md`
 - Concurrencia multi-agente (worktrees, leases, integración serializada): `docs/arquitectura_agentes_worktrees.md`
 - PRs diarios: `docs/PR/YYYY-MM-DD.md`
 - Documentación privada de la empresa: `docs/Doc Privada/` — **ignorada por git** (ver `.gitignore`), nunca debe commitearse ni subirse al repo
@@ -198,7 +210,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Antes de probar `create_ban`/`lift_ban` o cualquier cascada de estado de `Camara` (jerarquía Cámara→Botella) contra `lasfocasdev-*`, usar la skill `baneo-qa-real` — un servicio de prueba "cualquiera" puede tocar cámaras fuera del grupo objetivo; resolver el blast radius real antes de mutar y revertir sólo vía las funciones reales, nunca `UPDATE` directo.
 - El agente `security` se enfoca en APIs y SPAs modernas: XSS en Vue 3, CORS en FastAPI y manejo seguro de tokens/sesiones.
 - Para crear nuevos customizations del ecosistema agéntico, usar la tríada `skill-generator` en `.github/agents/skill-generator.agent.md`, `.github/prompts/crear-skill.prompt.md` y `.agentes-comunes/skills/skill-generator/`.
-- **Claude Code**: comandos slash disponibles en `.claude/commands/` (`/repo-updater`, `/generar-pr-diario`, `/cierre-sesion`, `/mantenimiento-disco`, `/migracion-alembic`, `/nuevo-modulo`, `/revisar-seguridad`, `/crear-skill`). Catálogo detallado de agentes, skills y comandos en `CLAUDE.md`.
+- **Claude Code**: comandos slash disponibles en `.claude/commands/` (`/iniciar-tarea-agente`, `/estado-agentes`, `/handoff-agente`, `/repo-updater`, `/generar-pr-diario`, `/cierre-sesion`, `/mantenimiento-disco`, `/migracion-alembic`, `/nuevo-modulo`, `/revisar-seguridad`, `/crear-skill`). Catálogo detallado de agentes, skills y comandos en `CLAUDE.md`.
 
 ## Conciencia agéntica y control de concurrencia
 

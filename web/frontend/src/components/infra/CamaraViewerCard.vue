@@ -70,7 +70,7 @@ function goToDetail(): void {
 
 .camara-viewer-card:hover,
 .camara-viewer-card:focus-visible {
-  box-shadow: 0 0 0 1px var(--color-accent), 0 6px 18px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0 0 1px var(--color-accent), var(--shadow-md);
 }
 
 .camara-viewer-card__row {

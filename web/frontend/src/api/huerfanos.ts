@@ -33,9 +33,6 @@ export function causaHuerfanoLabel(causa: string): string {
   return CAUSA_LABELS[causa as CausaHuerfano] ?? causa;
 }
 
-/** Sólo "cable en desuso" se puede normalizar por ahora (lo controla también el servidor). */
-export const CAUSAS_NORMALIZABLES: readonly string[] = ['CABLE_DESUSO'];
-
 export interface EvidenciaHuerfano {
   protegido?: boolean;
   motivo_proteccion?: string | null;

@@ -1,3 +1,7 @@
+# Nombre de archivo: dependencies-audit-2025-09-17.md
+# Ubicación de archivo: docs/historico/dependencies-audit-2025-09-17.md
+# Descripción: Auditoría histórica de dependencias Python por servicio (2025-09-17)
+
 # Auditoría de dependencias (Python) — 2025-09-17
 
 Este reporte resume el estado de dependencias Python por servicio, cambios aplicados hoy y recomendaciones de seguridad/mantenimiento.

@@ -59,7 +59,7 @@ defineEmits<{
   color: var(--color-text);
   background: var(--color-surface);
   border-radius: var(--radius-md);
-  box-shadow: 0 0 0 1px var(--color-divider), 0 10px 28px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-md);
 }
 
 .bulk-panel__count {

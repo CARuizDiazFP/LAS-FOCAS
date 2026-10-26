@@ -1,4 +1,4 @@
-<!-- repository-map: {"source_commit": "928e1860568a", "generated_at_utc": "2026-10-20T17:20:03Z", "manifest_sha256": "dd065efcf626da779b6a352b35370a743a279150a0da3a4c3d82fca098541c3e"} -->
+<!-- repository-map: {"source_commit": "fbb7e1ec01d1", "generated_at_utc": "2026-10-26T10:16:18Z", "manifest_sha256": "569a344474f83c654944c82aef9c8f513a245ad33fc4e62b634f7b634ff6d372"} -->
 # Nombre de archivo: REPOSITORY_MAP.md
 # Ubicación de archivo: docs/REPOSITORY_MAP.md
 # Descripción: Mapa canónico del repositorio por dominio (generado; no editar a mano)
@@ -34,20 +34,20 @@ API REST (puerto dev 8011), OAuth2 M2M /api/v1, healthchecks.
 
 ## `cromo-infra` — Infraestructura FO y Cromo Red
 
-Ingesta Cromo, cámaras, botellas, cables, ODFs, tracking de caminos ópticos.
+Ingesta Cromo, cámaras, botellas, cables, ODFs, tracking de caminos ópticos y servicios PROV.
 
-- Raíces: `core/services/cromo/`, `core/services/`, `modules/cromo_worker/`, `modules/botellas_recalculo_worker/`
+- Raíces: `core/services/cromo/`, `core/services/`, `core/services/prov/`, `modules/cromo_worker/`, `modules/botellas_recalculo_worker/`
 - Entradas: `core/services/cromo/ingesta.py`, `core/services/cromo/tracking_service.py`, `core/services/infra_service.py`
 - Docs: `docs/modulo_ingesta_cromo.md`, `docs/infra.md`
-- Tests: `tests/test_cromo_*.py`, `tests/test_botella*.py`
+- Tests: `tests/test_cromo_*.py`, `tests/test_botella*.py`, `tests/test_prov_*.py`
 - Comandos: `pytest tests/test_cromo_ingesta.py -q`
 - No indexar: `tests/*_real_db.py`
 
 ## `sla-reports` — Informes SLA y Repetitividad
 
-Motor SLA, consumo histórico, repetitividad, plantillas DOCX y conversión PDF.
+Motor SLA, consumo histórico, repetitividad, parsers de Excel, plantillas DOCX y conversión PDF.
 
-- Raíces: `core/sla/`, `core/sla_consumo/`, `modules/informes_sla/`, `modules/informes_repetitividad/`, `office_service/`, `Templates/`
+- Raíces: `core/sla/`, `core/sla_consumo/`, `modules/informes_sla/`, `modules/informes_repetitividad/`, `office_service/`, `Templates/`, `modules/common/`, `core/parsers/`
 - Entradas: `core/sla/engine.py`, `core/sla/report.py`, `office_service/app/`
 - Docs: `docs/informes/`, `docs/office_service.md`
 - Tests: `tests/test_sla*.py`, `tests/test_*repetitividad*.py`, `tests/test_office*.py`
@@ -60,7 +60,7 @@ Backend web (puerto dev 8090, sesión/CSRF/WebSocket) y SPA Vue 3 + Vite.
 
 - Raíces: `web/app/`, `web/frontend/src/`, `web/tools/`
 - Entradas: `web/app/main.py`, `web/app/routers/`, `web/app/comun.py`, `web/frontend/src/main.ts`, `web/frontend/src/router/index.ts`
-- Docs: `docs/web.md`
+- Docs: `docs/web.md`, `docs/clientes_categoria.md`
 - Tests: `tests/test_web*.py`
 - Comandos: `pytest tests/test_web_*.py -q`, `cd web/frontend && npm run build  # sólo deploy`
 - No indexar: `web/frontend/node_modules/`, `web/frontend/dist/`
@@ -69,11 +69,21 @@ Backend web (puerto dev 8090, sesión/CSRF/WebSocket) y SPA Vue 3 + Vite.
 
 Bot Telegram, notificador/app de Slack, clasificador de intención y FO Monitor.
 
-- Raíces: `bot_telegram/`, `modules/slack_baneo_notifier/`, `nlp_intent/`, `modules/fo_monitor_worker/`
+- Raíces: `bot_telegram/`, `modules/slack_baneo_notifier/`, `nlp_intent/`, `modules/fo_monitor_worker/`, `core/services/fo_monitor/`
 - Entradas: `bot_telegram/app.py`, `nlp_intent/app/`
 - Docs: `docs/bot.md`, `docs/slack_app_cables.md`, `docs/nlp/`, `docs/fo_monitor.md`
 - Tests: `tests/test_bot*.py`, `tests/test_slack*.py`, `tests/test_fo_monitor*.py`, `nlp_intent/tests/`
 - Comandos: `LLM_PROVIDER=heuristic pytest tests/test_slack*.py -q`
+
+## `chatbot-mcp` — Chatbot y MCP
+
+Orquestador de chat del panel, herramientas MCP (varias stub/rotas) y persistencia de conversaciones.
+
+- Raíces: `core/mcp/`, `core/chatbot/`, `core/repositories/`
+- Entradas: `core/mcp/registry.py`, `core/chatbot/orchestrator.py`, `web/app/routers/chat.py`
+- Docs: `docs/chatbot.md`, `docs/mcp.md`
+- Tests: `tests/test_mcp_registry.py`, `tests/test_chat_orchestrator.py`, `tests/test_web_chat*.py`
+- Comandos: `LLM_PROVIDER=heuristic pytest tests/test_mcp_registry.py tests/test_chat_orchestrator.py -q`
 
 ## `database` — Base de datos
 
@@ -84,3 +94,12 @@ PostgreSQL async, modelos SQLAlchemy del esquema app.* y migraciones Alembic.
 - Docs: `docs/db.md`
 - Tests: `tests/test_*migra*.py`
 - Comandos: `alembic -c db/alembic.ini heads`
+
+## `deploy-ops` — Despliegue y operación
+
+Compose prod (lasfocas) y dev (lasfocasdev), Dockerfiles, env de ejemplo, arranque y runbooks.
+
+- Raíces: `deploy/`, `Start`, `scripts/start_dev.sh`, `scripts/build_base.sh`
+- Entradas: `deploy/compose.yml`, `deploy/docker-compose.dev.yml`, `deploy/docker/base.Dockerfile`
+- Docs: `docs/entorno_dev.md`, `docs/despliegue_produccion.md`, `docs/Seguridad.md`
+- Comandos: `docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev ps`

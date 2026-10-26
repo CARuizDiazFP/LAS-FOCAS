@@ -15,110 +15,54 @@ Soy el agente especializado en el microservicio de LibreOffice de LAS-FOCAS.
 
 ## Mi Alcance
 
-- Microservicio LibreOffice headless
-- Conversión de documentos (DOCX→PDF, etc.)
-- API UNO para manipulación de documentos
-- Optimización de rendimiento
+- Microservicio `office_service` (LibreOffice headless + UNO)
+- Conversión DOCX→PDF de los informes (`modules/common/libreoffice_export.py`)
+- Diagnóstico de PDFs que no se generan
+
+## Estado real (verificado 2026-10-26 en dev)
+
+Hay **dos caminos**; el subprocess local no funciona en los contenedores `web`/`api`:
+
+1. **`office_service` (`office:8090`)**: `runner.py` levanta `soffice` en modo UNO (puerto 2002) y
+   uvicorn. `GET /health` informa el estado de UNO. `POST /convert` (multipart `file`, `output_format=pdf`
+   por query) **convierte** desde el 2026-10-26 (`office_service/app/conversion.py`): un
+   `soffice --convert-to` por pedido con perfil temporal propio, serializado; devuelve los bytes del PDF.
+   Entradas `.docx/.doc/.odt/.rtf` (sólo Writer); 400/413 (`OFFICE_MAX_FILE_SIZE`, 50 MB)/503/504
+   (`OFFICE_CONVERT_TIMEOUT`, 120 s)/500. Medido: DOCX de una página ≈ 6 s.
+2. **Subprocess local** (`modules/common/libreoffice_export.py::convert_to_pdf`): ejecuta
+   `soffice --headless --convert-to pdf` en el **mismo contenedor** que lo llama, con `SOFFICE_BIN`.
+   Lo usan `core/sla/report.py`, `core/sla/legacy_report.py`, `core/services/sla_consumo.py`,
+   `modules/informes_sla` y `modules/informes_repetitividad`. Las imágenes `web` y `api`
+   (`focas-base`) **no instalan LibreOffice**: con `SOFFICE_BIN=/usr/bin/soffice` el subprocess
+   falla con `FileNotFoundError` (reproducido en `lasfocasdev-web`), se loguea y el informe sale sin
+   PDF (sin 500). Prod se construye desde los mismos Dockerfiles (`web/Dockerfile`, `api/Dockerfile`,
+   `deploy/docker/base.Dockerfile`), que no instalan LibreOffice.
+
+La herramienta MCP `ConvertirDocAPdf` (`core/mcp/registry.py`) es hoy el único consumidor de
+`/convert` (`OFFICE_SERVICE_BASE`, default `http://office:8090`). Los informes podrían migrar a ese
+camino en vez del subprocess sin `soffice`.
+
+Antes de prometer un PDF, verificar `docker exec <contenedor> sh -c 'command -v soffice'`.
 
 ## Estructura
 
 ```
 office_service/
-├── __init__.py
-├── Dockerfile
+├── Dockerfile          # python:3.11-slim-bookworm + libreoffice-core/-writer/-java-common; USER office
 ├── requirements.txt
-├── app/
-│   ├── __init__.py
-│   ├── config.py       # Configuración
-│   ├── main.py         # FastAPI app
-│   ├── runner.py       # Ejecución de soffice
-│   └── uno_client.py   # Cliente UNO
+└── app/
+    ├── config.py       # Settings con prefijo OFFICE_
+    ├── main.py         # FastAPI: /health, /convert (multipart → PDF)
+    ├── conversion.py   # soffice --convert-to con perfil temporal, serializado
+    ├── runner.py       # arranca soffice (UNO) + uvicorn; reenvía la salida de soffice al log
+    ├── uno_client.py   # conexión y health de UNO
+    └── logging_setup.py
 ```
 
-## Formatos Soportados
-
-| De | A | Método |
-|----|---|--------|
-| DOCX | PDF | LibreOffice convert |
-| DOCX | ODT | LibreOffice convert |
-| ODT | PDF | LibreOffice convert |
-| XLSX | PDF | LibreOffice convert |
-| PPTX | PDF | LibreOffice convert |
-
-## API del Servicio
-
-```python
-# Endpoint de conversión
-@app.post("/convert")
-async def convert_document(
-    file: UploadFile,
-    output_format: str = "pdf"
-) -> FileResponse:
-    """Convertir documento a otro formato."""
-    # 1. Guardar archivo temporal
-    # 2. Ejecutar soffice --headless --convert-to
-    # 3. Retornar archivo convertido
-    pass
-
-# Healthcheck
-@app.get("/health")
-async def health():
-    return {"status": "ok", "libreoffice": check_soffice()}
-```
-
-## Uso desde otros servicios
-
-```python
-import httpx
-
-async def convertir_documento(filepath: str, formato: str = "pdf") -> bytes:
-    """Convertir documento usando office_service."""
-    async with httpx.AsyncClient() as client:
-        with open(filepath, "rb") as f:
-            response = await client.post(
-                "http://office:8090/convert",
-                files={"file": f},
-                params={"output_format": formato},
-                timeout=60.0  # Conversión puede ser lenta
-            )
-        response.raise_for_status()
-        return response.content
-```
-
-## Dockerfile
-
-```dockerfile
-FROM python:3.11-slim
-
-# Instalar LibreOffice
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice-writer \
-    libreoffice-calc \
-    libreoffice-impress \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-# Usuario no-root
-RUN useradd -m appuser && chown -R appuser:appuser /app
-USER appuser
-
-EXPOSE 8090
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8090"]
-```
-
-## Comando de Conversión
+## Comando de conversión (camino que sí funciona donde hay `soffice`)
 
 ```bash
-# Conversión directa con soffice
 soffice --headless --convert-to pdf --outdir /output /input/documento.docx
-
-# Con formato específico
-soffice --headless --convert-to pdf:writer_pdf_Export --outdir /output /input/documento.docx
 ```
 
 ## Reglas que Sigo
@@ -128,30 +72,31 @@ soffice --headless --convert-to pdf:writer_pdf_Export --outdir /output /input/do
 3. **No concurrencia excesiva**: LibreOffice es single-threaded, usar cola
 4. **Validar formato de entrada**: rechazar archivos no soportados
 5. **Logging de conversiones**: registrar tiempo, tamaño, éxito/fallo
-6. **Healthcheck de soffice**: verificar que LibreOffice responde
+6. **No documentar como operativo** un camino de conversión sin verificarlo en el contenedor real
 
-## Configuración
+## Configuración (`office_service/app/config.py`, prefijo `OFFICE_`)
 
 ```
-OFFICE_HOST=0.0.0.0
-OFFICE_PORT=8090
-OFFICE_TIMEOUT=60
-OFFICE_MAX_FILE_SIZE=50MB
+OFFICE_ENABLE_UNO=true
+OFFICE_LOG_LEVEL=INFO
+OFFICE_SOFFICE_PORT=2002
+OFFICE_SOFFICE_CONNECT_HOST=127.0.0.1
+OFFICE_SOFFICE_BINARY=/usr/bin/soffice
+OFFICE_UVICORN_PORT=8090
+SOFFICE_BIN=/usr/bin/soffice   # lo leen los módulos de informes (subprocess local), no office_service
 ```
 
-## Servicio Docker
+## Servicio Docker (`deploy/compose.yml`)
 
 ```yaml
-# En deploy/compose.yml
 office:
   build:
-    context: ..
-    dockerfile: office_service/Dockerfile
-  expose:
-    - "8090"
-    - "2002"
+    context: ../office_service
+    dockerfile: Dockerfile
+  container_name: lasfocas-office
+  expose: ["8090", "2002"]
   volumes:
-    - uploads_data:/app/uploads
+    - ../Logs:/app/Logs
 ```
 
 ## Documentación

@@ -33,18 +33,19 @@ core/mcp/
 ```
 core/chatbot/
 ├── orchestrator.py   # ChatOrchestrator (streaming, tool dispatch)
-└── storage.py        # ChatStorage + InMemoryChatStorage
+└── storage.py        # ChatStorage (Protocol) + DatabaseChatStorage + InMemoryChatStorage
 ```
 
 ## Herramientas MCP Definidas
 
-| Herramienta | Descripción | Estado |
-|-------------|-------------|--------|
-| `InformeRepetitividad` | Genera informes de repetitividad | ✅ Activo |
-| `GenerarMapaGeo` | Genera mapas estáticos | ✅ Activo |
-| `CompararTrazas` | Compara trazas de fibra óptica | 🔧 Placeholder |
-| `ConvertirDoc` | Convierte documentos | 🔧 Placeholder |
-| `RegistrarNotion` | Registra en Notion | 🔧 Placeholder |
+Registradas en `core/mcp/registry.py::get_default_registry` (estado verificado 2026-10-26 en dev, tras P13). Sólo se registran herramientas que funcionan en el contenedor `web`; una sin implementación no se expone.
+
+| Herramienta | Roles | Descripción | Estado real |
+|-------------|-------|-------------|-------------|
+| `GenerarInformeRepetitividad` | user, admin | DOCX/PDF desde un Excel (`modules/informes_repetitividad`) | ✅ Implementada (no probada de punta a punta; el PDF depende de `soffice`) |
+| `ConvertirDocAPdf` | admin, ownergroup | Sube el documento (sólo de `UPLOADS_DIR`/`REPORTS_DIR`) multipart a `{OFFICE_SERVICE_BASE}/convert` (default `http://office:8090`) y guarda el PDF en `REPORTS_DIR` | ✅ Probada de punta a punta en dev contra `office` (2026-10-26) |
+
+Retiradas el 2026-10-26 (dan `TOOL_NOT_FOUND`): `GenerarMapaGeo` (sin `folium` en `web`), `CompararTrazasFO` (no existe comparador FO: `/api/flows/comparador-fo` responde 501) y `RegistrarEnNotion` (stub sin configuración). El orquestador sólo reconoce el comando `/repetitividad`; el chat del SPA usa `/api/chat/message` y no invoca herramientas MCP. Detalle en `docs/mcp.md`.
 
 ## Arquitectura del Orquestador
 
@@ -69,42 +70,46 @@ Clasificar   Ejecutar MCP Tool
 ## Registro de Herramientas
 
 ```python
-from core.mcp.registry import MCPRegistry, ToolDefinition
+from pydantic import BaseModel
+from core.mcp.registry import MCPRegistry, ToolContext, ToolDefinition, ToolResult
+
+
+class MiHerramientaArgs(BaseModel):
+    param1: str
+
+
+async def _run_mi_herramienta(args: MiHerramientaArgs, context: ToolContext) -> ToolResult:
+    return ToolResult(message="Listo", data={"param1": args.param1}, metadata={"tool": "MiHerramienta"})
+
 
 registry = MCPRegistry()
-
-# Registrar herramienta
-tool = ToolDefinition(
-    name="MiHerramienta",
-    description="Descripción para el LLM",
-    parameters={
-        "param1": {"type": "string", "description": "..."},
-    },
-    handler=mi_funcion_handler
+registry.register(
+    ToolDefinition(
+        name="MiHerramienta",
+        description="Descripción para el LLM",
+        input_model=MiHerramientaArgs,   # valida los args con Pydantic
+        handler=_run_mi_herramienta,
+        roles=["admin"],                 # default: ["user", "admin"]
+    )
 )
-registry.register(tool)
 
-# Ejecutar herramienta
-result = await registry.execute("MiHerramienta", {"param1": "valor"})
+result = await registry.invoke("MiHerramienta", {"param1": "valor"}, context)
+registry.list_tools()
 ```
+
+Errores esperables se lanzan como `ToolInvocationError(code, message, detail=...)`.
 
 ## Storage de Conversaciones
 
 ```python
-from core.chatbot.storage import ChatStorage, InMemoryChatStorage
+from core.chatbot.storage import DatabaseChatStorage, InMemoryChatStorage
 
-# Para desarrollo/tests
-storage = InMemoryChatStorage()
+storage = InMemoryChatStorage()          # tests/desarrollo
+# storage = DatabaseChatStorage(dsn)     # producción (PostgreSQL, sync en hilos)
 
-# Para producción (implementar DBChatStorage)
-storage = DBChatStorage(session)
-
-# Guardar mensaje
-await storage.save_message(user_id, role="user", content="Hola")
-await storage.save_message(user_id, role="assistant", content="¡Hola!")
-
-# Obtener historial
-history = await storage.get_history(user_id, limit=10)
+session_id = await storage.ensure_session(user_id)
+await storage.append_message(session_id, role="user", content="Hola", tool_name=None)
+history = await storage.list_messages(session_id, limit=40)
 ```
 
 ## Reglas que Sigo

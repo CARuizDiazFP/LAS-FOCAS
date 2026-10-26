@@ -68,13 +68,14 @@ core/chatbot/
 
 ## Herramientas MCP Definidas
 
-| Herramienta | Descripción | Estado |
-|-------------|-------------|--------|
-| `InformeRepetitividad` | Genera informes de repetitividad | ✅ Activo |
-| `GenerarMapaGeo` | Genera mapas estáticos | ✅ Activo |
-| `CompararTrazas` | Compara trazas de fibra óptica | 🔧 Placeholder |
-| `ConvertirDoc` | Convierte documentos | 🔧 Placeholder |
-| `RegistrarNotion` | Registra en Notion | 🔧 Placeholder |
+Registradas en `core/mcp/registry.py::get_default_registry` (verificado 2026-10-26; fuente vigente: `.github/agents/mcp-chatbot.agent.md` y `docs/mcp.md`):
+
+| Herramienta | Roles | Estado |
+|-------------|-------|--------|
+| `GenerarInformeRepetitividad` | user, admin | ✅ DOCX desde Excel (PDF depende de `soffice`, ausente en `web`) |
+| `ConvertirDocAPdf` | admin, ownergroup | ✅ Sube a `office:8090/convert` y guarda el PDF en `REPORTS_DIR` |
+
+Retiradas el 2026-10-26 (`TOOL_NOT_FOUND`): `GenerarMapaGeo`, `CompararTrazasFO`, `RegistrarEnNotion`.
 
 ## Arquitectura del Orquestador
 

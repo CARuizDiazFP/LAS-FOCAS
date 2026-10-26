@@ -2812,7 +2812,7 @@ su propia ventana de mantenimiento.
   - 249 cables con `/inner`: 16.332 pelos y 1.599 vínculos.
   - 97 bajas: 6.144 pelos y 876 vínculos automáticos retirados, 0 MANUAL.
   - Queda un solo nombre duplicado, F-ALV-2335, que es real.
-  - Detalle en `docs/relevamiento_cromo_cables_fantasma_2026-10-02.md`.
+  - Detalle en `docs/historico/relevamiento_cromo_cables_fantasma_2026-10-02.md`.
 - **Validación de la ingesta en dev:** `SOLO_CABLES` (corrida 2169) dio de baja sola un cable que
   Cromo había borrado ese mismo día (F-MTA-2454).
 - **Prod** (deploy `main` 7ab1cb8 sin migraciones; backup previo

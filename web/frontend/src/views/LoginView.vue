@@ -88,7 +88,7 @@ async function handleLogin() {
 }
 .field label { font-size: 0.85rem; color: var(--muted); }
 .field input {
-  background: #0c1117;
+  background: var(--color-bg);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -99,7 +99,7 @@ async function handleLogin() {
 }
 .field input:focus { outline: none; border-color: var(--primary); }
 .error {
-  color: #fca5a5;
+  color: var(--error);
   margin-bottom: 12px;
   font-size: 0.9rem;
 }

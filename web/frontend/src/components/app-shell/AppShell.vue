@@ -87,7 +87,11 @@
 
         <footer class="app-shell__sidebar-footer">
           <button class="app-shell__profile" type="button" :title="profileTooltip" aria-label="Perfil">
-            <i class="ph-fill ph-user-circle app-shell__profile-icon" aria-hidden="true"></i>
+            <!-- user-circle (fill) de Phosphor inline: es el único icono relleno del SPA y así no se
+                 carga la fuente fill completa (~130 KB woff2). Mide 1em, como un glifo. -->
+            <svg class="app-shell__profile-icon" viewBox="0 0 1024 1024" width="1em" height="1em" fill="currentColor" aria-hidden="true">
+              <path d="M688 480c0 97.202-78.798 176-176 176s-176-78.798-176-176c0-97.202 78.798-176 176-176v0c97.156 0.114 175.886 78.844 176 175.989l0 0.011zM928 512c0 229.75-186.25 416-416 416s-416-186.25-416-416c0-229.75 186.25-416 416-416v0c229.65 0.25 415.75 186.35 416 415.976l0 0.024zM864 512c-0.217-194.439-157.891-351.979-352.36-351.979-4.755 0-9.488 0.094-14.197 0.281l0.676-0.021c-188.4 7.28-338.64 164.2-338.12 352.72 0.194 89.521 33.91 171.129 89.255 232.975l-0.295-0.335c23.585-33.914 52.515-62.272 85.874-84.509l1.166-0.731c2.482-1.66 5.534-2.649 8.818-2.649 4.028 0 7.708 1.488 10.521 3.945l-0.019-0.016c41.711 36.232 96.556 58.314 156.56 58.314s114.849-22.083 156.854-58.564l-0.294 0.25c2.794-2.441 6.474-3.929 10.502-3.929 3.284 0 6.336 0.989 8.876 2.686l-0.058-0.037c34.573 22.96 63.543 51.318 86.474 84.202l0.686 1.038c55.282-61.692 89.080-143.632 89.080-233.466 0-0.061-0-0.123-0-0.184l0 0.010z" />
+            </svg>
             <span class="app-shell__profile-text">
               <strong>{{ profileName }}</strong>
               <small v-if="roleLabel">{{ roleLabel }}</small>
@@ -464,8 +468,7 @@ watch(
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.app-shell__link i.ph,
-.app-shell__link i.ph-fill {
+.app-shell__link i.ph {
   width: 16px;
   flex: none;
   font-size: 16px;

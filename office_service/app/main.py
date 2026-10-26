@@ -7,16 +7,18 @@
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from . import conversion
 from .config import Settings, get_settings
-from .uno_client import UnoHealth, UnoUnavailableError, uno_client
+from .uno_client import UnoHealth, uno_client
 
 LOGGER = logging.getLogger(__name__)
 
@@ -29,17 +31,20 @@ class HealthResponse(BaseModel):
     version: str = Field(..., description="Versión del microservicio")
 
 
-class ConvertRequest(BaseModel):
-    """Payload para conversiones de documentos."""
-
-    output_format: str = Field(..., description="Formato destino (ej. pdf, odt, docx)")
+_MEDIA_TYPES = {"pdf": "application/pdf"}
 
 
-class ConvertResponse(BaseModel):
-    """Respuesta placeholder para la conversión."""
+async def _leer_con_limite(file: UploadFile, limite: int) -> bytes:
+    """Lee el upload por bloques y corta apenas supera `limite` bytes (no lo carga entero)."""
 
-    message: str
-    output_path: Path | None = Field(default=None, description="Ruta del archivo generado")
+    partes: list[bytes] = []
+    total = 0
+    while bloque := await file.read(1024 * 1024):
+        total += len(bloque)
+        if total > limite:
+            raise HTTPException(status_code=413, detail=f"El archivo supera el máximo de {limite} bytes")
+        partes.append(bloque)
+    return b"".join(partes)
 
 
 def get_logger() -> logging.Logger:
@@ -82,29 +87,52 @@ def create_app() -> FastAPI:
             uno_health = UnoHealth(available=False, message="UNO deshabilitado o no disponible (modo degradado)")
         return HealthResponse(service=settings.service_name, uno=uno_health, version=app.version)
 
-    @app.post("/convert", response_model=ConvertResponse, tags=["conversions"])
+    @app.post("/convert", tags=["conversions"], response_class=Response)
     async def convert_document(
-        info: ConvertRequest,
         file: UploadFile,
         settings: Annotated[Settings, Depends(get_settings)],
-    ) -> ConvertResponse:
-        if not settings.enable_uno:
-            raise HTTPException(status_code=503, detail="UNO deshabilitado; no se puede procesar la solicitud")
+        output_format: str = "pdf",
+    ) -> Response:
+        formato = output_format.lower()
+        if formato not in conversion.FORMATOS_SALIDA:
+            raise HTTPException(status_code=400, detail=f"Formato de salida no soportado: {output_format}")
+        extension = Path(file.filename or "").suffix.lower()
+        if extension not in conversion.EXTENSIONES_ENTRADA:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Extensión no soportada: {extension or '(sin extensión)'}; "
+                f"se aceptan {', '.join(sorted(conversion.EXTENSIONES_ENTRADA))}",
+            )
+        if not Path(settings.soffice_binary).exists():
+            raise HTTPException(status_code=503, detail="LibreOffice no está instalado en el servicio")
 
+        contenido = await _leer_con_limite(file, settings.max_file_size)
+        if not contenido:
+            raise HTTPException(status_code=400, detail="El archivo está vacío")
+
+        inicio = time.perf_counter()
         try:
-            uno_client.get_connection()
-        except UnoUnavailableError as exc:
-            raise HTTPException(status_code=503, detail=f"UNO no disponible: {exc}") from exc
-
-        # TODO: Implementar conversión real utilizando UNO (ver docs/office_service.md)
+            datos, nombre_salida = await conversion.convertir(
+                contenido, file.filename or "documento", formato, settings.soffice_binary, settings.convert_timeout
+            )
+        except conversion.ConversionTimeout as exc:
+            LOGGER.warning("action=convert_timeout filename=%s error=%s", file.filename, exc)
+            raise HTTPException(status_code=504, detail=str(exc)) from exc
+        except conversion.ConversionError as exc:
+            LOGGER.warning("action=convert_error filename=%s error=%s", file.filename, exc)
+            raise HTTPException(status_code=500, detail="La conversión falló") from exc
         LOGGER.info(
-            "Solicitud de conversión recibida: filename=%s output_format=%s",
+            "action=convert filename=%s output_format=%s bytes_in=%s bytes_out=%s duration_ms=%.0f",
             file.filename,
-            info.output_format,
+            formato,
+            len(contenido),
+            len(datos),
+            (time.perf_counter() - inicio) * 1000,
         )
-        return ConvertResponse(
-            message="Conversión aún no implementada; placeholder OK",
-            output_path=None,
+        return Response(
+            content=datos,
+            media_type=_MEDIA_TYPES[formato],
+            headers={"Content-Disposition": f'attachment; filename="{nombre_salida}"'},
         )
 
     return app
