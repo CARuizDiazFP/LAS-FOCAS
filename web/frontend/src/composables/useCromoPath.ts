@@ -136,11 +136,6 @@ export function avisosDeCaminos(respuesta: CaminosServicioResponse): string[] {
   return avisos;
 }
 
-/** Avisos de la posición vigente declarada (pelo dañado, pelo que cambió, retirada, …). */
-export function avisosDePosicion(respuesta: CaminosServicioResponse): string[] {
-  return (respuesta.posicion_vigente?.avisos ?? []).map((a) => a.texto);
-}
-
 /** 30 s: seis veces el peor caso medido por objeto contra Cromo, sobre un endpoint documentado
  * como más caro que los demás (latencia real observada del camino: ~12 s). */
 const TIMEOUT_MS = 30_000;
