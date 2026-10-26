@@ -136,11 +136,20 @@ token copiado a mano (se desincroniza en cuanto alguien cambie el token).
    *por propiedad*, no por regla completa) decida en silencio cuál gana. Casos reales ya detectados:
    - `.container` estaba definida en ambos con valores distintos y **muerta** en las dos (ningún
      template la usaba) — eliminada de `admin.css`.
-   - `.btn` sigue definida en ambos con `border` en conflicto (`var(--border)` en `admin.css` vs.
-     `transparent` en `panel.css`, que carga después y gana esa propiedad) — **sin resolver
-     todavía**, afecta a los usos de `class="btn"` sin modificador (`.primary`/`.subtle`/etc.).
-     Verificar con `grep -rn 'class="btn"' web/frontend/src --include=*.vue` antes de asumir que un
-     botón "simple" se ve como en `admin.css`.
+   - `.btn` estaba en las dos hojas; se unificó en `panel.css` el 2026-10-26 (frente P09) moviendo
+     sólo lo que `admin.css` seguía aportando (`transition`, `white-space`, `.btn:hover` y el borde de
+     `.btn.primary:hover`). Ojo con el orden al mover reglas entre hojas: `.btn:hover` (0-2-0) venía
+     de la hoja que carga **antes**, así que `.btn.danger`/`.subtle`/… (también 0-2-0) le ganaban por
+     orden; en `panel.css` quedó **antes** de los modificadores para no cambiar la apariencia.
+   - `.card` sigue definida en las dos hojas con valores distintos (radio y padding): sin resolver.
+
+   Para detectar CSS global muerto, extraer los selectores de clase de la hoja y buscar cada nombre
+   como token en `src/**/*.{vue,ts}` + `index.html`, contando como usadas las clases armadas con
+   prefijo dinámico (`` `pref-${x}` ``, `'pref-' + x`). Un selector compuesto con una sola clase sin
+   uso no matchea nada. No usar `grep -w` para confirmar: el guion no es carácter de palabra y
+   `router-view` cuenta como `view`. Antes de borrar un `@keyframes` global, buscar
+   `animation: <nombre>` en los `.vue`: hay componentes que usan `spin` sin definirlo (el global vive
+   en `tokens.css`).
 
 ## Verificación sin navegador disponible
 

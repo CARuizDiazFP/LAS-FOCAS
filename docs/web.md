@@ -212,7 +212,7 @@ Todos los endpoints POST que mutan datos validan el CSRF token.
 
 ### Superficies legacy del frontend
 
-- `web/frontend/src/chat/main.ts` sigue existiendo como cliente standalone heredado para WebSocket, pero **no forma parte del bundle actual del SPA** porque `index.html` solo entra por `src/main.ts`.
+- `web/frontend/src/chat/main.ts` (cliente standalone heredado del chat por WebSocket, fuera del bundle) se eliminó el 2026-10-26; el chat del SPA es `views/tabs/ChatTab.vue`.
 - Si se reactiva ese cliente en el futuro, debe sanearse el uso de `innerHTML` antes de volver a exponerlo en runtime.
 
 ## Build Dev del frontend
@@ -486,7 +486,6 @@ views/
     InfraTab.vue       ← dashboard cámaras
 admin/
   views/, components/, api/ ← área admin (sin router ni entry propios)
-chat/main.ts           ← cliente WebSocket legacy, fuera del bundle
 ```
 
 ### Rutas Vue Router
@@ -577,7 +576,7 @@ Las URLs legacy `/?tab=...` se redirigen antes de resolver la vista protegida pa
 ### Composable `useSession`
 
 Singleton module-level. Expone `{state, csrf(), fetchSession(), ensureSession(), setSession(), clearSession(), logoutSession()}`.  
-Tras cada actualización de estado llama a `setCsrfToken()` / `clearCsrfToken()` de `api/client.ts`, que además sincronizan `window.CSRF_TOKEN` para compatibilidad con `chat/main.ts` (widget de chat embebible, superficie legacy separada del SPA principal). El mini-SPA admin viejo (`admin/main.ts`, `admin/router/index.ts`, `admin/App.vue`, `admin/components/AdminLayout.vue`, que montaba en `#admin-app`) se eliminó por código muerto: las vistas admin viven hoy en el router unificado (`router/index.ts`).
+Tras cada actualización de estado llama a `setCsrfToken()` / `clearCsrfToken()` de `api/client.ts`, que además sincronizan `window.CSRF_TOKEN`. Esa copia existía por `chat/main.ts` (widget de chat legacy), eliminado el 2026-10-26, así que hoy no la lee nadie fuera de `api/client.ts`. El mini-SPA admin viejo (`admin/main.ts`, `admin/router/index.ts`, `admin/App.vue`, `admin/components/AdminLayout.vue`, que montaba en `#admin-app`) se eliminó por código muerto: las vistas admin viven hoy en el router unificado (`router/index.ts`).
 
 ### Camino óptico de Cromo en el Detalle de Servicio
 

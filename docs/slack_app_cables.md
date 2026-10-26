@@ -237,7 +237,8 @@ configurado en el entorno, el primer mensaje ya lo dice y no se encola nada.
 
 **Equivalente REST (Task 10, 2026-09-23)**: las mismas 4 operaciones (resolver cable, servicios
 únicos por cable, por buffer, refrescar PROV on-demand) están expuestas en
-`web/app/routers/cromo.py` para la SPA (`GET /api/infra/cromo/cables/resolver`,
+`web/app/routers/cromo.py` (el SPA no las llama: los clientes `api/cromo.ts` que nadie usaba se
+borraron el 2026-10-26; las rutas se conservan) (`GET /api/infra/cromo/cables/resolver`,
 `GET /api/infra/cromo/cables/{cable_n_id}/servicios-unicos`,
 `GET /api/infra/cromo/cables/{cable_n_id}/buffers/{numero}/servicios-unicos` y
 `POST /api/infra/cromo/cables/{cable_n_id}/servicios-unicos/refrescar-prov`) — ver

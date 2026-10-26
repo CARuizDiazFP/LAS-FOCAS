@@ -108,10 +108,9 @@ Módulos admin actuales bajo `/admin`:
 entry point sin conectar. Se eliminaron en `9bb86f6` (2026-08-05). `src/admin/` sigue existiendo, pero
 sólo con vistas, componentes y API client que importa el router unificado.
 
-**Huérfano vigente (2026-10-26)**: `src/chat/main.ts` no lo importa nadie (`index.html` carga sólo
-`/src/main.ts`; la única mención es un comentario en `src/composables/useAdminNotifications.ts`). La
-auditoría del 2026-10-24 (frente P09) propone eliminarlo; hasta entonces, no tomarlo como patrón
-vigente.
+`src/chat/main.ts` (cliente DOM viejo del chat, reemplazado por `views/tabs/ChatTab.vue`) también se
+eliminó el 2026-10-26 (frente P09 de la auditoría). Verificado ese día: los 134 `.ts`/`.vue`/`.css`
+de `src/` son alcanzables desde `src/main.ts`.
 
 > **Si reaparece un router o un `main.ts` bajo `src/admin/`, no tiene efecto en runtime.** El único
 > router es `src/router/index.ts` y el único entry point es `src/main.ts`.
@@ -194,9 +193,9 @@ Agregar como `children` de la ruta raíz `{ path: '/', component: AppShell }`:
 ```
 
 **El router sólo lee `meta.requiresAuth` y `meta.requiresAdmin`** (`router.beforeEach` en
-`src/router/index.ts`). Las claves `navLabel`, `navDescription`, `navOrder` y `navSection` que todavía
-aparecen en algunas rutas **no las lee nadie** (verificado 2026-10-26: ningún `.vue`/`.ts` fuera del
-router las referencia). No agregarlas en rutas nuevas.
+`src/router/index.ts`). Las claves `navLabel`, `navDescription`, `navOrder` y `navSection` no las leía
+nadie y se eliminaron del router el 2026-10-26 (56 apariciones, decisión del usuario en el frente
+P09). No volver a agregarlas: no tienen efecto.
 
 **El menú lateral se edita a mano** en `src/components/app-shell/AppShell.vue`: `primaryLinks`
 (`SidebarItem`: `id`, `label`, `icon`, `to`) y los módulos desplegables (`SidebarModule`:
