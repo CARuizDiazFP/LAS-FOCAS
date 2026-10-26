@@ -37,8 +37,6 @@ metadata:
       grep -n "src/main" web/frontend/index.html
     - |
       grep -n "from.*router" web/frontend/src/main.ts
-    - |
-      grep -n "pathMatch" web/frontend/src/router/index.ts
 ---
 
 # Nombre de archivo: SKILL.md

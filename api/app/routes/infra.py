@@ -1009,13 +1009,6 @@ async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadRespons
 # =============================================================================
 
 
-class TrackingAnalyzeRequest(BaseModel):
-    """Request opcional para analyze (puede enviar contenido en lugar de archivo)."""
-    
-    content: Optional[str] = None
-    filename: Optional[str] = None
-
-
 class RutaInfoResponse(BaseModel):
     """Información de una ruta existente."""
     
@@ -1572,22 +1565,6 @@ class BanLiftRequest(BaseModel):
             }]
         }
     }
-
-
-class IncidenteBaneoResponse(BaseModel):
-    """Respuesta con datos de un incidente de baneo."""
-    
-    id: int
-    ticket_asociado: Optional[str]
-    servicio_afectado_id: str
-    servicio_protegido_id: str
-    ruta_protegida_id: Optional[int]
-    usuario_ejecutor: Optional[str]
-    motivo: Optional[str]
-    fecha_inicio: str
-    fecha_fin: Optional[str]
-    activo: bool
-    duracion_horas: Optional[float]
 
 
 @router.post("/api/infra/ban/create")

@@ -29,7 +29,37 @@ metadata:
     - ".codex-skills/**"
     - ".gemini/**"
   commands:
-    []
+    - |
+      python scripts/agent_worktree.py status            # panorama: agentes, leases, handoffs
+      git rev-parse --show-toplevel                      # ¿dónde está parada esta sesión?
+      python scripts/agent_worktree.py doctor            # inconsistencias (sólo diagnostica)
+    - |
+      python scripts/agent_worktree.py sync      --agent <agent-id>   # trae origin/dev a la rama
+      # resolver conflictos DENTRO del worktree propio y volver a validar con PRUEBAS FOCALES
+      # (ver "Validación hacia dev" abajo) + drift de mirrors si se tocaron skills
+      python scripts/agent_worktree.py ready     --agent <agent-id>   # worktree limpio + gate de calidad
+      python scripts/agent_worktree.py integrate --agent <agent-id>   # toma git:integrate-dev
+      python scripts/agent_worktree.py finish    --agent <agent-id>   # libera los leases propios
+      python scripts/agent_worktree.py cleanup   --agent <agent-id> --borrar-rama
+      # `integrate` publica la rama en origin y `--borrar-rama` sólo borra la local: borrar la
+      # remota, verificando antes que ya está en dev
+      git fetch origin && git merge-base --is-ancestor origin/<rama> origin/dev \
+        && git push origin --delete <rama>
+    - |
+      git checkout <rama-efímera-actual>
+      git fetch origin
+      git merge origin/dev
+    - |
+      git checkout dev
+      git pull origin dev
+      git merge <rama-efímera-actual>
+      git push origin dev
+      git branch -d <rama-efímera-actual>
+      git push origin --delete <rama-efímera-actual>
+    - |
+      git push origin <rama-efímera-actual>          # sincroniza la rama efímera en el remoto
+      git push origin <rama-efímera-actual>:dev      # fast-forward de dev al tip de la rama efímera
+      git push origin --delete <rama-efímera-actual>
 ---
 
 # Nombre de archivo: SKILL.md

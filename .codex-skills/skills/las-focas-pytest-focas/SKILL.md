@@ -38,6 +38,44 @@ metadata:
 
       # Fallar si cobertura < 60%
       pytest --cov=core --cov-fail-under=60
+    - |
+      # El elemento `metodos` como lista suelta en su propia línea: 4 tuplas en 2 archivos, sin falsos
+      # positivos (las construcciones por kwargs dicen `metodos=[...]` y no matchean). No anclar con `$`:
+      # en test_cromo_verificador.py la línea termina en un comentario `# metodos`.
+      grep -rnE '^\s+\["REGEX_EXACTO"\],' tests/
+    - |
+      POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5433 POSTGRES_DB=focas_dev POSTGRES_USER=FOCALBOT \
+      POSTGRES_PASSWORD="$(cat .secrets/Dev_db_password_v1.txt)" pytest
+    - |
+      # 1. Capturar los node IDs que fallan en el árbol actual (ya mergeado)
+      python -m pytest <archivos-afectados> -q -p no:randomly 2>&1 \
+      | grep -E "^(FAILED|ERROR)" | awk '{print $2}' | sort > /tmp/fallos-merged.txt
+
+      # 2. Worktree efímero en el commit ANTERIOR al cambio (no hace falta stashear ni revertir)
+      git worktree add /tmp/baseline <sha-base> --detach
+
+      # 3. Misma corrida ahí, reusando el venv del checkout principal
+      cd /tmp/baseline && source /ruta/al/.venv/bin/activate
+      python -m pytest <mismos-archivos> -q -p no:randomly 2>&1 \
+      | grep -E "^(FAILED|ERROR)" | awk '{print $2}' | sort > /tmp/fallos-baseline.txt
+
+      # 4. El diff es la respuesta. Vacío = cero regresiones introducidas
+      diff /tmp/fallos-baseline.txt /tmp/fallos-merged.txt
+
+      git worktree remove /tmp/baseline --force
+    - |
+      # Enlazar los artefactos al worktree de baseline (o aceptar la diferencia y justificarla)
+      ln -s <checkout-principal>/web/frontend/dist         /tmp/baseline/web/frontend/dist
+      ln -s <checkout-principal>/web/frontend/node_modules /tmp/baseline/web/frontend/node_modules
+    - |
+      cp core/services/x.py /tmp/x.py.bak     # backup explícito, no confiar en la memoria
+      # ...invertir el operador, vaciar el string, sacar el filtro...
+      python -m pytest tests/test_x.py -q -k "<el test que debería fallar>"
+      cp /tmp/x.py.bak core/services/x.py
+      git diff --stat core/services/x.py      # debe quedar vacío
+    - |
+      P=$(paste -sd'|' convertidos.txt)
+      grep -rnE "\.($P)\(|\b(await|asyncio\.run\() *[a-z_.]*($P)\b" tests/ --include=*.py
 ---
 
 # Nombre de archivo: SKILL.md
@@ -619,7 +657,7 @@ habría dado 500 apenas hubiera puntos terminales cargados (en dev y prod la tab
   cubría 11 de 20 rutas en Servicios y 12 de 33 en Cromo.
 - **Sesión simulada:** usar el fixture `con_sesion("admin" | "user" | None)` (`tests/soporte_sesion.py`),
   que llama a las dependencias reales con un request falso. No parchear `_require_auth` en el
-  router (`comun.get_current_user` es un helper sin llamadores: tampoco sirve parchearlo). Si hace falta, parchear la única fuente, `comun._require_auth`.
+  router. Si hace falta, parchear la única fuente, `comun._require_auth` (el helper `comun.get_current_user`, que no tenía llamadores, se borró el 2026-10-26).
 - **CSRF (desde 2026-10-26, P07): no se prueba por endpoint.** Lo valida `requiere_csrf` en el
   router; `tests/test_web_csrf.py` ya recorre `app.routes` (inventario + 403/paso por ruta), así que
   una ruta nueva en un router existente queda cubierta sola. Para un 403 puntual: fixture

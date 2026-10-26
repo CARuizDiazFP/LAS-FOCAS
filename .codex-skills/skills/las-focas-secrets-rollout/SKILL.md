@@ -22,14 +22,24 @@ metadata:
     - "db/session.py"
   commands:
     - |
-      python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')"
+      # mal — sigue rompiendo el fallback:
+      DATABASE_URL=
+
+      # bien:
+      # DATABASE_URL=postgresql+psycopg://...
+    - |
+      python3 - <<'PY'
+      import hashlib
+      def read(p):
+      with open(p) as f: return f.read().strip()
+      a, b = read(".env"), read(".secrets/db_password_v1.txt")  # ajustar paths
+      print("match:", a == b)
+      PY
     - |
       printf 'ALTER ROLE "%s" WITH PASSWORD %s;\n' "$PG_USER" "$(python3 -c "import sys; print(chr(39)+sys.argv[1].replace(chr(39),chr(39)*2)+chr(39))" "$NEWPASS")" \
         | docker exec -i <container_postgres> psql -U "$PG_USER" -d "$PG_DB"
     - |
       docker compose -f <compose_file> --env-file <env_file> up -d --force-recreate --no-build <servicio>
-    - |
-      ./scripts/check_no_plaintext_secrets.sh
 ---
 
 # Nombre de archivo: SKILL.md

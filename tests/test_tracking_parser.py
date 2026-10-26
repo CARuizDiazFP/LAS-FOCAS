@@ -19,12 +19,8 @@ from core.parsers.tracking_parser import (
     extract_servicio_id,
     extract_tracking_terminals,
     is_transito,
-    iter_empalmes,
-    iter_tramos,
     parse_punta,
     parse_tracking,
-    parse_tracking_as_dicts,
-    parse_tracking_entries,
 )
 
 # Combina literalmente los dos fragmentos del brief en una sola línea de empalme:
@@ -288,26 +284,6 @@ def test_parse_tracking_texto_vacio():
 # ---------------------------------------------------------------------------
 # Helpers de compatibilidad hacia atrás / iteradores
 # ---------------------------------------------------------------------------
-
-
-def test_parse_tracking_as_dicts_delega_en_to_dict():
-    esperado = parse_tracking(FIXTURE_TRACKING, FIXTURE_FILENAME).to_dict()
-    assert parse_tracking_as_dicts(FIXTURE_TRACKING, FIXTURE_FILENAME) == esperado
-
-
-def test_parse_tracking_entries_devuelve_solo_entries():
-    entries = parse_tracking_entries(FIXTURE_TRACKING)
-    esperado = parse_tracking(FIXTURE_TRACKING).entries
-    assert [e.to_dict() for e in entries] == [e.to_dict() for e in esperado]
-
-
-def test_iter_empalmes_y_iter_tramos():
-    resultado = parse_tracking(FIXTURE_TRACKING, FIXTURE_FILENAME)
-    empalmes = list(iter_empalmes(resultado.entries))
-    tramos = list(iter_tramos(resultado.entries))
-    assert len(empalmes) == 2
-    assert len(tramos) == 1
-    assert all(isinstance(e, TrackingEntry) for e in empalmes + tramos)
 
 
 def test_tracking_entry_to_dict():

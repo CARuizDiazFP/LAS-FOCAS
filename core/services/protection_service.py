@@ -197,13 +197,6 @@ class ProtectionService:
             IncidenteBaneo.activo == True
         ).order_by(IncidenteBaneo.fecha_inicio.desc()).all()
 
-    def get_incidentes_for_servicio(self, servicio_id: str) -> List[IncidenteBaneo]:
-        """Obtiene incidentes activos que afectan a un servicio (como protegido)."""
-        return self.session.query(IncidenteBaneo).filter(
-            IncidenteBaneo.servicio_protegido_id == servicio_id,
-            IncidenteBaneo.activo == True,
-        ).all()
-
     def is_servicio_baneado(self, servicio_id: str) -> bool:
         """Verifica si un servicio tiene un baneo activo."""
         return self.session.query(IncidenteBaneo).filter(

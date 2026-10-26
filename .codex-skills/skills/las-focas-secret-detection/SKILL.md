@@ -31,6 +31,7 @@ metadata:
       rg -n --hidden --glob '.env*' --glob 'deploy/*.sample' '.'
       rg -n --hidden 'sk-[A-Za-z0-9_-]+'
       git ls-files | rg '(^|/)\.env($|\.)|Keys/|credentials|\.pem$|\.key$'
+      ./scripts/check_no_plaintext_secrets.sh
 ---
 
 # Nombre de archivo: SKILL.md

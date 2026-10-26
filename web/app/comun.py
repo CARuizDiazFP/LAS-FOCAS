@@ -119,10 +119,6 @@ def leer_upload_sync(archivo: UploadFile, *, max_mb: int | None = None) -> bytes
     return b"".join(partes)
 
 
-def get_current_user(request: Request) -> str | None:
-    return request.session.get("username")
-
-
 def _require_auth(request: Request) -> tuple[str, str]:
     username = request.session.get("username")
     role = request.session.get("role", "user")

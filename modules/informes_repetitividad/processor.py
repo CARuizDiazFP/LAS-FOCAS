@@ -223,12 +223,6 @@ def filter_period(df: pd.DataFrame, mes: int, anio: int) -> pd.DataFrame:
     return filtrado
 
 
-def _detalles(grupo: pd.DataFrame) -> list[str]:
-    if "ID_SERVICIO" in grupo.columns and grupo["ID_SERVICIO"].notna().any():
-        return grupo["ID_SERVICIO"].astype(str).tolist()
-    return grupo.index.astype(str).tolist()
-
-
 def compute_repetitividad(df: pd.DataFrame) -> ResultadoRepetitividad:
     """Calcula servicios con casos repetidos (>=2) y arma detalle por reclamo."""
     grupos = df.groupby("SERVICIO", sort=True)

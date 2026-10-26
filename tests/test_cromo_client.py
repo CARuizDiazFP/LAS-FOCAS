@@ -196,7 +196,7 @@ async def test_get_objeto_con_topologia_manda_show_repetido_no_coma_separado():
 
 
 @pytest.mark.asyncio
-async def test_get_inner_y_get_container_construyen_ruta_correcta():
+async def test_get_inner_construye_ruta_correcta():
     rutas = []
 
     def handler_get(request: httpx.Request) -> httpx.Response:
@@ -205,12 +205,8 @@ async def test_get_inner_y_get_container_construyen_ruta_correcta():
 
     cliente = _cliente_con_transport(httpx.MockTransport(_con_oauth(handler_get)))
     await cliente.get_inner(50010)
-    await cliente.get_container(50010)
 
-    assert rutas == [
-        f"{BASE_URL}/db/objects/50010/inner",
-        f"{BASE_URL}/db/objects/50010/container",
-    ]
+    assert rutas == [f"{BASE_URL}/db/objects/50010/inner"]
 
 
 @pytest.mark.asyncio

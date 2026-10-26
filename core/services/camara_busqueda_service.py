@@ -6,10 +6,13 @@
 selectores/autocomplete de UI (picker de "Unificar Cámara", picker de "Asociar a Cámara existente"
 en el Caso 1 de Botellas huérfanas) — no para el dashboard principal.
 
-Deliberadamente NO reusa `smart_search_camaras_web`/`SmartSearchRequestModel`: ese endpoint carga
-TODAS las cámaras raíz en memoria y recalcula rutas/servicios/cables por cada una (N+1 ya
-documentado en `web/app/main.py`) para alimentar tarjetas completas del dashboard — sobre-ingeniería
-para un selector que sólo necesita `id/nombre/direccion/estado` de un puñado de candidatas."""
+Deliberadamente NO reusa `smart_search_camaras_web`/`SmartSearchRequestModel`
+(`web/app/routers/camaras.py` → `core/services/camaras_consulta.py::buscar_camaras_por_terminos`):
+con términos, ese endpoint carga TODAS las cámaras raíz con sus empalmes/rutas/cables/Botellas y
+matchea en Python antes de paginar, para alimentar tarjetas completas del dashboard. Desde
+2026-10-26 la carga va por lote (`selectinload`, ya no es N+1 por fila), pero sigue recorriendo el
+universo completo (~6,5 s en dev) — sobre-ingeniería para un selector que sólo necesita
+`id/nombre/direccion/estado` de un puñado de candidatas."""
 
 from __future__ import annotations
 

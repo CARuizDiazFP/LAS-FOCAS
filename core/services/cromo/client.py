@@ -49,12 +49,6 @@ def _limiter_camino_de_proceso(rate_per_second: float) -> AsyncRateLimiter:
     return _limiter_camino_compartido
 
 
-def reiniciar_limiter_camino() -> None:
-    """Descarta el limiter de proceso. Sólo para tests — en producción el pacing es global."""
-    global _limiter_camino_compartido
-    _limiter_camino_compartido = None
-
-
 class CromoClientError(RuntimeError):
     """Error de comunicación con la API de Cromo tras agotar los reintentos, o respuesta 4xx."""
 
@@ -254,10 +248,6 @@ class CromoClient:
     async def get_inner(self, n_id_o_id: int) -> dict[str, Any]:
         """`GET /db/objects/{id}/inner`."""
         return await self._get(f"/db/objects/{n_id_o_id}/inner")
-
-    async def get_container(self, n_id_o_id: int) -> dict[str, Any]:
-        """`GET /db/objects/{id}/container`."""
-        return await self._get(f"/db/objects/{n_id_o_id}/container")
 
     async def get_objeto_con_topologia(self, n_id_o_id: int) -> dict[str, Any]:
         """`GET /db/objects/{id}?show=TOPOLOGIES&show=REL_ATTRIBUTE` — params REPETIDOS (no

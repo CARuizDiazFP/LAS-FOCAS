@@ -29,25 +29,38 @@ metadata:
     - "**/*"
   commands:
     - |
-      git branch --show-current
+      python scripts/agent_worktree.py status                    # ¿ya estoy en un worktree de agente?
+      python scripts/agent_worktree.py start \
+        --agent <agent-id> --type <tipo> --task <slug>           # si no, crearlo
+      cd <ruta-del-worktree>                                     # el trabajo ocurre acá
     - |
       git fetch origin
       git checkout -b <tipo>/<slug-kebab-case> origin/dev
-      # Si dev no existe en el remoto:
-      git checkout -b dev
-      git push -u origin dev
     - |
-      test -f .env.dev && echo "OK" || echo "FALTA .env.dev"
-    - |
-      cp deploy/env.dev.sample .env.dev
-      echo "IMPORTANTE: Completar SLACK_BOT_TOKEN y SLACK_APP_TOKEN en .env.dev antes de continuar."
-    - |
-      # Siempre verificar rama antes de commitear
       git branch --show-current  # debe ser <tipo>/<slug>, nunca dev ni main
-
       git add .
       git commit -m "<tipo>(módulo): descripción técnica"
       git push -u origin HEAD     # NUNCA: git push origin dev ni git push origin main directamente
+    - |
+      git fetch origin
+      git merge-base --is-ancestor <rama> origin/dev   # ¿ya está integrada? (0 = sí)
+      git rev-list --count origin/dev..<rama>          # commits propios reales
+    - |
+      cd web/frontend && npm ci --no-audit --no-fund   # en el worktree; ~3 s, lockfile completo
+      npm run build          # desde 2026-10-26 = vue-tsc --noEmit && vite build (tipos + plantillas)
+    - |
+      bash scripts/check_no_plaintext_secrets.sh; echo "EXIT REAL=$?"   # sin pipe
+      # o: set -o pipefail   /   ${PIPESTATUS[0]}
+    - |
+      git diff --name-only origin/dev...HEAD | grep -E "<archivos-del-hallazgo>"   # ¿los toqué?
+      git show origin/dev:<archivo> | grep -c "<patrón>"                           # ¿ya estaba?
+    - |
+      git log --oneline -5 | cat          # ¿qué se commiteó mientras no miraba?
+      git status --porcelain              # ¿hay trabajo sin commitear?
+      python scripts/agent_worktree.py status   # ¿mi worktree sigue existiendo?
+      git rev-parse --show-toplevel       # ¿sigo parado donde creo?
+    - |
+      grep -in "fuente de verdad\|legacy" docs/decisiones.md | grep -i "<dominio>"
 ---
 
 # Nombre de archivo: SKILL.md

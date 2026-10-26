@@ -605,7 +605,7 @@ async def ingest_servicios(  # noqa: C901 - API interna; se conserva por decisi�
             # reasignar, a propósito: su PK es compuesta `(servicio_id, empalme_id)` (verificado real),
             # así que reasignar podría chocar contra esa PK si la familia real ya tuviera el mismo
             # empalme_id que el placeholder. La tabla además está DEPRECATED ("mantener por
-            # retrocompatibilidad", ver db/models/infra.py:89 y la relación `Servicio.empalmes`), su
+            # retrocompatibilidad"; ver el comentario de servicio_empalme_association en db/models/infra.py), su
             # reemplazo moderno es ruta_empalme_association vía RutaServicio, y en la práctica un
             # placeholder puro nunca tiene filas acá (verificado 0 de 9054 en dev). Perder esta
             # asociación deprecada de un placeholder que igual se está eliminando no tiene impacto.

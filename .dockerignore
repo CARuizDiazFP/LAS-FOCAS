@@ -3,8 +3,8 @@
 # Descripción: Excluye del contexto de build (context: .. en deploy/*.yml) logs, secretos, entornos, datos y artefactos locales
 
 # Los builds de deploy/compose.yml y docker-compose.dev.yml usan la raíz del repo como contexto, y
-# repetitividad_worker.Dockerfile hace `COPY . /app`: sin este archivo, Logs/, .env, .secrets/, el
-# dump de prod y los TSV de tmp/ terminaban dentro de la imagen. Ningún Dockerfile copia estas rutas
+# el Dockerfile de repetitividad_worker (retirado el 2026-10-26) hacía `COPY . /app`: sin este archivo,
+# Logs/, .env, .secrets/, el dump de prod y los TSV de tmp/ terminaban dentro de la imagen. Ningún Dockerfile copia estas rutas
 # a propósito (verificado con `grep -n COPY` sobre api/, web/ y deploy/docker/). Los datos que un
 # contenedor necesita en runtime (data/fo_monitor, Templates en los workers) entran por bind mount.
 # Antes de excluir una ruta nueva, confirmar que ningún Dockerfile la copie: api/Dockerfile copia

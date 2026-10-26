@@ -43,8 +43,11 @@ encabezado primero, Claude Code mostraba "Nombre de archivo: SKILL.md" como desc
 todas las skills y no podía activarlas por contexto.
 
 El frontmatter de cada mirror se **preserva** (cada plataforma tiene el suyo: `triggers`,
-`globs`, `commands`, `metadata`). Si el mirror no existe, se genera uno mínimo derivado
-del `name` y la `description` de la fuente.
+`globs`, `metadata`). Si el mirror no existe, se genera uno mínimo derivado
+del `name` y la `description` de la fuente. Excepción: `metadata.commands` de Codex se
+**regenera** desde los bloques ```bash/```sh de la fuente; preservado a mano quedaba
+obsoleto sin que `--check` lo viera (2026-10-26: 9 skills con comandos que la fuente ya no
+tenía, entre ellos un `docker image prune -a` que `docker-cleanup` prohíbe).
 
 Uso:
     python scripts/sync_skill_mirrors.py            # propaga (escribe)
@@ -73,6 +76,7 @@ RE_FRONTMATTER = re.compile(r"\A\s*---\n.*?\n---\n", re.DOTALL)
 # Enlace markdown a otra skill desde la estructura de la fuente: [texto](../<nombre>/SKILL.md)
 RE_ENLACE_SKILL = re.compile(r"\]\(\.\./([a-z0-9][a-z0-9-]*)/SKILL\.md\)")
 RE_ENLACE_REFERENCES = re.compile(r"\]\(\./references/")
+RE_BLOQUE_SHELL = re.compile(r"^([ \t]*)```(?:bash|sh)[ \t]*\n(.*?)^[ \t]*```[ \t]*$", re.DOTALL | re.MULTILINE)
 
 #: Tope de líneas del adaptador de Gemini (lo verifica también el auditor del entorno).
 MAX_LINEAS_ADAPTADOR = 15
@@ -290,6 +294,46 @@ def lista_frontmatter(frontmatter: str, clave: str) -> list[str]:
     return []
 
 
+def comandos_de(cuerpo: str) -> list[str]:
+    """Bloques ```bash/```sh del cuerpo de la fuente, sin la sangría del fence (listas anidadas).
+
+    Se omiten los bloques marcados con ❌ (listas de comandos prohibidos): en `commands`
+    Codex los ofrecería como comandos a ejecutar.
+    """
+    bloques: list[str] = []
+    for coincidencia in RE_BLOQUE_SHELL.finditer(cuerpo):
+        if "❌" in coincidencia.group(2):
+            continue
+        sangria = len(coincidencia.group(1))
+        lineas = [
+            (linea[sangria:] if linea[:sangria].isspace() else linea.lstrip()).rstrip()
+            for linea in coincidencia.group(2).splitlines()
+        ]
+        texto = "\n".join(lineas).strip("\n")
+        if texto:
+            bloques.append(texto)
+    return bloques
+
+
+def con_commands_de_codex(frontmatter: str, comandos: list[str]) -> str:
+    """Reemplaza ``metadata.commands`` del frontmatter de Codex por ``comandos``."""
+    if comandos:
+        nuevo = ["  commands:"]
+        for bloque in comandos:
+            nuevo.append("    - |")
+            nuevo.extend(f"      {linea}" if linea else "" for linea in bloque.splitlines())
+    else:
+        nuevo = ["  commands:", "    []"]
+    lineas = frontmatter.splitlines()
+    inicio = next((i for i, linea in enumerate(lineas) if linea == "  commands:"), None)
+    if inicio is None:
+        return "\n".join([*lineas, *nuevo])
+    fin = inicio + 1
+    while fin < len(lineas) and (not lineas[fin].strip() or lineas[fin].startswith("    ")):
+        fin += 1
+    return "\n".join([*lineas[:inicio], *nuevo, *lineas[fin:]])
+
+
 def render_adaptador(nombre: str, frontmatter_fuente: str, frontmatter_mirror: str | None) -> str:
     """Adaptador de Gemini: frontmatter de activación + puntero a la fuente.
 
@@ -341,6 +385,8 @@ def render(
             if plataforma.clave in ("claude", "agents")
             else frontmatter_por_defecto(plataforma, nombre, frontmatter_fuente)
         )
+    if plataforma.clave == "codex":
+        frontmatter = con_commands_de_codex(frontmatter, comandos_de(cuerpo))
     cabecera = plataforma.cabecera(nombre, descripcion)
     referencia = REFERENCIA[plataforma.clave](nombre)
     bloque = transformar(cuerpo, plataforma, nombre)

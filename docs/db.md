@@ -315,7 +315,11 @@ acepta el token `sin`). Nunca usar 6 como reemplazo.
 
 ### Tabla `servicio_empalme_association` (Legacy)
 
-Tabla intermedia N-a-N entre `servicios` y `empalmes`. Mantenida por retrocompatibilidad.
+Tabla intermedia N-a-N entre `servicios` y `empalmes`. Es legacy pero **sigue viva**: el alta y los
+merges de tracking (`core/services/infra_service.py`) la escriben en paralelo a las rutas, y la leen la
+búsqueda por servicio de `api/app/routes/infra.py` y el chequeo de placeholders de
+`api/app/routes/servicios.py` (en dev, 2026-10-26: 2967 filas de 49 servicios). Qué falta para
+retirarla: ver el comentario sobre la tabla en `db/models/infra.py`.
 **Para nuevas implementaciones usar `rutas_servicio` + `ruta_empalme_association`.**
 
 | Columna      | Tipo         | Descripción |
@@ -393,7 +397,6 @@ las propiedades `punta_a`/`punta_b`. La misma migración agregó `servicios.alia
 
 - `servicio.ruta_principal`: Retorna la ruta de tipo PRINCIPAL activa (o None).
 - `servicio.rutas_activas`: Lista de rutas activas del servicio.
-- `servicio.todos_los_empalmes`: Set único de todos los empalmes de todas las rutas.
 
 ---
 

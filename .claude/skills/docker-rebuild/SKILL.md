@@ -33,7 +33,6 @@ docker compose -f deploy/compose.yml --env-file .env build <servicio>
 # - nlp_intent
 # - office
 # - postgres
-# - repetitividad_worker (profile: reports-worker)
 # - pgadmin (profile: pgadmin)
 ```
 
@@ -102,12 +101,6 @@ docker compose -f deploy/compose.yml --env-file .env down -v
 ```
 
 ## Perfiles
-
-### Activar worker de reportes
-
-```bash
-docker compose -f deploy/compose.yml --env-file .env --profile reports-worker up -d
-```
 
 ### Activar pgAdmin
 
@@ -367,6 +360,31 @@ with mock.patch.object(app_module, "verify_password", return_value=True):  # só
         r = client.get("/api/algun/endpoint/real")
 ```
 
+### E2E HTTP real contra el servidor de dev: usuario QA temporal (preferible a `TestClient`)
+
+`TestClient` corre la app en otro proceso: no prueba el uvicorn desplegado (event loop, workers, imagen).
+Para un E2E con sesión contra `lasfocasdev-web` (sólo dev, nunca prod), crear un usuario admin temporal
+con contraseña aleatoria, loguearse por HTTP real y borrarlo al terminar. Real 2026-10-26 (E2E de la ola 1
+de la auditoría: 26 flujos, incluida la latencia de `/health` en paralelo a la smart-search):
+
+```bash
+SP=<scratchpad>; umask 077; PW=$(cat .secrets/Dev_db_password_v1.txt)
+python3 -c "import secrets;print(secrets.token_urlsafe(24))" > $SP/qa_pass.txt
+HASH=$(docker exec -i lasfocasdev-web python -c "import sys; from core.password import hash_password; print(hash_password(sys.stdin.read().strip()))" < $SP/qa_pass.txt)
+echo "insert into app.web_users(username,password_hash,role) values ('qa_<agent-id>', :'h', 'admin');" \
+  | docker exec -i -e PGPASSWORD="$PW" lasfocasdev-postgres psql -U FOCALBOT -d focas_dev -v h="$HASH"
+# script con httpx: POST /api/auth/login {"username","password"} → la respuesta trae "csrf" para los POST
+docker exec -e PGPASSWORD="$PW" lasfocasdev-postgres psql -U FOCALBOT -d focas_dev \
+  -c "delete from app.web_users where username='qa_<agent-id>'"; rm -f $SP/qa_pass.txt
+```
+
+- La contraseña va por stdin, nunca como argumento. Borrar también los archivos que el E2E dejó en los
+  volúmenes (`/app/data/uploads`, `/app/data/reports`).
+- Los flujos que mutan datos reales o mandan avisos (baneos con Slack/email, aprobar cámaras, consolidar
+  Botellas) y la revisión visual siguen siendo del usuario.
+- Repetitividad con mapas: en dev `MAPS_ENABLED=false` y el fixture `casos_repetitividad_geo.xlsx` no trae
+  `GEO_LAT`/`GEO_LON` (las coordenadas van en el texto): `map_images: []` no es una regresión.
+
 ## Medir el contexto de build y fijar tags de imagen (lecciones 2026-10-26, P01)
 
 **El contexto de build se mide contra el checkout de control, no contra el worktree.** Los datos que el
@@ -400,6 +418,19 @@ como impacto del despliegue.
 ./Start --dry-run          # Prod: muestra el plan; ejecutarlo sólo con autorización del usuario
                            # (build + migraciones + up -d sin down global; pide tipear 'lasfocas')
 ```
+
+`start_dev.sh` sólo construye y levanta `postgres nlp_intent api web office slack_baneo_worker
+cromo_worker` (`SERVICES`): **`botellas_recalculo_worker` y `fo_monitor_worker` quedan con la imagen
+vieja**. Para desplegar un lote completo en dev (real 2026-10-26, ola 1 de la auditoría):
+
+```bash
+./scripts/build_base.sh        # sólo reconstruye si cambió common-requirements.txt
+S="api web office nlp_intent slack_baneo_worker cromo_worker botellas_recalculo_worker fo_monitor_worker"
+docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev build $S
+docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d postgres redis $S
+```
+
+Antes: corridas `EN_CURSO` de Cromo (Consideración 11), drift de red y conteos de filas para comparar después.
 
 ## Consideraciones
 

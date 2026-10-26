@@ -32,7 +32,6 @@ metadata:
       # - nlp_intent
       # - office
       # - postgres
-      # - repetitividad_worker (profile: reports-worker)
       # - pgadmin (profile: pgadmin)
     - |
       docker compose -f deploy/compose.yml --env-file .env build --no-cache <servicio>
@@ -69,8 +68,6 @@ metadata:
       # Eliminar incluyendo volúmenes (CUIDADO: borra datos)
       docker compose -f deploy/compose.yml --env-file .env down -v
     - |
-      docker compose -f deploy/compose.yml --env-file .env --profile reports-worker up -d
-    - |
       docker compose -f deploy/compose.yml --env-file .env --profile pgadmin up -d
     - |
       docker compose -f deploy/compose.yml --env-file .env build --progress=plain <servicio>
@@ -88,8 +85,111 @@ metadata:
       docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev down --remove-orphans
       docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev ps
     - |
-      ./Start
-      ./scripts/start_dev.sh
+      docker exec lasfocasdev-web sh -c 'rm -rf /tmp/wt && mkdir -p /tmp/wt'
+      tar cf - --exclude=__pycache__ core db scripts modules | docker exec -i lasfocasdev-web tar xf - -C /tmp/wt
+      docker exec -w /tmp/wt lasfocasdev-web sh -c 'PYTHONPATH=/tmp/wt:/app python scripts/<script>.py --dry-run'
+      docker exec lasfocasdev-web rm -rf /tmp/wt          # siempre al terminar
+    - |
+      L="--label lasfocas.lifecycle=ephemeral --label lasfocas.session=<agent-id>"
+      docker build -q $L -t lasfocas-office-<agent-id>:smoke office_service/
+      docker run -d --rm $L --name <agent-id>-office-smoke --network lasfocasdev_lasfocas_dev_net lasfocas-office-<agent-id>:smoke
+      docker run --rm $L --network lasfocasdev_lasfocas_dev_net --user 1001:1001 \
+        -v "$PWD":/wt:ro -v <scratchpad>:/smoke -e PYTHONPATH=/wt -w /wt \
+        -e OFFICE_SERVICE_BASE=http://<agent-id>-office-smoke:8090 --entrypoint python lasfocasdev-web /smoke/smoke.py
+      docker stop <agent-id>-office-smoke && docker rmi lasfocas-office-<agent-id>:smoke
+    - |
+      docker network inspect <proyecto>_lasfocas_net --format '{{json .IPAM.Config}}'   # real
+      grep -A6 '^networks:' deploy/compose.yml                                          # declarada
+    - |
+      grep -rn 'useradd\|^USER' deploy/docker/*.Dockerfile api/Dockerfile web/Dockerfile
+    - |
+      docker exec lasfocasdev-web curl -s http://localhost:8080/api/infra/...
+    - |
+      docker cp scripts lasfocasdev-api:/app/scripts
+    - |
+      docker inspect <contenedor> --format '{{.Created}}'   # cuándo se construyó la imagen actual
+      git log --date=iso-strict -1 <archivo_relevante>       # cuándo se commiteó el último cambio real
+      # si el commit es posterior a la imagen, reconstruir antes de confiar en cualquier resultado:
+      docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev build <servicio>
+      docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d <servicio>
+    - |
+      SP=<scratchpad>; umask 077; PW=$(cat .secrets/Dev_db_password_v1.txt)
+      python3 -c "import secrets;print(secrets.token_urlsafe(24))" > $SP/qa_pass.txt
+      HASH=$(docker exec -i lasfocasdev-web python -c "import sys; from core.password import hash_password; print(hash_password(sys.stdin.read().strip()))" < $SP/qa_pass.txt)
+      echo "insert into app.web_users(username,password_hash,role) values ('qa_<agent-id>', :'h', 'admin');" \
+      | docker exec -i -e PGPASSWORD="$PW" lasfocasdev-postgres psql -U FOCALBOT -d focas_dev -v h="$HASH"
+      # script con httpx: POST /api/auth/login {"username","password"} → la respuesta trae "csrf" para los POST
+      docker exec -e PGPASSWORD="$PW" lasfocasdev-postgres psql -U FOCALBOT -d focas_dev \
+      -c "delete from app.web_users where username='qa_<agent-id>'"; rm -f $SP/qa_pass.txt
+    - |
+      S=<scratchpad>; cp <worktree>/.dockerignore $S/medir.Dockerfile.dockerignore
+      printf 'FROM focas-base:latest\nCOPY . /ctx\nRUN du -sk /ctx; find /ctx -name "*.dump"\n' > $S/medir.Dockerfile
+      docker build --no-cache --progress=plain -f $S/medir.Dockerfile --output type=cacheonly <checkout-de-control>
+    - |
+      ./scripts/start_dev.sh     # Dev: stack lasfocasdev, con --env-file .env.dev incluido
+      ./Start --dry-run          # Prod: muestra el plan; ejecutarlo sólo con autorización del usuario
+      # (build + migraciones + up -d sin down global; pide tipear 'lasfocas')
+    - |
+      ./scripts/build_base.sh        # sólo reconstruye si cambió common-requirements.txt
+      S="api web office nlp_intent slack_baneo_worker cromo_worker botellas_recalculo_worker fo_monitor_worker"
+      docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev build $S
+      docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d postgres redis $S
+    - |
+      source .venv/bin/activate
+      POSTGRES_USER=FOCALBOT \
+      POSTGRES_PASSWORD="$(cat .secrets/Dev_db_password_v1.txt)" \
+      POSTGRES_HOST=localhost \
+      POSTGRES_PORT=5433 \
+      POSTGRES_DB=focas_dev \
+      python scripts/mi_script.py --dry-run
+    - |
+      docker exec lasfocasdev-api cat /run/secrets/api_key_v1
+      # comparar contra:
+      cat .secrets/Dev_api_key_v1.txt
+    - |
+      curl -s http://localhost:8011/servicios/detail?id=123 \
+      -H "Authorization: Bearer $(cat .secrets/Dev_api_key_v1.txt)"
+    - |
+      SP=<scratchpad>; umask 077
+      docker exec lasfocasdev-api python scripts/api_clients.py crear --area "QA E2E <tarea>" \
+      --scopes servicios:read cables:read > $SP/c.txt 2>/dev/null
+      CID=$(awk '/^client_id:/{print $2}' $SP/c.txt); CS=$(awk '/^client_secret:/{print $2}' $SP/c.txt)
+      T=$(curl -s -u "$CID:$CS" -d grant_type=client_credentials http://localhost:8011/api/v1/oauth/token \
+      | python3 -c "import json,sys;print(json.load(sys.stdin)['access_token'])")
+      curl -s -H "Authorization: Bearer $T" http://localhost:8011/api/v1/servicios/93154/botellas
+      curl -s -G -H "Authorization: Bearer $T" --data-urlencode "cable=F-VIN-JDG (a instalar)" \
+      http://localhost:8011/api/v1/cables/servicios              # nombres con espacios: --data-urlencode
+      docker logs lasfocasdev-api 2>&1 | grep -c -F -e "$CS" -e "$T"   # debe dar 0: ni secret ni token en logs
+      docker exec lasfocasdev-api python scripts/api_clients.py desactivar --client-id $CID
+      rm -f $SP/c.txt
+    - |
+      # Pre-rebuild: la ruta no debe existir en el router del contenedor viejo.
+      # Ojo con la ruta de import: dentro de lasfocasdev-web es `app.main`, no `web.app.main`.
+      docker exec lasfocasdev-web python -c "
+      from app.main import app
+      print([r.path for r in app.router.routes if 'mi-ruta-nueva' in r.path])"
+
+      # Post-rebuild: un 401/403 sin cookie ya prueba que la ruta existe y está cableada.
+      # Un 404/405 significa que quedó mal registrada (ver el bug de orden de rutas de FastAPI).
+      curl -s -o /dev/null -w '%{http_code}\n' http://localhost:<puerto>/api/<ruta-nueva>
+    - |
+      curl -s http://localhost:<puerto>/ | grep -o 'index-[a-z0-9]*\.js'   # hash servido
+      ls web/frontend/dist/assets/index-*.js                               # hash local
+      curl -s http://localhost:<puerto>/assets/index-<hash>.js | grep -c '<literal-del-cambio>'
+    - |
+      docker exec lasfocasdev-web grep -c '<simbolo-o-fragmento-sql-nuevo>' /app/<ruta-del-modulo>
+    - |
+      # ¿Qué secretos monta cada servicio? Compará el que tocaste contra el que ya habla con ese sistema.
+      python3 - <<'PY'
+      import re, pathlib
+      s = pathlib.Path('deploy/docker-compose.dev.yml').read_text()
+      for m in re.finditer(r"\n  ([a-z_-]+):\n(.*?)(?=\n  [a-z_-]+:\n)", s, re.S):
+      secretos = re.findall(r"^\s+- (\w+_v\d+)$", m.group(2), re.M)
+      print(f"{m.group(1):28} {secretos}")
+      PY
+
+      # Y confirmalo en el contenedor ya recreado, no en el yml:
+      docker exec <contenedor> ls /run/secrets/
 ---
 
 # Nombre de archivo: SKILL.md
@@ -125,7 +225,6 @@ docker compose -f deploy/compose.yml --env-file .env build <servicio>
 # - nlp_intent
 # - office
 # - postgres
-# - repetitividad_worker (profile: reports-worker)
 # - pgadmin (profile: pgadmin)
 ```
 
@@ -194,12 +293,6 @@ docker compose -f deploy/compose.yml --env-file .env down -v
 ```
 
 ## Perfiles
-
-### Activar worker de reportes
-
-```bash
-docker compose -f deploy/compose.yml --env-file .env --profile reports-worker up -d
-```
 
 ### Activar pgAdmin
 
@@ -459,6 +552,31 @@ with mock.patch.object(app_module, "verify_password", return_value=True):  # só
         r = client.get("/api/algun/endpoint/real")
 ```
 
+### E2E HTTP real contra el servidor de dev: usuario QA temporal (preferible a `TestClient`)
+
+`TestClient` corre la app en otro proceso: no prueba el uvicorn desplegado (event loop, workers, imagen).
+Para un E2E con sesión contra `lasfocasdev-web` (sólo dev, nunca prod), crear un usuario admin temporal
+con contraseña aleatoria, loguearse por HTTP real y borrarlo al terminar. Real 2026-10-26 (E2E de la ola 1
+de la auditoría: 26 flujos, incluida la latencia de `/health` en paralelo a la smart-search):
+
+```bash
+SP=<scratchpad>; umask 077; PW=$(cat .secrets/Dev_db_password_v1.txt)
+python3 -c "import secrets;print(secrets.token_urlsafe(24))" > $SP/qa_pass.txt
+HASH=$(docker exec -i lasfocasdev-web python -c "import sys; from core.password import hash_password; print(hash_password(sys.stdin.read().strip()))" < $SP/qa_pass.txt)
+echo "insert into app.web_users(username,password_hash,role) values ('qa_<agent-id>', :'h', 'admin');" \
+  | docker exec -i -e PGPASSWORD="$PW" lasfocasdev-postgres psql -U FOCALBOT -d focas_dev -v h="$HASH"
+# script con httpx: POST /api/auth/login {"username","password"} → la respuesta trae "csrf" para los POST
+docker exec -e PGPASSWORD="$PW" lasfocasdev-postgres psql -U FOCALBOT -d focas_dev \
+  -c "delete from app.web_users where username='qa_<agent-id>'"; rm -f $SP/qa_pass.txt
+```
+
+- La contraseña va por stdin, nunca como argumento. Borrar también los archivos que el E2E dejó en los
+  volúmenes (`/app/data/uploads`, `/app/data/reports`).
+- Los flujos que mutan datos reales o mandan avisos (baneos con Slack/email, aprobar cámaras, consolidar
+  Botellas) y la revisión visual siguen siendo del usuario.
+- Repetitividad con mapas: en dev `MAPS_ENABLED=false` y el fixture `casos_repetitividad_geo.xlsx` no trae
+  `GEO_LAT`/`GEO_LON` (las coordenadas van en el texto): `map_images: []` no es una regresión.
+
 ## Medir el contexto de build y fijar tags de imagen (lecciones 2026-10-26, P01)
 
 **El contexto de build se mide contra el checkout de control, no contra el worktree.** Los datos que el
@@ -492,6 +610,19 @@ como impacto del despliegue.
 ./Start --dry-run          # Prod: muestra el plan; ejecutarlo sólo con autorización del usuario
                            # (build + migraciones + up -d sin down global; pide tipear 'lasfocas')
 ```
+
+`start_dev.sh` sólo construye y levanta `postgres nlp_intent api web office slack_baneo_worker
+cromo_worker` (`SERVICES`): **`botellas_recalculo_worker` y `fo_monitor_worker` quedan con la imagen
+vieja**. Para desplegar un lote completo en dev (real 2026-10-26, ola 1 de la auditoría):
+
+```bash
+./scripts/build_base.sh        # sólo reconstruye si cambió common-requirements.txt
+S="api web office nlp_intent slack_baneo_worker cromo_worker botellas_recalculo_worker fo_monitor_worker"
+docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev build $S
+docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d postgres redis $S
+```
+
+Antes: corridas `EN_CURSO` de Cromo (Consideración 11), drift de red y conteos de filas para comparar después.
 
 ## Consideraciones
 
