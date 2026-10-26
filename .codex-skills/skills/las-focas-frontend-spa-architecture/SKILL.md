@@ -105,9 +105,13 @@ Módulos admin actuales bajo `/admin`:
 ### Huérfanos históricos (ya eliminados)
 
 `web/frontend/src/admin/router/index.ts` y `web/frontend/src/admin/main.ts` eran un router y un
-entry point sin conectar. Se eliminaron en `9bb86f6` (2026-08-05); verificado otra vez el
-2026-10-20: ningún `.vue`/`.ts` de `src/` queda sin importar. `src/admin/` sigue existiendo, pero
+entry point sin conectar. Se eliminaron en `9bb86f6` (2026-08-05). `src/admin/` sigue existiendo, pero
 sólo con vistas, componentes y API client que importa el router unificado.
+
+**Huérfano vigente (2026-10-26)**: `src/chat/main.ts` no lo importa nadie (`index.html` carga sólo
+`/src/main.ts`; la única mención es un comentario en `src/composables/useAdminNotifications.ts`). La
+auditoría del 2026-10-24 (frente P09) propone eliminarlo; hasta entonces, no tomarlo como patrón
+vigente.
 
 > **Si reaparece un router o un `main.ts` bajo `src/admin/`, no tiene efecto en runtime.** El único
 > router es `src/router/index.ts` y el único entry point es `src/main.ts`.
@@ -184,18 +188,20 @@ Agregar como `children` de la ruta raíz `{ path: '/', component: AppShell }`:
 {
   path: 'mi-seccion',               // relativo a / → resulta en /mi-seccion
   name: 'mi-seccion',
-  component: MiVista,
-  meta: {
-    requiresAuth: true,
-    navLabel: 'Mi Sección',
-    navDescription: 'Descripción para el sidebar.',
-    navOrder: 50,
-    navSection: 'Operación',
-  },
+  component: () => import('../views/MiVista.vue'),
+  meta: { requiresAuth: true },     // requiresAdmin: true para rutas de admin
 },
 ```
 
-Si el módulo necesita aparecer en la navegación lateral, `navLabel`, `navOrder` y `navSection` son requeridos.
+**El router sólo lee `meta.requiresAuth` y `meta.requiresAdmin`** (`router.beforeEach` en
+`src/router/index.ts`). Las claves `navLabel`, `navDescription`, `navOrder` y `navSection` que todavía
+aparecen en algunas rutas **no las lee nadie** (verificado 2026-10-26: ningún `.vue`/`.ts` fuera del
+router las referencia). No agregarlas en rutas nuevas.
+
+**El menú lateral se edita a mano** en `src/components/app-shell/AppShell.vue`: `primaryLinks`
+(`SidebarItem`: `id`, `label`, `icon`, `to`) y los módulos desplegables (`SidebarModule`:
+`infraFo`, `reportes`, `dwdmCiena`, `toolKit`). Una vista nueva que deba verse en el menú necesita
+la ruta en el router **y** el ítem en `AppShell.vue`.
 
 ---
 

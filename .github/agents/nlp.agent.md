@@ -17,146 +17,87 @@ Soy el agente especializado en procesamiento de lenguaje natural de LAS-FOCAS.
 
 - Clasificación de intención del usuario
 - Proveedores de NLP (heurístico, OpenAI y compatibilidad heredada con Ollama)
-- Entrenamiento y ajuste de modelos
-- Métricas de precisión
+- Clasificación de acción (`action_code`) y respuestas cortas a consultas
+- Pruebas sin llamadas reales a LLM
 
-## Estructura
+## Estructura (real)
 
 ```
 nlp_intent/
-├── __init__.py
 ├── requirements.txt
 ├── app/
-│   ├── __init__.py
-│   ├── main.py          # FastAPI app
-│   ├── config.py        # Configuración
-│   ├── classifier.py    # Clasificador principal
-│   ├── providers/
-│   │   ├── __init__.py
-│   │   ├── base.py      # Interfaz base
-│   │   ├── heuristic.py # Basado en reglas
-│   │   ├── ollama.py    # Compatibilidad heredada con Ollama
-│   │   └── openai.py    # OpenAI API
-│   └── intents/
-│       ├── __init__.py
-│       └── definitions.py  # Definiciones de intenciones
-└── tests/
-    └── test_classifier.py
+│   ├── main.py               # FastAPI: /v1/intent:analyze, /v1/intent:classify (deprecated), /health
+│   ├── config.py             # Settings desde variables de entorno (+ secret openai_api_key_v1)
+│   ├── schemas.py            # IntentRequest, IntentResponse, IntentionResult
+│   ├── service.py            # classify_text (cadena de providers) y analyze_intention
+│   ├── action_classifier.py  # classify_action → action_code
+│   ├── answer_generator.py   # respuesta corta para Consulta/Generico
+│   └── providers/
+│       ├── heuristic.py      # regex de verbos de acción / preguntas / saludos
+│       ├── openai_provider.py
+│       └── ollama_provider.py  # compatibilidad heredada
+└── tests/                    # test_intent, test_intention_pipeline, test_action_and_answers, test_openai_mock
 ```
 
-## Intenciones Definidas
+## Intenciones reales
 
-| Intent | Descripción | Ejemplos |
-|--------|-------------|----------|
-| `informe_sla` | Solicitar informe SLA | "Quiero un informe SLA", "Generar SLA" |
-| `informe_repetitividad` | Informe de repetitividad | "Informe de repetitividad", "Reporte de alarmas" |
-| `buscar_infraestructura` | Buscar en infra | "Buscar cliente X", "¿Dónde está Y?" |
-| `saludo` | Saludos | "Hola", "Buenos días" |
-| `ayuda` | Solicitar ayuda | "Help", "Ayuda", "¿Qué puedes hacer?" |
-| `desconocido` | No clasificable | - |
+El clasificador primario devuelve **tres** etiquetas (`Literal["Consulta", "Acción", "Otros"]` en
+`nlp_intent/app/schemas.py`). `analyze_intention` las normaliza (`service.py::_map_intention`):
 
-## Arquitectura del Clasificador
+| `intention_raw` | `intention` normalizada | Ejemplos (heurística) |
+|---|---|---|
+| `Acción` | `Solicitud de acción` | "generá el informe", "comparar trazas", "actualizar…" |
+| `Consulta` | `Consulta/Generico` | "¿cómo…?", "qué…", "dónde…" o texto con `?` |
+| `Otros` | `Otros` | "hola", "gracias" o sin coincidencias (confianza 0.5) |
 
-```
-Mensaje del usuario
-        ↓
-┌───────────────────┐
-│   Classifier      │
-│  (main entry)     │
-└────────┬──────────┘
-         │
-    ┌────┴────┐
-    ↓         ↓
-Heuristic  LLM Provider
-(rápido)   (OpenAI/compat)
-    ↓         ↓
-    └────┬────┘
-         ↓
-   IntentResult
-   - intent: str
-   - confidence: float
-   - entities: dict
-```
+No hay intents por tema (SLA, infraestructura, saludo, ayuda). Para una
+`Solicitud de acción`, `action_classifier.classify_action` resuelve el `action_code`: hoy sólo
+`repetitividad_report` (habilitado por `INTENT_ACTIONS_ENABLED`); el resto queda `unsupported`.
 
-## Provider Pattern
+## Cadena de providers (`service.py::classify_text`)
 
-```python
-# providers/base.py
-from abc import ABC, abstractmethod
-from pydantic import BaseModel
+`LLM_PROVIDER` decide el orden:
 
-class IntentResult(BaseModel):
-    intent: str
-    confidence: float
-    entities: dict = {}
+- `heuristic` → sólo reglas.
+- `openai` (default) → OpenAI; si falla, cae al fallback final.
+- `ollama` → compatibilidad heredada, fuera de la topología operativa.
+- `auto` → heurística; si la confianza < `INTENT_THRESHOLD` (default 0.7), Ollama y luego OpenAI.
 
-class IntentProvider(ABC):
-    @abstractmethod
-    async def classify(self, text: str) -> IntentResult:
-        pass
+`IntentionResult` (schema v2) agrega `need_clarification`/`clarification_question`, `action_code`,
+`action_supported`, `answer` y `domain_confidence`.
 
-# providers/heuristic.py
-class HeuristicProvider(IntentProvider):
-    PATTERNS = {
-        "informe_sla": ["sla", "acuerdo de nivel"],
-        "informe_repetitividad": ["repetitividad", "alarmas repetidas"],
-        "buscar_infraestructura": ["buscar", "donde está", "encontrar"],
-    }
-    
-    async def classify(self, text: str) -> IntentResult:
-        text_lower = text.lower()
-        for intent, keywords in self.PATTERNS.items():
-            if any(kw in text_lower for kw in keywords):
-                return IntentResult(intent=intent, confidence=0.8)
-        return IntentResult(intent="desconocido", confidence=0.5)
-```
+## Endpoints y consumidores
 
-## Endpoint de Clasificación
+| Endpoint | Respuesta | Quién lo usa |
+|---|---|---|
+| `POST /v1/intent:analyze` | `IntentionResult` | chat del panel (`web/app/routers/chat.py`) |
+| `POST /v1/intent:classify` (deprecated) | `IntentResponse` | bot Telegram (`bot_telegram/handlers/intent.py`), `web/app/main.py` |
+| `GET /health` | `{"status": "ok"}` | healthcheck de compose |
 
-```python
-# app/main.py
-from fastapi import FastAPI
-from pydantic import BaseModel
+El servicio escucha en `nlp_intent:8100` (sólo `expose`, `deploy/compose.yml`) y no accede a la DB.
 
-app = FastAPI(title="NLP Intent Service")
+## Reglas que sigo
 
-class ClassifyRequest(BaseModel):
-    text: str
-    provider: str = "openai"  # openai, heuristic, auto, ollama(legacy)
+1. **Tests sin red**: `LLM_PROVIDER=heuristic` y mocks de OpenAI (`nlp_intent/tests/test_openai_mock.py`).
+2. **Nunca loguear el texto crudo** salvo `LOG_RAW_TEXT=true`: se registra largo + hash SHA-256.
+3. **Fallback a heurística** cuando el LLM falla.
+4. Agregar una acción nueva = patrón en `action_classifier.py` + alta en `INTENT_ACTIONS_ENABLED`
+   + test en `nlp_intent/tests/test_action_and_answers.py`.
 
-class ClassifyResponse(BaseModel):
-    intent: str
-    confidence: float
-    entities: dict
-    provider_used: str
-
-@app.post("/classify", response_model=ClassifyResponse)
-async def classify_intent(request: ClassifyRequest):
-    result = await classifier.classify(request.text, provider=request.provider)
-    return ClassifyResponse(
-        intent=result.intent,
-        confidence=result.confidence,
-        entities=result.entities,
-        provider_used=classifier.last_provider
-    )
-```
-
-## Reglas que Sigo
-
-1. **Fallback a heurístico**: si LLM falla, usar reglas
-2. **Confidence threshold**: < 0.6 = desconocido
-3. **Mock en tests**: nunca llamar a OpenAI en tests
-4. **Cache de resultados**: cachear clasificaciones frecuentes
-5. **Logging de clasificaciones**: registrar para mejorar modelo
-6. **Timeout de LLM**: máximo 5s para clasificación
-
-## Configuración
+## Configuración (`nlp_intent/app/config.py`)
 
 ```
-NLP_DEFAULT_PROVIDER=openai  # openai, heuristic, auto, ollama(legacy)
-NLP_OLLAMA_URL=http://localhost:11434  # sólo para compatibilidad heredada
-NLP_OPENAI_API_KEY=sk-xxx
-NLP_CONFIDENCE_THRESHOLD=0.6
+LLM_PROVIDER=openai            # openai | heuristic | auto | ollama (legacy)
+OPENAI_API_KEY=                # o Docker Secret openai_api_key_v1
+INTENT_THRESHOLD=0.7
+INTENT_CLARIFY_PROVIDER=heuristic
+INTENT_ACTION_PROVIDER=heuristic   # heuristic | llm
+INTENT_DOMAIN_CLASSIFIER=heuristic
+INTENT_ENABLE_ANSWERS=true
+INTENT_MAX_ANSWER_CHARS=800
+INTENT_ACTIONS_ENABLED=repetitividad_report
+OLLAMA_URL=http://ollama:11434  # sólo compatibilidad heredada
+LOG_RAW_TEXT=false
 ```
 
 ## Documentación

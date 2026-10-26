@@ -42,19 +42,19 @@
     {
       "id": "cromo-infra",
       "title": "Infraestructura FO y Cromo Red",
-      "summary": "Ingesta Cromo, cámaras, botellas, cables, ODFs, tracking de caminos ópticos.",
-      "roots": ["core/services/cromo/", "core/services/", "modules/cromo_worker/", "modules/botellas_recalculo_worker/"],
+      "summary": "Ingesta Cromo, cámaras, botellas, cables, ODFs, tracking de caminos ópticos y servicios PROV.",
+      "roots": ["core/services/cromo/", "core/services/", "core/services/prov/", "modules/cromo_worker/", "modules/botellas_recalculo_worker/"],
       "entrypoints": ["core/services/cromo/ingesta.py", "core/services/cromo/tracking_service.py", "core/services/infra_service.py"],
       "docs": ["docs/modulo_ingesta_cromo.md", "docs/infra.md"],
-      "tests": ["tests/test_cromo_*.py", "tests/test_botella*.py"],
+      "tests": ["tests/test_cromo_*.py", "tests/test_botella*.py", "tests/test_prov_*.py"],
       "commands": ["pytest tests/test_cromo_ingesta.py -q"],
       "exclusions": ["tests/*_real_db.py"]
     },
     {
       "id": "sla-reports",
       "title": "Informes SLA y Repetitividad",
-      "summary": "Motor SLA, consumo histórico, repetitividad, plantillas DOCX y conversión PDF.",
-      "roots": ["core/sla/", "core/sla_consumo/", "modules/informes_sla/", "modules/informes_repetitividad/", "office_service/", "Templates/"],
+      "summary": "Motor SLA, consumo histórico, repetitividad, parsers de Excel, plantillas DOCX y conversión PDF.",
+      "roots": ["core/sla/", "core/sla_consumo/", "modules/informes_sla/", "modules/informes_repetitividad/", "office_service/", "Templates/", "modules/common/", "core/parsers/"],
       "entrypoints": ["core/sla/engine.py", "core/sla/report.py", "office_service/app/"],
       "docs": ["docs/informes/", "docs/office_service.md"],
       "tests": ["tests/test_sla*.py", "tests/test_*repetitividad*.py", "tests/test_office*.py"],
@@ -67,7 +67,7 @@
       "summary": "Backend web (puerto dev 8090, sesión/CSRF/WebSocket) y SPA Vue 3 + Vite.",
       "roots": ["web/app/", "web/frontend/src/", "web/tools/"],
       "entrypoints": ["web/app/main.py", "web/app/routers/", "web/app/comun.py", "web/frontend/src/main.ts", "web/frontend/src/router/index.ts"],
-      "docs": ["docs/web.md"],
+      "docs": ["docs/web.md", "docs/clientes_categoria.md"],
       "tests": ["tests/test_web*.py"],
       "commands": ["pytest tests/test_web_*.py -q", "cd web/frontend && npm run build  # sólo deploy"],
       "exclusions": ["web/frontend/node_modules/", "web/frontend/dist/"]
@@ -76,11 +76,22 @@
       "id": "bots-workers",
       "title": "Bots, NLP y workers",
       "summary": "Bot Telegram, notificador/app de Slack, clasificador de intención y FO Monitor.",
-      "roots": ["bot_telegram/", "modules/slack_baneo_notifier/", "nlp_intent/", "modules/fo_monitor_worker/"],
+      "roots": ["bot_telegram/", "modules/slack_baneo_notifier/", "nlp_intent/", "modules/fo_monitor_worker/", "core/services/fo_monitor/"],
       "entrypoints": ["bot_telegram/app.py", "nlp_intent/app/"],
       "docs": ["docs/bot.md", "docs/slack_app_cables.md", "docs/nlp/", "docs/fo_monitor.md"],
       "tests": ["tests/test_bot*.py", "tests/test_slack*.py", "tests/test_fo_monitor*.py", "nlp_intent/tests/"],
       "commands": ["LLM_PROVIDER=heuristic pytest tests/test_slack*.py -q"],
+      "exclusions": []
+    },
+    {
+      "id": "chatbot-mcp",
+      "title": "Chatbot y MCP",
+      "summary": "Orquestador de chat del panel, herramientas MCP (varias stub/rotas) y persistencia de conversaciones.",
+      "roots": ["core/mcp/", "core/chatbot/", "core/repositories/"],
+      "entrypoints": ["core/mcp/registry.py", "core/chatbot/orchestrator.py", "web/app/routers/chat.py"],
+      "docs": ["docs/chatbot.md", "docs/mcp.md"],
+      "tests": ["tests/test_mcp_registry.py", "tests/test_chat_orchestrator.py", "tests/test_web_chat*.py"],
+      "commands": ["LLM_PROVIDER=heuristic pytest tests/test_mcp_registry.py tests/test_chat_orchestrator.py -q"],
       "exclusions": []
     },
     {
@@ -92,6 +103,17 @@
       "docs": ["docs/db.md"],
       "tests": ["tests/test_*migra*.py"],
       "commands": ["alembic -c db/alembic.ini heads"],
+      "exclusions": []
+    },
+    {
+      "id": "deploy-ops",
+      "title": "Despliegue y operación",
+      "summary": "Compose prod (lasfocas) y dev (lasfocasdev), Dockerfiles, env de ejemplo, arranque y runbooks.",
+      "roots": ["deploy/", "Start", "scripts/start_dev.sh", "scripts/build_base.sh"],
+      "entrypoints": ["deploy/compose.yml", "deploy/docker-compose.dev.yml", "deploy/docker/base.Dockerfile"],
+      "docs": ["docs/entorno_dev.md", "docs/despliegue_produccion.md", "docs/Seguridad.md"],
+      "tests": [],
+      "commands": ["docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev ps"],
       "exclusions": []
     }
   ]

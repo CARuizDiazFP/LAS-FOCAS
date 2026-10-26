@@ -101,10 +101,10 @@ Referencia completa: `docs/arquitectura_agentes_worktrees.md`. Skill operativa: 
 
 Invocar con `/nombre-comando [argumentos opcionales]`.
 
-| Comando | Propósito | Argumento útil |
-|---|---|---|
 > Comandos que invocan Python (pytest, alembic, pip-audit) asumen que el virtualenv `.venv/` está activo. Activar con `source .venv/bin/activate` si no lo está.
 
+| Comando | Propósito | Argumento útil |
+|---|---|---|
 | `/iniciar-tarea-agente` | Crea (o confirma) el worktree y la rama efímera propios de esta sesión antes de tocar el repo | `agent-id tipo task-slug` |
 | `/estado-agentes` | Muestra agentes activos, worktrees, leases y handoffs; `doctor` diagnostica inconsistencias | `doctor` o un `agent_id` |
 | `/handoff-agente` | Traspasa la tarea a otro agente conservando rama, worktree, leases y contexto | `origen → destino: siguiente paso` |
@@ -129,19 +129,27 @@ Definidos en `.github/agents/`. Cada agente tiene dominio, herramientas y handof
 | `web` | Vue 3 + Vite + TypeScript | SPA, Vue Router, WebSocket, sesión/CSRF | api, mcp-chatbot, security |
 | `db` | PostgreSQL async | SQLAlchemy, sesiones, Alembic, esquema `app.*` | api, docker |
 | `bot` | Telegram aiogram 3.x | Handlers, FSM, filtros, teclados | nlp, testing, mcp-chatbot |
-| `nlp` | Clasificación de intención | Providers heurístico/OpenAI/Ollama, 6 intents | mcp-chatbot, bot |
+| `nlp` | Clasificación de intención | Providers heurístico/OpenAI/Ollama, 3 intents (Consulta/Acción/Otros) | mcp-chatbot, bot |
 | `mcp-chatbot` | Model Context Protocol | MCPRegistry, ChatOrchestrator, streaming, tools | nlp, reports, web |
 | `infra` | Infraestructura FO Metrotel | Cámaras, rutas Ciena, mapas estáticos | db, api, reports |
 | `reports` | Informes SLA y Repetitividad | Plantillas DOCX/PDF, builders, procesadores | office, db, testing |
-| `office` | LibreOffice headless | Conversión DOCX/XLSX/PPTX→PDF, API puerto 8090 | reports, docker |
+| `office` | LibreOffice headless | `office_service` (UNO, `office:8090`, `/convert` placeholder) y `soffice` por subprocess | reports, docker |
 | `docker` | Infraestructura de contenedores | Compose, Dockerfiles, redes, healthchecks | testing, db |
 | `security` | Auditoría safe-by-design | Secretos, SAST, deps, CORS/XSS en FastAPI/Vue 3 | web, api, db |
-| `testing` | pytest y cobertura | Fixtures, mocks, 60% cobertura mínima, CI | api, bot, reports |
+| `testing` | pytest y cobertura | Fixtures, mocks, cobertura (objetivo 60%, no forzado), CI manual | api, bot, reports |
 | `skill-generator` | Arquitecto meta-agéntico | Crea agentes/prompts/skills (solo reglas, no app code) | — |
 
-**Intents NLP definidos:** `informe_sla`, `informe_repetitividad`, `buscar_infraestructura`, `saludo`, `ayuda`, `desconocido`
+**Intents NLP reales** (`nlp_intent/app/schemas.py`): `Consulta`, `Acción`, `Otros`, normalizados por `/v1/intent:analyze` a `Consulta/Generico`, `Solicitud de acción` y `Otros`. La única acción soportada es `repetitividad_report`.
 
-**Herramientas MCP definidas:** `InformeRepetitividad`, `GenerarMapaGeo`, `CompararTrazas`, `ConvertirDoc`, `RegistrarNotion`
+**Herramientas MCP** (`core/mcp/registry.py::get_default_registry`, estado 2026-10-26):
+`GenerarInformeRepetitividad` (implementada; sin PDF, ver abajo), `GenerarMapaGeo` (sin `folium` en la imagen `web`: falla con
+`MISSING_DEPENDENCY`), `CompararTrazasFO` (stub), `ConvertirDocAPdf` (rota: apunta a
+`office_service:8003` con JSON, y el `/convert` real es un placeholder) y `RegistrarEnNotion` (stub).
+
+> **PDF de informes**: la conversión real es `soffice` por subprocess
+> (`modules/common/libreoffice_export.py`) en el mismo contenedor, pero las imágenes `web`/`api` no
+> instalan LibreOffice: los informes salen sin PDF. Detalle en el agente `office` y la skill
+> `libreoffice-convert`.
 
 ---
 
