@@ -43,6 +43,10 @@ metadata:
       python scripts/agent_worktree.py list            # ¿qué agente los lanzó?
       docker system df                                 # Build Cache "RECLAIMABLE"
     - |
+      for f in $(git diff --name-only); do [ -s "$f" ] || echo "VACIO: $f"; done
+      git diff --stat -- <archivo>          # ¿sólo borrados? entonces no tenía cambios propios previos
+      git show HEAD:<archivo> > <archivo>   # restaurarlo así, archivo por archivo (no `git checkout -- .`)
+    - |
       # Resumen de uso Docker (imágenes, contenedores, volúmenes, cache)
       docker system df
 
@@ -235,6 +239,17 @@ docker system df                                 # Build Cache "RECLAIMABLE"
   partición) y aplicarlos cuando vuelva el espacio.
 - Después de liberar, verificar que `.git/config` siga intacto (`git config --get remote.origin.url`)
   y que no hayan quedado `*.lock`.
+- **Un archivo que se estaba escribiendo queda en 0 bytes** (`write_text`/`>` truncan antes de
+  escribir). Real (2026-10-26, P07): un script de edición de tests dejó
+  `tests/test_web_cromo_ingesta.py` vacío y las ediciones siguientes del mismo script no se aplicaron.
+  Antes de seguir:
+  ```bash
+  for f in $(git diff --name-only); do [ -s "$f" ] || echo "VACIO: $f"; done
+  git diff --stat -- <archivo>          # ¿sólo borrados? entonces no tenía cambios propios previos
+  git show HEAD:<archivo> > <archivo>   # restaurarlo así, archivo por archivo (no `git checkout -- .`)
+  ```
+  Si el archivo tenía cambios propios sin commitear, se perdieron: rehacerlos. Después, volver a
+  aplicar **todo** el lote de ediciones que estaba en curso, no sólo la que falló.
 
 ### 2. Diagnóstico Docker Completo
 
