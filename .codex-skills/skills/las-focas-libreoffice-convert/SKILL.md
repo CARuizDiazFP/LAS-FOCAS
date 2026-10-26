@@ -21,32 +21,15 @@ metadata:
     - "office_service/**"
   commands:
     - |
-      # Entrar al contenedor
-      docker compose -f deploy/compose.yml exec office bash
-
-      # Convertir directamente con soffice
+      docker exec lasfocasdev-web sh -c 'echo "SOFFICE_BIN=$SOFFICE_BIN"; command -v soffice || echo sin-soffice'
+      docker exec lasfocasdev-office sh -c 'command -v soffice'
+    - |
+      docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev exec office bash
       soffice --headless --convert-to pdf --outdir /tmp /ruta/documento.docx
     - |
-      # Convertir archivo
-      curl -X POST "http://localhost:8090/convert?output_format=pdf" \
-        -F "file=@documento.docx" \
-        -o documento.pdf
-    - |
-      # Verificar que el contenedor está corriendo
-      docker compose -f deploy/compose.yml ps office
-
-      # Ver logs
-      docker compose -f deploy/compose.yml logs office
-
-      # Restart
-      docker compose -f deploy/compose.yml restart office
-    - |
-      # Verificar healthcheck
-      curl http://localhost:8090/health
-
-      # Entrar y probar manualmente
-      docker compose -f deploy/compose.yml exec office bash
-      soffice --headless --convert-to pdf /tmp/test.docx
+      docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev ps office
+      docker logs --tail 100 lasfocasdev-office
+      docker exec lasfocasdev-office curl -fsS http://localhost:8090/health
 ---
 
 # Nombre de archivo: SKILL.md

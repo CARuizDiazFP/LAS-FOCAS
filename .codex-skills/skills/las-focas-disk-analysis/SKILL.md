@@ -32,12 +32,16 @@ metadata:
       # Espacio disponible en formato script
       DISK_USAGE=$(df / --output=pcent | tail -1 | tr -d ' %')
       if [ "$DISK_USAGE" -gt 85 ]; then
-          echo "🔴 CRÍTICO: Disco al ${DISK_USAGE}%"
+      echo "🔴 CRÍTICO: Disco al ${DISK_USAGE}%"
       elif [ "$DISK_USAGE" -gt 70 ]; then
-          echo "🟡 ADVERTENCIA: Disco al ${DISK_USAGE}%"
+      echo "🟡 ADVERTENCIA: Disco al ${DISK_USAGE}%"
       else
-          echo "🟢 OK: Disco al ${DISK_USAGE}%"
+      echo "🟢 OK: Disco al ${DISK_USAGE}%"
       fi
+    - |
+      docker ps --format '{{.Names}} {{.Status}}'      # ¿contenedores de otra sesión (p15-*, *-smoke)?
+      python scripts/agent_worktree.py list            # ¿qué agente los lanzó?
+      docker system df                                 # Build Cache "RECLAIMABLE"
     - |
       # Resumen de uso Docker (imágenes, contenedores, volúmenes, cache)
       docker system df
@@ -62,45 +66,49 @@ metadata:
 
       # Volúmenes del proyecto LAS-FOCAS
       docker volume ls --format "{{.Name}}" | grep -E "lasfocas|focas" | while read vol; do
-          SIZE=$(docker system df -v 2>/dev/null | grep "$vol" | awk '{print $NF}')
-          echo "$vol: $SIZE"
+      SIZE=$(docker system df -v 2>/dev/null | grep "$vol" | awk '{print $NF}')
+      echo "$vol: $SIZE"
       done
 
       # Verificar volúmenes que superan 2GB (advertencia)
       docker system df -v 2>/dev/null | grep -E "^[a-z]" | awk '$NF ~ /GB/ && $NF+0 > 2 {print "⚠️ ADVERTENCIA: " $1 " = " $NF}'
     - |
-      # Top 20 directorios en /var/lib/docker (requiere sudo)
+      # Top 20 directorios en /var/lib/docker (requiere sudo con contraseña; si no, docker system df -v)
       sudo du -h --max-depth=2 /var/lib/docker 2>/dev/null | sort -hr | head -20
 
       # Top 10 directorios en el proyecto
-      du -h --max-depth=2 /home/focal/proyectos/LAS-FOCAS 2>/dev/null | sort -hr | head -10
+      du -h --max-depth=2 . 2>/dev/null | sort -hr | head -10
 
       # Archivos más grandes en el proyecto (>10MB)
-      find /home/focal/proyectos/LAS-FOCAS -type f -size +10M -exec ls -lh {} \; 2>/dev/null | awk '{print $5, $9}'
+      find . -type f -size +10M -exec ls -lh {} \; 2>/dev/null | awk '{print $5, $9}'
     - |
-      # Tamaño total de logs del proyecto
-      du -sh /home/focal/proyectos/LAS-FOCAS/Logs/ 2>/dev/null
+      # Tamaño total de logs del proyecto (Logs/ = prod, Logs/dev/ = dev; ver logs-cleanup)
+      du -sh ./Logs/ ./Logs/dev/ 2>/dev/null
 
       # Detalle de archivos de log
-      ls -lah /home/focal/proyectos/LAS-FOCAS/Logs/*.log* 2>/dev/null
+      ls -lah ./Logs/*.log* 2>/dev/null
 
       # Tamaño de informes generados
-      du -sh /home/focal/proyectos/LAS-FOCAS/Reports/ 2>/dev/null
+      du -sh ./Reports/ 2>/dev/null
 
       # Desglose de Reports por subcarpeta
-      du -h --max-depth=1 /home/focal/proyectos/LAS-FOCAS/Reports/ 2>/dev/null
+      du -h --max-depth=1 ./Reports/ 2>/dev/null
 
       # Archivos en devs/output (desarrollo)
-      du -sh /home/focal/proyectos/LAS-FOCAS/devs/output/ 2>/dev/null
+      du -sh ./devs/output/ 2>/dev/null
     - |
       # Total de __pycache__ en el proyecto
-      find /home/focal/proyectos/LAS-FOCAS -type d -name "__pycache__" -exec du -sh {} \; 2>/dev/null
+      find . -type d -name "__pycache__" -exec du -sh {} \; 2>/dev/null
 
       # Suma total
-      find /home/focal/proyectos/LAS-FOCAS -type d -name "__pycache__" -exec du -b {} \; 2>/dev/null | awk '{sum+=$1} END {printf "Total __pycache__: %.2f MB\n", sum/1024/1024}'
+      find . -type d -name "__pycache__" -exec du -b {} \; 2>/dev/null | awk '{sum+=$1} END {printf "Total __pycache__: %.2f MB\n", sum/1024/1024}'
 
       # Archivos .pyc individuales
-      find /home/focal/proyectos/LAS-FOCAS -name "*.pyc" -type f | wc -l
+      find . -name "*.pyc" -type f | wc -l
+    - |
+      du -sh ~/* ~/.[a-z]* 2>/dev/null | sort -hr | head -20
+      du -sh ~/.vscode-server/cli/servers/* ~/.vscode-server/extensions/* 2>/dev/null | sort -hr | head -15
+      du -sh /tmp/* 2>/dev/null | sort -hr | head -5
     - |
       #!/bin/bash
       # Diagnóstico completo de disco para LAS-FOCAS
@@ -113,11 +121,11 @@ metadata:
       echo -e "\n📊 ESTADO GENERAL DEL DISCO"
       echo "─────────────────────────────"
       df -h / | tail -1 | awk '{
-          usage = $5+0
-          if (usage > 85) status = "🔴 CRÍTICO"
-          else if (usage > 70) status = "🟡 ADVERTENCIA"
-          else status = "🟢 OK"
-          printf "Uso: %s (%s) | Disponible: %s | Total: %s\n", $5, status, $4, $2
+      usage = $5+0
+      if (usage > 85) status = "🔴 CRÍTICO"
+      else if (usage > 70) status = "🟡 ADVERTENCIA"
+      else status = "🟢 OK"
+      printf "Uso: %s (%s) | Disponible: %s | Total: %s\n", $5, status, $4, $2
       }'
 
       # 2. Docker
@@ -128,28 +136,28 @@ metadata:
       # 3. Imágenes sin uso
       DANGLING=$(docker images -f "dangling=true" -q | wc -l)
       if [ "$DANGLING" -gt 0 ]; then
-          echo -e "\n⚠️  Imágenes huérfanas (dangling): $DANGLING"
+      echo -e "\n⚠️  Imágenes huérfanas (dangling): $DANGLING"
       fi
 
       # 4. Contenedores detenidos
       EXITED=$(docker ps -a -f "status=exited" -q | wc -l)
       if [ "$EXITED" -gt 0 ]; then
-          echo "⚠️  Contenedores detenidos: $EXITED"
+      echo "⚠️  Contenedores detenidos: $EXITED"
       fi
 
       # 5. Volúmenes (solo informativo)
       echo -e "\n📦 VOLÚMENES (solo informativo, no eliminar)"
       echo "─────────────────────────────"
       docker volume ls --format "{{.Name}}" | while read vol; do
-          echo "  • $vol"
+      echo "  • $vol"
       done
 
       # 6. Logs y Reports
       echo -e "\n📁 ARCHIVOS DEL PROYECTO"
       echo "─────────────────────────────"
-      echo "  Logs:    $(du -sh /home/focal/proyectos/LAS-FOCAS/Logs/ 2>/dev/null | cut -f1)"
-      echo "  Reports: $(du -sh /home/focal/proyectos/LAS-FOCAS/Reports/ 2>/dev/null | cut -f1)"
-      echo "  Cache:   $(find /home/focal/proyectos/LAS-FOCAS -type d -name '__pycache__' -exec du -b {} \; 2>/dev/null | awk '{sum+=$1} END {printf "%.1f MB", sum/1024/1024}')"
+      echo "  Logs:    $(du -sh ./Logs/ 2>/dev/null | cut -f1)"
+      echo "  Reports: $(du -sh ./Reports/ 2>/dev/null | cut -f1)"
+      echo "  Cache:   $(find . -type d -name '__pycache__' -exec du -b {} \; 2>/dev/null | awk '{sum+=$1} END {printf "%.1f MB", sum/1024/1024}')"
 
       echo -e "\n═══════════════════════════════════════════════════════════════"
 ---
@@ -204,6 +212,29 @@ else
     echo "🟢 OK: Disco al ${DISK_USAGE}%"
 fi
 ```
+
+**`Avail 0` con `Use%` en 95-100 %: lo está llenando root, a menudo otra sesión.** ext4 reserva ~5 %
+(2 G de 40 G) para root. Los contenedores que escriben como root (pip/pytest en `python:*-slim`,
+builds) siguen escribiendo en esa reserva, mientras los procesos del usuario ven 0 bytes: fallan
+los commits (`unable to write loose object file`), la escritura de archivos queda truncada y la
+transcripción de la propia sesión no puede guardarse. Real (2026-10-26): las corridas en contenedor
+de P15 llenaron el disco en medio del cierre de P08. El PR diario quedó a medio escribir. El push
+sí llegó al remoto, pero falló la actualización del ref local.
+
+```bash
+docker ps --format '{{.Names}} {{.Status}}'      # ¿contenedores de otra sesión (p15-*, *-smoke)?
+python scripts/agent_worktree.py list            # ¿qué agente los lanzó?
+docker system df                                 # Build Cache "RECLAIMABLE"
+```
+
+- Liberar `__pycache__` propios no alcanza: lo que se libera se consume enseguida.
+- El primer paso seguro es `docker builder prune -f` (**sin `-a`**): sólo cache sin uso. No toca
+  imágenes, rollbacks de prod, volúmenes ni contenedores. Liberó 3,07 GB en ese caso, **con
+  confirmación del usuario**.
+- Mientras tanto, redactar los textos largos en el scratchpad de la sesión (`/tmp`, tmpfs, otra
+  partición) y aplicarlos cuando vuelva el espacio.
+- Después de liberar, verificar que `.git/config` siga intacto (`git config --get remote.origin.url`)
+  y que no hayan quedado `*.lock`.
 
 ### 2. Diagnóstico Docker Completo
 

@@ -51,6 +51,29 @@ else
 fi
 ```
 
+**`Avail 0` con `Use%` en 95-100 %: lo está llenando root, a menudo otra sesión.** ext4 reserva ~5 %
+(2 G de 40 G) para root. Los contenedores que escriben como root (pip/pytest en `python:*-slim`,
+builds) siguen escribiendo en esa reserva, mientras los procesos del usuario ven 0 bytes: fallan
+los commits (`unable to write loose object file`), la escritura de archivos queda truncada y la
+transcripción de la propia sesión no puede guardarse. Real (2026-10-26): las corridas en contenedor
+de P15 llenaron el disco en medio del cierre de P08. El PR diario quedó a medio escribir. El push
+sí llegó al remoto, pero falló la actualización del ref local.
+
+```bash
+docker ps --format '{{.Names}} {{.Status}}'      # ¿contenedores de otra sesión (p15-*, *-smoke)?
+python scripts/agent_worktree.py list            # ¿qué agente los lanzó?
+docker system df                                 # Build Cache "RECLAIMABLE"
+```
+
+- Liberar `__pycache__` propios no alcanza: lo que se libera se consume enseguida.
+- El primer paso seguro es `docker builder prune -f` (**sin `-a`**): sólo cache sin uso. No toca
+  imágenes, rollbacks de prod, volúmenes ni contenedores. Liberó 3,07 GB en ese caso, **con
+  confirmación del usuario**.
+- Mientras tanto, redactar los textos largos en el scratchpad de la sesión (`/tmp`, tmpfs, otra
+  partición) y aplicarlos cuando vuelva el espacio.
+- Después de liberar, verificar que `.git/config` siga intacto (`git config --get remote.origin.url`)
+  y que no hayan quedado `*.lock`.
+
 ### 2. Diagnóstico Docker Completo
 
 ```bash

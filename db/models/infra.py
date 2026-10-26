@@ -113,8 +113,17 @@ class IngresoTipo(str, Enum):
 # TABLAS ASOCIATIVAS (Many-to-Many)
 # =============================================================================
 
-# DEPRECATED: Esta tabla se mantiene por retrocompatibilidad durante la migración.
-# Las nuevas implementaciones deben usar ruta_empalme_association.
+# LEGACY, pero VIVA: el modelo nuevo es ruta_empalme_association (vía RutaServicio), aunque esta tabla
+# se sigue escribiendo y leyendo en paralelo (en dev, 2026-10-26: 2967 filas de 49 servicios).
+# - Escriben: core/services/infra_service.py (las altas/merges de tracking hacen
+#   `servicio.empalmes.append`), core/services/servicios_fusion_prov.py::aplicar_plan y
+#   scripts/servicios_fusionar_identidades_duplicadas.py (reasignan), y los borrados de
+#   api/app/routes/infra.py (limpiar asociaciones) y api/app/routes/servicios.py (placeholders).
+# - Leen: la búsqueda por servicio de api/app/routes/infra.py (`selectinload(Servicio.empalmes)`)
+#   y el chequeo de "placeholder tocado" de api/app/routes/servicios.py.
+# Para retirarla falta: pasar esas lecturas a RutaServicio.empalmes, dejar de escribirla en
+# infra_service, migrar las filas que no tengan ruta equivalente y recién ahí una migración que
+# la borre. Las nuevas implementaciones usan ruta_empalme_association.
 servicio_empalme_association = Table(
     "servicio_empalme_association",
     Base.metadata,
@@ -270,7 +279,7 @@ class Empalme(Base):
 
     camara = relationship("Camara", back_populates="empalmes")
     
-    # DEPRECATED: Relación directa servicio<->empalme (mantener por retrocompatibilidad)
+    # LEGACY: relación directa servicio<->empalme, todavía en uso (ver servicio_empalme_association)
     servicios = relationship(
         "Servicio",
         secondary=servicio_empalme_association,
@@ -339,11 +348,6 @@ class RutaServicio(Base):
 
     def __repr__(self) -> str:
         return f"<RutaServicio id={self.id} servicio_id={self.servicio_id} nombre='{self.nombre}' tipo={self.tipo.value}>"
-
-    @property
-    def empalmes_ordenados(self) -> List["Empalme"]:
-        """Retorna los empalmes en orden de aparición en la ruta."""
-        return list(self.empalmes)
 
     @property
     def punta_a(self) -> Optional["PuntoTerminal"]:
@@ -473,7 +477,7 @@ class Servicio(Base):
         order_by="RutaServicio.created_at",
     )
 
-    # DEPRECATED: Relación directa servicio<->empalme (mantener por retrocompatibilidad)
+    # LEGACY: relación directa servicio<->empalme, todavía en uso (ver servicio_empalme_association)
     empalmes = relationship(
         "Empalme",
         secondary=servicio_empalme_association,
@@ -525,20 +529,6 @@ class Servicio(Base):
     def rutas_activas(self) -> List["RutaServicio"]:
         """Retorna todas las rutas activas del servicio."""
         return [r for r in self.rutas if r.activa]
-
-    @property
-    def todos_los_empalmes(self) -> List["Empalme"]:
-        """Retorna todos los empalmes de todas las rutas activas (sin duplicados).
-
-        Útil para retrocompatibilidad con código que usaba servicio.empalmes directamente.
-        """
-        empalmes_set = {}
-        for ruta in self.rutas_activas:
-            for empalme in ruta.empalmes:
-                if empalme.id not in empalmes_set:
-                    empalmes_set[empalme.id] = empalme
-        return list(empalmes_set.values())
-
 
 class ServicioHistorialId(Base):
     """Un eslabón de la cadena de upgrades de ID de un Servicio, según PROV (`cadena_upgrade`).

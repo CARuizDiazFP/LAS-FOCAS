@@ -280,24 +280,6 @@ services:
       - ../Logs/dev:/app/Logs
     group_add: ["1001"]  # el usuario `office` de la imagen escribe en Logs/ por grupo
 
-  repetitividad_worker:
-    logging: *logging-default
-    build:
-      context: ..
-      dockerfile: deploy/docker/repetitividad_worker.Dockerfile
-    profiles: ["reports-worker"]
-    user: "1001:1001"
-    env_file:
-      - ../.env.dev
-    environment:
-      LOGS_DIR: /app/Logs
-      TEMPLATES_DIR: /app/Templates
-    volumes:
-      - ../Logs/dev:/app/Logs
-      - ../Templates:/app/Templates:ro
-      - ../Reports:/app/data/reports
-    command: ["python", "-m", "modules.informes_repetitividad.worker"]
-
   slack_baneo_worker:
     logging: *logging-default
     build:

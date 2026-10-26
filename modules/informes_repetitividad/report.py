@@ -335,14 +335,3 @@ def _to_float(value: Optional[float]) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):  # noqa: BLE001
         return None
-
-
-def generate_geo_map(
-    data: ResultadoRepetitividad,
-    periodo: Params,
-    out_dir: str,
-) -> Optional[str]:
-    """Compatibilidad: genera el primer mapa disponible o retorna None."""
-
-    maps = generate_service_maps(data, periodo, out_dir, with_geo=True)
-    return str(maps[0]) if maps else None

@@ -48,11 +48,6 @@ class RespuestaParseada:
     lineas_invalidas: list[str] = field(default_factory=list)
     completa: bool = False
 
-    @property
-    def ids_con_linea(self) -> set[str]:
-        return {k for k, v in self.resultados.items() if v.parseado}
-
-
 def _limpiar_linea(linea: str) -> str:
     return linea.strip().strip(_DECORACION).strip()
 

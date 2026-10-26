@@ -40,7 +40,6 @@ ARCHIVO_POR_SERVICIO = {
     "nlp_intent": "nlp_intent.log",
     "bot": "bot.log",
     "office": "office.log",
-    "repetitividad_worker": "repetitividad_worker.log",
     "slack_baneo_worker": "slack_baneo_worker.log",
     "cromo_worker": "cromo_worker.log",
     "botellas_recalculo_worker": "botellas_recalculo_worker.log",

@@ -24,12 +24,16 @@ metadata:
     - "web/frontend/package.json"
   commands:
     - |
-      pip-audit -r requirements.txt
-      pip-audit -r requirements-dev.txt
-      pip-audit -r api/requirements.txt
-      pip-audit -r bot_telegram/requirements.txt
-      pip-audit -r nlp_intent/requirements.txt
-      pip-audit -r office_service/requirements.txt
+      OUT=<scratchpad>/audit; mkdir -p "$OUT"
+      docker run --rm -v "$PWD":/w:ro -v "$OUT":/out --entrypoint sh python:3.11-slim-bookworm -c '
+      pip install -q pip-audit==2.7.3
+      for f in common-requirements.txt requirements.txt requirements-dev.txt api/requirements.txt \
+      web/requirements.txt bot_telegram/requirements.txt office_service/requirements.txt \
+      modules/*/requirements.txt; do
+      (cd /w && pip-audit -r "$f" -f json --progress-spinner off > "/out/$(echo $f | tr / _).json")
+      echo "$f rc=$?"
+      done'
+      # resumen: paquete, versión, cantidad de vulns y fix mínimo/máximo por archivo (leer los JSON con python)
       cd web/frontend && npm audit --audit-level=high
 ---
 
@@ -64,7 +68,7 @@ Qué corre en cada imagen (ver la cabecera de `common-requirements.txt`):
 - `requirements.txt` (raíz) y `requirements-dev.txt` → sólo el venv local y la CI; ningún Dockerfile los usa.
 - `web/frontend/package.json`
 - Inventario real: `grep -rn "requirements\|pip install" deploy/docker/*.Dockerfile */Dockerfile`. Ahí aparecen
-  también los paquetes instalados inline, como `geopandas` en `repetitividad_worker.Dockerfile`.
+  también los paquetes instalados inline (hoy sólo el bloque `pip install` de `deploy/docker/base.Dockerfile`).
 
 ## Procedimiento
 

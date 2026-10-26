@@ -13,4 +13,4 @@
 - Después de cualquier cambio, actualizar los hashes esperados en `tests/test_templates_integrity.py`.
 - Mantener un registro en `docs/informes/*.md` de los ajustes realizados.
 - Las versiones empaquetadas en Docker se montan en `/app/Templates`.
-- Servicios consumidores actuales: `web` (montado en `deploy/compose.yml`) y el worker `repetitividad_worker` (perfil `reports-worker`).
+- Servicio consumidor actual: `web` (montado en `deploy/compose.yml`).

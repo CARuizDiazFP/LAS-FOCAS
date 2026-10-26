@@ -85,7 +85,7 @@
    - Maquetación (2026-10-19): **una tabla por hoja** (cada servicio arranca en hoja nueva) y, si el servicio tiene coordenadas, **el mapa ocupa la hoja siguiente** a página completa. El PNG se genera con la proporción del área útil A4 (`MAP_PAGE_STYLE`, 6.9 × 9.8 in, 150 dpi, paleta de 256 colores) y el encuadre se expande en el eje corto (`fit_bounds_to_aspect`) para que el zoom llene la hoja sin deformar ni recortar puntos.
    - Tiles: OSM bloquea el User-Agent genérico de contextily y responde HTTP 200 con una imagen "Access blocked" (el log igual decía `basemap=True`). `static_map` fija `contextily.tile.USER_AGENT` con un UA identificable (`MAPS_TILE_USER_AGENT` lo sobrescribe).
    - Descarga: los PNG viven en `REPORTS_DIR/maps_YYYYMM/`; la web y la herramienta MCP publican `/reports/maps_YYYYMM/<archivo>.png` (antes se perdía la subcarpeta y el link daba 404).
-   - El worker `repetitividad_worker` mantiene `geopandas` para tareas enfocadas; API/web/bot consumen directamente los PNG almacenados en `REPORTS_DIR`.
+   - Los mapas se generan en el mismo proceso que arma el informe (sin worker aparte ni `geopandas`); API/web/bot consumen los PNG almacenados en `REPORTS_DIR`.
 5. **Integraciones**
    - Exponer servicio REST (`POST /reports/repetitividad`) reutilizable por bot y web.
    - Orquestar envío de archivos desde web/Telegram usando `REPORTS_DIR`.
@@ -99,21 +99,11 @@
 
 ### Fixtures de integración
 - `tests/fixtures/repetitividad/casos_repetitividad_base.xlsx`: dataset controlado para validar el cálculo principal (dos servicios repetitivos y uno único).
-- `tests/fixtures/repetitividad/casos_repetitividad_geo.xlsx`: incluye descripciones con coordenadas (prefijo `GEO:`) para futuras pruebas del worker geoespacial.
+- `tests/fixtures/repetitividad/casos_repetitividad_geo.xlsx`: incluye descripciones con coordenadas (prefijo `GEO:`) para pruebas de los mapas.
 
-### Jobs para `repetitividad_worker`
-- El worker dedicado (`modules/informes_repetitividad/worker.py`) se desplegará con la imagen `deploy/docker/repetitividad_worker.Dockerfile` (perfil `reports-worker`).
-- Payload inicial previsto (cola a definir):
-  ```json
-  {
-    "type": "repetitividad.maps",
-    "docx": "/app/data/reports/repetitividad_202407.docx",
-    "detalles": [
-      {"servicio": "Fibra 100", "coordenadas": [[-34.60, -58.38], [-34.61, -58.37]]}
-    ]
-  }
-  ```
-- Objetivos de la primera iteración del worker:
-  1. Consumir este payload desde una cola Redis/Celery.
-  2. Generar PNGs y adjuntarlos al reporte (o guardarlos junto al DOCX).
-  3. Registrar métricas de uso y tiempos de render.
+### Worker geoespacial (retirado)
+- `modules/informes_repetitividad/worker.py` era un placeholder (`while True: sleep(60)`) con servicio
+  `repetitividad_worker` (perfil `reports-worker`) y una imagen propia con `geopandas`. Nunca procesó
+  trabajos: se retiró el 2026-10-26 (worker, `runner.py`, Dockerfile y servicio en los dos compose).
+  Si alguna vez hace falta sacar los mapas del proceso web, conviene reusar la cola Redis que ya usan
+  `botellas_recalculo_worker` y `cromo_worker`.

@@ -48,11 +48,9 @@ leerlo antes de ejecutar.
 - `cromo_relevamiento_cables_fantasma.py`: Relevamiento de sólo lectura de cables vigentes en la base local que Cromo ya borró, con sucesores y cobertura de servicios.
 - `cromo_inconsistencias_medicion.py`: Mide el detector de inconsistencias de Cromo en modo reporte (no escribe): conteos por tipo, caso testigo y muestra validada contra Cromo en vivo.
 - `arnes_busqueda_camaras.py`: Arneses de sólo lectura de la búsqueda de cámaras para comparar el código base contra una rama.
-- `linea_base_busqueda_camaras.py`: Graba y compara la línea base de smart search y exportación de Cámaras contra la base de dev.
-- `fo_monitor_poc_burrito.py`: Fase 0 de FO Monitor — prueba real bot→bot contra burritoIA en Slack (latencia, hilo, bloque FOMON).
-- `fo_monitor_simular_ingreso.py`: Simula un ingreso/egreso de técnico (vía `registrar_movimiento_ingreso`) para probar FO Monitor en dev.
-- `test_map_generation.py`: Prueba manual de la generación de mapas estáticos.
-- `test_sla_web.py`: Prueba manual del endpoint SLA, capturando errores.
+- `linea_base_busqueda_camaras.py`: Graba y compara la línea base de smart search y exportación de Cámaras contra la base de dev. Se conserva como arnés de regresión de smart-search (P17).
+- `fo_monitor_poc_burrito.py`: Fase 0 de FO Monitor — prueba real bot→bot contra burritoIA en Slack (latencia, hilo, bloque FOMON). Se conserva: se reusa cuando se habilite la ingesta automática de FO Monitor (hoy deshabilitada).
+- `fo_monitor_simular_ingreso.py`: Simula un ingreso/egreso de técnico (vía `registrar_movimiento_ingreso`) para probar FO Monitor en dev. Se conserva por el mismo motivo que la POC.
 
 #### Mantenimiento de datos re-ejecutable (dry-run por defecto)
 
