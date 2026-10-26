@@ -147,7 +147,7 @@ La sincronización no puede ser manual ni implícita. Debe existir una verificac
 - si un mirror difiere, se marca `drift_detected`;
 - el flujo de cierre no puede terminar con drift pendiente.
 
-Se recomienda un script de verificación tipo `scripts/check_agent_sync.sh` que haga:
+Se recomienda un script de verificación tipo `scripts/check_agent_sync.sh` que haga (implementado después como `scripts/check_skill_mirror_drift.sh`, apoyado en `scripts/sync_skill_mirrors.py`; `check_agent_sync.sh` nunca existió):
 
 - diff entre `.agentes-comunes/skills` y `.github/skills`;
 - diff entre `.agentes-comunes/skills` y `.claude/skills` para los skills habilitadas;
@@ -229,7 +229,7 @@ Si un agente queda interrumpido, no existe un contrato de continuidad formal par
 ### Fase 2 — Enfoque de sincronización
 
 - Hacer de `scripts/sync_agentes_comunes.sh` una validación obligatoria del pipeline.
-- Añadir `scripts/check_agent_sync.sh` a CI y pre-commit.
+- Añadir `scripts/check_agent_sync.sh` a CI y pre-commit (hoy: `scripts/check_skill_mirror_drift.sh`, que corre en el job `skills-drift` de `.github/workflows/ci.yml`).
 - Fail si `.agentes-comunes` y mirrors no coinciden.
 
 ### Fase 3 — Integración CI/CD
