@@ -452,6 +452,32 @@ with mock.patch.object(app_module, "verify_password", return_value=True):  # só
         r = client.get("/api/algun/endpoint/real")
 ```
 
+## Medir el contexto de build y fijar tags de imagen (lecciones 2026-10-26, P01)
+
+**El contexto de build se mide contra el checkout de control, no contra el worktree.** Los datos que el
+`.dockerignore` tiene que excluir (`backup_prod.dump`, `tmp/`, `data/`, `web/data/reports`) están ignorados
+por Git: existen sólo en el control, que es desde donde se buildea prod. Medido en el worktree, el contexto
+"ya está limpio" y el chequeo no prueba nada. Para probar un `.dockerignore` nuevo sin tocar el del control,
+usar el ignore por Dockerfile de BuildKit (`<nombre>.Dockerfile.dockerignore` al lado del Dockerfile):
+
+```bash
+S=<scratchpad>; cp <worktree>/.dockerignore $S/medir.Dockerfile.dockerignore
+printf 'FROM focas-base:latest\nCOPY . /ctx\nRUN du -sk /ctx; find /ctx -name "*.dump"\n' > $S/medir.Dockerfile
+docker build --no-cache --progress=plain -f $S/medir.Dockerfile --output type=cacheonly <checkout-de-control>
+```
+
+Con `FROM` una imagen **ya local** (`focas-base:latest`): un `FROM python:3.11-slim-bookworm` la bajó del
+registry porque no estaba en el host, y hubo que borrarla después. El `du -sk /ctx` es la cifra que vale: el
+"transferring context" de BuildKit es incremental y, desde la segunda corrida, sólo muestra el delta.
+
+**Fijar un tag "a la versión que corre" exige comparar digests, no versiones.** `docker exec <c> sh -c 'echo
+$PG_VERSION; cat /etc/alpine-release'` da la versión; `docker buildx imagetools inspect <tag>` da el digest
+del tag en el registry, que se compara con `docker image inspect -f '{{.RepoDigests}}'` local. Real: Redis
+`7.4.11-alpine3.21` ya apuntaba a un rebuild (`57e4…`) distinto del que corría (`ff02…`); se fijó con
+`tag@sha256:<digest>`. Y aunque el digest sea el mismo, **cambiar la referencia `image:` (o el healthcheck)
+cambia el hash de config del servicio: el próximo `up` recrea el contenedor** (`postgres` incluido). Avisarlo
+como impacto del despliegue.
+
 ## Script de Inicio Rápido
 
 ```bash
