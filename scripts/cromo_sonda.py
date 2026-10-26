@@ -1,6 +1,6 @@
 # Nombre de archivo: cromo_sonda.py
 # Ubicación de archivo: scripts/cromo_sonda.py
-# Descripción: Script de descubrimiento de sólo lectura contra Cromo Red para cerrar puntos abiertos de docs/ingesta_cromo.md
+# Descripción: Script de descubrimiento de sólo lectura contra Cromo Red para cerrar puntos abiertos de docs/modulo_ingesta_cromo.md
 
 from __future__ import annotations
 
@@ -215,7 +215,7 @@ async def _inventariar_atributos(cliente: CromoClient) -> tuple[SeccionSonda, li
 async def _controlar_capacidad(cliente: CromoClient, cables: list[dict[str, Any]]) -> SeccionSonda:
     """Compara at.32 contra los class 130 reales, obtenidos vía /inner por cable.
 
-    El barrido directo (`filter=51`) nunca trae `inner[]` (ver docs/ingesta_cromo.md
+    El barrido directo (`filter=51`) nunca trae `inner[]` (ver docs/modulo_ingesta_cromo.md
     capítulo 2, corrección 8): comparar contra ese `inner[]` ausente da 0 pelos siempre,
     un falso positivo de divergencia. El punto 3 de esta sonda confirma que `/inner`
     por cable sí expande tubos y pelos, así que se usa ese endpoint para el conteo real.
