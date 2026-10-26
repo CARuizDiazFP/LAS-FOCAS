@@ -171,7 +171,9 @@ def sample_alarma():
 
 ## Cobertura Mínima
 
-> **Regla**: 60% de cobertura para módulos nuevos en MVP
+> **Objetivo**: 60% de cobertura para módulos nuevos. **No se aplica automáticamente** (verificado
+> 2026-10-26): ni `pytest.ini`, ni `.github/workflows/ci.yml`, ni el gate de `ready`
+> (`scripts/agentes/calidad.py`) usan `--cov-fail-under`. Medirlo a mano al cerrar un módulo nuevo.
 
 ```bash
 # Verificar cobertura de módulo específico
@@ -566,8 +568,8 @@ habría dado 500 apenas hubiera puntos terminales cargados (en dev y prod la tab
   Agregar además `assert len(_RUTAS_ADMIN) >= N` para que el test no pase vacío. La lista a mano
   cubría 11 de 20 rutas en Servicios y 12 de 33 en Cromo.
 - **Sesión simulada:** usar el fixture `con_sesion("admin" | "user" | None)` (`tests/soporte_sesion.py`),
-  que llama a las dependencias reales con un request falso. No parchear `get_current_user` ni
-  `_require_auth` en el router. Si hace falta, parchear la única fuente, `comun._require_auth`.
+  que llama a las dependencias reales con un request falso. No parchear `_require_auth` en el
+  router (`comun.get_current_user` es un helper sin llamadores: tampoco sirve parchearlo). Si hace falta, parchear la única fuente, `comun._require_auth`.
 
 ## Checklist Pre-Commit
 
