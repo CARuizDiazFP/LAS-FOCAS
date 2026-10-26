@@ -288,6 +288,13 @@ docker exec lasfocasdev-web rm -rf /tmp/wt          # siempre al terminar
   ```
   Con `--rm`, el `rmi` inmediato tras `stop` puede fallar con "image is being used": el borrado del
   contenedor es asíncrono; reintentar a los segundos.
+  Con `--rm`, además, `docker logs` desaparece junto con el contenedor: revisar los logs **antes** del
+  `stop`. Real (2026-10-26, P04): un `grep -c error` dio 1 sobre un contenedor ya borrado, y hubo que
+  relanzarlo para ver que era un 401 esperado. Para servir la app `web` con el código de un worktree
+  sin tocar `lasfocasdev-web`, montar `web/app` → `/app/app`, `core`, `db`, `modules` y los tres
+  módulos sueltos de `web/` (`:ro`), con los `Dev_*` secrets y `--env-file` sacado de
+  `docker inspect lasfocasdev-web --format '{{range .Config.Env}}{{println .}}{{end}}'` (umask 077,
+  borrarlo después). `/app/Logs` y `/app/data/*` van como `--tmpfs` con `uid=1001`.
 - La primera corrida en frío de una consulta sobre tablas grandes puede tardar 10× más que las
   siguientes (real: 21,8 s → 0,4 s / 0,1 s). Repetir antes de sacar conclusiones de tiempo.
 - Para prod, el mismo patrón sirve empaquetado en un script operativo que el usuario lanza con

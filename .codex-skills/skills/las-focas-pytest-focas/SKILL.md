@@ -611,6 +611,47 @@ habría dado 500 apenas hubiera puntos terminales cargados (en dev y prod la tab
   que llama a las dependencias reales con un request falso. No parchear `_require_auth` en el
   router (`comun.get_current_user` es un helper sin llamadores: tampoco sirve parchearlo). Si hace falta, parchear la única fuente, `comun._require_auth`.
 
+## Endpoints web `async def` → `def` y tests de rendimiento (lección 2026-10-26, P04)
+
+Al sacar el I/O sync del event loop del web (`tests/test_web_event_loop_sin_io_sync.py`), cuatro
+trampas reales:
+
+- **Un test que llama al endpoint directo rompe fuera de `tests/test_web_*.py`.** Tras pasar
+  `api_reports_history` a `def`, la suite web quedó en verde y la completa falló en
+  `tests/test_report_history.py` (`asyncio.run(endpoint(...))` → `ValueError: a coroutine was expected`).
+  Antes de correr nada, grepear **todo** `tests/` por los nombres convertidos:
+  ```bash
+  P=$(paste -sd'|' convertidos.txt)
+  grep -rnE "\.($P)\(|\b(await|asyncio\.run\() *[a-z_.]*($P)\b" tests/ --include=*.py
+  ```
+- **"Corre en un hilo aparte" se prueba con el hilo, no con la función que recibe `to_thread`.**
+  Tres tests espiaban `asyncio.to_thread` y exigían que recibiera `detectar_grupos_…` directo;
+  rompieron con un refactor correcto (envolverla en una función que abre su propia `Session`). Se
+  reescribieron registrando `threading.get_ident()` en un fake async (el hilo del loop) y en el fake
+  sync, y comparando. Un fake async que el camino probado no llama (p. ej. leer la caché con
+  `refrescar=true`) deja la clave sin registrar: elegir uno que sí se ejecute.
+- **"La cantidad de queries no crece con N": comparar 20 contra 200, no 5 contra 200.** Con pocas
+  filas algunas etapas de `selectinload` no tienen padres y no consultan (12 vs 13 sentencias, falso
+  rojo). Y `selectinload` parte cada 500 padres: con 500 filas aparecen 5 sentencias más, una por lote,
+  no una por fila. Medido en dev: 13 sentencias con 20, 50, 100 y 200 filas, y 18 con 500.
+- **Inventario por texto: `"SessionLocal(" in cuerpo` también encuentra `AsyncSessionLocal(`.** El
+  primer conteo dio 136 endpoints en vez de 66. Comparar el nombre exacto de la llamada en el AST
+  (`ast.Call` → `Name`/`Attribute`), no subcadenas.
+
+**Medir el bloqueo del event loop, base contra rama** (fue la evidencia que importó: `/health` pasó de
+7,2 s a 37 ms bajo carga):
+
+1. Armar el árbol base con `git archive origin/dev web core db modules | tar -x -C <scratch>/base`.
+2. Escribir una app de medición que importe `web.app.main`, ponga overrides en `usuario_sesion` y
+   `usuario_admin`, y abra transacciones `SET TRANSACTION READ ONLY` con un listener `begin` del engine.
+3. Levantar dos uvicorn de **un proceso** contra la DB de dev publicada (5433), cada uno con su
+   `PYTHONPATH`: el base y el worktree.
+4. Lanzar N requests pesados en hilos mientras otro hilo pide `/health` cada 50 ms, y reportar el
+   máximo.
+
+Para bajarlos, matar por PID o con `pgrep -f "[a]pp_medicion"`: un `pkill -f app_medicion` corrido
+desde el mismo `bash -c` matchea su propia línea de comando y mata la shell (exit 144).
+
 ## Checklist Pre-Commit
 
 - [ ] `pytest` pasa sin errores

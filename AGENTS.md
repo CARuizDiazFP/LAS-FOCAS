@@ -105,6 +105,11 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 ## Gotchas
 
 - Existe conflicto potencial entre `api/app` y `web/app`; evitar imports ambiguos y respetar `pytest.ini`.
+- El web (`web/app/`) corre uvicorn con **un solo proceso**: un endpoint `async def` que abre `SessionLocal`,
+  conecta con psycopg, verifica bcrypt o habla con Slack/SMTP/Docker congela el panel, el chat y los WebSocket de
+  todos los usuarios mientras dura (real 2026-10-24: 66 endpoints; una búsqueda de Cámaras dejaba `/health` 7 s sin
+  responder). Si no hace `await` de nada, va como `def`; si mezcla, la parte sync va a `asyncio.to_thread`, y una
+  `Session` nunca cruza entre el loop y el hilo. Lo vigila `tests/test_web_event_loop_sin_io_sync.py`.
 - En la imagen de `web`, `web/app` se copia como `app` (`COPY web/app /app/app`): un módulo suelto de `web/`
   (`fo_monitor_routes.py`, `chat_ws.py`, `admin_ws.py`) que importe `web.app...` pasa todos los tests y tumba el
   contenedor con `ModuleNotFoundError: No module named 'web.app'` (real 2026-10-23). Usar `try: from web.app... except
