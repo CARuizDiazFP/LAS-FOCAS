@@ -30,6 +30,9 @@ export class ApiError extends Error {
   }
 }
 
+/** Header que valida `requiere_csrf` en el backend (canónico; el `csrf_token` del body es de transición). */
+export const CSRF_HEADER = 'X-CSRF-Token';
+
 let csrfToken: string | null = null;
 
 function legacyWindow(): Window & { CSRF_TOKEN?: string } {
@@ -117,6 +120,13 @@ export async function request(url: string, options: ApiRequestOptions = {}): Pro
 
   const nextHeaders = new Headers(headers);
   let nextBody: BodyInit | null | undefined = body;
+
+  // Todo pedido mutante lleva el token en el header, aunque no pida `csrf: true`: el backend lo exige
+  // en cualquier POST/PUT/PATCH/DELETE de una sesión iniciada.
+  const token = getCsrfToken();
+  if (method !== 'GET' && token && !nextHeaders.has(CSRF_HEADER)) {
+    nextHeaders.set(CSRF_HEADER, token);
+  }
 
   if (formData) {
     nextBody = csrf ? withCsrfFormData(formData) : cloneFormData(formData);

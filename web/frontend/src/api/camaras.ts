@@ -2,7 +2,7 @@
 // Ubicación de archivo: web/frontend/src/api/camaras.ts
 // Descripción: Cliente frontend para la ingesta masiva de cámaras, el listado del dashboard Viewer y la detección de duplicados
 
-import { ApiError, getCsrfToken, requestJson } from './client';
+import { ApiError, CSRF_HEADER, getCsrfToken, requestJson } from './client';
 
 export interface CamaraViewerItem {
   id: number;
@@ -117,6 +117,7 @@ export function ingestCamarasFile(
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/admin/ingesta/camaras', true);
     xhr.withCredentials = true;
+    xhr.setRequestHeader(CSRF_HEADER, getCsrfToken());
 
     xhr.upload.onprogress = (event: ProgressEvent<EventTarget>) => {
       if (!event.lengthComputable || !onProgress) return;

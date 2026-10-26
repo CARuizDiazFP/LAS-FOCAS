@@ -2,7 +2,7 @@
 // Ubicación de archivo: web/frontend/src/admin/api/clientesCategoria.ts
 // Descripción: Cliente del panel admin "Clientes por categoría" — listado, cambio, lista oficial, alias, fusión y sync
 
-import { ApiError, getCsrfToken, requestJson } from '../../api/client';
+import { ApiError, CSRF_HEADER, getCsrfToken, requestJson } from '../../api/client';
 
 // ─── Tipos ───────────────────────────────────────────────────────────────
 
@@ -123,6 +123,7 @@ function subirListaArchivo<T>(url: string, archivo: File, categoria: number | nu
     const xhr = new XMLHttpRequest();
     xhr.open('POST', url, true);
     xhr.withCredentials = true;
+    xhr.setRequestHeader(CSRF_HEADER, getCsrfToken());
 
     xhr.onload = () => {
       let payload: unknown = null;

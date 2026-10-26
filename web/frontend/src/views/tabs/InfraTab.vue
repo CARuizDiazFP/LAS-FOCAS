@@ -774,7 +774,7 @@ async function searchCamaras() {
     const res = await fetch('/api/infra/smart-search', {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf() },
       body: JSON.stringify({
         terms: searchTerms.value,
         limit: PAGE_SIZE,
@@ -1213,6 +1213,7 @@ async function downloadEml() {
     const res = await fetch('/api/infra/notify/download-eml', {
       method: 'POST',
       credentials: 'include',
+      headers: { 'X-CSRF-Token': csrf() },
       body: fd,
     });
     if (!res.ok) {
@@ -1374,7 +1375,7 @@ async function analyzeTracking() {
     const res = await fetch('/api/infra/trackings/analyze', {
       method: 'POST',
       credentials: 'include',
-      headers: { Accept: 'application/json' },
+      headers: { Accept: 'application/json', 'X-CSRF-Token': csrf() },
       body: formData,
     });
     const data = await res.json();

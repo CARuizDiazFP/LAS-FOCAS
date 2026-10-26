@@ -2,7 +2,7 @@
 // Ubicación de archivo: web/frontend/src/api/servicios.ts
 // Descripción: Cliente frontend para ingesta y búsqueda paginada del módulo servicios
 
-import { ApiError, getCsrfToken, requestJson } from './client';
+import { ApiError, CSRF_HEADER, getCsrfToken, requestJson } from './client';
 import type { TimelineEvent } from '../types/timeline';
 
 export interface IngestServiciosResponse {
@@ -190,6 +190,7 @@ export function ingestServiciosFile(
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/servicios/ingest', true);
     xhr.withCredentials = true;
+    xhr.setRequestHeader(CSRF_HEADER, getCsrfToken());
 
     xhr.upload.onprogress = (event: ProgressEvent<EventTarget>) => {
       if (!event.lengthComputable || !onProgress) return;
