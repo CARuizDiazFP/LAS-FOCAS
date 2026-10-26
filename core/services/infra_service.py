@@ -709,13 +709,20 @@ class InfraService:
         terminal_a_norm = normalize_terminal(terminal_a)
         terminal_b_norm = normalize_terminal(terminal_b)
         
+        # Scan completo con re-parseo en Python: medido en dev (2026-10-26, 45 rutas con tracking) cuesta
+        # ~30 ms por llamada. Si crece, persistir los terminales parseados en columnas indexadas.
+        errores_parseo = 0
         for ruta in rutas_query.all():
             # Extraer terminales del raw_file_content de esta ruta
             try:
                 ruta_terminal_a, ruta_terminal_b = extract_tracking_terminals(ruta.raw_file_content)
                 ruta_terminal_a_norm = normalize_terminal(ruta_terminal_a)
                 ruta_terminal_b_norm = normalize_terminal(ruta_terminal_b)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - una ruta ilegible no corta la búsqueda, pero queda registrada
+                errores_parseo += 1
+                logger.warning(
+                    "action=find_service_by_terminals evento=error_parseo ruta_id=%s error=%s", ruta.id, exc
+                )
                 continue
             
             # Comparar terminales
@@ -746,7 +753,12 @@ class InfraService:
                     ruta.servicio.servicio_id, ruta.id,
                 )
                 return (ruta.servicio, "Terminal B Match")
-        
+
+        if errores_parseo:
+            logger.warning(
+                "action=find_service_by_terminals evento=sin_match_con_errores_parseo rutas_ilegibles=%d",
+                errores_parseo,
+            )
         return None
 
     def execute_upgrade(
