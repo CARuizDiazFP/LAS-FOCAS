@@ -1983,7 +1983,7 @@ Imagen multi-stage compartida por todos los servicios Python del proyecto (excep
 | Web extras | `jinja2`, `itsdangerous`, `python-multipart`, `bcrypt` |
 | DB / ORM | `SQLAlchemy`, `psycopg[binary]`, `alembic` |
 | Data | `pandas`, `openpyxl`, `python-docx`, `Unidecode` |
-| Geo / Maps | `matplotlib`, `Pillow`, `staticmap`, `contextily`, `pyproj` |
+| Geo / Maps | `matplotlib`, `Pillow`, `contextily`, `pyproj` |
 
 Además incluye en runtime: `curl`, `libpq5`, `libexpat1`, `tzdata`, `ca-certificates`.
 
