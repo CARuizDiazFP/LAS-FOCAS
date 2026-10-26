@@ -8,15 +8,24 @@ La capa MCP (Model Context Protocol) abstrae la ejecución de herramientas del b
 
 ## 📚 Registro de herramientas
 
-Las herramientas se definen en `core/mcp/registry.py` mediante `ToolDefinition` y se registran en el `MCPRegistry` retornado por `get_default_registry()`.
+Las herramientas se definen en `core/mcp/registry.py` mediante `ToolDefinition` y se registran en el `MCPRegistry` retornado por `get_default_registry()` (`list_tools()` devuelve los nombres). Sólo se registran herramientas que funcionan en el contenedor `web`: una herramienta sin implementación no se expone para fallar después.
 
-| Nombre | Rol requerido | Descripción breve |
-|--------|---------------|-------------------|
-| `GenerarInformeRepetitividad` | `user` | Genera informe DOCX (y opcionalmente PDF/mapa) a partir de un XLSX cargado. |
-| `GenerarMapaGeo` | `user` | Construye un mapa HTML con marcadores `lat/lon`. |
-| `CompararTrazasFO` | `user` | Placeholder; registra solicitud mientras se completa la integración. |
-| `ConvertirDocAPdf` | `ownergroup` / `admin` | Envía un documento al servicio `office_service` para conversión a PDF. |
-| `RegistrarEnNotion` | `admin` | Placeholder para futura integración con Notion. |
+| Nombre | Rol requerido | Estado | Depende de |
+|--------|---------------|--------|------------|
+| `GenerarInformeRepetitividad` | `user` / `admin` | Operativa | `modules/informes_repetitividad` (PDF sólo si hay `SOFFICE_BIN` válido) |
+| `ConvertirDocAPdf` | `admin` / `ownergroup` | Operativa (2026-10-26) | Servicio `office` (`OFFICE_SERVICE_BASE`, default `http://office:8090`), `POST /convert` |
+
+**Cómo se llega a ellas.** No hay un LLM que elija herramientas: el orquestador (`core/chatbot/orchestrator.py`) las invoca por comando de texto en el WebSocket `/ws/chat` (`/repetitividad mes=9 anio=2025` con un `.xlsx` adjunto) o por pedido explícito `tool_call` (WebSocket o `POST /mcp/invoke`). El chat del SPA (`ChatTab.vue`) usa `/api/chat/message` (clasificación NLP) y hoy no invoca herramientas MCP.
+
+**Retiradas el 2026-10-26** (auditoría integral, P13; ver `docs/PR/2026-10-26.md`):
+
+| Nombre | Motivo |
+|--------|--------|
+| `GenerarMapaGeo` | Importaba `folium`, que no está en la imagen `web` (sólo en `api`): devolvía siempre `MISSING_DEPENDENCY`. Se quitó también el comando `/mapa`. |
+| `CompararTrazasFO` | Stub que devolvía `pending`. No existe un comparador de trazas FO al que conectarla (`POST /api/flows/comparador-fo` responde 501; `web/tools/vlan_comparator.py` compara VLANs Cisco). Se quitó el comando `/comparador`. |
+| `RegistrarEnNotion` | Stub sin configuración de Notion en el código ni en `env.sample`, sin dueño. |
+
+Un nombre retirado responde `TOOL_NOT_FOUND`.
 
 ## 🧾 Especificaciones de entrada/salida
 
@@ -29,9 +38,12 @@ Las herramientas se definen en `core/mcp/registry.py` mediante `ToolDefinition` 
     "file_path": "chat_..._casos.xlsx",
     "mes": 9,
     "anio": 2025,
-    "export_pdf": true
+    "export_pdf": true,
+    "with_geo": false
   }
   ```
+
+  `file_path` relativo se resuelve contra `UPLOADS_DIR`.
 
 - **Output (`result`)**
 
@@ -40,32 +52,21 @@ Las herramientas se definen en `core/mcp/registry.py` mediante `ToolDefinition` 
     "status": "ok",
     "docx": "/reports/Informe_Repetitividad_2025-09.docx",
     "pdf": "/reports/Informe_Repetitividad_2025-09.pdf",
-    "map": "/reports/mapa_1696680000.html"
+    "maps": [],
+    "map_images": ["/reports/maps_202509/repetitividad_202509_X.png"],
+    "with_geo": false
   }
   ```
 
 - **Errores relevantes**: `FILE_NOT_FOUND`, `INVALID_TOOL_ARGS`, `TOOL_INTERNAL_ERROR`.
 
-### GenerarMapaGeo
-
-- **Input**: `{ "points": [{"lat": -34.6, "lon": -58.4, "label": "Nodo"}, ...], "out_path": "opcional.html" }`
-- **Output**: `{ "status": "ok", "map": "/reports/mapa_1696681111.html" }`
-- **Errores**: `INVALID_POINTS`, `MISSING_DEPENDENCY` (folium no instalado).
-
-### CompararTrazasFO *(placeholder)*
-
-- Registra la intención y devuelve `{ "status": "pending" }`. Se documentarán los parámetros cuando se integre el módulo definitivo.
-
 ### ConvertirDocAPdf
 
-- **Input**: `{ "input_path": "chat_..._reporte.docx", "out_dir": "/app/data/reports" }`
-- **Salida**: respuesta directa del microservicio `office_service` (`status`, `message`, `output_path`).
-- **Errores**: `CONVERT_HTTP_ERROR`, `CONVERT_NETWORK_ERROR`.
-
-### RegistrarEnNotion *(placeholder)*
-
-- **Input**: `{ "page": "soporte/pendientes", "payload": {"titulo": "Ticket", ...} }`
-- **Salida**: `{ "status": "pending" }` con log de auditoría.
+- **Input**: `{ "input_path": "chat_..._reporte.docx" }`. Ruta relativa a `UPLOADS_DIR`, o absoluta **dentro** de `UPLOADS_DIR` o `REPORTS_DIR`; cualquier otra (`../`, `/etc/...`) se rechaza antes de leer el disco. El campo `out_dir` de la versión anterior ya no existe (se ignora si llega).
+- **Flujo**: lee el archivo, lo sube multipart a `{OFFICE_SERVICE_BASE}/convert?output_format=pdf` (timeout 150 s) y guarda el PDF en `REPORTS_DIR/<nombre>.pdf`.
+- **Output**: `{ "status": "ok", "input": "chat_..._reporte.docx", "pdf": "/reports/chat_..._reporte.pdf" }`.
+- **Formatos**: `.docx`, `.doc`, `.odt`, `.rtf` (la imagen de `office` sólo trae Writer); máximo 50 MB. Ver `docs/office_service.md`.
+- **Errores**: `INVALID_PATH`, `FILE_NOT_FOUND`, `CONVERT_HTTP_ERROR` (el detalle trae la respuesta de office, p. ej. extensión no soportada), `CONVERT_NETWORK_ERROR`.
 
 ## 🛡️ Auditoría
 
@@ -95,11 +96,12 @@ La respuesta incluye cada evento emitido por el orquestador (útil para depurar 
 ## 🧪 Pruebas y dobles
 
 - `tests/test_mcp_registry.py` verifica registros duplicados, validación y respuesta base.
+- `tests/test_mcp_herramientas.py` prueba cada herramienta del registro por defecto (éxito y error), con el HTTP de office simulado con `httpx.MockTransport` (`_cliente_office` se reemplaza en el test).
+- `tests/test_office_service_convert.py` prueba `POST /convert` de office con `soffice` simulado.
 - Para pruebas unitarias del orquestador puede utilizarse `InMemoryChatStorage` y registrar herramientas de prueba.
 
 ## 🚧 Próximos pasos
 
-1. Integrar lógica real para `CompararTrazasFO` y `RegistrarEnNotion`.
-2. Añadir métricas Prometheus (contador por herramienta, latencias).
-3. Implementar autorizaciones más granuladas (rol vs. herramienta) desde DB.
-4. Publicar colección Postman para `POST /mcp/invoke` y `/api/chat/uploads`.
+1. Añadir métricas Prometheus (contador por herramienta, latencias).
+2. Implementar autorizaciones más granuladas (rol vs. herramienta) desde DB.
+3. Publicar colección Postman para `POST /mcp/invoke` y `/api/chat/uploads`.
