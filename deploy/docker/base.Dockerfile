@@ -9,7 +9,7 @@
 # ─── Stage 1: Builder ─────────────────────────────────────────────────────────
 # Instala herramientas de compilación y genera wheels precompilados para todos
 # los paquetes comunes y sus dependencias transitivas.
-FROM python:3.11-slim-bookworm AS builder
+FROM python:3.11.16-slim-bookworm AS builder
 
 ENV PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1
@@ -38,7 +38,7 @@ RUN python -m pip install --upgrade pip \
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
 # Imagen final liviana: sin compiladores, solo librerías de ejecución.
 # Instala los wheels pre-compilados del stage builder (sin acceso a internet).
-FROM python:3.11-slim-bookworm AS runtime
+FROM python:3.11.16-slim-bookworm AS runtime
 
 ARG REQUIREMENTS_HASH=unknown
 LABEL focas.requirements.hash="${REQUIREMENTS_HASH}" \

@@ -2,7 +2,7 @@
 # Ubicación de archivo: office_service/Dockerfile
 # Descripción: Imagen Docker del microservicio LibreOffice/UNO
 
-FROM python:3.11-slim-bookworm
+FROM python:3.11.17-slim-bookworm
 
 ENV PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
