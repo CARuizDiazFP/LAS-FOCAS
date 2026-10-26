@@ -41,7 +41,7 @@ workers:  cromo_worker (ingesta Cromo Red)          ─┐
           slack_baneo_worker (bot de Slack)         ─┘
           fo_monitor_worker (FO Monitor, sólo postgres)
 otros:    bot (Telegram) · office :8090 (LibreOffice/UNO)
-          pgadmin :5050 (profile pgadmin) · repetitividad_worker (profile reports-worker, placeholder)
+          pgadmin :5050 (profile pgadmin)
 ```
 
 - **Redis es obligatorio** (colas y estado de `cromo_worker`, `botellas_recalculo_worker`,

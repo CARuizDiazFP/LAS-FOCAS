@@ -31,7 +31,6 @@ Soy el agente especializado en infraestructura Docker del proyecto LAS-FOCAS.
 | `nlp_intent` | expose 8100 | Clasificador de intención |
 | `bot` | - | Telegram Bot |
 | `office` | expose 8090, 2002 | LibreOffice service |
-| `repetitividad_worker` | - | Worker geoespacial (profile: reports-worker) |
 | `pgadmin` | 5050:80 | PgAdmin (profile: pgadmin) |
 
 ## Comandos Esenciales

@@ -64,7 +64,7 @@ Qué corre en cada imagen (ver la cabecera de `common-requirements.txt`):
 - `requirements.txt` (raíz) y `requirements-dev.txt` → sólo el venv local y la CI; ningún Dockerfile los usa.
 - `web/frontend/package.json`
 - Inventario real: `grep -rn "requirements\|pip install" deploy/docker/*.Dockerfile */Dockerfile`. Ahí aparecen
-  también los paquetes instalados inline, como `geopandas` en `repetitividad_worker.Dockerfile`.
+  también los paquetes instalados inline (hoy sólo el bloque `pip install` de `deploy/docker/base.Dockerfile`).
 
 ## Procedimiento
 

@@ -60,10 +60,8 @@ modules/informes_repetitividad/
 ├── config.py      # ReportConfig
 ├── processor.py   # Normalización de datos
 ├── report.py      # Generación DOCX
-├── runner.py      # Orquestación
 ├── schemas.py     # Modelos Pydantic
-├── service.py     # API de servicio
-└── worker.py      # Worker opcional
+└── service.py     # API de servicio
 ```
 
 ### Informes SLA

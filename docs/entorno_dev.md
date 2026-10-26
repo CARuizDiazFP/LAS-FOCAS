@@ -96,7 +96,7 @@ El script hace automáticamente:
 - Crear `.env.dev` desde el sample si no existe (con aviso para completar tokens)
 - Crear `.secrets/*.txt` si no existen y leerlos como Docker Secrets
 - Construir `focas-base:latest` si `common-requirements.txt` cambió (via `scripts/build_base.sh`)
-- Levantar con build los servicios de `SERVICES` (`postgres`, `nlp_intent`, `api`, `web`, `office`, `slack_baneo_worker`, `cromo_worker`) más sus dependencias (`redis`, `docker-socket-proxy`). `botellas_recalculo_worker`, `fo_monitor_worker`, `bot` y los perfiles opcionales (`reports-worker`, `pgadmin`) no están en esa lista: se levantan aparte con `docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d <servicio>`
+- Levantar con build los servicios de `SERVICES` (`postgres`, `nlp_intent`, `api`, `web`, `office`, `slack_baneo_worker`, `cromo_worker`) más sus dependencias (`redis`, `docker-socket-proxy`). `botellas_recalculo_worker`, `fo_monitor_worker`, `bot` y el perfil opcional `pgadmin` no están en esa lista: se levantan aparte con `docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d <servicio>`
 - Esperar a que Postgres esté healthy
 - Aplicar migraciones Alembic
 - Verificar el health de todos los servicios

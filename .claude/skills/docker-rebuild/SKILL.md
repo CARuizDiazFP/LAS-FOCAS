@@ -33,7 +33,6 @@ docker compose -f deploy/compose.yml --env-file .env build <servicio>
 # - nlp_intent
 # - office
 # - postgres
-# - repetitividad_worker (profile: reports-worker)
 # - pgadmin (profile: pgadmin)
 ```
 
@@ -102,12 +101,6 @@ docker compose -f deploy/compose.yml --env-file .env down -v
 ```
 
 ## Perfiles
-
-### Activar worker de reportes
-
-```bash
-docker compose -f deploy/compose.yml --env-file .env --profile reports-worker up -d
-```
 
 ### Activar pgAdmin
 

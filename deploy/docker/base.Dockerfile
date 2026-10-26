@@ -75,7 +75,7 @@ RUN pip install --upgrade pip \
 
 WORKDIR /app
 
-# Usuario no-root compartido por los servicios hijos (api, web, bot, repetitividad_worker).
+# Usuario no-root compartido por los servicios hijos (api, web, bot).
 # No se hace USER acá: cada Dockerfile hijo instala sus propias dependencias con pip
 # DESPUÉS de heredar de esta imagen, y eso necesita escribir en site-packages como root.
 # El switch a no-root es la última instrucción de cada hijo, no de esta base.
