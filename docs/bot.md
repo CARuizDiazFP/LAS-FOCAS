@@ -1,6 +1,6 @@
 # Nombre de archivo: bot.md
 # Ubicación de archivo: docs/bot.md
-# Descripción: Guía operativa del bot de Telegram como consumidor de servicios del stack moderno
+# Descripción: Guía operativa del bot de Telegram y del monitor de ingresos técnicos de Slack
 
 ## Variables requeridas (.env)
 - TELEGRAM_BOT_TOKEN=...
@@ -525,6 +525,9 @@ padre, evalúa su estado de acceso (misma jerarquía de `_evaluar_estado_acceso_
 red > baneo manual > OK) igual que si hubiera matcheado desde el principio; marca
 `resuelto_via_empalme=True` para no reprocesar el mismo hilo dos veces, tenga éxito o no. Ver
 `docs/db.md` (tabla `ingresos_sin_match`) y `docs/infra.md` (sección "Ingresos sin match").
+Desde 2026-10-23 ese número se prueba primero como Fontaine ID, y una persona también puede
+reescribir la cámara en el hilo: ver "Identificar la cámara por Fontaine ID, "Empalme <n_id>" y
+reescritura en el hilo" más abajo.
 
 **Panel legado** (`/admin/Servicios/Baneos` → sección **🔄 Cámaras Pendientes de Revisión**, sólo
 las filas ya existentes al 2026-08-11):
@@ -532,6 +535,97 @@ las filas ya existentes al 2026-08-11):
 - **Convertir en Alias** → crea un registro en `app.camara_alias` vinculado a una cámara existente y elimina el registro pendiente
 - **Definir Nombre Canón** → permite editar el nombre al formato oficial y lo promueve a `LIBRE`; el nombre original del técnico queda guardado automáticamente como un alias en `app.camara_alias` para que futuras búsquedas del mismo término sigan resolviendo esta cámara
 - **Eliminar** → elimina físicamente el registro de `app.camaras`; requiere confirmación inline. Útil para borrar entradas basura generadas por mensajes mal formateados o nombres combinados erróneos.
+
+### Identificar la cámara por Fontaine ID, "Empalme <n_id>" y reescritura en el hilo (2026-10-23)
+
+Regla de producto: **en los hilos de ingresos el bot no deriva a terceros** (nada de "avisá a un
+administrador"). Sólo publica resultados o pide algo que el propio bot procesa en el mismo hilo
+(reescribir la cámara, un Fontaine ID, un ID de empalme, `Revalidar ingreso`, `Forzar …`). Los avisos
+de sin match, ambiguo y número que no coincide terminan con el mismo pedido
+(`_PEDIDO_REESCRIBIR` en `listener.py`): "Escribí la cámara correcta en este hilo (o el operador
+puede responder con el Fontaine ID)."
+
+**En el mensaje del formulario** (`buscar_camara` / `buscar_camara_o_botella_cromo`):
+
+- **Prefijo con el `n_id` de Cromo de la Botella** ("Empalme 10245762: Cra 25 de Mayo 302", o
+  "6635973: …" sin la palabra "Empalme"; 7 u 8 dígitos, sólo al principio y seguido de `:`/`-`, o
+  "Empalme N" solo): se resuelve por `n_id` antes que la cascada (`camara_por_prefijo_empalme`,
+  `modules/slack_baneo_notifier/camara_search.py`). Vale sólo si la Botella es vigente, tiene Cámara y
+  el resto del texto la corrobora (`resto_corrobora_botella`: los números de 2+ dígitos del resto
+  están en el nombre y el parecido `SequenceMatcher` es ≥ 0,8). Si no, se quita el prefijo y la
+  búsqueda por nombre sigue sin exigir ese número.
+- **Número que no coincide → "¿Quisiste decir…?"**: si el texto trae números y ningún intento de la
+  cascada encuentra una cámara con ellos, pero sin esos números sí hay parecidas, se lanza
+  `NumeroNoCoincideError` (subclase de `AmbiguousSearchError`) con hasta 3 ordenadas por similitud.
+  El listener la captura antes que la ambigüedad, registra el `IngresoSinMatch` y responde
+  "No encontré *X* con ese número. ¿Quisiste decir: …". **Nunca asigna una parecida**. Revalidación,
+  corrección, reproceso y baneo masivo la siguen tratando como ambigua.
+
+**Respuestas en el hilo de un `IngresoSinMatch` pendiente.** Sólo respuestas reales en un hilo, y
+antes del filtro `solo_workflows` (las escribe una persona, no el Workflow). Orden de la cadena en
+`_handle_message`: fecha pendiente de un `Forzar …` vigente → seguimiento por número → `Revalidar
+ingreso` → `Forzar ingreso/egreso` → reescritura de la cámara.
+
+- **Seguimiento por número** (`_procesar_seguimiento_empalme`). Acepta un número suelto, "empalme N",
+  "#N", "id: N", "id N" e "(in|e)greso ok, id: N" (también con texto alrededor: "Ingreso ok, ID
+  1228619."). El número se prueba primero como **Fontaine ID** y después como ID de empalme:
+  - **Fontaine ID** = `app.cromo_botellas.id_legacy` (el ID del sistema anterior que Cromo conserva,
+    7 dígitos; no es `app.camaras.fontine_id`). `buscar_por_id_legacy`
+    (`core/services/cromo/camara_botella_busqueda.py`) considera también Botellas no vigentes; si el
+    `id_legacy` está en varias Botellas resuelve sólo si todas cuelgan de la misma Cámara, y si no
+    responde la lista y no elige. Un número suelto sólo se prueba como Fontaine ID con 7 dígitos
+    (hay `id_legacy` cortos de túneles); los cortos, sólo con la forma "id: N" / "(in|e)greso ok, id: N".
+  - Si resuelve por Fontaine ID, **registra el movimiento** del mensaje original (su tipo y su
+    horario, `resuelto_via_revalidacion`, `ingreso_id`) y confirma: "✅ Registré el ingreso en *X*
+    (Fontaine ID N)." más el estado de acceso (o "⚠️ Registré el intento de ingreso (bloqueado)…" si
+    el grupo está bloqueado). Un Nodo se ignora en silencio.
+  - Si resuelve por ID de empalme (`resolver_botella_por_fusion_sync`), cierra el caso **sin
+    registrar** movimiento (`resuelto_via_empalme`), como antes de esta fecha.
+  - Si no resuelve: con la forma del Fontaine ID el caso queda pendiente ("No encontré el Fontaine ID
+    *N* (tampoco es un ID de empalme)…"); con un número suelto o "empalme N" se marca
+    `resuelto_via_empalme` como antes.
+- **Reescritura de la cámara** (`_procesar_reescritura_camara`, último eslabón). Una persona (sin
+  `bot_id`, `subtype` vacío o `thread_broadcast`) escribe la cámara en el hilo. `nombre_reescrito`
+  quita emojis/entidades y el prefijo "(in|e)greso ok[, sin id][, nombre:]" y exige 2+ tokens
+  significativos y además un número de 3+ dígitos o un tipo inicial ("Cra", "Bot", "Poste", …); si no,
+  es charla del hilo y se ignora en silencio (igual que un Nodo). Con match único cierra el caso por
+  el mismo camino que `Revalidar ingreso` ("✅ Cámara corregida — …", movimiento con el horario
+  original); sin match o ambiguo responde "*X* sigue sin match en el inventario", con "¿Quisiste
+  decir…?" si hay candidatas, y el caso queda como está. Sin migración: el texto reescrito queda en el
+  log `action=ingreso_reescritura_camara`.
+
+Tests: `tests/test_slack_ingreso_listener.py`, `tests/test_slack_camara_search_intento.py`,
+`tests/test_busqueda_camaras_sin_match.py`.
+
+### Mover y anular un ingreso desde el portal (baja lógica, 2026-10-23)
+
+Un ingreso registrado desde Slack que quedó en la cámara equivocada (Fontaine ID mal tipeado,
+reescritura, `Forzar …`) o que nunca ocurrió se corrige desde el portal, no desde el hilo. Sólo admin
++ CSRF, en `web/app/routers/camaras.py`; la lógica vive en
+`core/services/ingreso_correccion_service.py`:
+
+| Endpoint | Servicio | Qué hace | Rechazos |
+|---|---|---|---|
+| `POST /api/admin/infra/ingresos/{ingreso_id}/mover` | `mover_ingreso_web` | Cambia `camara_id` (y opcionalmente a una `CromoBotella` vigente del destino; si no, `cromo_botella_id` queda NULL). El destino tiene que ser una Cámara raíz; un ingreso abierto se mueve abierto. | 404 ingreso/cámara inexistente; 409 anulado o mismo destino; 422 motivo, botella o destino no raíz |
+| `POST /api/admin/infra/ingresos/{ingreso_id}/anular` | `anular_ingreso_web` | Baja lógica: setea `anulado_at`/`anulado_por`/`anulado_motivo` en `app.ingresos`. La fila se conserva. | 404 inexistente; 409 ya anulado; 422 motivo |
+
+- Motivo obligatorio de 3 a 500 caracteres. Cada invocación, incluidos los rechazos, deja una fila de
+  auditoría en `app.ingresos_correcciones` con `origen='web'`; el cambio y su auditoría se confirman
+  en un único `commit()`.
+- Ninguna de las dos escribe `Camara.estado` ni reabre el `IngresoSinMatch` que hubiera resuelto el
+  ingreso, y **ninguna publica en el hilo de Slack**.
+- Un ingreso anulado deja de contar para todo lo que decide estado (`Ingreso.vigente()`,
+  `anulado_at IS NULL`): acceso a la cámara, cierre de un Egreso, cascada de resolución del hilo de
+  `Forzar …`, reproceso y FO Monitor. `Forzar egreso #<id>` sobre un anulado responde
+  ":warning: El ingreso *#<id>* está anulado; no se puede cerrar." (`construir_respuesta_ingreso_anulado`).
+- Los listados de ingresos (`GET /api/infra/camaras/{camara_id}/registros`,
+  `GET /api/infra/servicios/{servicio_id}/ingresos`) ocultan los anulados; un admin los pide con
+  `?incluir_anulados=1` (a un usuario común se le ignora el parámetro) y la SPA los muestra
+  atenuados ("Mostrar anulados"). Modales `ModalMoverIngreso.vue` / `ModalAnularIngreso.vue`
+  (`web/frontend/src/components/servicios/`), montados desde `ServicioIngresosView.vue` y desde
+  `ModalRegistros.vue` del detalle de Cámara (`CamaraDetailView.vue`).
+- Columnas, CHECK, migración (`20261023_01`) y lista completa de lectores filtrados: `docs/db.md`
+  (tabla `ingresos`).
 
 ### Configuración desde el panel web
 

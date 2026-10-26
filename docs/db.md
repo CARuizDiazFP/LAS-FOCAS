@@ -338,10 +338,12 @@ Cada servicio puede tener múltiples rutas (Principal, Backup, Alternativa) con 
 | `servicio_id`         | FK → servicios      | Servicio al que pertenece la ruta. |
 | `nombre`              | String(255)         | Nombre de la ruta (ej: "Principal", "Backup Norte"). |
 | `tipo`                | Enum(ruta_tipo)     | `PRINCIPAL`, `BACKUP`, `ALTERNATIVA`. |
+| `cantidad_pelos`      | Integer, nullable   | Cantidad de pelos de la ruta, extraída del tracking (migración `20260113_01`). |
 | `hash_contenido`      | String(64)          | SHA256 del contenido normalizado del tracking. |
 | `activa`              | Boolean             | Si la ruta está activa (true por defecto). |
 | `nombre_archivo_origen`| String(255)        | Nombre del archivo de tracking original. |
-| `contenido_original`  | Text                | Contenido raw del tracking para debugging. |
+| `contenido_original`  | Text                | JSON parseado del tracking. |
+| `raw_file_content`    | Text                | Contenido exacto del `.txt` original (migración `20260112_02`); lo adjuntan las notificaciones de baneo. |
 | `created_at`          | DateTime(tz)        | Fecha de creación. |
 | `updated_at`          | DateTime(tz)        | Última actualización. |
 
@@ -359,6 +361,26 @@ Tabla intermedia N-a-N entre `rutas_servicio` y `empalmes`:
 | `ruta_id`   | FK → rutas_servicio (PK) | ID de la ruta. |
 | `empalme_id`| FK → empalmes (PK) | ID del empalme. |
 | `orden`     | Integer            | Orden del empalme en la secuencia de la ruta. |
+
+### Tabla `puntos_terminales`
+
+Extremos A y B de una ruta (ODF, nodo o rack donde empieza y termina el tracking). Modelo
+`PuntoTerminal` (`db/models/infra.py`), migración `20260113_01_puntos_terminales.py`.
+
+| Columna                | Tipo                        | Descripción |
+|------------------------|-----------------------------|-------------|
+| `id`                   | Integer (PK)                | ID autoincremental. |
+| `ruta_id`              | FK → `rutas_servicio.id` `ON DELETE CASCADE`, indexado | Ruta a la que pertenece. |
+| `tipo`                 | Enum `punto_terminal_tipo` (`A`, `B`) | Punta A (origen) o B (destino). |
+| `sitio_descripcion`    | String(255), nullable       | Sitio, p. ej. `ODF MAIPU 316 1`. |
+| `identificador_fisico` | String(255), nullable       | Posición física, p. ej. `RACK 1 BANDEJA 2`. |
+| `pelo_conector`        | String(64), nullable        | Par pelo-conector, p. ej. `P09-C10`. |
+
+**Claves:** `UNIQUE (ruta_id, tipo)` (`uq_punto_terminal_ruta_tipo`): a lo sumo una punta A y una B
+por ruta. La migración crea la tabla e índice `ix_app_puntos_terminales_ruta_id` con SQL crudo
+(`CREATE ... IF NOT EXISTS`) para no recrear el enum. Acceso: `RutaServicio.puntos_terminales` y
+las propiedades `punta_a`/`punta_b`. La misma migración agregó `servicios.alias_ids`,
+`empalmes.es_transito` y `rutas_servicio.cantidad_pelos`.
 
 ### Relaciones del modelo de rutas
 
@@ -532,7 +554,7 @@ punto). Detalle completo de diseño en
 Reemplaza el auto-registro `PENDIENTE_REVISION` en ingresos sin match (ver `docs/infra.md`, sección
 homónima) — no crea ninguna `Camara`, es sólo información de sólo lectura para revisión manual y
 mejora del regex de búsqueda. Poblada por `modules/slack_baneo_notifier/listener.py` (bot de Slack),
-`web/app/main.py::upload_tracking_web` (carga de tracking) y, desde 2026-08-24,
+`web/app/routers/servicios.py::upload_tracking_web` (carga de tracking) y, desde 2026-08-24,
 `core/services/camara_ingest_service.py` (ingesta Excel de cámaras baneadas, `origen="excel_camaras"`)
 — el único de los 3 orígenes con una acción de resolución real además del triage (asociación manual,
 ver tabla `camara_alias` más abajo).
@@ -660,6 +682,71 @@ No se almacenan bytes de archivos, contenido de planillas, secretos ni payloads 
 **Migración:** `20260417_01_config_servicios.py` — crea la tabla e inserta fila por defecto para `slack_baneo_notifier`.
 
 **Uso:** El worker `slack_baneo_notifier` lee esta tabla en cada ejecución para obtener la configuración actualizada (intervalo, canales, estado activo). El panel admin en `/admin/Servicios/Baneos` permite modificar estos valores sin reiniciar el worker.
+
+## Informe SLA consumido (`sla_ingestas`, `servicio_sla_snapshot`)
+
+Persistencia del informe SLA consumido: cada par de archivos (Excel de Servicios + Excel de
+Reclamos) que se procesa queda registrado, los reclamos se upsertean en `app.reclamos` y se guarda
+una foto del SLA de cada línea por fecha de corte. Migración `20261005_02_sla_consumo_historico.py`;
+modelos `SlaIngesta` y `ServicioSlaSnapshot` (`db/models/sla_consumo.py`); escritura en
+`core/sla_consumo/persistencia.py::ingerir`. Flujo funcional en `docs/informes/sla_consumo.md`.
+
+### Tabla `sla_ingestas`
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | BigInteger PK | |
+| `fecha_corte` | Date, `NOT NULL`, indexado (`ix_sla_ingestas_fecha_corte`) | Calculada desde los reclamos (`calcular_fecha_corte`). |
+| `hash_servicios`, `hash_reclamos` | String(64), `NOT NULL` | SHA-256 de cada archivo. `UNIQUE (hash_servicios, hash_reclamos)` (`uq_sla_ingestas_hashes`). |
+| `usuario` | String(128), nullable | Quién subió los archivos. |
+| `reclamos_insertados`, `reclamos_actualizados`, `servicios_snapshot` | Integer, `NOT NULL`, default 0 | Conteos de la ingesta. |
+| `report_history_id` | BigInteger, nullable | Referencia blanda (sin FK) a `app.report_history`. |
+| `created_at` | timestamptz, default `now()` | |
+
+**Idempotencia:** si el mismo par de hashes ya existe, `ingerir` devuelve la ingesta previa sin
+escribir nada. `app.reclamos.ingesta_id` sí tiene FK a `sla_ingestas.id` (`ON DELETE SET NULL`).
+
+### Tabla `servicio_sla_snapshot`
+
+Una fila por `(numero_linea, fecha_corte)` (`UNIQUE`, `uq_sla_snapshot_linea_corte`); una nueva
+ingesta con la misma fecha de corte la actualiza (`ON CONFLICT DO UPDATE`).
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | BigInteger PK | |
+| `numero_linea` | String(64), `NOT NULL`, indexado | |
+| `numero_primer_servicio` | String(64), nullable, indexado | |
+| `fecha_corte` | Date, `NOT NULL`, indexado | |
+| `nombre_cliente`, `tipo_servicio` | String(128) / String(80), nullable | |
+| `sla_prometido` / `sla_entregado` | Numeric(6,3) / Numeric(9,6), nullable | |
+| `horas_reclamos_mes`, `horas_carriers_mes`, `horas_reclamos_todos`, `horas_carriers_todos`, `horas_restantes` | Numeric(12,4), nullable | Horas decimales. |
+| `abono_usd` | Numeric(14,2), nullable | |
+| `cantidad_reclamos_todos` | Integer, nullable | |
+| `ingesta_id` | BigInteger, nullable | Sin FK: última ingesta que escribió la fila. |
+| `updated_at` | timestamptz, default `now()` | |
+
+**Lectura:** `api/app/routes/servicios.py` arma `sla_historico` de `GET /servicios/detail` con las
+fotos de las líneas del servicio, ordenadas por fecha de corte.
+
+La misma migración amplía `app.reclamos` (horas a `Numeric(12,4)`, columnas de carrier, código y
+grupo de cierre, `ingesta_id`, `first_seen_at`/`last_seen_at`) y crea la vista `app.v_eventos_sla`
+(reclamos agrupados por `numero_evento`).
+
+## Chat del panel web (`chat_sessions`, `chat_messages`)
+
+Historial del chatbot. Sin modelo ORM: las crean `20251007_01` y `20251008_01` con SQL crudo
+(`CREATE ... IF NOT EXISTS`) y las lee y escribe `core/chatbot/storage.py` con SQL directo. Detalle
+de uso en `docs/chatbot.md`.
+
+- **`chat_sessions`**: `id` SERIAL PK, `user_id` VARCHAR(255) `NOT NULL`, `is_active` (default
+  `true`), `created_at` y `last_activity` (`timestamp` sin zona, default `NOW()`). Índices:
+  `ix_chat_sessions_user_id_last_activity (user_id, last_activity)`,
+  `ix_chat_sessions_last_activity (last_activity DESC)` y el único parcial
+  `uq_chat_sessions_user_active (user_id) WHERE is_active IS TRUE` (una sesión activa por usuario).
+- **`chat_messages`**: `id` SERIAL PK, `session_id` FK → `chat_sessions.id` `ON DELETE CASCADE`,
+  `role` VARCHAR(32), `content` TEXT, `tool_name` VARCHAR(128), `tool_args` y `attachments` JSONB,
+  `error_code` VARCHAR(64), `created_at`. Índices `ix_chat_messages_session_created (session_id,
+  created_at)` e `ix_chat_messages_role_created (role, created_at DESC)`.
 
 ## Inventario de Fibra Óptica (Cromo)
 
@@ -891,7 +978,7 @@ sembrada por la migración — el worker nunca arranca sin config.
 
 **Lectura y escritura:** `modules/cromo_worker/worker.py` (el worker relee esta fila en cada
 `/reload` y actualiza `ultima_ejecucion`/`ultimo_error` al final de cada corrida) y
-`web/app/main.py` (`GET`/`POST /api/admin/ingesta/cromo/config`, panel admin).
+`web/app/routers/admin_datos.py` (`GET`/`POST /api/admin/ingesta/cromo/config`, panel admin).
 
 ### Tabla `cromo_botella_alias` (2026-08-19)
 
@@ -1000,7 +1087,7 @@ una ODF conocida sólo por referencia.
 **Lectura:** `core/services/cromo/verificador.py::servicios_por_odf` suma los overrides vigentes de
 una ODF al resultado del match automático por texto, deduplicando por `servicio_id` si el mismo
 Servicio ya resolvía por el camino automático (gana el automático, que trae datos más ricos). Expuesto
-vía `GET /api/infra/cromo/odfs/{n_id}/servicios` (`web/app/main.py`) — cada fila con override manual
+vía `GET /api/infra/cromo/odfs/{odf_n_id}/servicios` (`web/app/routers/cromo.py`) — cada fila con override manual
 aparece con `metodo="OVERRIDE_MANUAL"`.
 
 ### `cromo_tracking_cache` (caché de trackings con vencimiento, 2026-09-17)
@@ -1132,6 +1219,33 @@ columnas y tablas.
 de la rama, antes de integrar. Orden en prod: migración, `cromo_worker`, y después `web`,
 `botellas_recalculo_worker` y `slack_baneo_worker`.
 
+### Tabla `servicio_posicion_vigente` (2026-10-21, migración `20261021_01`)
+
+Conector de ODF que un admin declara como la posición por la que hoy va un Servicio; el tracking
+siembra desde su `pelo_n_id`. Modelo `ServicioPosicionVigente` (`db/models/cromo.py`), lógica en
+`core/services/cromo/servicio_posicion_vigente.py`. Comportamiento (siembra, retiro automático,
+avisos) en `docs/infra.md`, sección "Posición vigente por conector, caminos adicionales y `full`".
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | Integer PK | |
+| `servicio_id` | Integer FK → `servicios.id` `ON DELETE CASCADE`, `NOT NULL` | |
+| `conector_n_id` | BigInteger, `NOT NULL` | Referencia blanda (sin FK) a `cromo_odf_conectores.n_id`: Cromo puede reingerir. |
+| `odf_n_id`, `bandeja_n_id`, `bandeja_nombre`, `numero_conector` | BigInteger / BigInteger / Text / Text | Foto del conector al declarar, para avisar aunque desaparezca. `odf_n_id` `NOT NULL`. |
+| `pelo_n_id` | BigInteger, `NOT NULL` | Pelo declarado (semilla del tracking). |
+| `pelos_candidatos` | BigInteger[], nullable | Todos los pelos del conector al declarar; sólo es `PELO_CAMBIO` si el pelo actual no está entre ellos. |
+| `declarado_por`, `declarado_en` | String(128) `NOT NULL` / timestamptz default `CURRENT_TIMESTAMP` | |
+| `vigente` | Boolean, `NOT NULL`, default `true` | Retirar es `vigente = false`, nunca `DELETE`. |
+| `retirado_en`, `retirado_por`, `motivo_retiro` | timestamptz / String(128) (`'auto'` o el usuario) / Text | |
+| `detalle_retiro` | JSONB, nullable (`none_as_null`) | |
+
+**Claves y restricciones:** índice único parcial `ux_servicio_posicion_vigente_vigente
+(servicio_id, conector_n_id) WHERE vigente` (una declaración vigente por conector), índice
+`ix_servicio_posicion_vigente_servicio (servicio_id)`, CHECK `ck_servicio_posicion_vigente_motivo`
+(`motivo_retiro` NULL o `MANUAL`, `SIN_PELO`, `PELO_CAMBIO`, `PELO_DANADO`, `CABLE_SIN_USO`,
+`CONECTOR_INEXISTENTE`) y CHECK `ck_servicio_posicion_vigente_retiro_coherente` (una fila retirada
+tiene `retirado_en` y `motivo_retiro`).
+
 ### `cromo_splitters` y `cromo_splitter_puertos` (2026-09-17)
 
 Splitter óptico (clase 133) y sus puertos (clase 134). **Los dos ya venían en el `inner[]` de cada
@@ -1225,6 +1339,33 @@ Clientes máquina-a-máquina de la API v1 (un área corporativa por fila). Los a
 | `created_at` | `timestamptz`, default `now()` | |
 | `ultimo_uso_at` | `timestamptz`, nullable | Última emisión de token. |
 
+## FO Monitor (`fomon_*`, 2026-10-14)
+
+Nueve tablas creadas por `20261014_02_fo_monitor.py`; modelos en `db/models/fo_monitor.py`.
+Funcionamiento, estado y operación en `docs/fo_monitor.md`. Estados y fases son `String` + `CHECK`
+(no enums de Postgres). `servicio_pk` no tiene FK a `app.servicios` **a propósito**: la fusión por
+cadena PROV (`core/services/servicios_fusion_prov.py`) borra filas superadas y el histórico de FO
+Monitor no debe romperse. La migración también siembra la fila `fo_monitor` en
+`app.config_servicios` (kill switch y canal, **inactiva**, canal `C08UB8ML3LP`); su `downgrade()`
+borra todo, incluida esa fila.
+
+| Tabla | Propósito | Columnas, claves e índices relevantes |
+|---|---|---|
+| `fomon_config` | Singleton de configuración del piloto (editable por admin). | `id` SmallInteger PK con `CHECK id = 1` (`ck_fomon_config_singleton`); `ventana_desde`/`ventana_hasta`; `tope_mensajes_diario` (400), `max_ids_por_mensaje` (10, `CHECK` 1-20), `timeout_base_s` (240), `timeout_por_servicio_s` (20), `concurrencia` (3, `CHECK` 1-10), `burrito_user_id`, `prompt_version`, `canales_ingreso` (coma-separados; default `C08UB8ML3LP`), `ultimo_ingreso_id_procesado` (marca de agua; se siembra con `max(ingresos.id)` para no procesar el histórico), `actualizado_por`/`actualizado_at`. |
+| `fomon_config_auditoria` | Quién cambió la configuración y qué. **Append-only.** | `id` BigInteger PK, `usuario`, `cambios` JSONB, `created_at`. |
+| `fomon_intervenciones` | Una intervención a verificar (por ingreso de técnico o manual). | `id` PK; `origen` (`CHECK` `INGRESO`/`MANUAL`); `camara_id` FK → `camaras.id` `ON DELETE SET NULL`; `botella_objetivo_n_id`, `cable_n_id_manual`, `tecnico`, `thread_ts_ingreso`, `canal_ingreso`; `estado` (`CHECK` `PRE_PENDIENTE`, `PRE_EN_CURSO`, `EN_CURSO`, `POST_PENDIENTE`, `POST_EN_CURSO`, `CERRADA`, `SIN_EGRESO`, `CANCELADA`); `fecha_ingreso`/`fecha_egreso`; banderas `botella_1_inferida`, `sin_linea_base`, `post_tardio`, `egreso_inferido`, `atribucion_compartida`; `aviso_canal`/`aviso_ts`; `proximo_evento_en`; `iniciada_por`, `creada_at`, `actualizada_at`, `cerrada_at`. Índices por `camara_id`, `estado` y `proximo_evento_en`. |
+| `fomon_intervencion_ingresos` | Ingresos de `app.ingresos` asociados a una intervención. | PK `(intervencion_id, ingreso_id)`, ambas FK `ON DELETE CASCADE`; `UNIQUE (ingreso_id)` (`uq_fomon_interv_ingresos_ingreso`): un ingreso pertenece a una sola intervención. |
+| `fomon_intervencion_servicios` | Alcance congelado en el PRE: cables y servicios a verificar. | `id` BigInteger PK; `intervencion_id` FK `ON DELETE CASCADE`; `cable_n_id`, `cable_nombre`, `cable_clase`, `botella_n_id`, `es_objetivo`; `servicio_pk` (NULL = cable sin servicios verificables), `servicio_id_externo`, `tipo_servicio`, `categoria`, `cliente`. `UNIQUE (intervencion_id, cable_n_id, servicio_pk)` (`uq_fomon_interv_serv`); índices por `intervencion_id` y `cable_n_id`. |
+| `fomon_consultas` | Un mensaje a burritoIA. | `id` PK; `intervencion_id` FK; `fase` (`CHECK` `PRE`/`POST`/`REVERIF`), `intento`; `estado` (`CHECK` `PENDIENTE`, `ENVIADA`, `RESPONDIDA`, `TIMEOUT`, `ERROR`, `CANCELADA`); `servicios_pk` Integer[], `ids_solicitados` String(64)[]; `prompt_version`, `canal`, `slack_ts`, `permalink`, `texto_crudo`, `ref_burrito`, `completa`, `lineas_invalidas`, `error`; `creada_at`, `enviada_at`, `respondida_at`, `proximo_evento_en`. Índices por `intervencion_id`, `estado` y `enviada_at`. |
+| `fomon_resultados` | Estado medido de cada servicio en cada fase. **Append-only.** | `id` BigInteger PK; `consulta_id` FK → `fomon_consultas.id`; `intervencion_id` (sin FK); `fase` (`CHECK` como en consultas); `servicio_pk`, `servicio_id_externo`; `estado` (`CHECK` `UP`, `DOWN`, `ADMIN_DOWN`, `DESCONOCIDO`, `NO_SOPORTADO`); `extremo`, `motivo`, `parseado`, `medido_at`. Índices por `consulta_id` e `intervencion_id`. |
+| `fomon_reconocimientos` | Reconocimiento manual, con motivo, de una intervención o de uno de sus servicios (`servicio_pk`); lo escribe `core/services/fo_monitor/consultas_web.py::reconocer`. **Append-only.** | `id` PK; `intervencion_id` FK; `servicio_pk`; `usuario`; `motivo` (`CHECK length(trim(motivo)) >= 3`); `created_at`. Índice por `intervencion_id`. |
+| `fomon_cable_geo` | Polilínea WGS84 simplificada por cable para el mapa (sin PostGIS). | `cable_n_id` BigInteger PK; `coords` JSONB (`[[lon, lat], ...]`); bbox `min_lon`/`min_lat`/`max_lon`/`max_lat` con índice `ix_fomon_cable_geo_bbox`; `vmax`; `calidad`; `actualizado_at`. La escribe `core/services/fo_monitor/geometria.py::actualizar_geometrias` (incremental por `vmax`, purga los cables no vigentes), que `core/services/cromo/ingesta.py` invoca tras las corridas de los modos de `MODOS_GEOMETRIA_FO` (`COMPLETA`, `SOLO_CABLES`, `SOLO_CABLES_BAJADA`, `SOLO_CABLES_TERCEROS`). |
+
+**Append-only:** `fomon_resultados`, `fomon_reconocimientos` y `fomon_config_auditoria` tienen el
+trigger `trg_<tabla>_inmutable` (`BEFORE UPDATE OR DELETE ... FOR EACH ROW`) que ejecuta
+`app.fomon_bloquear_mutacion()` y aborta con `RAISE EXCEPTION`, el mismo patrón que
+`ingresos_correcciones`.
+
 ## Extensiones PostgreSQL requeridas
 
 | Extensión | Motivo |
@@ -1246,61 +1387,111 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 
 ## Historial de migraciones
 
-| Revisión | Archivo | Descripción |
-|----------|---------|-------------|
-| `20260127_01` | `20260127_01_incidente_baneo_email_fields.py` | Campos de email en incidentes de baneo |
-| `20260417_01` | `20260417_01_config_servicios.py` | Tabla `app.config_servicios` para worker Slack |
-| `20260420_01` | `20260420_01_camaras_estado_auditoria.py` | Tabla `app.camaras_estado_auditoria` + enum `camara_estado` |
-| `20260423_01` | `20260423_01_config_servicios_hora_inicio.py` | Columna `hora_inicio` en `app.config_servicios` |
-| `20260427_01` | `20260427_01_unaccent_extension.py` | Extensión `unaccent` para búsquedas sin acento |
-| `20260428_01` | `20260428_01_listener_workflow_ids.py` | Columnas `workflow_ids` y `solo_workflows` en `app.config_servicios` |
-| `20260428_02` | `20260428_02_camara_alias_pendiente.py` | Tabla `app.camara_alias` + valor `PENDIENTE_REVISION` en enum `camara_estado` |
-| `20260805_01` | `20260805_01_cromo_ingesta.py` | Tablas `app.cromo_*` (catálogo + auditoría + inventario) y enum `cromo_tipo_asociacion_pelo`, para la Etapa 2 de ingesta desde Cromo Red |
-| `20260806_01` | `20260806_01_cromo_ingesta_config.py` | Tabla `app.cromo_ingesta_config` (fila única, config del scheduler del worker dedicado), para la Etapa 7 de ingesta desde Cromo Red |
-| `20260807_01` | `20260807_01_cromo_fusiones_botella_nullable.py` | `cromo_fusiones.botella_n_id` pasa a nullable — el fetch directo de clase 132 no trae `parent`, para la Etapa 8 de ingesta desde Cromo Red |
-| `20260810_01` | `20260810_01_camara_padre_botella.py` | Columna `camaras.camara_padre_id` (FK auto-referencial + índice + `CHECK` anti-autoreferencia) y valor `INFERIDO` en enum `camara_origen_datos`, para la jerarquía Cámara→Botella (ver `docs/infra.md`) |
-| `20260811_01` | `20260811_01_cromo_botella_camara_padre.py` | Columnas `cromo_botellas.camara_id` (FK a `camaras.id`) y `estado` (+ `CHECK`), valores `NO_OPERATIVA` en `camara_estado` e `INFERIDO_CROMO` en `camara_origen_datos` — vincula Botellas Cromo a una Cámara padre propia (ver `docs/infra.md`, sección "Cámara padre para Botellas Cromo") |
-| `20260811_02` | `20260811_02_ingresos_sin_match.py` | Tabla `app.ingresos_sin_match` — reemplaza el auto-registro `PENDIENTE_REVISION` en ingresos sin match (ver `docs/infra.md`, sección homónima) |
-| `20260813_01` | `20260813_01_cromo_botella_default_libre.py` | `ALTER COLUMN cromo_botellas.estado SET DEFAULT 'LIBRE'` (antes `'NO_OPERATIVA'`) — reversión de la política fail-closed del `20260811_01`, metadata-only (ver `docs/decisiones.md`) |
-| `20260814_01` | `20260814_01_servicios_categoria_check.py` | Backfill `servicios.categoria` NULL→6, luego `SET DEFAULT 6` + `SET NOT NULL` + `CHECK ck_servicios_categoria_valida (categoria BETWEEN 0 AND 6)` — la columna ya existía sin restricciones, 100% NULL (ver `docs/decisiones.md`) |
-| `20260814_02` | `20260814_02_servicios_origen_datos.py` | Enum `app.servicio_origen_datos` (`MANUAL`/`TRACKING`/`INGEST_EXCEL`/`INFERIDO_CROMO`) + columna `servicios.origen_datos NOT NULL DEFAULT 'MANUAL'`, mismo patrón que `camara_origen_datos` |
-| `20260819_01` | `20260819_01_cromo_botella_alias.py` | Tabla `app.cromo_botella_alias` — escudo manual de aliasing para botellas duplicadas/basura (ver sección "Tabla `cromo_botella_alias`" arriba) |
-| `20260821_01` | `20260821_01_cromo_botella_nombre_editado_manual.py` | Columna `cromo_botellas.nombre_editado_manual BOOLEAN NOT NULL DEFAULT false` — protege un nombre corregido a mano (Verificador Cromo) de que una corrida futura lo pise (ver sección "Repoblación de cables con historial 'ID dual'" arriba) |
-| `20260822_01` | `20260822_01_cromo_botella_separada_manualmente.py` | Columnas de auditoría `cromo_botellas.separada_manualmente/separada_motivo/separada_por/separada_at` — separación manual de Botella agrupada erróneamente por nombre bajo una Cámara padre compartida |
-| `20260825_02` | `20260825_02_servicios_verificable.py` | Columnas `servicios.es_verificable BOOLEAN NOT NULL` (backfill por `tipo_servicio` sobre las filas existentes) y `servicios.es_verificable_override BOOLEAN` nullable — trazabilidad de IDs y verificabilidad de Servicios SLA (ver sección "Tabla `servicios`" arriba y `docs/decisiones.md`) |
-| `20260908_01` | `20260908_01_cromo_servicio_odf_override.py` | Tabla `app.cromo_servicio_odf_override` (+ 3 CHECK + 2 índices propios) y el índice btree parcial `ix_cromo_odf_conectores_servicio_resuelto` — gestor "Servicios sin ODF" (ver sección "Tabla `cromo_servicio_odf_override`" arriba y `docs/decisiones.md`) |
-| `20260908_02` | `20260908_02_servicios_alias_ids_gin.py` | Índice GIN `ix_servicios_alias_ids_gin` sobre `app.servicios.alias_ids` — habilita el self-join anti-ambigüedad por contención del detector "Servicios sin ODF" (ver sección "Tabla `cromo_servicio_odf_override`" arriba y `docs/decisiones.md`) |
-| `20260917_01` | `20260917_01_cromo_tracking_cache.py` | Tabla `app.cromo_tracking_cache` — caché de salida con TTL de 24 h del `.txt` de tracking de cada pelo, para que la descarga multipelo no repita la llamada de 4,6-14 s a `/path` por cada archivo (ver sección "`cromo_tracking_cache`" arriba y `docs/decisiones.md` 2026-09-17) |
-| `20260917_02` | `20260917_02_cromo_clases_pon.py` | Catálogo de las clases de la red de acceso PON (66/84/85/86/133/134/137/141) con `ingerible=false` — sólo se etiquetan para que el diagrama de camino muestre qué es cada nodo |
-| `20260917_03` | `20260917_03_cromo_splitters.py` | Tablas `app.cromo_splitters` y `app.cromo_splitter_puertos` + `cromo_botellas.splitters_relevados` — el ratio del splitter lo publica Cromo en `at.83` y venía descartándose en cada barrido |
-| `20260919_01` | `20260919_01_cromo_clases_pon_ingeribles.py` | Alta de las 5 clases de caja PON que faltaban (126/127/138/139/140) y `ingerible=true` para 66/84/85/133/134/137 — revierte parcialmente `20260917_02`; también puebla `count_cromo`/`count_fecha` con los conteos reales, que pasan a ser el fallback de `fase_conteo` |
-| `20260919_02` | `20260919_02_cromo_pon_elementos.py` | Tabla `app.cromo_pon_elementos` — cajas PON (7 clases) y rosetas en una sola tabla discriminadas por `clase`, porque el esquema medido es idéntico en las ocho |
-| `20260919_03` | `20260919_03_cromo_splitters_contenedor.py` | Columnas `cromo_splitters.contenedor_n_id/contenedor_clase` — el 88 % de los splitters cuelga de una caja PON y no de una Botella, así que `botella_n_id` sola no alcanzaba |
-| `20260919_04` | `20260919_04_cromo_cables_clase.py` | Columna `cromo_cables.clase` (backfill a 51) — habilita alojar los cables de bajada (66) sin que la fase de reconciliación los marque como referencias colgadas |
-| `20260923_01` | `20260923_01_ingresos_correcciones.py` | Columnas `ingresos.thread_ts`/`canal_id` + tabla append-only `app.ingresos_correcciones` con trigger de inmutabilidad — soporte de datos de los comandos `Forzar ingreso`/`Forzar egreso` (ver sección "Tabla `ingresos_correcciones`" arriba y `docs/decisiones.md`) |
-| `20260923_02` | `20260923_02_servicios_sync_prov.py` | Tabla `app.servicios_sync_prov` (`ultima_sincronizacion_ok NOT NULL` en esta versión) — última sincronización PROV por Servicio (ver sección "Tabla `servicios_sync_prov`" arriba) |
-| `20260923_03` | `20260923_03_servicios_sync_prov_nullable.py` | `ALTER COLUMN servicios_sync_prov.ultima_sincronizacion_ok DROP NOT NULL` — fix de revisión de la Task 9: el camino de intento FALLIDO necesita persistir sin una sincronización exitosa previa; `NULL` reemplaza al centinela `1970-01-01` que se usó primero (ver `docs/decisiones.md`) |
-| `20260928_01` | `20260928_01_ingresos_correcciones_origen_web.py` | Columnas `ingresos_correcciones.origen`/`actor_web_usuario`, columnas de Slack nullable + CHECK por origen — auditoría del botón "Registrar egreso" del panel. El `downgrade()` aborta si ya hay filas `origen='web'` (no se descarta auditoría). Upgrade→downgrade→upgrade verificado en dev |
-| `20260929_01` | `20260929_01_api_clients.py` | Tabla `app.api_clients` (clientes OAuth2 `client_credentials` de `/api/v1`, índice único `ix_api_clients_client_id`). Upgrade→downgrade→upgrade verificado en dev |
-| `20260929_02` | `20260929_02_cromo_tracking_cache_pelos_camino.py` | Columna `cromo_tracking_cache.pelos_camino BIGINT[] NULL`: pelos que recorre cada tracking, para que `track` entregue un `.txt` por camino y no uno por posición de ODF. `NULL` = entrada previa, se regenera. Upgrade→downgrade→upgrade verificado en dev |
-| `20260929_03` | `20260929_03_cromo_clases_cables_terceros.py` | Alta en `cromo_clases` de 52/59/60 (cables de terceros, `entidad='CABLE'`), requisito de la FK `cromo_cables.clase`. El `downgrade()` borra esos cables con sus tubos, pelos y matches. Upgrade→downgrade→upgrade verificado en dev |
-| `20261005_01` | `20261005_01_cromo_servicio_pelo_excluido.py` | Tabla `app.cromo_servicio_pelo_excluido`: pelos huérfanos que un admin saca del tracking de un Servicio |
-| `20261005_02` | `20261005_02_sla_consumo_historico.py` | Persistencia del informe SLA consumido (reclamos, foto de SLA por línea y corte). **Fix 2026-10-14:** el `UPDATE app.reclamos SET horas_netas = horas_netas / 60.0` pasó a correr **después** del `alter_column` a `Numeric(12,4)`; antes corría sobre la columna vieja y redondeaba a 2 decimales. Dev ya estaba en esta revisión (no se re-ejecuta); prod la corre por primera vez con el orden correcto. Test: `tests/test_sla_consumo_migracion_orden.py` |
-| `20261014_01` | `20261014_01_clientes_categoria.py` | Enum `app.cliente_origen_categoria`, tablas `app.clientes` y `app.clientes_alias`, columnas `servicios.categoria_sla` y `servicios.categoria_excepcion`, y `servicios.categoria` pasa a nullable sin default. Backfill: `categoria_sla = categoria` (1 a 6, con cliente) y `categoria = NULL` donde era 6 sin cliente. No carga clientes: eso lo hace `scripts/clientes_categoria_regularizar.py`. `downgrade()` devuelve los NULL a 6 (con pérdida). Upgrade→downgrade→upgrade verificado en dev |
-| `20261016_01` | `20261016_01_cromo_odf_nodo.py` | Clase 86 (ODF Nodo) en `cromo_clases` + CHECK `tipo_elemento`, columna `cromo_odf_conectores.patch_conector_n_id` y backfill de `pelo_n_id` erróneos |
-| `20261016_02` | `20261016_02_cromo_tracking_cache_extremos.py` | Columna `cromo_tracking_cache.extremos JSONB NULL` |
-| `20261016_03` | `20261016_03_servicio_odf_confirmada.py` | Tabla `app.servicio_odf_confirmada` y columna `servicios.trackings_esperados` |
-| `20261016_04` | `20261016_04_cromo_auditoria_huerfanos.py` | Tabla `app.cromo_auditoria_huerfanos` y columnas `origen`/`auditoria_id` en `cromo_servicio_pelo_excluido` |
-| `20261017_01` | `20261017_01_cromo_odf_fusion_conector.py` | Columna `cromo_odf_conectores.fusion_odf_n_id BIGINT NULL` (fusión de ODF clase 141, referencia blanda sin FK). Sin backfill: se completa con una corrida `SOLO_ODF` |
-| `20261017_02` | `20261017_02_cromo_inconsistencias.py` | Tablas `app.cromo_inconsistencia` (UNIQUE `(tipo, objeto_n_id)`, 3 CHECK de `tipo`/`revision`/`estado`, índice `(estado, tipo)`) y `app.cromo_inconsistencia_pelo` (PK `(inconsistencia_id, pelo_n_id)`, FK CASCADE, índice por pelo) |
-| `20261017_03` | `20261017_03_cromo_servicio_match_vigente.py` | Vista `app.v_cromo_servicio_match_vigente`: `cromo_servicio_match` sin los pelos de casos en `CUARENTENA` |
-| `20261017_04` | `20261017_04_config_cromo_inconsistencias.py` | Fila `Cromo Inconsistencias` en `app.config_servicios` (inactiva, sin canales, idempotente); el downgrade la borra |
-| `20261020_01` | `20261020_01_cromo_arbitro.py` | Árbitro de Cromo: tablas `app.cromo_regla_correccion` (sembrada con 5 reglas en SOMBRA), `app.cromo_propuesta` (índice único parcial de abiertas), `app.cromo_evidencia_camino` y `app.cromo_arbitro_evaluacion`; columnas `origen`/`propuesta_id` y categoría `EVIDENCIA_CAMINO` en `cromo_servicio_odf_override` |
-| `20261023_01` | `20261023_01_ingresos_anulacion_y_mover.py` | Baja lógica de `app.ingresos` (`anulado_at`/`anulado_por`/`anulado_motivo` + CHECK `ck_ingresos_anulado_coherente`) y origen del movimiento en `app.ingresos_correcciones` (`camara_id_anterior`, `cromo_botella_id_anterior`); además elimina las 3 FKs de `ingresos_correcciones` (ids históricos: con la FK `SET NULL` el trigger append-only impedía borrar o unificar una cámara referenciada). `ADD COLUMN` sin default: no dispara el trigger. El `downgrade()` recrea las FKs `ON DELETE SET NULL` y aborta si hay ingresos anulados, correcciones con origen o ids huérfanos. Upgrade→downgrade→upgrade verificado en dev |
+Tabla **generada** desde `db/alembic/versions/` por `scripts/gen_tabla_migraciones.py` (solo
+lectura: parsea cada archivo con `ast`, sin importarlo). Orden de la cadena `down_revision` →
+`revision`; la descripción es el encabezado `# Descripción:` de cada migración. No editarla a mano:
 
-*(Nota: esta tabla tiene un gap pre-existente de filas entre `20260825_02` y `20260908_01` —
-migraciones aplicadas en dev en ese rango que nunca se agregaron acá. Fuera de alcance de esta
-entrada.)*
+```bash
+python scripts/gen_tabla_migraciones.py                       # imprime la tabla; pegarla entre los marcadores
+python scripts/gen_tabla_migraciones.py --verificar docs/db.md # exit 1 si el bloque quedó desactualizado
+```
+
+Por stderr el script informa raíces, heads, merges, ramas y `down_revision` colgadas. Estado al
+generarla (2026-10-26): 72 migraciones en una sola cadena lineal, raíz `20251007_01`, head
+`20261023_01`, sin merges ni ramas.
+
+<!-- tabla-migraciones:inicio -->
+| Revisión | Revisa a | Fecha | Archivo | Descripción |
+|----------|----------|-------|---------|-------------|
+| `20251007_01` | — | 2025-10-07 | `20251007_01_chat_tables.py` | Migración inicial para tablas de chat del panel web |
+| `20251008_01` | `20251007_01` | 2025-10-08 | `20251008_01_chat_tables_guard.py` | Refuerzo de tablas e índices para chat_sessions y chat_messages |
+| `20251013_01` | `20251008_01` | 2025-10-13 | `20251013_01_add_geo_to_cases.py` | Migración para agregar columnas latitude/longitude a app.cases (si existe) |
+| `20251014_01` | `20251013_01` | 2025-10-14 | `20251014_01_reclamos.py` | Crea tabla app.reclamos con índices y PK única en numero_reclamo |
+| `20251230_01` | `20251014_01` | 2025-12-30 | `20251230_01_infra.py` | Crea tablas de infraestructura (cámaras, cables, empalmes, servicios, ingresos y asociación) |
+| `20260108_01` | `20251230_01` | 2026-01-08 | `20260108_01_infra_updates.py` | Actualiza tablas de infraestructura: nuevo estado DETECTADA, enum origen_datos, campos servicio_id |
+| `20260110_01` | `20260108_01` | 2026-01-10 | `20260110_01_ruta_servicio.py` | Crea tabla rutas_servicio y asociativa ruta_empalme para versionado de rutas |
+| `20260112_01` | `20260110_01` | 2026-01-12 | `20260112_01_incidente_baneo.py` | Migración para crear tabla incidentes_baneo (Protocolo de Protección) |
+| `20260112_02` | `20260112_01` | 2026-01-12 | `20260112_02_raw_file_content.py` | Agrega columna raw_file_content a rutas_servicio para guardar TXT original |
+| `20260113_01` | `20260112_02` | 2026-01-13 | `20260113_01_puntos_terminales.py` | Agregar puntos terminales, alias_ids a servicios, es_transito a empalmes, cantidad_pelos a rutas |
+| `20260127_01` | `20260113_01` | 2026-01-27 | `20260127_01_incidente_baneo_email_fields.py` | Agrega campos de asunto y cuerpo de correo a incidentes de baneo |
+| `20260417_01` | `20260127_01` | 2026-04-17 | `20260417_01_config_servicios.py` | Crea tabla config_servicios para configuración de workers automatizados |
+| `20260420_01` | `20260417_01` | 2026-04-20 | `20260420_01_camaras_estado_auditoria.py` | Crea tabla de auditoría para cambios manuales del estado de cámaras |
+| `20260423_01` | `20260420_01` | 2026-04-23 | `20260423_01_config_servicios_hora_inicio.py` | Agrega columna hora_inicio a app.config_servicios para programar inicio del ciclo en GMT-3 |
+| `20260427_01` | `20260423_01` | 2026-04-27 | `20260427_01_unaccent_extension.py` | Instala la extensión unaccent de PostgreSQL requerida por las búsquedas de cámaras |
+| `20260428_01` | `20260427_01` | 2026-04-28 | `20260428_01_listener_workflow_ids.py` | Agrega workflow_ids y solo_workflows a config_servicios para el filtro de Workflow ID del listener |
+| `20260428_02` | `20260428_01` | 2026-04-27 | `20260428_02_camara_alias_pendiente.py` | Agrega tabla app.camara_alias y el valor PENDIENTE_REVISION al enum camara_estado |
+| `20260625_01` | `20260428_02` | 2026-06-25 | `20260625_01_report_history.py` | Crea tabla app.report_history para histórico persistente de informes web |
+| `20260713_01` | `20260625_01` | 2026-07-13 | `20260713_01_servicios_sla_fase1.py` | Extiende app.servicios con campos SLA para ingesta y búsqueda paginada |
+| `20260805_01` | `20260713_01` | 2026-08-05 | `20260805_01_cromo_ingesta.py` | Crea las tablas app.cromo_* (catálogo, auditoría e inventario) para la Etapa 2 de ingesta desde Cromo Red |
+| `20260806_01` | `20260805_01` | 2026-08-06 | `20260806_01_cromo_ingesta_config.py` | Crea app.cromo_ingesta_config — configuración persistente del scheduler de ingesta automática (Etapa 7) |
+| `20260807_01` | `20260806_01` | 2026-08-07 | `20260807_01_cromo_fusiones_botella_nullable.py` | cromo_fusiones.botella_n_id pasa a nullable — el fetch directo de clase 132 no trae "parent" (Etapa 8) |
+| `20260810_01` | `20260807_01` | 2026-08-10 | `20260810_01_camara_padre_botella.py` | Jerarquía Cámara→Botella — FK auto-referencial camaras.camara_padre_id + valor INFERIDO en camara_origen_datos |
+| `20260811_01` | `20260810_01` | 2026-08-11 | `20260811_01_cromo_botella_camara_padre.py` | Vincula Botellas Cromo a una Cámara padre propia (app.camaras) y les da estado operativo — nuevos valores NO_OPERATIVA/INFERIDO_CROMO |
+| `20260811_02` | `20260811_01` | 2026-08-11 | `20260811_02_ingresos_sin_match.py` | Tabla app.ingresos_sin_match — reemplaza el auto-registro de Cámara PENDIENTE_REVISION en ingresos de técnicos sin match |
+| `20260813_01` | `20260811_02` | 2026-08-13 | `20260813_01_cromo_botella_default_libre.py` | Cambia el server_default de app.cromo_botellas.estado de NO_OPERATIVA a LIBRE |
+| `20260814_01` | `20260813_01` | 2026-08-14 | `20260814_01_servicios_categoria_check.py` | CHECK + DEFAULT + NOT NULL sobre app.servicios.categoria (0-6), backfill de las ~1488 filas existentes (100% NULL hoy) a 6 ("sin categorizar") |
+| `20260814_02` | `20260814_01` | 2026-08-14 | `20260814_02_servicios_origen_datos.py` | Nuevo enum app.servicio_origen_datos + columna app.servicios.origen_datos — distingue servicios reales (MANUAL/TRACKING/INGEST_EXCEL) de placeholders sintetizados por el matching Cromo (INFERIDO_CROMO) |
+| `20260819_01` | `20260814_02` | 2026-08-19 | `20260819_01_cromo_botella_alias.py` | Tabla de aliasing manual de botellas Cromo — permite marcar un n_id junk/duplicado como fusionado a un n_id "golden" o directamente ignorado, y que la ingesta lo honre. |
+| `20260821_01` | `20260819_01` | 2026-08-21 | `20260821_01_cromo_botella_nombre_editado_manual.py` | Flag de protección de nombre editado a mano en Botellas Cromo — impide que una re-ingesta futura pise una corrección manual |
+| `20260822_01` | `20260821_01` | 2026-08-22 | `20260822_01_cromo_botella_separada_manualmente.py` | Columnas de auditoría para la separación manual de una Botella Cromo de su Cámara padre |
+| `20260823_01` | `20260822_01` | 2026-08-23 | `20260823_01_ingreso_seguimiento_empalme.py` | Columnas de seguimiento por hilo en IngresoSinMatch + índice en CromoBotella.nombre |
+| `20260825_01` | `20260823_01` | 2026-08-25 | `20260825_01_cromo_pelo_verificacion.py` | Campos de verificación manual (verificable/status/fecha_hora_status) en cromo_pelos |
+| `20260825_02` | `20260825_01` | 2026-08-25 | `20260825_02_servicios_verificable.py` | Agrega es_verificable (calculado por tipo_servicio, con backfill) y es_verificable_override (corrección manual) a app.servicios |
+| `20260828_01` | `20260825_02` | 2026-08-28 | `20260828_01_cromo_odfs.py` | Nueva tabla app.cromo_odfs — submódulo ODFs de Cromo Red (clase 69), objeto de primer nivel hermano de Cable/Botella, sin columna de agrupamiento por sitio. |
+| `20260831_01` | `20260828_01` | 2026-08-31 | `20260831_01_cromo_odf_conectores.py` | Nueva tabla app.cromo_odf_conectores — inventario de conectores/posiciones de patchera de una ODF (Cromo Red clases 135/136), con el servicio resuelto vía atributo directo + regex de pelo, combinados por criterio MAX-based ID final. |
+| `20260831_02` | `20260831_01` | 2026-08-31 | `20260831_02_ingreso_cromo_botella.py` | Agregar FK de Cromo Botella a Ingreso para registrar qué botella específica se intervino |
+| `20260902_01` | `20260831_02` | 2026-09-02 | `20260902_01_servicios_prov_historial_equipos.py` | Nuevo valor INGEST_PROV en app.servicio_origen_datos + tablas servicios_historial_id y servicios_equipos_ultima_milla para la integración con la API PROV |
+| `20260904_01` | `20260902_01` | 2026-09-04 | `20260904_01_ingreso_tipo_movimiento.py` | Nuevo enum app.ingreso_tipo + columna app.ingresos.tipo — distingue INGRESO/EGRESO real de un INTENTO_BLOQUEADO por baneo |
+| `20260907_01` | `20260904_01` | 2026-09-07 | `20260907_01_ingreso_sin_match_revalidacion.py` | Columnas de revalidación en IngresoSinMatch (texto_mensaje, resuelto_via_revalidacion, ingreso_id) |
+| `20260908_01` | `20260907_01` | 2026-09-08 | `20260908_01_cromo_servicio_odf_override.py` | Tabla escudo cromo_servicio_odf_override (asociación manual Servicio→ODF de Cromo) + índice btree parcial de performance sobre cromo_odf_conectores.servicio_resuelto |
+| `20260908_02` | `20260908_01` | 2026-09-08 | `20260908_02_servicios_alias_ids_gin.py` | Índice GIN sobre app.servicios.alias_ids — habilita el self-join anti-ambigüedad reescrito a contención (`alias_ids @> ARRAY[...]`) del detector "Servicios sin ODF" |
+| `20260917_01` | `20260908_02` | 2026-09-17 | `20260917_01_cromo_tracking_cache.py` | Nueva tabla app.cromo_tracking_cache — caché de salida, con vencimiento, del tracking .txt de cada pelo, para que la descarga multipelo no pague N llamadas a Cromo. |
+| `20260917_02` | `20260917_01` | 2026-09-17 | `20260917_02_cromo_clases_pon.py` | Registra en app.cromo_clases las clases de la red de acceso PON que el camino óptico atraviesa pero la ingesta no barre, para que el diagrama deje de mostrar "CLASE_84" |
+| `20260917_03` | `20260917_02` | 2026-09-17 | `20260917_03_cromo_splitters.py` | Tablas app.cromo_splitters y app.cromo_splitter_puertos — el ratio del splitter y sus puertos vienen publicados por Cromo y hasta ahora se descartaban en cada corrida |
+| `20260919_01` | `20260917_03` | 2026-09-19 | `20260919_01_cromo_clases_pon_ingeribles.py` | Da de alta las 5 clases de caja PON que faltaban en app.cromo_clases y marca ingeribles las clases de la red de acceso que el submódulo PON pasa a barrer |
+| `20260919_02` | `20260919_01` | 2026-09-19 | `20260919_02_cromo_pon_elementos.py` | Crea app.cromo_pon_elementos, la tabla única de cajas PON y rosetas de la red de acceso, discriminadas por clase |
+| `20260919_03` | `20260919_02` | 2026-09-19 | `20260919_03_cromo_splitters_contenedor.py` | Agrega contenedor_n_id/contenedor_clase a app.cromo_splitters, porque el 88% de los splitters no cuelga de una Botella sino de una caja PON |
+| `20260919_04` | `20260919_03` | 2026-09-19 | `20260919_04_cromo_cables_clase.py` | Agrega clase a app.cromo_cables para poder alojar cables de bajada (66) junto a los de FO (51) sin que se confundan |
+| `20260923_01` | `20260919_04` | 2026-09-23 | `20260923_01_ingresos_correcciones.py` | Columnas de hilo en app.ingresos + tabla append-only app.ingresos_correcciones (auditoría de "Forzar ingreso"/"Forzar egreso") |
+| `20260923_02` | `20260923_01` | 2026-09-23 | `20260923_02_servicios_sync_prov.py` | Tabla app.servicios_sync_prov — última sincronización exitosa contra PROV por Servicio |
+| `20260923_03` | `20260923_02` | 2026-09-23 | `20260923_03_servicios_sync_prov_nullable.py` | app.servicios_sync_prov.ultima_sincronizacion_ok pasa a NULLABLE — fix de la revisión de calidad de la Task 9 (centinela 1970-01-01 reemplazado por NULL) |
+| `20260928_01` | `20260923_03` | 2026-09-28 | `20260928_01_ingresos_correcciones_origen_web.py` | Origen (slack/web) y actor web en app.ingresos_correcciones, para auditar el egreso registrado desde el panel |
+| `20260929_01` | `20260928_01` | 2026-09-29 | `20260929_01_api_clients.py` | Tabla app.api_clients para OAuth2 client_credentials (M2M) de la API v1 |
+| `20260929_02` | `20260929_01` | 2026-09-29 | `20260929_02_cromo_tracking_cache_pelos_camino.py` | Columna pelos_camino en app.cromo_tracking_cache — los pelos que recorre cada tracking, para entregar un .txt por camino distinto y no uno por posición de ODF. |
+| `20260929_03` | `20260929_02` | 2026-09-29 | `20260929_03_cromo_clases_cables_terceros.py` | Da de alta en app.cromo_clases las clases de cable de terceros (52, 59 Telefónica, 60 Telecom), requisito de la FK cromo_cables.clase para poder ingerirlas. |
+| `20260930_01` | `20260929_03` | 2026-09-30 | `20260930_01_cromo_pelos_atributos_inner.py` | Atributos at.62/at.63 del pelo (sólo vía /inner del cable) y config del barrido semanal SOLO_PELOS_INNER, sembrada deshabilitada. |
+| `20261005_01` | `20260930_01` | 2026-10-05 | `20261005_01_cromo_servicio_pelo_excluido.py` | Tabla app.cromo_servicio_pelo_excluido — pelos que Cromo sigue etiquetando con un Servicio pero que el operador sacó de él en local (huérfanos de un camino). |
+| `20261005_02` | `20261005_01` | 2026-10-05 | `20261005_02_sla_consumo_historico.py` | Histórico SLA consumido — amplía app.reclamos, crea sla_ingestas, servicio_sla_snapshot y v_eventos_sla |
+| `20261014_01` | `20261005_02` | 2026-10-14 | `20261014_01_clientes_categoria.py` | Tablas app.clientes y app.clientes_alias, enum cliente_origen_categoria y categoría SLA/excepción en app.servicios (categoria pasa a nullable sin default) |
+| `20261014_02` | `20261014_01` | 2026-10-14 | `20261014_02_fo_monitor.py` | Tablas app.fomon_* de FO Monitor (intervenciones, consultas a burritoIA, resultados append-only, geometría) |
+| `20261016_01` | `20261014_02` | 2026-10-16 | `20261016_01_cromo_odf_nodo.py` | Habilita la ingesta de la clase 86 de Cromo (ODF Nodo) en app.cromo_odfs, agrega cromo_odf_conectores.patch_conector_n_id y corrige los pelo_n_id que no eran pelos. |
+| `20261016_02` | `20261016_01` | 2026-10-16 | `20261016_02_cromo_tracking_cache_extremos.py` | Columna extremos en app.cromo_tracking_cache — los dos extremos de cada camino y su resumen (ODFs y cables), para clasificarlo como TRAMO o RESIDUAL sin volver a Cromo. |
+| `20261016_03` | `20261016_02` | 2026-10-16 | `20261016_03_servicio_odf_confirmada.py` | Tabla app.servicio_odf_confirmada (ODF confirmadas por servicio, con rol EXTREMO o TRANSITO) y columna app.servicios.trackings_esperados (cantidad de trackings que declara el operador). |
+| `20261016_04` | `20261016_03` | 2026-10-16 | `20261016_04_cromo_auditoria_huerfanos.py` | Tabla app.cromo_auditoria_huerfanos (pelos de caminos residuales con causa sugerida) y traza de origen (MANUAL / AUDITORIA) en app.cromo_servicio_pelo_excluido. |
+| `20261017_01` | `20261016_04` | 2026-10-17 | `20261017_01_cromo_odf_fusion_conector.py` | Columna app.cromo_odf_conectores.fusion_odf_n_id (fusión de ODF clase 141 por la que el conector llega a su pelo o a otro conector). |
+| `20261017_02` | `20261017_01` | 2026-10-17 | `20261017_02_cromo_inconsistencias.py` | Tablas app.cromo_inconsistencia (casos del detector de inconsistencias de Cromo) y app.cromo_inconsistencia_pelo (pelos en uso afectados por cada caso) |
+| `20261017_03` | `20261017_02` | 2026-10-17 | `20261017_03_cromo_servicio_match_vigente.py` | Vista app.v_cromo_servicio_match_vigente — cromo_servicio_match sin los pelos de casos de inconsistencia de Cromo en CUARENTENA |
+| `20261017_04` | `20261017_03` | 2026-10-17 | `20261017_04_config_cromo_inconsistencias.py` | Fila "Cromo Inconsistencias" en app.config_servicios (aviso de casos nuevos a Slack), inactiva y sin canales |
+| `20261020_01` | `20261017_04` | 2026-10-20 | `20261020_01_cromo_arbitro.py` | Tablas del árbitro de Cromo (reglas, propuestas, evidencia de camino, evaluaciones) y origen AUTO en el override de ODF |
+| `20261021_01` | `20261020_01` | 2026-10-21 | `20261021_01_servicio_posicion_vigente.py` | Tabla app.servicio_posicion_vigente (posición de ODF por conector que un operador declara como la vigente de un Servicio, con la foto del conector y el retiro automático o manual) |
+| `20261023_01` | `20261021_01` | 2026-10-23 | `20261023_01_ingresos_anulacion_y_mover.py` | Baja lógica de app.ingresos (anulado_at/por/motivo), origen del movimiento en app.ingresos_correcciones y fin de sus FKs (ids históricos) |
+<!-- tabla-migraciones:fin -->
+
+**Notas que no entran en la tabla** (leídas de cada migración):
+
+- `20260428_02` declara `Create Date: 2026-04-27`, anterior a su prefijo de revisión.
+- `20260928_01`: el `downgrade()` aborta si ya hay filas `origen='web'` en `ingresos_correcciones`.
+- `20260929_03`: el `downgrade()` borra los cables de clases 52/59/60 con sus tubos, pelos y matches.
+- `20261005_02`: el `UPDATE app.reclamos SET horas_netas = horas_netas / 60.0` corre **después** del
+  `alter_column` a `Numeric(12,4)` (fix del 2026-10-14; antes redondeaba a 2 decimales). Test:
+  `tests/test_sla_consumo_migracion_orden.py`.
+- `20261014_01`: el `downgrade()` devuelve `servicios.categoria` NULL a 6 (con pérdida).
+- `20261014_02`: el `downgrade()` borra todas las tablas `fomon_*` y la fila `fo_monitor` de
+  `config_servicios`.
+- `20261016_01`: el `downgrade()` borra las filas `ODF_NODO` de `cromo_odfs` y sus conectores; el
+  backfill de `pelo_n_id` no se revierte.
+- `20261023_01`: el `downgrade()` recrea las FKs `ON DELETE SET NULL` de `ingresos_correcciones` y
+  aborta si hay ingresos anulados, correcciones con origen o ids huérfanos.
 
 ---
 

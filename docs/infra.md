@@ -11,12 +11,25 @@ El módulo **Infraestructura FO** permite la gestión de cámaras de fibra ópti
 ## Funcionalidades principales
 
 ### Búsqueda de cámaras
-- **Smart Search**: búsqueda libre por servicio, dirección, cámara, cable
-- **Filtros rápidos**: por estado (Libre, Ocupada, Baneada, Detectada, Tracking)
+- **Smart Search**: búsqueda libre por servicio, dirección, cámara, cable (`POST /api/infra/smart-search`,
+  `web/app/routers/camaras.py`)
+- **Filtros rápidos**: por estado (Libre, Ocupada, Baneada, No operativa); `DETECTADA` y el pseudo-estado
+  "Tracking" se retiraron el 2026-08-11 (ver "Estados operables" más abajo)
 - **Upload de tracking**: carga archivos `.txt` de tracking para asociar cámaras a servicios
 - El grid sólo devuelve **Cámaras raíz** (`camara_padre_id IS NULL`, ver "Jerarquía Cámara → Botellas"
   más abajo) — las Botellas viven dentro del detalle de su Cámara, no como tarjetas propias en el
   dashboard.
+- **Búsqueda liviana para selectores** (`core/services/camara_busqueda_service.py`): fuera del grid,
+  los pickers que eligen una Cámara por nombre usan `buscar_camaras_ligero(session, q, *, limit=10,
+  excluir_id=None, solo_raiz=True)`. Filtra `Camara.nombre ILIKE '%q%'` (con `q` vacío devuelve las
+  primeras por nombre), ordena por nombre, acota `limit` a 1-50, puede excluir una Cámara puntual y,
+  con `solo_raiz=False`, incluye también Botellas legado. Devuelve `CamaraLigera` (`id`, `nombre`,
+  `direccion`, `estado`, `botellas_count` = Botellas legado + Cromo, `cables_count`, y para Botellas
+  `es_botella`/`camara_padre_id`/`camara_padre_nombre`). Su único llamador es
+  `GET /api/infra/camaras/buscar` (`web/app/routers/camaras.py::camaras_buscar_ligero_web`), que
+  consumen `ModalUnificarCamara.vue`, `ModalAsociarHuerfanas.vue`, `admin/components/ModalAsociarSinMatch.vue`
+  y `src/api/camaras.ts`. No reusa Smart Search a propósito: ese endpoint recalcula rutas/servicios/cables
+  de todas las Cámaras raíz. Contrato completo en "API Endpoints" → `GET /api/infra/camaras/buscar`.
 
 ### Jerarquía Cámara → Botellas
 
@@ -40,7 +53,7 @@ nombre (preservando el resto, ej. el sufijo "CF" final) para obtener el nombre b
 
 **Alta en vivo**: `core/services/camara_hierarchy_service.py::resolver_o_crear_padre()` se invoca desde
 los 5 caminos de alta/promoción de `Camara` (tracking `.txt`, sync Google Sheets, alta Slack, y los dos
-endpoints admin `admin_dar_de_alta_camara`/`admin_aprobar_camara` en `web/app/main.py`) — si el nombre
+endpoints admin `admin_dar_de_alta_camara`/`admin_aprobar_camara` en `web/app/routers/camaras.py`) — si el nombre
 nuevo matchea `RE_BOT_SUFIJO`, reusa la Cámara padre `INFERIDO` existente para esa base o crea una
 nueva, y vincula la fila nueva como Botella. La ingesta Excel de cámaras baneadas
 (`core/services/camara_ingest_service.py`) dejó de ser un camino de alta — hoy sólo banea
@@ -560,8 +573,8 @@ operativos para mantenimiento, pensado para crecer con más módulos) → tarjet
   `ModalUnificarCamara.vue` (buscar duplicada → resumen de impacto + checkbox de alias → confirmar).
 - **Hallazgo real de routing durante la verificación (2026-08-11, sigue vigente)**:
   `GET /api/infra/camaras/buscar` chocaba con `GET /api/infra/camaras/{camara_id}` (registrada antes
-  en `web/app/main.py`) — FastAPI matchea por orden de registro, así que "buscar" se interpretaba
-  como `camara_id: int` y devolvía 422. Corregido registrando `/camaras/buscar` ANTES de la ruta con
+  en el mismo router, hoy `web/app/routers/camaras.py`) — FastAPI matchea por orden de registro,
+  así que "buscar" se interpretaba como `camara_id: int` y devolvía 422. Corregido registrando `/camaras/buscar` ANTES de la ruta con
   parámetro — cualquier ruta GET literal nueva bajo `/api/infra/camaras/` debe seguir este orden.
 
 ### Dashboard Viewer de Botellas — duplicados dentro de la misma Cámara padre y apropiación legado→Cromo (2026-08-14)
@@ -759,7 +772,7 @@ admin abierto cuando el recálculo termina — sin tocar la función de detecci�
   /api/admin/infra/botellas/viewer/duplicados` acepta ese parámetro para **saltear la caché por
   completo** y forzar el cómputo, repoblando la caché con el resultado fresco. Lo usa el
   botón "Actualizar" del visor (`refrescar()` → `reloadDuplicados(true)`). El cómputo (acá y en los
-  otros 2 call-sites directos de `detectar_grupos_duplicados_botellas` en `web/app/main.py` —
+  otros 2 call-sites directos de `detectar_grupos_duplicados_botellas` en `web/app/routers/cromo.py` —
   `apropiar-masivo` y el export de inconsistencias, ambos en su propio cache-miss) corre vía
   `await asyncio.to_thread(...)`, no directo en el `async def` del endpoint (2026-08-22): antes del
   fix, cualquiera de los 3 bloqueaba el event loop entero de `web` durante todo el cómputo — medido
@@ -814,7 +827,8 @@ bloquea, se aborta la operación completa antes de tocar la sesión.
     (`ondelete=CASCADE`) junto con ella. No queda rastro en base de datos de que existió, sólo el
     `logger.info(...)` del endpoint. Agregar una tabla de auditoría dedicada quedó fuera de alcance de
     este ticket.
-- **Endpoints** (admin, CSRF, `web/app/main.py`):
+- **Endpoints** (admin, CSRF; `botellas/eliminar` en `web/app/routers/cromo.py`, `camaras/eliminar` en
+  `web/app/routers/camaras.py`):
   - `POST /api/infra/botellas/eliminar` — body `{origen, id, csrf_token}`. 400 con
     `{"error", "bloqueos": [{origen, id, nombre, razon}]}` si se rechaza; 200 con
     `{ok, origen, id, camara_padre_eliminada, alias_registrado}` si se borra.
@@ -904,7 +918,7 @@ mejora del regex de búsqueda, sin crear ninguna entidad de infraestructura.
 
 - **Alcance**: los dos flujos que auto-registraban una Cámara al no encontrar match — el bot de Slack
   (`modules/slack_baneo_notifier/listener.py::_construir_respuesta_camara`) y la carga de tracking
-  (`web/app/main.py::upload_tracking_web`). El técnico de Slack recibe un mensaje que aclara que
+  (`web/app/routers/servicios.py::upload_tracking_web`). El técnico de Slack recibe un mensaje que aclara que
   puede ser un error de formato/tipeo y que **puede continuar con el ingreso igual** — nunca lee como
   un rechazo. El tracking simplemente deja `Empalme.camara_id = NULL` para esa ubicación (columna ya
   nullable) en vez de crear una Cámara `DETECTADA`/`TRACKING`.
@@ -1301,7 +1315,7 @@ El viewer tiene tres pestañas (`?tab=propuestas` / `?tab=reglas`; sin `tab` abr
   regla, editables, con aceptadas, rechazadas y precisión. La marca "Lista para AUTO" aparece con
   precisión ≥ 95 % y N ≥ 30.
 
-Endpoints (admin; los POST con CSRF) bajo `/api/admin/infra/arbitro-cromo`, en `web/app/main.py`,
+Endpoints (admin; los POST con CSRF) bajo `/api/admin/infra/arbitro-cromo`, en `web/app/routers/cromo.py`,
 cliente `web/frontend/src/api/arbitroCromo.ts`:
 
 | Endpoint | Respuesta |
@@ -1334,7 +1348,8 @@ La vista dedicada realiza carga paralela contra endpoints same-origin del servic
 **Registros** muestra:
 
 - pestaña **Ingresos** (desde 2026-08-31) poblada con los movimientos reales de `app.ingresos` del
-  grupo cámara+botellas hermanas (`_serialize_camara_ingreso` en `web/app/main.py`, consumido por
+  grupo cámara+botellas hermanas (`_serialize_camara_ingreso` en `web/app/comun.py`, usado por `GET /api/infra/camaras/{id}/registros`
+  en `web/app/routers/camaras.py` y consumido por
   `ModalRegistros.vue` vía prop `ingresos`) — ver "Escritura de `Ingreso` sobre el grupo" más arriba
 - pestaña **Baneos** con historial ordenado por fecha de inicio descendente y accordions retraídos por defecto
 - auditoría manual de cambios de estado (`app.camaras_estado_auditoria`) como trazabilidad complementaria dentro de la pestaña de baneos
@@ -1600,8 +1615,8 @@ Genera archivo EML para descargar y abrir en Outlook.
 - `web/frontend/src/views/CamaraDetailView.vue` - Vista dedicada por cámara (Alias, Registros, Servicios, Botellas)
 - `web/frontend/src/components/infra/` - Modales aislados de alias, servicios, registros, botellas y edición de estado
 - `web/frontend/src/router/index.ts` - Ruta SPA `/infra/Camaras/:id` (una Botella es una Camara más — reusa la misma ruta/vista)
-- `web/app/main.py` - Endpoints web same-origin para listado y detalle; único consumidor real del frontend hoy
-- `api/app/routes/infra.py` - Router montado en el servicio `api` (puerto 8011 dev / 8001 prod) con endpoints de cámaras/búsqueda equivalentes; **sin consumidor real en el frontend actual** (la SPA usa exclusivamente los endpoints same-origin de `web/app/main.py`) — deuda técnica preexistente, no se tocó en esta iteración
+- `web/app/routers/camaras.py` - Endpoints web same-origin para listado y detalle (montados por `web/app/main.py`, que hoy sólo ensambla routers); único consumidor real del frontend hoy
+- `api/app/routes/infra.py` - Router montado en el servicio `api` (puerto 8011 dev / 8001 prod) con endpoints de cámaras/búsqueda equivalentes; **sin consumidor real en el frontend actual** (la SPA usa exclusivamente los endpoints same-origin de `web/app/routers/`) — deuda técnica preexistente, no se tocó en esta iteración
 - `core/services/camara_estado_service.py` - Contexto/auditoría de estado, `miembros_del_grupo()`, `aplicar_estado_a_grupo()` (único punto que escribe `Camara.estado`), `obtener_ultima_transicion_a_baneada()`
 - `core/services/camara_hierarchy_service.py` - Detección de sufijo "Bot N", extracción de nombre base, `resolver_o_crear_padre()` (alta en vivo), `estado_mas_restrictivo()`
 - `core/services/protection_service.py` - Lógica de negocio del Protocolo de Protección (`create_ban`/`lift_ban`), con cascada de grupo completa
@@ -1817,7 +1832,7 @@ Genera archivo EML para descargar y abrir en Outlook.
 - **Fuera de alcance**: escritura de `Ingreso` sobre el grupo (la tabla no tiene ningún camino de escritura real hoy), fusión de duplicados sin patrón "Bot N", unificación de las 3 implementaciones divergentes de conteo de servicios, limpieza de `api/app/routes/infra.py` (huérfano, sin consumidor real).
 
 ### 2026-05-12 - Restauración de avisos Slack en Protocolo de Protección
-- **Corregido**: los baneos ejecutados desde el panel Vue 3 entran por `web/app/main.py`; esa ruta persistía el incidente pero no disparaba el aviso inmediato a Slack ni el reporte actualizado.
+- **Corregido**: los baneos ejecutados desde el panel Vue 3 entran por el servicio `web` (entonces `web/app/main.py`, hoy `web/app/routers/camaras.py`); esa ruta persistía el incidente pero no disparaba el aviso inmediato a Slack ni el reporte actualizado.
 - **Corregido**: `POST /api/infra/ban/create` y `POST /api/infra/ban/lift` del servicio `web` ahora reutilizan `modules.slack_baneo_notifier.eventos` igual que `api`, manteniendo el aviso puntual y el reenvío del reporte de cámaras baneadas.
 - **Agregado**: `slack_sdk==3.33.5` en `web/requirements.txt`, porque el contenedor `web` no incluía la dependencia necesaria para ejecutar ese flujo.
 - **UX**: el modal del wizard de Protocolo de Protección se cierra automáticamente tras un alta exitosa y reinicia su estado interno.

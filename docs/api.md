@@ -12,13 +12,22 @@ La API de LAS-FOCAS funciona como backend de una SPA Vue 3 desacoplada. Todo end
 api/
 ├── Dockerfile          # CMD: uvicorn app.main:app (vía symlink /app/app → /app/api/app)
 ├── app/
-│   ├── main.py         # Factory FastAPI, registra todos los routers
+│   ├── main.py         # Factory FastAPI: CORS, handlers de error, registra todos los routers
 │   ├── db.py           # SQLAlchemy engine + db_health()
+│   ├── security.py     # require_api_key: API key interna (Bearer o X-API-Key)
+│   ├── oauth.py        # OAuth2 client_credentials de la API v1: JWT + require_oauth_token
+│   ├── errores.py      # ErrorDeDominio y subclases + 500 con referencia (ver "Formato de errores")
 │   └── routes/
-│       ├── health.py   # GET /health, /health/version, /db-check
-│       ├── reports.py  # POST /reports/repetitividad, /reports/sla
-│       ├── ingest.py   # POST /ingest/reclamos, /import/reclamos
-│       └── infra.py    # Endpoints de infraestructura (cámaras, trackings, rutas)
+│       ├── health.py     # GET /health, /health/version, /db-check
+│       ├── reports.py    # /reports/repetitividad (POST/GET), POST /reports/sla, GET /reports/sla/preview
+│       ├── ingest.py     # POST /ingest/reclamos, /ingest/camaras, /import/reclamos (alias)
+│       ├── infra.py      # Infraestructura: cámaras, trackings, rutas, baneos, notificación, export
+│       ├── servicios.py  # /servicios/*: ingesta, búsqueda, detalle, refresco PROV, categoría, verificable
+│       ├── clientes.py   # /clientes/*: categoría por cliente, lista oficial, alias, fusión, sync
+│       └── v1/           # API v1 interáreas (OAuth2 M2M, no API key)
+│           ├── oauth.py      # POST /api/v1/oauth/token
+│           ├── servicios.py  # GET /api/v1/servicios/{servicio_id}/{botellas,cables,odfs}
+│           └── cables.py     # GET /api/v1/cables/{servicios,pelos}
 └── requirements.txt    # Dependencias específicas del microservicio
 ```
 
@@ -32,6 +41,31 @@ Entrada desde Docker: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
 - Mantener autenticación por API key interna o sesión según la superficie.
 - No mezclar renderizado de UI ni lógica de presentación.
 - Todo acceso a I/O debe ser asíncrono cuando aplique.
+
+## Formato de errores
+
+Definido en `api/app/errores.py` y registrado en `create_app()` (`api/app/main.py`) con
+`add_exception_handler`. La API interna responde sus errores con el cuerpo de FastAPI
+(`{"detail": ...}`), el mismo de `HTTPException`, para no cambiarles el contrato a sus consumidores
+(proxies de la web, bot):
+
+- `HTTPException` y `RequestValidationError` (422) conservan los handlers de FastAPI.
+- `ErrorDeDominio` y sus subclases (`NoEncontrado` 404, `DatoInvalido` 422, `Conflicto` 409; la base
+  es 400) → `{"detail": "<mensaje>"}` con el `status_code` de la clase.
+- Excepción no controlada, o capturada por un endpoint con `error_interno(accion, exc, **contexto)` →
+  **500** `{"detail": "Error interno (ref 1a2b3c4d)"}`. La referencia son 8 caracteres hex
+  (`secrets.token_hex(4)`); el texto de la excepción **no** se expone en la respuesta, va al log del
+  servicio con traceback como `action=<accion>_error <clave>=<valor> ... error=<exc> ref=<ref>`.
+  Para cruzar una respuesta 500 con su causa: `grep "ref=1a2b3c4d" Logs/api.log`.
+  `error_interno` acepta `cuerpo=` para conservar claves extra del endpoint junto a `detail`.
+- **API v1 (`/api/v1/...`)**: su contrato no cambia. Una excepción no controlada se loguea con ref
+  pero responde lo mismo que Starlette sin handler: 500 `text/plain` `Internal Server Error`.
+- `POST /api/infra/notify/email` es la excepción: ante un error responde **200** con
+  `success: false` y `error: "Error interno (ref …)"`, porque la SPA consume ese contrato.
+
+Módulo y handlers agregados en `62249120`; los endpoints de `routes/` pasaron a `error_interno` en
+`15fc39ac` (ambos 2026-10-23). Antes, varios devolvían `detail: "Error ...: <texto de la excepción>"`. El panel web aplica el mismo diseño con la clave
+`error` en lugar de `detail` (`web/app/errores.py`).
 
 ## Endpoint de salud
 
@@ -917,6 +951,50 @@ La categoría de un servicio sigue a la de su cliente (`docs/clientes_categoria.
   }
   ```
 
+#### POST `/servicios/prov/refrescar`
+
+Refresca on-demand un servicio contra PROV (`API_Contexto_Servicio`) y devuelve el detalle
+actualizado.
+
+- **Autenticación:** API key interna. El panel web lo expone como `POST /api/servicios/prov/refrescar`
+  (`web/app/routers/servicios.py`, sesión + CSRF en el body, cualquier usuario autenticado; timeout
+  del proxy 70 s), usado por el botón de `ServicioDetalleView.vue`.
+- **Query params:** `id` (requerido): ID origen, línea actual o `servicio_id`, igual que
+  `/servicios/detail`.
+- **Comportamiento:** consulta PROV con el número de primer servicio (o `servicio_id`) del registro,
+  con `max_reintentos=1` (`_PROV_REFRESCAR_MAX_REINTENTOS`, peor caso ~61 s). No retiene una conexión
+  del pool durante la llamada: abre una sesión corta antes y otra después. Ingiere el contexto con
+  `ingerir_contexto_prov` y luego corre `sincronizar_clientes_post_ingesta` con el nombre de cliente
+  anterior y el nuevo (categoría por cliente).
+- **Respuesta 200:** `ServicioDetailResponse`, el mismo cuerpo que `GET /servicios/detail`
+  (incluye `historial_ids`, `equipos_ultima_milla` y `sla_historico`).
+- **Errores:** `400` sin `id`; `404` si el servicio no existe en la base o PROV no lo encuentra;
+  `502` si falla la consulta a PROV; `503` `"PROV no está configurado en este entorno"` si faltan
+  `PROV_BASE_URL` o sus secrets (`ProvConfigError`).
+
+**Límite de tasa hacia PROV.** Todas las llamadas a PROV del proceso pasan por un único `ProvClient`
+(`get_prov_client()`, `lru_cache`) que comparte un `AsyncRateLimiter`
+(`core/services/prov/rate_limiter.py`): pacing uniforme en memoria, cada turno se espacia
+`1/PROV_RATE_LIMIT_PER_SECOND` segundos del anterior (default 5 por segundo,
+`core/services/prov/config.py`), sin ráfagas, serializado con un `asyncio.Lock`. **No coordina entre
+procesos**: alcanza dentro del contenedor `api` porque corre uvicorn sin `--workers`
+(`api/Dockerfile`), pero los otros procesos que llaman a PROV (el panel web en
+`web/app/routers/cromo.py` y el notificador de Slack en `modules/slack_baneo_notifier/`) instancian
+su propio `ProvClient` con su propio limitador, así que la tasa total contra PROV puede ser la suma
+de la de cada proceso.
+
+#### PATCH `/servicios/{id}/verificable`
+
+Fija a mano si un servicio es verificable.
+
+- **Autenticación:** API key interna. Proxy web: `PATCH /api/servicios/{id}/verificable`
+  (`web/app/routers/servicios.py`, sesión + CSRF).
+- **Path:** `id` es el `id` interno (entero) de `app.servicios`, no el ID de servicio.
+- **Body (JSON):** `{"es_verificable": true | false}`.
+- **Comportamiento:** escribe `es_verificable` y `es_verificable_override`; con el override no nulo,
+  la ingesta deja de recalcular `es_verificable` (`db/models/infra.py`).
+- **Respuesta 200:** `ServicioItemResponse` actualizado. **Errores:** `404` si no existe el servicio.
+
 ### Sistema de Versionado de Rutas FO (v2)
 
 El sistema de carga de trackings evolucionó a un flujo en 2 pasos con soporte de versionado/ramificación, similar a un sistema de control de versiones (Git) para rutas de fibra óptica.
@@ -1412,6 +1490,45 @@ Obtiene los registros de ingreso/egreso de técnico (Slack) a las cámaras que a
 - **Respuesta 404** (`{"error": "Servicio {servicio_id} no encontrado"}`) si el identificador no matchea ningún `Servicio`.
 - **Notas:** las cámaras del servicio se resuelven vía `ProtectionService.get_camaras_for_servicio()` (`core/services/protection_service.py`), que ya combina el camino legado `RutaServicio`/`Empalme` con Cromo en una sola llamada. `total` es la cantidad de filas devueltas (post-`limit(100)`, no un total real contra todo lo que matchea — no asumir que sigue creciendo más allá de 100). Cada item lleva los mismos campos que `_serialize_camara_ingreso` (ver `GET /api/infra/camaras/{camara_id}/registros` arriba, incluidos `botella_label`/`tipo` desde 2026-09-04) más `camara_id`/`camara_nombre` de la cámara concreta a la que corresponde ese movimiento dentro del servicio. Consumido por `ServicioDetalleView.vue` (sección "Ingresos").
 
+### GET `/api/infra/servicios/{servicio_id}/rutas`
+
+Lista las rutas FO (legado `RutaServicio`) de un servicio (`api/app/routes/infra.py`).
+
+- **Autenticación:** API key interna. El panel web tiene su propia ruta homónima con sesión
+  (`web/app/routers/servicios.py`).
+- **Respuesta 200 (`ServicioRutasResponse`):** `{"status": "ok", "servicio_id", "servicio_db_id",
+  "cliente", "total_rutas", "rutas": [{"id", "nombre", "tipo", "hash_contenido", "empalmes_count",
+  "activa", "created_at", "nombre_archivo_origen"}]}`; `tipo` cae a `"PRINCIPAL"` si es nulo.
+- **Errores:** `404` `{"detail": "Servicio <id> no encontrado"}`; `500` con referencia.
+
+### GET `/api/infra/rutas/{ruta_id}/empalmes`
+
+Empalmes de una ruta con la cámara de cada uno (`api/app/routes/infra.py`). Sin equivalente en el
+panel web ni consumidor en la SPA (verificado por grep en `web/`).
+
+- **Autenticación:** API key interna.
+- **Path:** `ruta_id` (int).
+- **Respuesta 200:**
+
+  ```json
+  {
+    "status": "ok",
+    "ruta": {"id": 33, "nombre": "Principal", "tipo": "PRINCIPAL", "servicio_id": "52547", "activa": true},
+    "empalmes": [
+      {
+        "id": 901,
+        "tracking_empalme_id": "...",
+        "tipo": "...",
+        "camara": {"id": 2724, "nombre": "...", "direccion": "...", "estado": "LIBRE", "latitud": null, "longitud": null}
+      }
+    ],
+    "total_empalmes": 1
+  }
+  ```
+
+  `camara` es `null` si el empalme no tiene cámara asociada.
+- **Errores:** `404` `{"detail": "Ruta <id> no encontrada"}`; `500` con referencia.
+
 ### GET `/api/infra/rutas/{ruta_id}/tracking`
 
 Obtiene la secuencia de tracking completa de una ruta para el modal de servicios de la vista dedicada.
@@ -1552,6 +1669,42 @@ Devuelve métricas básicas del período consultando la DB.
 Notas:
 - Requiere API key interna.
 - Requiere que la tabla `app.reclamos` exista (migraciones Alembic aplicadas) y que las variables de conexión estén configuradas.
+
+### POST `/reports/sla`
+
+Genera el informe SLA de un período desde un Excel o desde la base (`api/app/routes/reports.py`,
+servicio `core/services/sla.py`).
+
+- **Autenticación:** API key interna.
+- **Content-Type:** `multipart/form-data`.
+- **Parámetros:** `file` (opcional, `.xlsx`), `periodo_mes` (1-12), `periodo_anio` (2000-2100),
+  `usar_db` (bool, default `false`), `incluir_pdf` (bool, default `false`) y los textos libres
+  `eventos`, `conclusion`, `propuesta`. Sin archivo (o con `usar_db=true`) se calcula desde la DB
+  (`sla_service.compute_from_db`).
+- **Respuesta 200 (JSON):** `{"docx": "<ruta>", "pdf": "<ruta>" | null, "preview": {...}}`, con los
+  headers `X-Source` (`db` o `excel`), `X-Docx-Path`, `X-Servicios`, `X-Disponibilidad` y, si se
+  generó, `X-Pdf-Path`. Las rutas son del filesystem del contenedor `api`.
+- **Errores:** `400` si el archivo no es `.xlsx` o está vacío; `422` ante un `ValueError` del
+  cálculo; `500` con referencia (ver "Formato de errores").
+- **Nota:** la SPA no usa este endpoint: `POST /api/reports/sla` del panel web
+  (`web/app/routers/informes.py`) llama a `core.services.sla` directamente.
+
+### GET `/reports/sla/preview`
+
+Vista JSON del cálculo SLA de un período, sin generar documentos.
+
+- **Autenticación:** API key interna.
+- **Query params:** `periodo_mes` (1-12), `periodo_anio` (2000-2100) y filtros opcionales
+  `cliente` (igualdad sin distinguir mayúsculas), `service_id` (igualdad) y `servicio` (subcadena del
+  tipo de servicio); `usar_db` (default `true`).
+- **Respuesta 200:** armada por `core/sla/preview.py::construir_preview`, header `X-Source: db`:
+  `{"periodo", "resumen": {disponibilidad_pct, downtime_total_h, downtime_total_hhmm, servicios,
+  incidentes, tickets, mttr_h, mtbf_h}, "servicios": [{service_id, cliente, tipo_servicio,
+  disponibilidad_pct, downtime_h, downtime_hhmm, incidentes_agrupados, tickets_unicos, mttr_h,
+  mtbf_h}], "anexo": [...]}`.
+- **Errores:** `501` con `usar_db=false` (el preview basado en Excel no está implementado); `500`
+  con referencia si falla el cálculo contra la DB.
+- **Consumidores:** ninguno en `web/`, `bot_telegram/` ni `modules/` (verificado por grep).
 
 ### Ingesta de reclamos (nuevo)
 
@@ -1701,7 +1854,7 @@ Compara las VLANs permitidas de dos configuraciones Cisco IOS.
   |-------|------|-----------|-------------|
   | `text_a` | string | Sí | Configuración completa de la primera interfaz. Se buscan las líneas `switchport trunk allowed vlan` (con o sin `add`). |
   | `text_b` | string | Sí | Configuración de la segunda interfaz. |
-  | `csrf_token` | string | Condicional | Token de sesión utilizado por el panel (campo oculto en `panel.html`). |
+  | `csrf_token` | string | Condicional | Token CSRF de la sesión (la SPA lo toma de `useSession().csrf()`). |
 
 - **Procesamiento:**
   - Se parsean las líneas relevantes usando `web.tools.vlan_comparator.parse_cisco_vlans`.
@@ -1727,7 +1880,7 @@ Compara las VLANs permitidas de dos configuraciones Cisco IOS.
   - `403` → token CSRF inválido.
   - `400` → no se detectaron VLANs en una de las configuraciones.
 
-- **UI relacionada:** sección "Comparador de VLANs" en `web/templates/panel.html`, estilos en `web/static/styles.css` y lógica en `web/static/panel.js`.
+- **Implementación:** `web/app/routers/informes.py`. **UI relacionada:** `web/frontend/src/views/tabs/VlanTab.vue`.
 
 
 ### POST `/reports/repetitividad`
@@ -1849,6 +2002,46 @@ Obtiene el detalle de un incidente específico con las cámaras afectadas.
 
 - **Respuesta 200:** Incluye datos del incidente y lista de cámaras afectadas.
 
+### Notificación por correo de baneos
+
+Tres endpoints en `api/app/routes/infra.py` (API key interna). El panel web tiene implementaciones
+**propias, no proxies**, en los mismos paths (`web/app/routers/camaras.py`, con sesión); la SPA
+(`InfraTab.vue`) llama a las del panel web, cuyo `download-eml` declara cuerpo JSON
+(`EmlDownloadRequestModel`: `incident_id`, `recipients`, `subject`, `html_body`, `include_xls`,
+`include_txt`) en lugar de form-data. **Discrepancia abierta (lectura de código, 2026-10-26, sin
+verificar en runtime):** `downloadEml()` de `InfraTab.vue` envía `FormData`, el formato del endpoint
+de la API, no el JSON que espera el del panel web.
+La configuración SMTP sale de `core/config.py` (`SmtpSettings`): el servicio se considera configurado
+si `SMTP_HOST` no está vacío (`EmailService.is_configured()`, `core/services/email_service.py`).
+
+#### POST `/api/infra/notify/email`
+
+- **Body (JSON):** `to` (lista, mín. 1), `cc` (opcional), `subject` (1-256), `body`,
+  `incidente_ids` (lista, mín. 1), `include_xls` (default `true`: adjunta `baneos_activos.xlsx` con
+  las cámaras de cada incidente) e `include_txt` (default `true`: adjunta el TXT original del primer
+  tracking con `raw_file_content` del servicio protegido).
+- **Respuesta 200 (`EmailNotifyResponse`):** `{"success", "message", "error", "recipients_count"}`.
+  Responde **siempre 200**: SMTP sin configurar, IDs inexistentes o un error al enviar llegan como
+  `success: false` (en el último caso con `error: "Error interno (ref …)"`).
+
+#### GET `/api/infra/notify/email/config`
+
+- **Respuesta 200:** `{"configured": bool, "from_email": str | null, "from_name": str | null}`
+  (remitente sólo si está configurado).
+
+#### POST `/api/infra/notify/download-eml`
+
+Alternativa sin SMTP: genera un `.eml` para abrir y enviar desde el cliente de correo.
+
+- **Body (form-data):** `incident_id` (int, requerido), `recipients`, `subject`, `html_body`
+  (opcionales). Si llegan `subject` o `html_body`, **se guardan** en el incidente
+  (`email_subject`/`email_body`) antes de generar el archivo.
+- **Adjuntos:** el TXT del tracking de la ruta protegida (o de la primera ruta del servicio con
+  contenido), vía `EmailService.generate_ban_eml`.
+- **Respuesta 200:** `message/rfc822` con `Content-Disposition: attachment;
+  filename="Aviso_Baneo_<ticket_asociado>.eml"`.
+- **Errores:** `404` `{"detail": "Incidente no encontrado"}`; `500` con referencia.
+
 ---
 
 ## Ingesta Excel de Cámaras y Panel de Baneos Agrupados
@@ -1871,7 +2064,7 @@ existentes que matcheen (búsqueda extendida Camara+CromoBotella). **Nunca crea 
   |---|---|---|---|
   | `file` | archivo | Sí | Excel `.xlsx`/`.xlsm`, alias en columna B, sin cabecera. |
   | `motivo_baneo` | string | Sí | Motivo del baneo masivo — no puede quedar vacío tras `.strip()`. |
-  | `usuario` | string | Sí | Usuario admin que ejecuta la operación (lo agrega el proxy `POST /api/admin/ingesta/camaras` de `web/app/main.py` a partir de la sesión). |
+  | `usuario` | string | Sí | Usuario admin que ejecuta la operación (lo agrega el proxy `POST /api/admin/ingesta/camaras` de `web/app/routers/admin_datos.py` a partir de la sesión). |
 
 - **Respuesta 200:**
 

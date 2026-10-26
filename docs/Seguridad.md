@@ -93,8 +93,8 @@ WEB_HOST="172.18.208.162" \
 MGMT_IFACE="ens224" \
 PERSIST_RULES=true \
 bash scripts/firewall_hardening.sh
-- Publicación del puerto 8080 sólo en la IP LAN: ver `ports` en [deploy/compose.yml](deploy/compose.yml).
-- Firewall/iptables (idempotente): usar [scripts/firewall_hardening.sh](scripts/firewall_hardening.sh). Ejecutar como root y ajustar subredes permitidas, por ejemplo:
+- Publicación del puerto 8080 sólo en la IP LAN: ver `ports` en [deploy/compose.yml](../deploy/compose.yml).
+- Firewall/iptables (idempotente): usar [scripts/firewall_hardening.sh](../scripts/firewall_hardening.sh). Ejecutar como root y ajustar subredes permitidas, por ejemplo:
   - `WEB_ALLOWED_SUBNETS="190.12.96.0/24 192.168.241.0/24" WEB_HOST=172.18.208.162 PERSIST_RULES=true bash scripts/firewall_hardening.sh`
   - Reglas aplicadas: `INPUT` y `DOCKER-USER` permiten sólo las subredes definidas hacia 8080, luego `DROP`; `POSTROUTING` mantiene SNAT `172.18.0.0/16 -> ens224` sin duplicados.
 - `rp_filter`: el script fija `1` en interfaces generales y mantiene `2` en `ens224` (o la interfaz definida en `MGMT_IFACE`), con persistencia en `/etc/sysctl.d/99-lasfocas.conf`.
@@ -173,7 +173,7 @@ Auditoría integral (secretos, dependencias, SAST, hardening de contenedores/red
 skill `revisar-seguridad`. Reporte completo con vector de ataque y mitigación detallada entregado
 al usuario; se resume acá lo accionable para no perderlo de vista en la próxima sesión de trabajo.
 
-- **High** — `web/app/main.py` (`SessionMiddleware`): si falta el secreto `web_secret_key_v1` y la
+- **High** — `web/app/main.py` (`SessionMiddleware`, opciones en `_session_middleware_options()`): si falta el secreto `web_secret_key_v1` y la
   env var `WEB_SECRET_KEY`, la app arranca con el literal `"cambiar_por_clave_web_segura"` (publicado
   en `README.md`/`deploy/env.sample`) en vez de fallar. Con esa clave conocida se puede forjar una
   cookie de sesión firmada con rol admin. Pendiente: fallar el arranque si el valor resuelto es
@@ -188,10 +188,18 @@ al usuario; se resume acá lo accionable para no perderlo de vista en la próxim
   `starlette` (0.37.2–0.38.6 → mín. 0.40.0), `python-multipart` (0.0.9 → 0.0.31, usado en endpoints
   de upload reales de `api`/`web`/`office_service`), y `aiohttp` (3.10.11, transitiva de `aiogram`
   en `bot_telegram`, mitigado hoy porque el bot usa polling y no expone servidor).
-- **Medium-High** — CSRF ausente en ~12 endpoints mutantes de `web/app/main.py` que sí deberían
-  llevarlo por el patrón ya establecido en el resto del archivo (baneos, merges/alta de Cámaras,
-  borrado de empalmes, upload de trackings). Pendiente: aplicar el chequeo de forma uniforme vía
-  dependencia compartida en vez de por endpoint.
+- **Medium-High** — CSRF ausente en ~12 endpoints mutantes del panel web que sí deberían llevarlo
+  por el patrón ya establecido en el resto. Desde el refactor de 2026-10-20 los endpoints viven en
+  `web/app/routers/` (`main.py` sólo ensambla). Reverificado el 2026-10-26: siguen sin chequeo
+  `POST /api/infra/ban/create` y `/ban/lift`, `POST /api/infra/notify/email` y `/notify/download-eml`,
+  los admin `aprobar`, `dar-de-alta`, `convertir-alias` y `DELETE .../camaras/pendientes/{id}`
+  (`web/app/routers/camaras.py`), y `POST /api/infra/upload_tracking`, `/trackings/analyze`,
+  `/trackings/resolve` y `DELETE /api/infra/servicios/{id}/empalmes` (`web/app/routers/servicios.py`).
+  Los merges de Cámaras ya lo validan. El token se genera en el login (`web/app/routers/sesion.py`,
+  `request.session["csrf"]`) y cada endpoint lo compara a mano o con `_validar_csrf()`
+  (`web/app/comun.py`); `web/app/dependencias.py` sólo da `usuario_sesion`/`usuario_admin`, no hay
+  dependencia de CSRF. Pendiente: aplicar el chequeo de forma uniforme vía dependencia compartida en
+  vez de por endpoint.
 - **Medium** — Allowlist de Telegram (`bot_telegram/filters/allowlist.py`) falla **abierta** (admite
   a cualquiera) si `TELEGRAM_ALLOWED_IDS` queda vacío/sin setear, en vez de bloquear a todos.
 - **Medium** — Path traversal vía `document.file_name` sin sanitizar en

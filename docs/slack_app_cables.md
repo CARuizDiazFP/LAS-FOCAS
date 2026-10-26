@@ -237,7 +237,10 @@ configurado en el entorno, el primer mensaje ya lo dice y no se encola nada.
 
 **Equivalente REST (Task 10, 2026-09-23)**: las mismas 4 operaciones (resolver cable, servicios
 únicos por cable, por buffer, refrescar PROV on-demand) están expuestas en
-`web/app/main.py` bajo `/api/infra/cromo/cables/...` para la SPA — ver
+`web/app/routers/cromo.py` para la SPA (`GET /api/infra/cromo/cables/resolver`,
+`GET /api/infra/cromo/cables/{cable_n_id}/servicios-unicos`,
+`GET /api/infra/cromo/cables/{cable_n_id}/buffers/{numero}/servicios-unicos` y
+`POST /api/infra/cromo/cables/{cable_n_id}/servicios-unicos/refrescar-prov`) — ver
 `docs/superpowers/specs/2026-09-23-correccion-ingresos-y-servicios-por-cable-design.md` (sección de
 contratos, con ejemplos de request/response) y `docs/db.md`. El POST REST **no comparte** el candado
 por-cable de Slack (limitación conocida, documentada en la spec) — awaitea el lote dentro del propio
@@ -434,6 +437,35 @@ posibles** del Servicio y el operador puede declarar en el portal cuál es la **
 - Un camino de posición sólo es adicional si tiene al menos el 25% de los pelos del camino completo
   más largo del Servicio: en el 102452 los jumpers de 1 pelo del Nodo Dixon (9614673/74) frente a
   tramos de 47/27/24 pelos ya no se mencionan como adicionales (2026-10-22).
+
+### Caminos que Cromo corta por un proyecto: reintento con red proyectada/actual (2026-10-23)
+
+Caso que lo motivó: `track 47838` (Servicio 83693) dejaba el `.txt` terminando en un pelo suelto
+(FL-CTB-330:2) en vez de llegar a la ODF del cliente. `/path` sin `projview` (= `0`, red completa)
+**corta** el camino en un pelo que tiene a la vez una fusión a desinstalar y otra proyectada: con las
+dos continuaciones visibles, Cromo no elige. `projview=1` (red actual) sigue la de desinstalación y
+`projview=2` (red proyectada, el toggle "Red proyectada" de la UI de Cromo) la proyectada
+(`CromoClient.get_camino_optico`, `core/services/cromo/client.py`).
+
+- **Señal, sin llamadas extra:** un extremo del camino es un pelo con destinos en `tp[]` que el
+  camino no recorrió (`camino_optico_service.detectar_cortes` → `CaminoOptico.cortes`).
+- **Reintento** (`tracking_service.completar_camino_cortado`, dentro de `obtener_tracking`; por eso
+  aplica igual a `track` de Slack y al `tracking.txt` del portal): sólo si hay corte y el camino no
+  tiene ya sus dos extremos en ODF. Pide el mismo pelo con `PROJVIEWS_REINTENTO = (2, 1)`. Un
+  candidato vale sólo si **extiende** el camino y suma extremos en ODF; entre los que valen gana el de
+  más extremos en ODF, después el que coincide con el at.62 del servicio en los conectores y después
+  con su domicilio; ante empate, la red proyectada. Si el reintento falla contra Cromo, queda el
+  camino original.
+- **`.txt`:** cabecera `# ATENCIÓN …` que dice dónde se cortaba, con qué vista se completó y cuántos
+  metros agrega; los elementos proyectados llevan `- Proyectado` / `- Proyectado Desinstalación`,
+  como en la UI de Cromo (`camino_optico_txt.py`).
+- **Caché:** `extremos.projview` guarda con qué vista se completó el camino.
+- **Slack:** el resumen agrega la línea `:construction: N tracking(s) se completaron pidiéndole a
+  Cromo la red proyectada o la actual: …` (`tracking_servicio.mensaje_resumen`).
+- No asumir que gana la red proyectada: en el 105553 se completó con la actual. El detalle del
+  diagnóstico (regla 15, `stp` medidos) está en la skill
+  [`cromo-diagnostico-real`](../.agentes-comunes/skills/cromo-diagnostico-real/SKILL.md); la decisión, en
+  `docs/decisiones.md` (2026-10-23). Tests: `tests/test_cromo_tracking_red_proyectada.py`.
 
 ## `@bot track <id> full` — implementado (2026-10-21, sólo dev)
 

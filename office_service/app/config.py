@@ -32,6 +32,8 @@ class Settings(BaseSettings):
         default=2.0,
         description="Timeout en segundos para verificar conexión UNO",
     )
+    max_file_size: int = Field(default=50 * 1024 * 1024, description="Tamaño máximo en bytes del archivo a convertir")
+    convert_timeout: float = Field(default=120.0, description="Timeout en segundos de cada conversión con soffice")
     uvicorn_host: str = Field(default="0.0.0.0", description="Host de escucha para Uvicorn")
     uvicorn_port: int = Field(default=8090, description="Puerto HTTP del servicio")
     uvicorn_reload: bool = Field(default=False, description="Activa auto-reload (solo desarrollo)")

@@ -96,7 +96,7 @@ El script hace automáticamente:
 - Crear `.env.dev` desde el sample si no existe (con aviso para completar tokens)
 - Crear `.secrets/*.txt` si no existen y leerlos como Docker Secrets
 - Construir `focas-base:latest` si `common-requirements.txt` cambió (via `scripts/build_base.sh`)
-- Levantar todos los servicios con build
+- Levantar con build los servicios de `SERVICES` (`postgres`, `nlp_intent`, `api`, `web`, `office`, `slack_baneo_worker`, `cromo_worker`) más sus dependencias (`redis`, `docker-socket-proxy`). `botellas_recalculo_worker`, `fo_monitor_worker`, `bot` y los perfiles opcionales (`reports-worker`, `pgadmin`) no están en esa lista: se levantan aparte con `docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d <servicio>`
 - Esperar a que Postgres esté healthy
 - Aplicar migraciones Alembic
 - Verificar el health de todos los servicios
@@ -161,7 +161,8 @@ docker compose -f deploy/docker-compose.dev.yml logs -f slack_baneo_worker
 
 ```bash
 # 1. dev-workflow crea o reutiliza la rama efímera desde origin/dev
-#    (formato <tipo>/<slug>, p. ej. feat/mi-cambio)
+#    (formato <tipo>/<slug>, p. ej. feat/mi-cambio; en un worktree de agente,
+#    <tipo>/<agente>-<slug>, ver "Worktree propio por agente")
 
 # 2. Hacer los cambios...
 
@@ -185,6 +186,49 @@ git push -u origin HEAD
 | `docs:`     | Solo documentación |
 | `chore:`    | Mantenimiento (deps, config, infraestructura) |
 | `ci:`       | Scripts CI/CD |
+
+---
+
+## Worktree propio por agente (sesiones concurrentes)
+
+Cuando trabaja un agente (Claude Code, Codex, Copilot, Gemini), la rama efímera vive en un
+**Git worktree propio**, no en el checkout principal: `/home/support-focal-01/LAS-FOCAS` queda
+en `dev` como checkout de control/integración. El ciclo lo maneja `scripts/agent_worktree.py`:
+
+| Subcomando | Qué hace |
+|---|---|
+| `start --agent <id> --type <tipo> --task <slug> [--offset N]` | Crea la rama `<tipo>/<id>-<slug>` desde `origin/dev` y el worktree en `/home/support-focal-01/LAS-FOCAS-agentes/<id>-<slug>` |
+| `status` / `list` | Estado global o de un agente; agentes registrados |
+| `heartbeat --agent <id>` | Registra actividad y renueva los leases propios (tareas largas) |
+| `sync` | Incorpora `dev` a la rama del agente dentro de su worktree |
+| `ready` | Corre el gate de calidad (lint + tests focales) y marca listo para integrar |
+| `integrate` | Integra la rama a `dev` en ventana serializada (lease `git:integrate-dev`) |
+| `finish` / `cleanup` | Cierra el agente y libera leases; remueve el worktree finalizado |
+| `handoff` / `accept-handoff` / `doctor` | Traspaso de tarea; diagnóstico sin corregir nada |
+
+En Claude Code, `sync → ready → integrate → finish → cleanup` lo ejecuta `/cierre-sesion`.
+
+Qué prepara `start` en el worktree:
+
+- **Enlaces simbólicos** al checkout de control: `.venv`, `.env`, `.secrets` y `Logs`
+  (`ENLACES_ENTORNO`). Instalar o cambiar dependencias del venv compartido requiere el lease
+  `env:python-dependencies`.
+- **`.env.dev` privada** (copia modo 0600, no symlink), con un bloque que agrega o sobrescribe
+  `LAS_FOCAS_AGENT_WORKTREE=1`, `LAS_FOCAS_PORT_OFFSET=<N>` y los puertos locales desplazados:
+  `API_PORT`/`WEB_PORT`/`VITE_PORT`/`OFFICE_PORT`/`NLP_PORT` = `8011`/`8090`/`5173`/`8020`/`8030`
+  + offset, y `VITE_API_BASE_URL=http://127.0.0.1:<API_PORT>`. El offset (1..90) es el menor
+  libre o el que se pase con `--offset`.
+- **Sin `web/frontend/dist` ni `node_modules`**: no se enlazan (son mutables). `start` avisa si
+  faltan; sin `dist` fallan los tests que sirven el shell SPA (`test_web_admin.py::test_admin_paths_*`),
+  y eso no es una regresión del cambio.
+
+> Los puertos con offset aíslan procesos **locales** (uvicorn, vite). El stack compose dev
+> (`name: lasfocasdev`, `container_name` fijos) sigue siendo **uno solo y compartido**:
+> recrearlo, bajarlo o reconstruirlo requiere el lease `env:docker-compose`.
+
+Detalle completo (modelo de estado, leases, limpieza segura, recuperación):
+[arquitectura_agentes_worktrees.md](arquitectura_agentes_worktrees.md), sección 9 "Entornos
+compartidos".
 
 ---
 
@@ -223,9 +267,10 @@ Ver `.github/skills/dev-workflow/SKILL.md` para el protocolo completo. Reglas m�
 
 1. Trabajar siempre sobre una rama efímera `<tipo>/<slug>` creada desde `origin/dev` — nunca commitear directo en `dev` ni en `main`. `dev-workflow` crea o reutiliza esa rama automáticamente al inicio de la sesión/tarea.
 2. No modificar `deploy/compose.yml`, `.env` ni ningún archivo de producción sin aprobación explícita.
-3. Usar siempre `docker compose -f deploy/docker-compose.dev.yml` para operaciones Docker en dev.
+3. Usar siempre `docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev` para operaciones Docker en dev (es lo que hace `scripts/start_dev.sh`); el stack dev es compartido entre agentes y recrearlo requiere el lease `env:docker-compose`.
 4. Hacer push siempre a la rama efímera activa (`git push -u origin HEAD`), nunca directo a `origin/dev` ni `origin/main`.
 5. La integración a `dev` es automática al cierre de sesión (`cierre-sesion`), que mergea la rama efímera. Los merges de `dev` a `main` se hacen solo mediante PR revisado.
+6. Trabajar en el worktree propio que crea `scripts/agent_worktree.py start`, nunca en el checkout de control (ver "Worktree propio por agente").
 
 ---
 
@@ -248,3 +293,5 @@ Se requiere crear una **Slack App separada** en `https://api.slack.com/apps` (ej
 - [scripts/start_dev.sh](../scripts/start_dev.sh)
 - [docs/infra.md](infra.md) — sección "Entorno de Desarrollo"
 - [.github/skills/dev-workflow/SKILL.md](../.github/skills/dev-workflow/SKILL.md)
+- [docs/arquitectura_agentes_worktrees.md](arquitectura_agentes_worktrees.md) — worktrees, leases e integración serializada
+- [scripts/agent_worktree.py](../scripts/agent_worktree.py)

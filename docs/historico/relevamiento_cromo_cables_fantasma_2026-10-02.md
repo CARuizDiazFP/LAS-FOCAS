@@ -1,5 +1,5 @@
 # Nombre de archivo: relevamiento_cromo_cables_fantasma_2026-10-02.md
-# Ubicación de archivo: docs/relevamiento_cromo_cables_fantasma_2026-10-02.md
+# Ubicación de archivo: docs/historico/relevamiento_cromo_cables_fantasma_2026-10-02.md
 # Descripción: Relevamiento real (dev) de cables vigentes en LAS-FOCAS que Cromo ya borró, y de cables de Cromo que faltan en la base
 
 # Relevamiento: cables fantasma de Cromo (dev, 2026-10-02)
