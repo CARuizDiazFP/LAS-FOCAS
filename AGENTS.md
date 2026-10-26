@@ -57,7 +57,12 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
   `POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5433 POSTGRES_DB=focas_dev POSTGRES_USER=FOCALBOT \
   POSTGRES_PASSWORD="$(cat .secrets/Dev_db_password_v1.txt)" pytest`. El host `postgres` del
   compose no resuelve desde fuera de la red de Docker. Guard: `tests/soporte_postgres_real.py`.
+  Además el guard exige que `current_database()` esté en la allowlist de dev/test (`focas_dev`, `focas_test`;
+  se suman nombres con `TESTS_DB_PERMITIDAS=a,b`). Con cualquier otra DB, la de prod `FOCALDB` incluida, se
+  saltean, porque varios de esos tests hacen `commit()` real.
 - Cobertura esperada para módulos nuevos: al menos 60% (objetivo; hoy no lo fuerza ni la CI ni el gate de `ready`).
+  Medida el 2026-10-26: 76% sobre `core`, `web/app`, `api/app` y `modules`, sin los `real_db`. Por decisión del usuario
+  todavía no hay `--cov-fail-under`.
 - `tests/test_reports_db_mode_optional.py` se saltea salvo `ENABLE_DB_TESTS=1` (además de las variables de Postgres de dev de arriba).
 - **Pruebas focales vs. regresión**: durante la tarea y al cerrar hacia `dev` (`ready`/`integrate`
   de `cierre-sesion`) se corren **sólo las pruebas focales** de los módulos modificados (más
