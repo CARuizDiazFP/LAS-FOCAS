@@ -1,7 +1,13 @@
 # Nombre de archivo: common-requirements.txt
 # Ubicación de archivo: common-requirements.txt
 # Descripción: Dependencias Python comunes a todos los servicios. Forman la imagen base focas-base:latest.
-# NOTA: office_service queda excluido (versiones de fastapi/pydantic/uvicorn incompatibles + LibreOffice).
+# Qué archivo alimenta qué (2026-10-26):
+#   - common-requirements.txt  → focas-base (deploy/docker/base.Dockerfile), base de api, web, bot,
+#     nlp_intent y todos los workers. Es lo que corre en las imágenes.
+#   - {api,web,bot_telegram}/requirements.txt y modules/*/requirements.txt → se suman encima de
+#     focas-base en el Dockerfile de cada servicio (p. ej. folium/gspread/PyJWT en api, slack_sdk).
+#   - requirements.txt (raíz) → sólo el venv local y la CI; no lo usa ningún Dockerfile.
+# NOTA: office_service queda excluido: imagen propia con LibreOffice (office_service/requirements.txt).
 
 # FastAPI stack
 fastapi==0.112.2
@@ -21,7 +27,6 @@ bcrypt==4.1.2
 SQLAlchemy==2.0.36
 psycopg[binary]==3.2.1
 asyncpg==0.29.0
-asyncpg==0.29.0
 alembic==1.13.2
 
 # Data
@@ -34,7 +39,6 @@ json5==0.15.0  # Parser tolerante para las respuestas pseudo-JSON (claves sin co
 # Geo / Maps
 matplotlib==3.9.2
 Pillow==10.4.0
-staticmap==0.5.7
 contextily==1.5.2
 pyproj==3.6.1
 
