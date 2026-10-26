@@ -53,7 +53,7 @@ web/
     dist/              ← build Vite (generado, no en git)
     vite.config.ts
     index.html
-  Dockerfile           ← multi-stage: Node 20 build → Python serve
+  Dockerfile           ← multi-stage: Node 24 build → Python serve
 ```
 
 ### Backend: routers por dominio
@@ -449,7 +449,7 @@ El flujo de carga de trackings opera en 2 fases:
 
 ## Frontend SPA (Vue 3)
 
-El SPA usa **Vue 3 + Vite 5 + TypeScript + Vue Router 4**.
+El SPA usa **Vue 3 + Vite 6 + TypeScript + Vue Router 4**.
 
 ### Estructura `web/frontend/src/`
 
@@ -697,7 +697,7 @@ El `web/Dockerfile` usa **multi-stage**:
 
 ```dockerfile
 # Stage 1: build Vite
-FROM node:20.12.2-slim AS web-build
+FROM node:24.22.1-slim AS web-build
 WORKDIR /frontend
 COPY web/frontend/... ./
 RUN npm ci && npm run build   # genera /frontend/dist/

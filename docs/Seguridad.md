@@ -188,6 +188,9 @@ al usuario; se resume acá lo accionable para no perderlo de vista en la próxim
   `starlette` (0.37.2–0.38.6 → mín. 0.40.0), `python-multipart` (0.0.9 → 0.0.31, usado en endpoints
   de upload reales de `api`/`web`/`office_service`), y `aiohttp` (3.10.11, transitiva de `aiogram`
   en `bot_telegram`, mitigado hoy porque el bot usa polling y no expone servidor).
+  **Resuelto en código el 2026-10-26 (P15)**: fastapi 0.136.1 + starlette 1.3.1, python-multipart
+  0.0.31, Pillow 13.0.0, orjson 3.11.5, aiogram 3.29.0 + aiohttp 3.14.4 (pip-audit en 0). Rige en
+  cada entorno recién cuando se reconstruyen `focas-base` y **todas** las imágenes.
 - **Medium-High** — CSRF ausente en ~12 endpoints mutantes del panel web que sí deberían llevarlo
   por el patrón ya establecido en el resto. Desde el refactor de 2026-10-20 los endpoints viven en
   `web/app/routers/` (`main.py` sólo ensambla). Reverificado el 2026-10-26: siguen sin chequeo

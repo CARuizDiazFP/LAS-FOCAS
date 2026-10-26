@@ -53,20 +53,43 @@ transitivas, y asyncpg 0.29.0, pandas 2.2.2, pyproj 3.6.1 y psycopg-binary 3.2.1
 
 ```bash
 OUT=<scratchpad>/audit; mkdir -p "$OUT"
-docker run --rm -v "$PWD":/w:ro -v "$OUT":/out --entrypoint sh python:3.11-slim-bookworm -c '
+docker run --rm -v "$PWD":/w:ro -v "$OUT":/out -w /w --entrypoint sh python:3.11-slim-bookworm -c '
   pip install -q pip-audit==2.7.3
   for f in common-requirements.txt requirements.txt requirements-dev.txt api/requirements.txt \
            web/requirements.txt bot_telegram/requirements.txt office_service/requirements.txt \
            modules/*/requirements.txt; do
-    (cd /w && pip-audit -r "$f" -f json --progress-spinner off > "/out/$(echo $f | tr / _).json")
+    pip-audit -r "$f" -f json --progress-spinner off > "/out/$(echo $f | tr / _).json"
     echo "$f rc=$?"
   done'
-# resumen: paquete, versión, cantidad de vulns y fix mínimo/máximo por archivo (leer los JSON con python)
-cd web/frontend && npm audit --audit-level=high
+# resumen: paquete, versión, cantidad de vulns y "mínima que cierra todas" = máximo, entre los CVEs,
+# del menor fix_version de cada uno (leer los JSON con python)
+cd web/frontend && npm audit --omit=dev && npm audit
 ```
 
 `rc=1` significa que hay hallazgos, no que falló la herramienta. `nlp_intent/requirements.txt` no tiene
-paquetes y no hace falta auditarlo.
+paquetes y no hace falta auditarlo. El `-w /w` es obligatorio: sin él, el glob `modules/*/requirements.txt`
+se expande en `/` del contenedor, no matchea y los cuatro workers **no se auditan** (`rc=2`, JSON vacío).
+Pasó el 2026-10-26 con la receta anterior, que hacía `cd /w` recién dentro del loop.
+
+**Auditar también lo que corre en las imágenes.** `pip-audit -r` resuelve las transitivas a las versiones de
+hoy, pero una imagen vieja conserva las que tenía al construirse. El 2026-10-26, `lasfocasdev-bot` (de cuatro
+días antes) tenía `certifi` y `urllib3` vulnerables que ningún requirements mostraba:
+
+```bash
+OUT=<scratchpad>/audit_img; mkdir -p "$OUT"
+for i in web api bot nlp_intent office cromo_worker slack_baneo_worker botellas_recalculo_worker fo_monitor_worker; do
+  docker run --rm --entrypoint pip lasfocasdev-$i:latest freeze | grep -v '^-e\|@ file' > "$OUT/$i.txt"
+done
+docker run --rm -v "$OUT":/w -w /w --entrypoint sh python:3.11-slim-bookworm -c '
+  pip install -q pip-audit==2.7.3
+  for f in *.txt; do pip-audit -r "$f" --no-deps --disable-pip -f json --progress-spinner off > "${f%.txt}.json"; done'
+```
+
+**Antes de cambiar un pin, verificar que los manifests se puedan instalar juntos.** La CI instala
+`requirements.txt`, `common-requirements.txt`, `api`, `web`, `requirements-dev.txt` y
+`modules/cromo_worker` en un solo `pip install`. Del 2026-10-26 (pins de P06) a P15 no se pudo resolver:
+`requirements.txt` fijaba `slack_sdk==3.33.5` mientras `requirements-dev.txt` traía `slack_bolt==1.30.0`
+(exige `slack_sdk>=3.38`) y los workers usaban 3.45.0. Probar el `pip install` combinado en un contenedor 3.11.
 
 ## Hallazgos esperados
 
@@ -84,4 +107,8 @@ paquetes y no hace falta auditarlo.
 4. No reinstalar el `.venv` compartido para "alinearlo" con las imágenes sin preguntar: lo usan todas las
    sesiones, y con Python 3.13 algunos pins de las imágenes no se pueden instalar (decisión del usuario,
    2026-10-26: no se reinstala, el drift queda documentado en la cabecera de `requirements.txt`).
-3. No tratar dependencias de desarrollo como equivalentes a runtime sin aclararlo.
+5. No tratar dependencias de desarrollo como equivalentes a runtime sin aclararlo.
+6. Un paquete que hoy llega como transitiva y se sube por un CVE se fija **explícito** en el manifest
+   (`starlette` bajo `fastapi`, `aiohttp` bajo `aiogram`): si no, el próximo rebuild puede resolver otra versión.
+7. Al subir fastapi, mirar si cambia `router.routes`: desde 0.137 es un árbol y unos 20 tests lo recorren
+   como lista plana. Por eso P15 (2026-10-26) se quedó en 0.136.1, que ya admite starlette 1.x.
