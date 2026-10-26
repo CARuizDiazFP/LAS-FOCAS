@@ -5,12 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run type-check && vite build",
     "preview": "vite preview --port 5173",
     "type-check": "vue-tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@phosphor-icons/web": "^2.1.1",
+    "@phosphor-icons/web": "2.1.2",
     "@protomaps/basemaps": "5.7.2",
     "maplibre-gl": "6.11.2",
     "pmtiles": "4.5.0",
