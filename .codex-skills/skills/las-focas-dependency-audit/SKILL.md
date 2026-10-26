@@ -44,6 +44,16 @@ metadata:
       docker run --rm -v "$OUT":/w -w /w --entrypoint sh python:3.11-slim-bookworm -c '
       pip install -q pip-audit==2.7.3
       for f in *.txt; do pip-audit -r "$f" --no-deps --disable-pip -f json --progress-spinner off > "${f%.txt}.json"; done'
+    - |
+      git archive origin/dev | tar -x -C <scratchpad>/src_base          # árbol viejo
+      git ls-files -z | tar --null -T - -cf - | tar -x -C <scratchpad>/src_new   # árbol de la rama
+      # por cada árbol (de a uno: ver disco abajo):
+      docker run --rm -v <src>:/src -v <out>:/out --entrypoint sh python:3.11.16-slim-bookworm -c '
+      cd /src && pip install -q -r common-requirements.txt -r requirements.txt -r api/requirements.txt \
+      -r web/requirements.txt -r requirements-dev.txt -r bot_telegram/requirements.txt \
+      -r modules/cromo_worker/requirements.txt
+      LLM_PROVIDER=heuristic pytest -q -p no:cacheprovider --junitxml=/out/junit.xml > /out/pytest.log 2>&1'
+      # comparar los dos junit.xml por classname::name con python (pass/skip/failure/error)
 ---
 
 # Nombre de archivo: SKILL.md
@@ -136,6 +146,36 @@ docker run --rm -v "$OUT":/w -w /w --entrypoint sh python:3.11-slim-bookworm -c 
 `modules/cromo_worker` en un solo `pip install`. Del 2026-10-26 (pins de P06) a P15 no se pudo resolver:
 `requirements.txt` fijaba `slack_sdk==3.33.5` mientras `requirements-dev.txt` traía `slack_bolt==1.30.0`
 (exige `slack_sdk>=3.38`) y los workers usaban 3.45.0. Probar el `pip install` combinado en un contenedor 3.11.
+
+## Validar una subida de versiones: suite actual vs. nueva, en contenedor 3.11
+
+El `.venv` del host (3.13) no sirve para esto. El método es correr la suite dos veces en
+`python:3.11.16-slim-bookworm` (misma base que `focas-base`): una con el árbol de `origin/dev` y otra con
+el de la rama. Las dos instalan los pins de la línea de la CI y escriben `--junitxml`. Las fallas nuevas
+son las que fallan en la nueva y no en la vieja; los errores de entorno se repiten en las dos y se
+cancelan. Real 2026-10-26, P15: 4231 passed en ambas y 0 nuevas. Los 88 errores comunes eran tests de
+tooling git, porque la imagen slim no trae `git`.
+
+```bash
+git archive origin/dev | tar -x -C <scratchpad>/src_base          # árbol viejo
+git ls-files -z | tar --null -T - -cf - | tar -x -C <scratchpad>/src_new   # árbol de la rama
+# por cada árbol (de a uno: ver disco abajo):
+docker run --rm -v <src>:/src -v <out>:/out --entrypoint sh python:3.11.16-slim-bookworm -c '
+  cd /src && pip install -q -r common-requirements.txt -r requirements.txt -r api/requirements.txt \
+    -r web/requirements.txt -r requirements-dev.txt -r bot_telegram/requirements.txt \
+    -r modules/cromo_worker/requirements.txt
+  LLM_PROVIDER=heuristic pytest -q -p no:cacheprovider --junitxml=/out/junit.xml > /out/pytest.log 2>&1'
+# comparar los dos junit.xml por classname::name con python (pass/skip/failure/error)
+```
+
+- **Disco**: cada contenedor de la suite ocupa ~1,1 GB mientras corre. En este host (40 GB, prod incluido)
+  correr las dos suites y un build en paralelo lo llenó en medio del cierre de otra sesión (ver
+  `disk-analysis`). Hay que correr de a uno y mirar `df -h /` antes de cada corrida.
+- Con las imágenes ya reconstruidas, el humo y los `rmi` del final siguen la receta de `docker-rebuild`
+  ("Probar una `focas-base` nueva sin pisar `focas-base:latest`").
+- Repetir el `pip-audit` **después** de subir los pins. GitHub y PyPI pueden fijar distinto el fix del
+  mismo CVE: con CVE-2025-67221, PyPI daba orjson 3.11.5 y GHSA-hx9q-6w63-j58v daba 3.11.6, y el segundo
+  aviso apareció recién en la auditoría final.
 
 ## Hallazgos esperados
 
