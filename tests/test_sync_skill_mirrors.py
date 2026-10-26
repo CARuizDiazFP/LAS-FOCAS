@@ -11,6 +11,8 @@ import pytest
 from scripts.sync_skill_mirrors import (
     MAX_LINEAS_ADAPTADOR,
     PLATAFORMAS,
+    comandos_de,
+    con_commands_de_codex,
     frontmatter_de,
     lista_frontmatter,
     partes_fuente,
@@ -267,3 +269,38 @@ def test_procesar_acota_a_una_skill(raiz: Path) -> None:
 
 def test_frontmatter_de_devuelve_none_si_no_existe_el_archivo(tmp_path: Path) -> None:
     assert frontmatter_de(tmp_path / "no-existe.md") is None
+
+
+def test_comandos_de_extrae_bloques_shell_sin_sangria_y_omite_prohibidos() -> None:
+    cuerpo = (
+        "Texto.\n\n```bash\ndocker ps\n```\n\n"
+        "1. Paso:\n   ```sh\n   ls -la\n     sub\n   ```\n\n"
+        "```python\nprint(1)\n```\n\n"
+        "```bash\n# ❌ NUNCA EJECUTAR\ndocker volume prune\n```\n"
+    )
+    assert comandos_de(cuerpo) == ["docker ps", "ls -la\n  sub"]
+
+
+def test_con_commands_de_codex_reemplaza_solo_el_bloque_commands() -> None:
+    frontmatter = (
+        'name: "las-focas-x"\nmetadata:\n  globs:\n    - "**/*"\n'
+        "  commands:\n    - |\n      obsoleto\n\n      otro\n  otra: 1"
+    )
+    resultado = con_commands_de_codex(frontmatter, ["nuevo"])
+    assert "obsoleto" not in resultado and "otro" not in resultado
+    assert resultado.endswith("  commands:\n    - |\n      nuevo\n  otra: 1")
+    assert con_commands_de_codex(frontmatter, []).count("    []") == 1
+
+
+def test_render_codex_regenera_commands_desde_la_fuente(raiz: Path) -> None:
+    codex = next(p for p in PLATAFORMAS if p.clave == "codex")
+    fuente = raiz / ".agentes-comunes/skills/ejemplo/SKILL.md"
+    fuente.write_text(fuente.read_text(encoding="utf-8") + "\n```bash\nmake verificar\n```\n", encoding="utf-8")
+    destino = raiz / codex.ruta("ejemplo")
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    destino.write_text(render(codex, "ejemplo", fuente, raiz).replace("make verificar", "comando viejo"), encoding="utf-8")
+    regenerado = render(codex, "ejemplo", fuente, raiz)
+    frontmatter = regenerado.split("\n---\n", 1)[0]
+    assert "      make verificar" in frontmatter
+    assert "comando viejo" not in regenerado
+

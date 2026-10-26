@@ -20,7 +20,9 @@ metadata:
     - "scripts/cromo_sonda.py"
     - "scripts/cromo_backfill_geo.py"
   commands:
-    []
+    - |
+      source .venv/bin/activate
+      python -m scripts.cromo_sonda
 ---
 
 # Nombre de archivo: SKILL.md

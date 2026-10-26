@@ -44,10 +44,15 @@ metadata:
       # 3. Confirmar en el CSS REALMENTE servido dentro del contenedor corriendo — no en tu
       #    dist/ local, que no es lo que el usuario tiene abierto en el navegador
       CSS=$(docker exec lasfocasdev-web sh -c "ls /app/frontend/dist/assets | grep '^NombreVista.*\.css$'")
-      docker exec lasfocasdev-web grep -c "<hex-viejo>" "/app/frontend/dist/assets/$CSS"
+      docker exec lasfocasdev-web grep -c "<hex-viejo>" "/app/frontend/dist/assets/$CSS"   # debe dar 0 o error (no matches)
       docker exec lasfocasdev-web grep -o "color-mix(in srgb,var(--TOKEN-nuevo)" "/app/frontend/dist/assets/$CSS" | head -1
     - |
-      grep -rn 'class="btn"' web/frontend/src --include=*.vue
+      docker exec lasfocasdev-web sh -c "grep -ho 'app-shell__main\[[^]]*\]{[^}]*}' /app/frontend/dist/assets/*.css"
+      #   ...{min-width:0;min-height:100vh;padding:0}     <- la regla VIEJA, no la del worktree
+      docker exec lasfocasdev-web grep -n "<simbolo-nuevo>" /app/<ruta-del-modulo>   # 0 matches
+    - |
+      curl -s http://127.0.0.1:8090/ | grep -oE 'index-[A-Za-z0-9_-]+\.css'    # hash servido
+      curl -s http://127.0.0.1:8090/assets/<hash>.css | grep -o '<token-o-regla-nueva>'
 ---
 
 # Nombre de archivo: SKILL.md

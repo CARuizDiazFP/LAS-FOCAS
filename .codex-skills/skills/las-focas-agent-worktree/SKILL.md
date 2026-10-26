@@ -19,7 +19,51 @@ metadata:
   globs:
     - "**/*"
   commands:
-    []
+    - |
+      scripts/instalar_hooks.sh
+    - |
+      python scripts/agent_worktree.py status            # panorama completo
+      python scripts/agent_worktree.py list              # agentes registrados
+      git rev-parse --show-toplevel                      # ¿dónde estoy parado?
+    - |
+      python scripts/agent_worktree.py start \
+      --agent claude-api --type feat --task busqueda-camaras
+    - |
+      ln -s <checkout-de-control>/web/frontend/dist web/frontend/dist
+      ln -s <checkout-de-control>/web/frontend/node_modules web/frontend/node_modules
+    - |
+      python scripts/agent_worktree.py heartbeat --agent claude-api
+    - |
+      python scripts/agent_lock.py acquire "db:migrations" \
+        --agent claude-api --reason "migración de inventario"
+      # ... trabajo ...
+      python scripts/agent_lock.py release "db:migrations" --agent claude-api
+    - |
+      python scripts/agent_worktree.py sync  --agent claude-api   # trae origin/dev a la rama
+      # resolver conflictos DENTRO del worktree propio; volver a validar
+      pytest -q                                                    # o el subconjunto pertinente
+      scripts/check_no_plaintext_secrets.sh
+      scripts/sync_agentes_comunes.sh && scripts/check_skill_mirror_drift.sh   # si se tocaron skills
+      python scripts/agent_worktree.py ready --agent claude-api    # worktree limpio + gate de calidad
+    - |
+      python scripts/agent_worktree.py integrate --agent claude-api
+    - |
+      git -C /home/support-focal-01/LAS-FOCAS status --porcelain      # ¿sólo archivos sin trackear (??)?
+      git -C /home/support-focal-01/LAS-FOCAS merge --ff-only origin/dev  # seguro: Git se niega si pisaría algo
+      git -C /home/support-focal-01/LAS-FOCAS rev-parse --short HEAD     # debe coincidir con origin/dev
+    - |
+      python scripts/agent_worktree.py finish  --agent claude-api   # libera leases propios
+      python scripts/agent_worktree.py cleanup --agent claude-api --borrar-rama
+    - |
+      python scripts/agent_worktree.py handoff \
+      --from claude-api --to codex-api \
+      --next-action "continuar implementación del endpoint" \
+      --blocked-on "falta definir el contrato de respuesta"
+
+      python scripts/agent_worktree.py accept-handoff --agent codex-api
+    - |
+      python scripts/agent_worktree.py doctor
+      python scripts/agent_lock.py stale-cleanup --dry-run
 ---
 
 # Nombre de archivo: SKILL.md

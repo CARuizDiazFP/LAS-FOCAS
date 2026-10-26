@@ -23,6 +23,10 @@ metadata:
     - "scripts/**"
   commands:
     - |
+      # Inventario: imágenes sin contenedor, marcando las protegidas
+      docker images --format '{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.Size}}\t{{.CreatedSince}}' | sort
+      docker ps -a --format '{{.Image}}' | sort -u     # las que SÍ están en uso
+    - |
       # Imágenes huérfanas (dangling) - seguro eliminar
       docker images -f "dangling=true" --format "table {{.ID}}\t{{.Size}}\t{{.CreatedSince}}"
 
@@ -31,18 +35,18 @@ metadata:
 
       # Calcular espacio de imágenes dangling
       docker images -f "dangling=true" --format "{{.Size}}" | \
-          awk '{
-              if ($1 ~ /GB/) sum += $1*1024
-              else if ($1 ~ /MB/) sum += $1
-              else if ($1 ~ /KB/) sum += $1/1024
-          } END {printf "%.2f MB\n", sum}'
+      awk '{
+      if ($1 ~ /GB/) sum += $1*1024
+      else if ($1 ~ /MB/) sum += $1
+      else if ($1 ~ /KB/) sum += $1/1024
+      } END {printf "%.2f MB\n", sum}'
 
       # Imágenes no usadas por ningún contenedor
       docker images --format "{{.Repository}}:{{.Tag}}" | while read img; do
-          if [ "$(docker ps -a -q --filter ancestor="$img" | wc -l)" -eq 0 ]; then
-              SIZE=$(docker images "$img" --format "{{.Size}}")
-              echo "$img: $SIZE"
-          fi
+      if [ "$(docker ps -a -q --filter ancestor="$img" | wc -l)" -eq 0 ]; then
+      SIZE=$(docker images "$img" --format "{{.Size}}")
+      echo "$img: $SIZE"
+      fi
       done
     - |
       # Contenedores con status=exited
@@ -79,11 +83,11 @@ metadata:
       # 3. Limpiar redes no utilizadas
       docker network prune -f
     - |
-      # Eliminar TODAS las imágenes no usadas por contenedores activos
-      # ⚠️ Esto forzará pulls/rebuilds en próximo deploy
-      docker image prune -a -f
+      # Rollbacks superados (hay uno más nuevo del mismo servicio) — confirmar uno por uno
+      docker image rm lasfocas-api:pre-hotfix-20261019 lasfocas-web:pre-hotfix-20261019
 
-      # Verificar espacio liberado
+      # Verificar espacio liberado (las imágenes comparten capas: lo liberado suele ser menor
+      # que la suma de los SIZE de `docker images`)
       docker system df
     - |
       # Limpiar todo el build cache
@@ -95,68 +99,43 @@ metadata:
       # Limpiar cache de más de 7 días
       docker builder prune --filter "until=168h" -f
     - |
-      # ⚠️ IMPORTANTE: Este comando NO incluye volúmenes
-      # El flag --volumes está OMITIDO intencionalmente
-
-      docker system prune -a -f
-
-      # Verificar que los volúmenes siguen intactos
-      docker volume ls
+      # Equivalente seguro: todo lo no persistente, sin imágenes con tag
+      docker image prune -f        # sólo dangling
+      docker container prune -f
+      docker builder prune -f
+      docker network prune -f
     - |
-      #!/bin/bash
-      # Limpieza Docker segura para LAS-FOCAS
+      docker run -d --label lasfocas.lifecycle=ephemeral --label lasfocas.session=<agent-id> ...
+      docker network create --label lasfocas.lifecycle=ephemeral --label lasfocas.session=<agent-id> <red>
+      docker volume create --label lasfocas.lifecycle=ephemeral --label lasfocas.session=<agent-id> <vol>
+    - |
+      # 1. Inventario de la sesión (sólo lectura)
+      docker ps -a        --filter label=lasfocas.session=<agent-id> --format '{{.ID}} {{.Names}} {{.Status}}'
+      docker network ls   --filter label=lasfocas.session=<agent-id> --format '{{.ID}} {{.Name}}'
+      docker volume ls    --filter label=lasfocas.session=<agent-id> --format '{{.Name}}'
 
-      echo "╔══════════════════════════════════════════════════════════════╗"
-      echo "║          LIMPIEZA DOCKER - LAS-FOCAS                         ║"
-      echo "╚══════════════════════════════════════════════════════════════╝"
+      # 2. Antes de borrar: mounts del contenedor y consumidores de la red/volumen
+      docker inspect -f '{{json .Mounts}}' <container-id>
+      docker ps -a --filter volume=<vol> --format '{{.ID}} {{.Names}}'
+      docker network inspect -f '{{json .Containers}}' <network-id>
 
-      # Análisis previo
-      echo -e "\n📊 ESTADO ACTUAL"
-      docker system df
-
-      # Calcular espacio recuperable
-      IMAGES_RECLAIM=$(docker system df --format "{{.Type}}\t{{.Reclaimable}}" | grep Images | awk '{print $2}')
-      CONTAINERS_RECLAIM=$(docker system df --format "{{.Type}}\t{{.Reclaimable}}" | grep Containers | awk '{print $2}')
-      CACHE_RECLAIM=$(docker system df --format "{{.Type}}\t{{.Reclaimable}}" | grep "Build Cache" | awk '{print $2}')
-
-      echo -e "\n💾 ESPACIO RECUPERABLE"
-      echo "─────────────────────────────"
-      echo "  Imágenes:     $IMAGES_RECLAIM"
-      echo "  Contenedores: $CONTAINERS_RECLAIM"
-      echo "  Build Cache:  $CACHE_RECLAIM"
-
-      # Confirmar limpieza
-      echo -e "\n⚠️  Los volúmenes NO serán eliminados (datos seguros)"
-      read -p "¿Proceder con la limpieza? (s/N): " CONFIRM
-
-      if [[ "$CONFIRM" =~ ^[sS]$ ]]; then
-          echo -e "\n🧹 Ejecutando limpieza..."
-
-          echo "  → Limpiando imágenes dangling..."
-          docker image prune -f
-
-          echo "  → Limpiando contenedores detenidos..."
-          docker container prune -f
-
-          echo "  → Limpiando build cache..."
-          docker builder prune -f
-
-          echo "  → Limpiando redes no utilizadas..."
-          docker network prune -f
-
-          echo -e "\n✅ LIMPIEZA COMPLETADA"
-          echo "─────────────────────────────"
-          docker system df
-      else
-          echo "❌ Limpieza cancelada"
+      # 3. Borrado por ID exacto (-v sólo quita los volúmenes ANÓNIMOS de ese contenedor)
+      docker container rm -v <container-id>
+      docker network rm <network-id>
+      docker volume rm <vol>
+    - |
+      SVC=api   # repetir por servicio reconstruido
+      # 1. Recordar el rollback que va a quedar desplazado (puede no existir)
+      OLD_RB="$(docker image inspect -f '{{.Id}}' lasfocas-$SVC:rollback 2>/dev/null || true)"
+      # 2. current -> rollback (la imagen validada que está corriendo hoy)
+      docker tag lasfocas-$SVC:latest lasfocas-$SVC:rollback
+      # 3. Build + up del nuevo current (ver docker-rebuild) y validar healthchecks/smoke
+      # 4. Recién con el current nuevo validado, retirar el rollback desplazado por ID exacto
+      NEW_RB="$(docker image inspect -f '{{.Id}}' lasfocas-$SVC:rollback)"
+      if [ -n "$OLD_RB" ] && [ "$OLD_RB" != "$NEW_RB" ]; then
+      docker ps -a --filter ancestor="$OLD_RB" --format '{{.ID}} {{.Names}}'   # debe salir vacío
+      docker image rm "$OLD_RB"   # falla solo si algún contenedor todavía la usa: no forzar
       fi
-    - |
-      # ❌ NUNCA EJECUTAR - Eliminaría datos de PostgreSQL, uploads, etc.
-      docker volume prune
-      docker system prune --volumes
-
-      # ❌ NUNCA EJECUTAR - Eliminaría contenedores activos
-      docker rm -f $(docker ps -aq)
     - |
       # Verificar que los volúmenes siguen intactos
       docker volume ls
