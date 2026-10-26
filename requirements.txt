@@ -21,7 +21,7 @@ sqlalchemy==2.0.36  # ORM para interactuar con la base de datos (armonizado con 
 psycopg[binary]==3.2.1  # Driver PostgreSQL en formato binario (armonizado con common-requirements.txt)
 asyncpg==0.29.0  # Driver async de db.session (está en common-requirements.txt)
 redis==5.0.8  # Cola/cache liviana de los workers (está en common-requirements.txt)
-orjson==3.11.5  # Serializador JSON de alto rendimiento (unificado)
+orjson==3.11.6  # Serializador JSON de alto rendimiento (unificado)
 jinja2==3.1.6  # Motor de plantillas para UI (parche de seguridad, ver pip-audit)
 python-multipart==0.0.31  # Soporte de formularios para FastAPI
 bcrypt==4.1.2  # Hash de contraseñas (uso directo sin Passlib)
