@@ -3,6 +3,6 @@
 # Descripción: Dependencias específicas del worker Slack (las comunes están en focas-base vía common-requirements.txt)
 
 # Solo paquetes específicos de este servicio
-slack_sdk>=3.27.0,<4
-slack_bolt>=1.22,<2
-apscheduler>=3.10,<4
+slack_sdk==3.45.0
+slack_bolt==1.30.0
+apscheduler==3.11.3

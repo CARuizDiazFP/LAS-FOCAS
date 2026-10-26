@@ -76,7 +76,7 @@ function goToDetail(): void {
 
 .botella-card-min:hover,
 .botella-card-min:focus-visible {
-  box-shadow: 0 0 0 1px var(--color-accent), 0 6px 18px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0 0 1px var(--color-accent), var(--shadow-md);
 }
 
 .botella-card-min.is-selected {

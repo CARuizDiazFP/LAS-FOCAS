@@ -38,11 +38,6 @@ export interface ListenerConfig {
 
 // ─── Endpoints ───────────────────────────────────────────────────────────
 
-/** Devuelve el usuario admin autenticado, lanza Error si no es admin. */
-export async function getAdminMe(): Promise<AdminUser> {
-  return requestJson<AdminUser>('/api/admin/me');
-}
-
 /** Crea un nuevo usuario. */
 export async function createUser(
   username: string,

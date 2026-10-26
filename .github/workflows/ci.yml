@@ -36,32 +36,14 @@ jobs:
       - name: Check no plaintext secrets
         run: |
           ./scripts/check_no_plaintext_secrets.sh
-      - name: Run pytest (API)
-        working-directory: api
+      # Un solo paso: `testpaths` de pytest.ini ya incluye tests/ y nlp_intent/tests. Antes había
+      # pasos separados para API/NLP/Web que repetían los mismos archivos dentro del paso general.
+      - name: Run pytest
         env:
           LLM_PROVIDER: heuristic
           TESTING: "true"
         run: |
-          pytest -q ../tests/test_health.py
-      - name: Run pytest (NLP)
-        env:
-          LLM_PROVIDER: heuristic
-          TESTING: "true"
-        run: |
-          pytest -q nlp_intent/tests
-      - name: Run pytest (Web)
-        working-directory: web
-        env:
-          LLM_PROVIDER: heuristic
-          TESTING: "true"
-        run: |
-          pytest -q ../tests/test_web_*.py
-      - name: Run pytest (repo tests)
-        env:
-          LLM_PROVIDER: heuristic
-          TESTING: "true"
-        run: |
-          pytest -q tests nlp_intent/tests
+          pytest -q
 
   security-audit:
     runs-on: ubuntu-latest
@@ -75,14 +57,30 @@ jobs:
           python-version: '3.11'
       - name: Install pip-audit
         run: pip install -r requirements-dev.txt
-      - name: Audit root requirements
+      # Se audita lo que instalan las imágenes (ver la cabecera de cada requirements): focas-base se
+      # construye con common-requirements.txt, y cada Dockerfile hijo suma su requirements propio.
+      # requirements.txt (raíz) sólo alimenta el venv local, pero también se audita.
+      - name: Audit common requirements (focas-base)
+        run: pip-audit -r common-requirements.txt
+      - name: Audit root requirements (venv local)
         run: pip-audit -r requirements.txt
-      - name: Audit web requirements
-        run: pip-audit -r web/requirements.txt
       - name: Audit api requirements
         run: pip-audit -r api/requirements.txt
-      - name: Audit nlp_intent requirements
-        run: pip-audit -r nlp_intent/requirements.txt
+      - name: Audit web requirements
+        run: pip-audit -r web/requirements.txt
+      - name: Audit bot_telegram requirements
+        run: pip-audit -r bot_telegram/requirements.txt
+      - name: Audit office_service requirements
+        run: pip-audit -r office_service/requirements.txt
+      - name: Audit workers requirements
+        run: |
+          rc=0
+          for req in modules/*/requirements.txt; do
+            echo "::group::$req"
+            pip-audit -r "$req" || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
 
   frontend-audit:
     runs-on: ubuntu-latest

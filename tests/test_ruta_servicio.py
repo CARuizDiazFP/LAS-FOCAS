@@ -843,23 +843,31 @@ class TestRutaTipo:
 
 
 # =============================================================================
-# TESTS: INTEGRATION (requiere DB real - marcados como slow)
+# TESTS: Servicio.ruta_principal (propiedad Python, sin DB)
 # =============================================================================
 
-@pytest.mark.slow
-class TestRutaServicioIntegration:
-    """Tests de integración que requieren base de datos real."""
+class TestServicioRutaPrincipal:
+    """Elección de la ruta principal sobre objetos ORM transitorios."""
 
-    @pytest.fixture
-    def db_session(self):
-        """Fixture para sesión de DB real."""
-        # Este fixture solo se ejecuta si los tests slow están habilitados
-        pytest.skip("Requiere base de datos real")
+    @staticmethod
+    def _ruta(nombre, tipo, activa=True):
+        return RutaServicio(nombre=nombre, tipo=tipo, activa=activa)
 
-    def test_create_ruta_with_empalmes(self, db_session):
-        """Debe crear ruta con empalmes ordenados."""
-        pass  # TODO: Implementar con DB real
+    def test_prefiere_la_principal_activa(self):
+        backup = self._ruta("Backup", RutaTipo.BACKUP)
+        principal = self._ruta("Principal", RutaTipo.PRINCIPAL)
+        servicio = Servicio(servicio_id="111", rutas=[backup, principal])
+        assert servicio.ruta_principal is principal
 
-    def test_servicio_ruta_principal_property(self, db_session):
-        """Debe retornar ruta principal correctamente."""
-        pass  # TODO: Implementar con DB real
+    def test_principal_inactiva_cae_a_la_primera_activa(self):
+        principal = self._ruta("Principal", RutaTipo.PRINCIPAL, activa=False)
+        backup = self._ruta("Backup", RutaTipo.BACKUP)
+        servicio = Servicio(servicio_id="111", rutas=[principal, backup])
+        assert servicio.ruta_principal is backup
+
+    def test_sin_rutas_activas_devuelve_none(self):
+        servicio = Servicio(
+            servicio_id="111",
+            rutas=[self._ruta("Principal", RutaTipo.PRINCIPAL, activa=False)],
+        )
+        assert servicio.ruta_principal is None

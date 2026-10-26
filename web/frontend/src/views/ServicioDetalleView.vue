@@ -266,22 +266,6 @@ const foRutas = ref<InfraRutaItem[]>([]);
 // vive en el gestor de Servicios sin ODF, que es admin-only.
 const camino = useCromoPath();
 
-/**
- * La etiqueta dice cuántos archivos van a bajar, porque no es lo mismo un Servicio PON (1 pelo,
- * 1 .txt) que uno de FO o con un SW de módulo bifilar (2 o más). Durante la descarga muestra el
- * avance: en frío cada pelo cuesta entre 4,6 s y 14 s contra Cromo, así que sin progreso el
- * operador cree que se colgó.
- */
-const etiquetaDescargaTracking = computed(() => {
-  if (camino.resolviendoCaminos.value) return 'Resolviendo caminos en Cromo…';
-  if (camino.descargando.value) {
-    const total = camino.descargaTotal.value;
-    return total > 1 ? `Generando… ${camino.descargadosCount.value}/${total}` : 'Generando…';
-  }
-  // Con la selección automática son los caminos esperados del Servicio, no lo tildado.
-  const cantidad = camino.cantidadDescarga.value;
-  return cantidad > 1 ? `Trackings Cromo (${cantidad} .txt)` : 'Tracking Cromo (.txt)';
-});
 const foTrackingResumen = ref<{
   camaras: number;
   cables: number;
@@ -411,9 +395,6 @@ const rutaPrincipal = computed(() => {
   return principal ?? rutas[0];
 });
 
-const resumenSla = computed(() => formatReporteSummary(reporteSla.value));
-const resumenRepetitividad = computed(() => formatReporteSummary(reporteRepetitividad.value));
-
 const slaEstadoCorto = computed(() => {
   if (!reporteSla.value) return 'Sin informes';
   return reporteSla.value.status === 'success' ? 'Informe OK' : reporteSla.value.status;
@@ -427,13 +408,6 @@ const domicilio = computed(() => {
   return parts.length > 0 ? parts.join(' · ') : 'Sin dato';
 });
 
-/** Descarga el tracking `.txt` generado desde Cromo para el Servicio abierto. */
-async function descargarTrackingDeCromo(): Promise<void> {
-  const servicioId = servicio.value?.id;
-  if (servicioId == null) return;
-  await camino.descargarTrackings(servicioId);
-}
-
 function formatPunta(
   punta?: { sitio?: string | null; identificador?: string | null; conector?: string | null } | null,
 ): string | null {
@@ -443,15 +417,6 @@ function formatPunta(
   const conector = (punta.conector ?? '').trim();
   const texto = [sitio, identificador, conector].filter((part) => part.length > 0).join(':');
   return texto || null;
-}
-
-function formatReporteSummary(item: ReportHistoryItem | null): string {
-  if (!item) return 'Sin ejecuciones recientes';
-  const estado = item.status === 'success' ? 'correcto' : item.status;
-  const fecha = item.started_at
-    ? new Date(item.started_at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })
-    : 'sin fecha';
-  return `${estado} · ${fecha}`;
 }
 
 async function loadDetalle(): Promise<void> {
