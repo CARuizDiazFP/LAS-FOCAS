@@ -28,7 +28,7 @@ commands:
     alembic -c db/alembic.ini history
     alembic -c db/alembic.ini current
   - |
-    alembic -c db/alembic.ini revision --autogenerate -m "descripcion"
+    # manual: target_metadata = None en env.py deja vacío a --autogenerate
     alembic -c db/alembic.ini revision -m "descripcion"
   - |
     alembic -c db/alembic.ini upgrade head --sql
@@ -47,13 +47,13 @@ commands:
 ---
 name: Migración Alembic
 description: "Crea o actualiza una migración Alembic con validaciones, downgrade y documentación asociada"
-argument-hint: "Describe el cambio y opcionalmente el tipo, por ejemplo: agregar tabla usuarios, tipo autogenerate"
+argument-hint: "Describe el cambio, por ejemplo: agregar tabla usuarios"
 agent: "agent"
 ---
 
 # Crear Migración Alembic
 
-Crear una migración Alembic a partir de la descripción dada por el usuario. Si el usuario no especifica tipo, inferir si corresponde `autogenerate` o migración manual según el cambio pedido.
+Crear una migración Alembic a partir de la descripción dada por el usuario. La migración se escribe siempre a mano: `db/alembic/env.py` tiene `target_metadata = None` y `--autogenerate` genera un archivo vacío (skill `alembic-migrations`, gotcha 5).
 
 ## Objetivo
 
@@ -64,7 +64,7 @@ Crear una migración Alembic a partir de la descripción dada por el usuario. Si
 ## Entradas esperadas
 
 - descripción del cambio de esquema
-- tipo sugerido: `autogenerate` o `manual`
+- tipo: `manual` (el autogenerate está inactivo)
 - contexto adicional sobre tablas, columnas, índices o datos existentes
 
 ## Flujo de trabajo
@@ -79,10 +79,10 @@ alembic -c db/alembic.ini current
 
 ### 2. Elegir estrategia de creación
 
-Usar `revision --autogenerate` si el cambio está reflejado en modelos SQLAlchemy. Usar `revision -m` si requiere SQL manual, backfill, enums, correcciones idempotentes o transformaciones no detectables.
+Usar siempre `revision -m` y escribir `upgrade()`/`downgrade()` a mano, copiando del modelo los nombres de índice y los tipos exactos: con `target_metadata = None`, `revision --autogenerate` no detecta ningún cambio.
 
 ```bash
-alembic -c db/alembic.ini revision --autogenerate -m "descripcion"
+# manual: target_metadata = None en env.py deja vacío a --autogenerate
 alembic -c db/alembic.ini revision -m "descripcion"
 ```
 
@@ -163,6 +163,6 @@ alembic -c db/alembic.ini downgrade -1
 ## Salida esperada
 
 1. Crear o actualizar la migración en `db/alembic/versions/`.
-2. Explicar si fue `autogenerate` o manual y por qué.
+2. Explicar qué operaciones escribió a mano y cómo verificó que coinciden con el modelo.
 3. Dejar checklist de validación y compatibilidad.
 4. Actualizar `docs/db.md` o el PR diario si corresponde.

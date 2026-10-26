@@ -268,6 +268,10 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
      ejecuta nada y sale con código 0 y salida vacía (una declaración "aplicada" no existía en la
      base). Con heredoc, siempre `docker exec -i`; si el script imprime algo, una salida vacía es un
      fallo, no un éxito.
+     Lo mismo al **copiar un archivo suelto**: `docker exec lasfocasdev-web sh -c 'cat > /tmp/wt/x.py'
+     < x.py` sin `-i` deja `x.py` **vacío** y sale con código 0. Real (2026-10-26): el bench importó un
+     módulo vacío y falló recién con `AttributeError`. Después de copiar, verificar el contenido
+     (`docker exec … grep -c <símbolo nuevo> <archivo>`).
    - **Un solo `asyncio.run` por script si se usa `db.session.AsyncSessionLocal`**: su pool queda
      atado al primer event loop y un segundo `asyncio.run` revienta en el checkout
      (`Exception terminating connection` / `different loop`). Hacer todo dentro de un único
@@ -314,6 +318,28 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    - `stp` medido: 30 en servicio, 31 a desinstalar, 1 proyectado. Apareció también un `21` (camino
      del 105553) sin interpretar: no marcarlo hasta medirlo.
    Medición de referencia: `docs/decisiones.md` (2026-10-23), 30 Activos al azar + 83693.
+
+16. **Un refactor de rendimiento sobre la ingesta o la resolución de Cámaras se acepta con un arnés viejo
+   contra nuevo sobre el mismo input real, dentro de una transacción con `ROLLBACK`.** Real (P05,
+   2026-10-26, `docs/PR/2026-10-26.md`): precarga por lote en `ingesta.py` y resolución de Cámara
+   padre, donde los tests con fakes pasaban aunque la precarga viera todo como inexistente.
+   - Montar `git show origin/dev:<archivo>` como módulo `*_viejo` junto al nuevo en `/tmp/wt` (regla 13),
+     o dos árboles (`/tmp/wt2` = `git archive origin/dev`, `/tmp/wt3` = worktree), y correr ambos
+     sobre el mismo input: payload de Cromo bajado **una vez** a un JSON, o nombres reales de la base.
+   - Contar queries con `event.listen(engine, "before_cursor_execute", …)` (en async:
+     `async_engine.sync_engine`). Al comparar, tener en cuenta que el autoflush por `sesion.get()`
+     multiplica los `UPDATE`: menos `UPDATE` no significa otro resultado.
+   - La huella del resultado se lee **de la base**, antes del rollback:
+     `md5(string_agg((to_jsonb(t) - 'ultima_ingesta' - 'ultima_modificacion')::text, '|' order by n_id))`
+     por tabla, filtrando `ultima_ingesta >= t0`, más la secuencia de eventos de la corrida. No sale
+     del `identity_map`: es débil y los eventos ya flusheados desaparecen (huella vacía, falso OK).
+   - Para detectar "creó una fila", no usar `obj in session.new`: si la función hace `flush()`
+     adentro, el objeto ya es persistente y la creación pasa por reuso (falso DIF). Comparar
+     `obj.id > max(id)` leído antes de empezar.
+   - `CREATE EXTENSION` y `CREATE INDEX` son transaccionales en Postgres: un índice candidato
+     (p. ej. GIN trigram) se mide con `EXPLAIN ANALYZE` dentro de `BEGIN … ROLLBACK`, sin dejarlo
+     creado. Verificar después en `pg_extension`/`pg_indexes`. Antes de proponerlo, comprobar que la
+     consulta real use la columna desnuda: `unaccent(lower(nombre)) ILIKE` no usa un GIN sobre `nombre`.
 
 ## Documentación relacionada
 

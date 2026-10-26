@@ -44,7 +44,8 @@ Guía breve para crear, validar y aplicar migraciones Alembic sin sobrecargar el
 ## Procedimiento
 
 1. Revisar estado actual de migraciones.
-2. Elegir `autogenerate` o migración manual.
+2. Escribir la migración **a mano** (`revision -m`): con `target_metadata = None` en `env.py`,
+   `--autogenerate` genera un archivo vacío (ver punto 5 de los gotchas).
 3. Implementar `upgrade()` y `downgrade()`.
 4. Validar con `--sql` y aplicar solo si corresponde.
 5. Actualizar `docs/db.md` o PR diario cuando el cambio tenga impacto visible.
@@ -90,6 +91,13 @@ Guía breve para crear, validar y aplicar migraciones Alembic sin sobrecargar el
    Además `target_metadata = None` en `env.py`: `autogenerate`/`alembic check` no detectan drift
    modelo↔migración, así que nombres de índices y tipos se verifican a mano contra el modelo.
    Hallazgo real (2026-10-05, `20261005_02_sla_consumo_historico`, ver `docs/cierres/2026-10-05.md`).
+   El drift ya es grande: medido el 2026-10-26 con `alembic.autogenerate.compare_metadata` contra
+   dev, hay ~180 operaciones de índice en todo `app.*`. La mayoría son la convención `ix_app_*` del
+   modelo frente a los `ix_*` de las migraciones, más índices creados por migración que el modelo
+   no declara. Por eso **no conviene encender** `target_metadata` sin reconciliar antes: el primer
+   autogenerate propondría borrar y recrear decenas de índices en prod. Para verificar un índice
+   puntual, correr `compare_metadata(MigrationContext.configure(conn, opts={"include_schemas": True}),
+   Base.metadata)` en sólo lectura y filtrar por tabla (`docs/PR/2026-10-26.md`, P05).
 6. **Una migración de una rama SIN integrar aplicada al Postgres de dev compartido bloquea a las
    demás ramas.** El dev DB queda en un head que `dev` (y toda rama que parte de él) no conoce:
    `alembic upgrade` de otra rama falla ("Can't locate revision"), y si esa rama también encadenó

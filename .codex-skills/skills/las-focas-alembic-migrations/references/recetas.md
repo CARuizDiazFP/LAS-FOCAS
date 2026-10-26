@@ -1,5 +1,5 @@
 # Nombre de archivo: recetas.md
-# Ubicación de archivo: .github/skills/alembic-migrations/references/recetas.md
+# Ubicación de archivo: .agentes-comunes/skills/alembic-migrations/references/recetas.md
 # Descripción: Recetas y operaciones comunes para migraciones Alembic en LAS-FOCAS
 
 # Recetas de Migraciones Alembic
@@ -15,7 +15,7 @@ alembic -c db/alembic.ini heads
 ## Crear migración
 
 ```bash
-alembic -c db/alembic.ini revision --autogenerate -m "descripcion"
+# manual: target_metadata = None en env.py deja vacío a --autogenerate
 alembic -c db/alembic.ini revision -m "descripcion"
 ```
 

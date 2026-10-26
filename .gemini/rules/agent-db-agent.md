@@ -19,7 +19,8 @@ commands:
   - |
     # Crear nueva migración
     cd /home/focal/proyectos/LAS-FOCAS
-    alembic -c db/alembic.ini revision --autogenerate -m "descripcion"
+    # manual: target_metadata = None en env.py deja vacío a --autogenerate
+    alembic -c db/alembic.ini revision -m "descripcion"
 
     # Aplicar migraciones
     alembic -c db/alembic.ini upgrade head
@@ -101,7 +102,8 @@ class User(Base):
 ```bash
 # Crear nueva migración
 cd /home/focal/proyectos/LAS-FOCAS
-alembic -c db/alembic.ini revision --autogenerate -m "descripcion"
+# manual: target_metadata = None en env.py deja vacío a --autogenerate
+alembic -c db/alembic.ini revision -m "descripcion"
 
 # Aplicar migraciones
 alembic -c db/alembic.ini upgrade head

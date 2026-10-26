@@ -15,7 +15,7 @@ alembic -c db/alembic.ini heads
 ## Crear migración
 
 ```bash
-alembic -c db/alembic.ini revision --autogenerate -m "descripcion"
+# manual: target_metadata = None en env.py deja vacío a --autogenerate
 alembic -c db/alembic.ini revision -m "descripcion"
 ```
 
