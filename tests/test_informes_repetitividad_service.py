@@ -1,3 +1,7 @@
+# Nombre de archivo: test_informes_repetitividad_service.py
+# Ubicación de archivo: tests/test_informes_repetitividad_service.py
+# Descripción: Pruebas del servicio local de informes de repetitividad
+
 """Pruebas del servicio local de informes de repetitividad."""
 
 from __future__ import annotations
