@@ -21,6 +21,8 @@ from ..comun import (
     _incluye_anulados,
     _serialize_camara_ingreso,
     _servicio_existe,
+    leer_upload,
+    leer_upload_sync,
     logger,
 )
 from ..dependencias import UsuarioSesion, requiere_csrf, usuario_admin, usuario_sesion
@@ -34,6 +36,9 @@ from ..errores import (
 )
 
 router = APIRouter(dependencies=[Depends(usuario_sesion), Depends(requiere_csrf)])
+
+# Los trackings son .txt de una ruta (KB): 5 MB ya es un archivo equivocado.
+MAX_TRACKING_MB = 5
 
 
 def _find_servicio_por_identificador_web(session: Any, servicio_id: str) -> Optional[Any]:
@@ -663,7 +668,7 @@ async def servicios_ingest_web(
         return JSONResponse({"error": "Falta nombre de archivo"}, status_code=400)
 
     try:
-        content = await file.read()
+        content = await leer_upload(file)
         files = {
             "file": (file.filename, content, file.content_type or "application/octet-stream"),
         }
@@ -2160,7 +2165,7 @@ def upload_tracking_web(
         from db.session import SessionLocal
 
         # Leer contenido
-        content = file.file.read()  # endpoint sync: corre en el threadpool
+        content = leer_upload_sync(file, max_mb=MAX_TRACKING_MB)  # endpoint sync: corre en el threadpool
         try:
             raw_text = content.decode("utf-8")
         except UnicodeDecodeError:
@@ -2290,7 +2295,7 @@ def analyze_tracking_web(
     username, _ = usuario
     
     # Leer contenido del archivo
-    raw_bytes = file.file.read()  # endpoint sync: corre en el threadpool
+    raw_bytes = leer_upload_sync(file, max_mb=MAX_TRACKING_MB)  # endpoint sync: corre en el threadpool
     try:
         raw_content = raw_bytes.decode("utf-8")
     except UnicodeDecodeError:

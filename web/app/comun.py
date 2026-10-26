@@ -12,10 +12,12 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, Request, UploadFile, status
 
 from core.config import get_secret
 from core.services.report_history import ReportHistoryBackend, ReportHistoryService
+
+from .errores import ErrorDeDominio
 
 # Mismo logger "web" que configura main.py con setup_logging("web", ...)
 logger = logging.getLogger("web")
@@ -71,6 +73,50 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         logger.warning("action=config_invalid_int name=%s default=%s", name, default)
         return default
+
+
+# Tope de los uploads del panel (Excel de informes e ingestas). Los que tienen un límite propio lo pasan
+# en `max_mb` (CSV de alarmas 10 MB, trackings 5 MB); chat y lista de clientes ya leían con tope.
+MAX_UPLOAD_MB = _env_int("MAX_UPLOAD_MB", 20)
+_CHUNK_UPLOAD = 1024 * 1024
+
+
+class UploadDemasiadoGrande(ErrorDeDominio):
+    status_code = 413
+
+
+def _tope_upload(archivo: UploadFile, max_mb: int | None) -> tuple[int, str]:
+    mb = MAX_UPLOAD_MB if max_mb is None else max_mb
+    nombre = Path(archivo.filename or "El archivo").name
+    return mb * 1024 * 1024, f"{nombre} supera el límite de {mb} MB"
+
+
+async def leer_upload(archivo: UploadFile, *, max_mb: int | None = None) -> bytes:
+    """Lee el upload por chunks y corta con 413 apenas pasa el tope, sin cargarlo entero a memoria."""
+    limite, mensaje = _tope_upload(archivo, max_mb)
+    partes: list[bytes] = []
+    total = 0
+    while chunk := await archivo.read(_CHUNK_UPLOAD):
+        total += len(chunk)
+        if total > limite:
+            logger.warning("action=upload_rechazado reason=tamano archivo=%s limite=%s", archivo.filename, limite)
+            raise UploadDemasiadoGrande(mensaje)
+        partes.append(chunk)
+    return b"".join(partes)
+
+
+def leer_upload_sync(archivo: UploadFile, *, max_mb: int | None = None) -> bytes:
+    """Variante para endpoints `def` (threadpool): lee `archivo.file` con el mismo tope que `leer_upload`."""
+    limite, mensaje = _tope_upload(archivo, max_mb)
+    partes: list[bytes] = []
+    total = 0
+    while chunk := archivo.file.read(_CHUNK_UPLOAD):
+        total += len(chunk)
+        if total > limite:
+            logger.warning("action=upload_rechazado reason=tamano archivo=%s limite=%s", archivo.filename, limite)
+            raise UploadDemasiadoGrande(mensaje)
+        partes.append(chunk)
+    return b"".join(partes)
 
 
 def get_current_user(request: Request) -> str | None:

@@ -372,10 +372,14 @@ class _UploadEspia:
     def __init__(self, filename: str, contenido: bytes) -> None:
         self.filename = filename
         self._contenido = contenido
+        self._pos = 0
         self.cierres = 0
 
-    async def read(self) -> bytes:
-        return self._contenido
+    async def read(self, size: int = -1) -> bytes:
+        # Posicional como UploadFile: `leer_upload` lee por chunks hasta recibir b"".
+        fin = len(self._contenido) if size < 0 else self._pos + size
+        parte, self._pos = self._contenido[self._pos:fin], min(fin, len(self._contenido))
+        return parte
 
     async def close(self) -> None:
         self.cierres += 1
@@ -458,3 +462,16 @@ async def test_cierre_que_falla_no_rompe_la_respuesta(monkeypatch) -> None:  # n
     r = await _handler(monkeypatch, ups, mes="abc")
     assert r.status_code == 422
     assert ups[0].cierres == 1
+
+
+@pytest.mark.asyncio
+async def test_upload_sobre_el_tope_da_413_y_registra_el_error(monkeypatch) -> None:  # noqa: ANN001
+    from web.app import comun
+
+    monkeypatch.setattr(comun, "MAX_UPLOAD_MB", 1)
+    ups = [_UploadEspia("a.xlsx", b"x" * (1024 * 1024 + 1)), _UploadEspia("b.xlsx", b"x")]
+    r = await _handler(monkeypatch, ups, testing="true")
+    assert r.status_code == 413
+    assert ups[0].cierres == 1
+    rec = web_informes.REPORT_HISTORY.list_records(report_type="sla", status="error")[0]
+    assert rec["error_message"] == "a.xlsx supera el límite de 1 MB"

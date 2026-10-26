@@ -28,6 +28,7 @@ from ..comun import (
     _internal_api_auth_headers,
     _marcar_corrida_fallida,
     _serializar_cromo_corrida,
+    leer_upload,
     logger,
 )
 from ..dependencias import UsuarioSesion, requiere_csrf, usuario_admin, usuario_sesion
@@ -356,7 +357,7 @@ async def camaras_ingest_web(
         return JSONResponse({"error": "Formato no soportado (use .xlsx o .xlsm)"}, status_code=415)
 
     try:
-        content = await file.read()
+        content = await leer_upload(file)
         files = {
             "file": (file.filename, content, file.content_type or "application/octet-stream"),
         }

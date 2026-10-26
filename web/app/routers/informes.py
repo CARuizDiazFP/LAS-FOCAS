@@ -33,6 +33,8 @@ from ..comun import (
     REPORT_HISTORY,
     REPORTS_DIR,
     UPLOADS_DIR,
+    UploadDemasiadoGrande,
+    leer_upload,
     logger,
 )
 from ..dependencias import UsuarioSesion, requiere_csrf, usuario_sesion
@@ -245,7 +247,11 @@ async def _leer_excels_sla(archivos: List[UploadFile], on_error: Any) -> tuple[b
             await archivo.close()
             logger.warning("action=sla_web_report stage=validation error=extension file=%s", nombre)
             return _rechazo_sla(on_error, 415, f"{nombre} debe tener extensión .xlsx")
-        contenido = await archivo.read()
+        try:
+            contenido = await leer_upload(archivo)
+        except UploadDemasiadoGrande as exc:
+            await archivo.close()
+            return _rechazo_sla(on_error, 413, exc.mensaje)
         await archivo.close()
         if not contenido:
             logger.warning("action=sla_web_report stage=validation error=empty file=%s", nombre)
@@ -450,7 +456,11 @@ async def generar_informe_sla_consumo_web(
     contenidos: dict[str, bytes] = {}
     for archivo in archivos:
         nombre = Path(archivo.filename).name
-        contenido = await archivo.read()
+        try:
+            contenido = await leer_upload(archivo)
+        except UploadDemasiadoGrande as exc:
+            await archivo.close()
+            return _error(413, exc.mensaje)
         await archivo.close()
         if not nombre.lower().endswith(".xlsx") or not contenido:
             return _error(415, f"{nombre} debe ser un .xlsx no vacío")
@@ -531,7 +541,7 @@ async def flow_sla(
             assert file is not None
             if not file.filename or not file.filename.lower().endswith(".xlsx"):
                 return JSONResponse({"error": "El archivo debe ser .xlsx"}, status_code=400)
-            excel_bytes = await file.read()
+            excel_bytes = await leer_upload(file)
             await file.close()
             if not excel_bytes:
                 return JSONResponse({"error": "El archivo está vacío"}, status_code=400)
@@ -840,8 +850,11 @@ async def tool_alarmas_ciena(
     
     # Leer contenido
     try:
-        content = await file.read()
+        content = await leer_upload(file, max_mb=10)
         await file.close()
+    except UploadDemasiadoGrande:
+        logger.warning("action=alarmas_ciena_size_exceeded user=%s filename=%s", username, file.filename)
+        return JSONResponse({"error": "El archivo supera el límite de 10MB"}, status_code=413)
     except Exception as e:  # noqa: BLE001
         return error_interno("alarmas_ciena_read", e)
     
@@ -849,19 +862,6 @@ async def tool_alarmas_ciena(
         return JSONResponse(
             {"error": "El archivo está vacío"},
             status_code=400
-        )
-    
-    # Validar tamaño (límite de 10MB para CSV)
-    MAX_CSV_SIZE = 10 * 1024 * 1024  # 10MB
-    if len(content) > MAX_CSV_SIZE:
-        logger.warning(
-            "action=alarmas_ciena_size_exceeded user=%s size=%d",
-            username,
-            len(content)
-        )
-        return JSONResponse(
-            {"error": "El archivo supera el límite de 10MB"},
-            status_code=413
         )
     
     # Procesar archivo
