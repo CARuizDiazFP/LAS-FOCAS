@@ -14,15 +14,15 @@ Guía para convertir documentos a PDF en LAS-FOCAS y diagnosticar por qué un PD
 
 ## Estado real (verificado 2026-10-26 en dev — reverificar antes de confiar)
 
-Hay dos caminos y **ninguno convierte desde los contenedores `web`/`api`**:
+Hay dos caminos; **el subprocess local no funciona en los contenedores `web`/`api`**:
 
 | Camino | Dónde | Estado |
 |---|---|---|
 | Subprocess local `modules/common/libreoffice_export.py::convert_to_pdf(docx, soffice_bin)` | Corre en el contenedor que lo llama (lo usan `core/sla/report.py`, `core/sla/legacy_report.py`, `core/services/sla_consumo.py`, `modules/informes_sla`, `modules/informes_repetitividad`) | Las imágenes `web`/`api` (`focas-base`) **no instalan LibreOffice**: con `SOFFICE_BIN=/usr/bin/soffice` el subprocess da `FileNotFoundError`; el informe sale sin PDF (sin 500) |
-| `office_service` (`office:8090`, UNO en 2002) | Contenedor `office` (`lasfocas-office` / `lasfocasdev-office`), el único con `soffice` | `POST /convert` es **placeholder**: responde `"Conversión aún no implementada; placeholder OK"` sin archivo (`office_service/app/main.py`) |
+| `office_service` (`office:8090`, UNO en 2002) | Contenedor `office` (`lasfocas-office` / `lasfocasdev-office`), el único con `soffice` | `POST /convert` **convierte** desde el 2026-10-26 (`office_service/app/conversion.py`); ver "API de `office_service`" |
 
-La herramienta MCP `ConvertirDocAPdf` (`core/mcp/registry.py`) apunta a `office_service:8003` con
-JSON: también está rota. No existe `core/services/office_client.py`.
+La herramienta MCP `ConvertirDocAPdf` (`core/mcp/registry.py`) es el único consumidor de `/convert`
+(`OFFICE_SERVICE_BASE`, default `http://office:8090`). No existe `core/services/office_client.py`.
 
 Antes de diagnosticar un PDF faltante:
 
@@ -52,8 +52,18 @@ soffice --headless --convert-to pdf --outdir /tmp /ruta/documento.docx
 ## API de `office_service`
 
 - `GET /health` → `{"service", "uno": {"available", "message"}, "version"}`.
-- `POST /convert` (multipart `file` + `output_format`) → placeholder (ver arriba); 503 si UNO está
-  deshabilitado o no disponible.
+- `POST /convert` (multipart `file`; `output_format=pdf` por query, único valor) → bytes del PDF
+  (`application/pdf`). Entradas `.docx/.doc/.odt/.rtf` (la imagen sólo trae Writer). 400 formato,
+  extensión o vacío; 413 sobre `OFFICE_MAX_FILE_SIZE` (bytes, 50 MB); 503 sin `soffice`; 504 sobre
+  `OFFICE_CONVERT_TIMEOUT` (120 s); 500 sin salida. Un `soffice` por pedido con perfil temporal propio
+  (el por defecto lo tiene la instancia UNO), serializado; DOCX de una página ≈ 6 s.
+
+  ```python
+  async with httpx.AsyncClient(timeout=150.0) as client:
+      r = await client.post("http://office:8090/convert", params={"output_format": "pdf"},
+                            files={"file": (path.name, path.read_bytes(), "application/octet-stream")})
+  r.raise_for_status()  # r.content = PDF
+  ```
 - Configuración con prefijo `OFFICE_` (`office_service/app/config.py`): `OFFICE_ENABLE_UNO`,
   `OFFICE_SOFFICE_PORT`, `OFFICE_SOFFICE_BINARY`, `OFFICE_UVICORN_PORT` (8090).
 

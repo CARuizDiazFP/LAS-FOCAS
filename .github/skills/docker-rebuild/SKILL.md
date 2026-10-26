@@ -180,6 +180,22 @@ docker exec lasfocasdev-web rm -rf /tmp/wt          # siempre al terminar
   registrarlo antes en `sys.modules`, cualquier `@dataclass` del módulo revienta con
   `AttributeError: 'NoneType' object has no attribute '__dict__'` (real, 2026-10-24, `ingesta.py`). Usar
   el patrón `tar` + `PYTHONPATH` de arriba, que importa el paquete con su nombre real.
+- **Si el cambio toca también OTRO servicio** (p. ej. `office_service` + el cliente en `core/`), probar
+  el par sin tocar el stack compartido: imagen del otro servicio con tag propio y contenedor
+  descartable en la red de dev, y el código del worktree corrido en un contenedor de un solo uso de la
+  imagen `web` (montado `:ro`, sin `docker exec` sobre `lasfocasdev-web`). Real 2026-10-26 (P13,
+  `ConvertirDocAPdf` → `/convert`: DOCX → PDF de punta a punta):
+  ```bash
+  L="--label lasfocas.lifecycle=ephemeral --label lasfocas.session=<agent-id>"
+  docker build -q $L -t lasfocas-office-<agent-id>:smoke office_service/
+  docker run -d --rm $L --name <agent-id>-office-smoke --network lasfocasdev_lasfocas_dev_net lasfocas-office-<agent-id>:smoke
+  docker run --rm $L --network lasfocasdev_lasfocas_dev_net --user 1001:1001 \
+    -v "$PWD":/wt:ro -v <scratchpad>:/smoke -e PYTHONPATH=/wt -w /wt \
+    -e OFFICE_SERVICE_BASE=http://<agent-id>-office-smoke:8090 --entrypoint python lasfocasdev-web /smoke/smoke.py
+  docker stop <agent-id>-office-smoke && docker rmi lasfocas-office-<agent-id>:smoke
+  ```
+  Con `--rm`, el `rmi` inmediato tras `stop` puede fallar con "image is being used": el borrado del
+  contenedor es asíncrono; reintentar a los segundos.
 - La primera corrida en frío de una consulta sobre tablas grandes puede tardar 10× más que las
   siguientes (real: 21,8 s → 0,4 s / 0,1 s). Repetir antes de sacar conclusiones de tiempo.
 - Para prod, el mismo patrón sirve empaquetado en un script operativo que el usuario lanza con

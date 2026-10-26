@@ -182,3 +182,26 @@ async def test_attachment_sanitization_filters_traversal() -> None:
     tool_entries = [row for row in history if row["role"] == "tool"]
     assert tool_entries
     assert tool_entries[0]["attachments"] == [{"path": "valid.xlsx"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("comando", ["/comparador file_a=a.sor file_b=b.sor", "/mapa"])
+async def test_comandos_de_herramientas_retiradas_no_invocan_nada(comando: str) -> None:
+    storage = InMemoryChatStorage()
+    orchestrator = ChatOrchestrator(storage=storage, registry=MCPRegistry())
+    session_id = await orchestrator.ensure_session("ana")
+
+    events = []
+    async for event in orchestrator.handle_message(
+        user_id="ana",
+        role="user",
+        session_id=session_id,
+        message=ChatMessage(type="user_message", content=comando),
+    ):
+        events.append(event)
+
+    assert [evt.type for evt in events] == ["assistant_done"]
+    assert "no reconocido" in (events[0].content or "")
+    assert "/comparador" not in (events[0].content or "")
+    history = await orchestrator.history(session_id)
+    assert not [row for row in history if row["role"] == "tool"]
