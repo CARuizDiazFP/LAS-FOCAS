@@ -25,6 +25,12 @@ Guía breve para crear, validar y aplicar migraciones Alembic sin sobrecargar el
 3. Implementar `upgrade()` y `downgrade()`.
 4. Validar con `--sql` y aplicar solo si corresponde.
 5. Actualizar `docs/db.md` o PR diario cuando el cambio tenga impacto visible.
+6. Regenerar la tabla "Historial de migraciones" de `docs/db.md` (está entre los marcadores
+   `<!-- tabla-migraciones:inicio/fin -->` y no se edita a mano): correr
+   `python scripts/gen_tabla_migraciones.py` y pegar la salida entre los marcadores, y después
+   `python scripts/gen_tabla_migraciones.py --verificar docs/db.md`, que tiene que salir con 0.
+   Su stderr además avisa de heads múltiples o `down_revision` colgadas. Antes de 2026-10-26 la
+   tabla se mantenía a mano y le faltaban 25 de 72 migraciones (ver `docs/cierres/2026-10-26.md`).
 
 ## Referencias
 

@@ -2,7 +2,7 @@
 # Ubicación de archivo: scripts/cromo_bajas_cables_fantasma.py
 # Descripción: Fix retroactivo de cables fantasma — alta de los cables que faltan, sus pelos por /inner y baja lógica de los que Cromo borró; dry-run exacto por defecto
 
-"""Fix retroactivo del relevamiento `docs/relevamiento_cromo_cables_fantasma_2026-10-02.md`.
+"""Fix retroactivo del relevamiento `docs/historico/relevamiento_cromo_cables_fantasma_2026-10-02.md`.
 
 El orden importa y lo decidió el usuario (2026-10-02): en dev, 70 de los 244 cables que faltaban
 eran justamente los que reemplazaron a los fantasmas. Dar de baja primero dejaba a sus servicios sin
