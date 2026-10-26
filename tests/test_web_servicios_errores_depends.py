@@ -120,21 +120,8 @@ def test_ingest_conserva_su_403_solo_admin(con_sesion):
     assert res.json() == {"error": "Solo admin"}
 
 
-def test_ingest_conserva_su_csrf(con_sesion):
-    con_sesion("admin")
-    res = _cliente().post(
-        "/api/servicios/ingest", files={"file": ("s.xlsx", b"x")}, data={"csrf_token": "otro"}
-    )
-    assert res.status_code == 403
-    assert res.json() == {"error": "CSRF invalido"}
-
-
-def test_categoria_conserva_su_csrf_fuera_de_tests(con_sesion, monkeypatch):
-    con_sesion("admin")
-    monkeypatch.setenv("TESTING", "false")
-    res = _cliente().patch("/api/servicios/1/categoria", json={"categoria": 2, "csrf_token": "otro"})
-    assert res.status_code == 403
-    assert res.json() == {"error": "CSRF inválido"}
+# CSRF: lo valida `requiere_csrf` (router) con sesión real; ver tests/test_web_csrf.py. Con `con_sesion` la
+# cookie no tiene usuario y la dependencia no decide, así que acá ya no se puede probar.
 
 
 # --- 500 con ref -------------------------------------------------------------------------------------

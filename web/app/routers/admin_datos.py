@@ -28,16 +28,15 @@ from ..comun import (
     _internal_api_auth_headers,
     _marcar_corrida_fallida,
     _serializar_cromo_corrida,
-    _validar_csrf,
     logger,
 )
-from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+from ..dependencias import UsuarioSesion, requiere_csrf, usuario_admin, usuario_sesion
 from ..errores import ErrorDeDominio, error_interno, error_servicio_externo, nueva_ref, payload_de_upstream
 
 # Todo el router exige sesión; las rutas admin agregan `usuario_admin`. Tres rutas (config de baneos,
 # health del worker e ingesta de Cámaras) conservan su chequeo de rol propio para seguir respondiendo
 # 403 `{"error": "Solo admin"}` en lugar del `{"detail": "Permisos insuficientes"}` de `usuario_admin`.
-router = APIRouter(dependencies=[Depends(usuario_sesion)])
+router = APIRouter(dependencies=[Depends(usuario_sesion), Depends(requiere_csrf)])
 
 
 # ── Servicios Baneos (admin) ────────────────────────────────────
@@ -113,16 +112,12 @@ async def servicios_baneos_update(
     slack_channels: str = Form(""),
     activo: str = Form("off"),
     hora_inicio: str = Form(""),
-    csrf_token: str = Form(...),
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ):
     """Actualiza la configuración del worker de notificaciones de baneos."""
     _, role = usuario
     if role != "admin":
         return JSONResponse({"error": "Solo admin"}, status_code=403)
-    if csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     if intervalo_horas < 1:
         return JSONResponse({"error": "El intervalo debe ser al menos 1 hora"}, status_code=400)
 
@@ -188,10 +183,6 @@ async def servicios_baneos_update(
 @router.post("/api/admin/servicios/baneos/worker/start", dependencies=[Depends(usuario_admin)])
 async def servicios_baneos_worker_start(request: Request):
     """Inicia el contenedor del worker de baneos si está detenido."""
-    body = await request.form()
-    if body.get("csrf_token") != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     # Docker SDK sync (HTTP al socket): corre en un hilo para no frenar el event loop.
     def _arrancar() -> JSONResponse:
         import docker as docker_sdk  # type: ignore[import-untyped]
@@ -218,10 +209,6 @@ async def servicios_baneos_worker_start(request: Request):
 @router.post("/api/admin/servicios/baneos/trigger", dependencies=[Depends(usuario_admin)])
 async def servicios_baneos_trigger(request: Request):
     """Dispara una ejecución manual inmediata del worker de baneos."""
-    body = await request.form()
-    if body.get("csrf_token") != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(_SLACK_WORKER_TRIGGER_URL)
@@ -301,12 +288,8 @@ async def listener_config_post(
     canal_id: str = Form(""),
     workflow_ids: str = Form(""),
     solo_workflows: str = Form("off"),
-    csrf_token: str = Form(...),
 ) -> JSONResponse:
     """Actualiza la configuración del listener de ingresos y recarga el worker."""
-    if csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     canal_id_norm = canal_id.strip()
     activo_bool = activo.lower() in ("on", "true", "1", "yes")
     solo_workflows_bool = solo_workflows.lower() in ("on", "true", "1", "yes")
@@ -353,7 +336,6 @@ async def listener_config_post(
 async def camaras_ingest_web(
     request: Request,
     file: UploadFile = File(...),
-    csrf_token: str = Form(...),
     motivo_baneo: str = Form(...),
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
@@ -362,9 +344,6 @@ async def camaras_ingest_web(
     username, role = usuario
     if role != "admin":
         return JSONResponse({"error": "Solo admin"}, status_code=403)
-    if csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF invalido"}, status_code=403)
-
     motivo_baneo = motivo_baneo.strip()
     if not motivo_baneo:
         return JSONResponse({"error": "El motivo de baneo no puede estar vacío"}, status_code=400)
@@ -413,7 +392,6 @@ class AsociarSinMatchCamarasRequestModel(BaseModel):
     caso_ids: list[int]
     camara_id: int
     motivo: str | None = None
-    csrf_token: str | None = None
 
 
 @router.post("/api/admin/ingesta/camaras/asociar")
@@ -426,11 +404,6 @@ def ingesta_camaras_asociar_web(
     origen='excel_camaras') hacia una Cámara/Botella existente: crea un alias por cada uno (para que
     futuros Excel con el mismo texto matcheen solos) y banea el grupo destino una sola vez."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     if not body.caso_ids:
         return JSONResponse({"error": "No se especificaron casos a asociar"}, status_code=400)
 
@@ -487,23 +460,15 @@ class CromoIngestaIniciarRequest(BaseModel):
     resto de este payload, p.ej. `psize` contra `PSIZE_PERMITIDOS`).
     """
 
-    csrf_token: str
     clases: List[int] | None = None
     psize: int | None = None
     max_paginas: int | None = None
     modo: Optional[str] = None
 
 
-class CromoIngestaCancelarRequest(BaseModel):
-    """Payload para cancelar una corrida en curso."""
-
-    csrf_token: str
-
-
 class CromoSchedulerConfigRequest(BaseModel):
     """Payload para configurar el scheduler del worker dedicado (Etapa 7)."""
 
-    csrf_token: str
     habilitado: bool
     intervalo_horas: int
     hora_inicio: Optional[int] = None
@@ -545,9 +510,6 @@ async def cromo_ingesta_iniciar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if body.csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     if body.psize is not None and body.psize not in PSIZE_PERMITIDOS:
         return JSONResponse(
             {"error": f"psize inválido. Valores permitidos: {sorted(PSIZE_PERMITIDOS)}"}, status_code=400
@@ -636,9 +598,6 @@ async def cromo_scheduler_config_guardar_web(request: Request, body: CromoSchedu
     from db.models.cromo import CromoIngestaConfig
     from db.session import AsyncSessionLocal
 
-    if body.csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     if body.psize not in PSIZE_PERMITIDOS:
         return JSONResponse(
             {"error": f"psize inválido. Valores permitidos: {sorted(PSIZE_PERMITIDOS)}"}, status_code=400
@@ -684,13 +643,10 @@ async def cromo_scheduler_health_web() -> JSONResponse:
 
 @router.post("/api/admin/ingesta/cromo/config/trigger")
 async def cromo_scheduler_trigger_web(
-    request: Request, body: CromoIngestaCancelarRequest, usuario: UsuarioSesion = Depends(usuario_admin)
+    request: Request, usuario: UsuarioSesion = Depends(usuario_admin)
 ) -> JSONResponse:
     """Dispara una ejecución manual inmediata usando la configuración guardada ("Ejecutar ahora")."""
     username = usuario.username
-    if body.csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(_CROMO_WORKER_RUN_URL, json={"usuario": username})
@@ -859,7 +815,6 @@ async def cromo_ingesta_detalle_web(corrida_id: int, limit: int = 200) -> JSONRe
 async def cromo_ingesta_cancelar_web(
     request: Request,
     corrida_id: int,
-    body: CromoIngestaCancelarRequest,
     usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Marca la corrida para detenerse: el chequeo cooperativo entre páginas la corta y la cierra
@@ -869,9 +824,6 @@ async def cromo_ingesta_cancelar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if body.csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     async with AsyncSessionLocal() as sesion:
         corrida = await sesion.get(CromoIngestaCorrida, corrida_id)
         if corrida is None:
@@ -888,10 +840,10 @@ async def cromo_ingesta_cancelar_web(
 
 
 # ─── Clientes por categoría (proxy admin a /clientes del API interno) ────────
-# Todos exigen rol admin; los que escriben, además CSRF (`_validar_csrf`, misma excepción de tests
-# que el resto). El usuario de la sesión viaja en `X-Usuario` para la auditoría (`actualizado_por`).
-# La lista oficial acepta archivo (multipart: `file` + `categoria` + `modo` + `csrf_token`) o JSON
-# (`{nombres, categoria, modo, csrf_token}`) en la misma ruta, igual que el endpoint interno.
+# Todos exigen rol admin; los que escriben, además CSRF (`requiere_csrf` del router). El usuario de
+# la sesión viaja en `X-Usuario` para la auditoría (`actualizado_por`).
+# La lista oficial acepta archivo (multipart: `file` + `categoria` + `modo`) o JSON
+# (`{nombres, categoria, modo}`) en la misma ruta, igual que el endpoint interno.
 
 TAMANO_MAXIMO_LISTA_CLIENTES = 5 * 1024 * 1024  # 5 MB, mismo límite que el API interno
 MARGEN_MULTIPART_LISTA_CLIENTES = 64 * 1024  # boundaries y campos del form en el pre-chequeo
@@ -937,17 +889,13 @@ MAXIMO_NOMBRES_LISTA_CLIENTES = 2000
 LARGO_MAXIMO_NOMBRE_CLIENTE = 255
 
 
-class _ClientesCsrfModel(BaseModel):
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
-
-
-class ClientesCategoriaRequestModel(_ClientesCsrfModel):
+class ClientesCategoriaRequestModel(BaseModel):
     cliente_ids: list[int]
     categoria: int | None = None
     automatico: bool = False
 
 
-class ClientesListaRequestModel(_ClientesCsrfModel):
+class ClientesListaRequestModel(BaseModel):
     nombres: list[Annotated[str, Field(max_length=LARGO_MAXIMO_NOMBRE_CLIENTE)]] = Field(
         max_length=MAXIMO_NOMBRES_LISTA_CLIENTES
     )
@@ -955,12 +903,12 @@ class ClientesListaRequestModel(_ClientesCsrfModel):
     modo: Literal["agregar", "reemplazar"] = "agregar"
 
 
-class ClientesFusionarRequestModel(_ClientesCsrfModel):
+class ClientesFusionarRequestModel(BaseModel):
     destino_id: int
     origen_ids: list[int] = Field(min_length=1)
 
 
-class ClientesAliasRequestModel(_ClientesCsrfModel):
+class ClientesAliasRequestModel(BaseModel):
     nombre: str = Field(max_length=LARGO_MAXIMO_NOMBRE_CLIENTE)
 
 
@@ -977,10 +925,8 @@ async def clientes_categoria_web(
 ) -> JSONResponse:
     """Cambia la categoría de uno o varios clientes (`null` = sin categorizar, `automatico`)."""
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "clientes_categoria", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     return await _proxy_clientes(
-        "PATCH", "/categoria", username, "clientes_categoria", cuerpo=body.model_dump(exclude={"csrf_token"})
+        "PATCH", "/categoria", username, "clientes_categoria", cuerpo=body.model_dump()
     )
 
 
@@ -1004,9 +950,7 @@ async def _proxy_lista_clientes(request: Request, operacion: str, username: str)
                 },
                 status_code=400,
             )
-        if not _validar_csrf(request, body.csrf_token, accion, username):
-            return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-        return await _proxy_clientes("POST", ruta, username, accion, cuerpo=body.model_dump(exclude={"csrf_token"}))
+        return await _proxy_clientes("POST", ruta, username, accion, cuerpo=body.model_dump())
 
     try:
         largo_declarado = int(request.headers.get("content-length") or 0)
@@ -1015,9 +959,6 @@ async def _proxy_lista_clientes(request: Request, operacion: str, username: str)
     if largo_declarado > TAMANO_MAXIMO_LISTA_CLIENTES + MARGEN_MULTIPART_LISTA_CLIENTES:
         return JSONResponse({"error": "El archivo supera los 5 MB"}, status_code=413)
     form = await request.form()
-    csrf_token = form.get("csrf_token")
-    if not _validar_csrf(request, csrf_token if isinstance(csrf_token, str) else None, accion, username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     archivo = form.get("file")
     if not isinstance(archivo, StarletteUploadFile) or not archivo.filename:
         return JSONResponse({"error": "Falta el archivo de la lista"}, status_code=400)
@@ -1059,10 +1000,8 @@ async def clientes_fusionar_web(
 ) -> JSONResponse:
     """Fusiona clientes: mueve los alias de `origen_ids` al destino."""
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "clientes_fusionar", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     return await _proxy_clientes(
-        "POST", "/fusionar", username, "clientes_fusionar", cuerpo=body.model_dump(exclude={"csrf_token"})
+        "POST", "/fusionar", username, "clientes_fusionar", cuerpo=body.model_dump()
     )
 
 
@@ -1075,8 +1014,6 @@ async def clientes_agregar_alias_web(
 ) -> JSONResponse:
     """Agrega un alias (nombre alternativo) a un cliente."""
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "clientes_alias_agregar", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     return await _proxy_clientes(
         "POST", f"/{cliente_id}/alias", username, "clientes_alias_agregar", cuerpo={"nombre": body.nombre}
     )
@@ -1084,21 +1021,17 @@ async def clientes_agregar_alias_web(
 
 @router.delete("/api/admin/clientes/alias/{alias_id}")
 async def clientes_quitar_alias_web(
-    request: Request, alias_id: int, body: _ClientesCsrfModel, usuario: UsuarioSesion = Depends(usuario_admin)
+    request: Request, alias_id: int, usuario: UsuarioSesion = Depends(usuario_admin)
 ) -> JSONResponse:
-    """Quita un alias de cliente (el CSRF viaja en el cuerpo JSON del DELETE)."""
+    """Quita un alias de cliente."""
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "clientes_alias_quitar", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     return await _proxy_clientes("DELETE", f"/alias/{alias_id}", username, "clientes_alias_quitar")
 
 
 @router.post("/api/admin/clientes/sincronizar")
 async def clientes_sincronizar_web(
-    request: Request, body: _ClientesCsrfModel, usuario: UsuarioSesion = Depends(usuario_admin)
+    request: Request, usuario: UsuarioSesion = Depends(usuario_admin)
 ) -> JSONResponse:
     """Sincronización global de categorías de clientes → servicios."""
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "clientes_sincronizar", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     return await _proxy_clientes("POST", "/sincronizar", username, "clientes_sincronizar")

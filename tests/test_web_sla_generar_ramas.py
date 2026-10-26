@@ -387,7 +387,7 @@ class _UploadCierreFalla(_UploadEspia):
         raise OSError("no cierra")
 
 
-async def _handler(monkeypatch: pytest.MonkeyPatch, files, *, csrf="tok", testing="false", **extra):  # noqa: ANN001
+async def _handler(monkeypatch: pytest.MonkeyPatch, files, *, testing="false", **extra):  # noqa: ANN001
     from types import SimpleNamespace
 
     monkeypatch.setenv("TESTING", testing)
@@ -395,19 +395,16 @@ async def _handler(monkeypatch: pytest.MonkeyPatch, files, *, csrf="tok", testin
     request = SimpleNamespace(session={"username": "user", "csrf": "tok"})
     args = dict(
         mes="10", anio="2025", periodo_mes=None, periodo_anio=None,
-        pdf_enabled=False, use_db=False, csrf_token=csrf, files=files,
+        pdf_enabled=False, use_db=False, files=files,
         usuario=UsuarioSesion("user", "user"),  # el handler se llama directo: la sesión (Depends) va explícita
     )
     args.update(extra)
     return await web_informes.generar_informe_sla_web(request, **args)
 
 
-@pytest.mark.asyncio
-async def test_uploads_se_cierran_con_csrf_invalido(monkeypatch) -> None:  # noqa: ANN001
-    ups = [_UploadEspia("a.xlsx", b"x"), _UploadEspia("b.xlsx", b"x")]
-    r = await _handler(monkeypatch, ups, csrf="malo")
-    assert r.status_code == 403
-    assert [u.cierres for u in ups] == [1, 1]
+# CSRF inválido: lo rechaza `requiere_csrf` antes del handler y FastAPI cierra los uploads del form al
+# terminar la request (`file_stack`); lo cubren `test_csrf_invalido_no_registra_historia` y
+# tests/test_web_csrf.py.
 
 
 @pytest.mark.asyncio
@@ -458,6 +455,6 @@ async def test_uploads_se_cierran_en_el_camino_de_exito(monkeypatch, tmp_path) -
 @pytest.mark.asyncio
 async def test_cierre_que_falla_no_rompe_la_respuesta(monkeypatch) -> None:  # noqa: ANN001
     ups = [_UploadCierreFalla("a.xlsx", b"x")]
-    r = await _handler(monkeypatch, ups, csrf="malo")
-    assert r.status_code == 403
+    r = await _handler(monkeypatch, ups, mes="abc")
+    assert r.status_code == 422
     assert ups[0].cierres == 1

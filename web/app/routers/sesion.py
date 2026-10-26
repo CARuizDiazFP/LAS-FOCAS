@@ -22,12 +22,12 @@ from ..comun import (
     _env_int,
     logger,
 )
-from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+from ..dependencias import UsuarioSesion, requiere_csrf, usuario_admin, usuario_sesion
 from ..errores import ErrorDeDominio, error_interno, nueva_ref
 
 # Sin dependencia a nivel router: health, auth/session, auth/login, auth/logout y logout son públicas.
 # Las demás piden sesión con Depends en su firma.
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(requiere_csrf)])
 
 WEB_LOGIN_RATE_LIMIT_MAX = _env_int("WEB_LOGIN_RATE_LIMIT_MAX", 5)
 WEB_LOGIN_RATE_LIMIT_WINDOW = _env_int("WEB_LOGIN_RATE_LIMIT_WINDOW", 60)
@@ -169,13 +169,10 @@ def change_password(
     request: Request,
     current_password: str = Form(...),
     new_password: str = Form(...),
-    csrf_token: str = Form(...),
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ):
-    # Autenticado (Depends) + CSRF
+    # Autenticado (Depends); CSRF: `requiere_csrf` del router
     user = usuario.username
-    if csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     try:
         with psycopg.connect(DB_DSN) as conn:
             with conn.cursor() as cur:
@@ -205,15 +202,13 @@ def admin_create_user(
     username: str = Form(...),
     password: str = Form(...),
     role: str = Form("invitado"),
-    csrf_token: str = Form(...),
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ):
-    # Admin + CSRF. Con usuario_sesion (y no usuario_admin) para conservar el 403 {"error": "Solo admin"}.
+    # Admin (CSRF: `requiere_csrf` del router). Con usuario_sesion (y no usuario_admin) para conservar
+    # el 403 {"error": "Solo admin"}.
     admin, role_sess = usuario
     if role_sess != "admin":
         return JSONResponse({"error": "Solo admin"}, status_code=403)
-    if csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     # Validación de rol permitido (case-insensitive)
     role_norm = role.strip().lower()
     if role_norm not in ALLOWED_ROLES:

@@ -87,3 +87,13 @@ def con_sesion():
 
     with sesion_simulada() as activar:
         yield activar
+
+
+@pytest.fixture
+def csrf_real(monkeypatch):
+    """Reactiva la validación CSRF (`requiere_csrf` la saltea con `TESTING=true`).
+
+    Exige una sesión real (login o cookie) con `username` y `csrf`: con `con_sesion` la cookie queda
+    vacía y la dependencia no decide (sin usuario en sesión responde la autenticación).
+    """
+    monkeypatch.setenv("TESTING", "false")

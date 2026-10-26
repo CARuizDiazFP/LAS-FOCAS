@@ -5,12 +5,11 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from typing import Any, Literal, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -22,10 +21,9 @@ from ..comun import (
     _incluye_anulados,
     _serialize_camara_ingreso,
     _servicio_existe,
-    _validar_csrf,
     logger,
 )
-from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+from ..dependencias import UsuarioSesion, requiere_csrf, usuario_admin, usuario_sesion
 from ..errores import (
     Conflicto,
     ErrorDeDominio,
@@ -35,7 +33,7 @@ from ..errores import (
     payload_de_upstream,
 )
 
-router = APIRouter(dependencies=[Depends(usuario_sesion)])
+router = APIRouter(dependencies=[Depends(usuario_sesion), Depends(requiere_csrf)])
 
 
 def _find_servicio_por_identificador_web(session: Any, servicio_id: str) -> Optional[Any]:
@@ -653,7 +651,6 @@ def download_tracking_alias(
 async def servicios_ingest_web(
     request: Request,
     file: UploadFile = File(...),
-    csrf_token: str = Form(...),
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Ingesta de servicios SLA (solo admin) delegada a la API interna."""
@@ -662,8 +659,6 @@ async def servicios_ingest_web(
     username, role = usuario
     if role != "admin":
         return JSONResponse({"error": "Solo admin"}, status_code=403)
-    if csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF invalido"}, status_code=403)
     if not file.filename:
         return JSONResponse({"error": "Falta nombre de archivo"}, status_code=400)
 
@@ -967,7 +962,6 @@ class ServicioOdfAsociarRequestModel(BaseModel):
     odf_n_id: int
     pelo_n_id: Optional[int] = None
     notas: Optional[str] = None
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/admin/infra/servicios-odf/{servicio_id}/asociar")
@@ -990,12 +984,6 @@ async def servicios_sin_odf_asociar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=servicios_sin_odf_asociar result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         async with AsyncSessionLocal() as sesion:
             detalle = await _obtener_servicio_categorizado(sesion, servicio_id)
@@ -1278,14 +1266,12 @@ class PelosExcluirRequestModel(BaseModel):
 
     pelos_n_id: list[int] = Field(min_length=1, max_length=500, description="Pelos a excluir")
     motivo: str | None = Field(default=None, max_length=500, description="Por qué se excluyen")
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 class PeloRestaurarRequestModel(BaseModel):
     """Payload para devolver un pelo excluido a su Servicio."""
 
     pelo_n_id: int = Field(description="Pelo a restaurar")
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/admin/infra/servicios-odf/{servicio_id}/pelos-excluidos")
@@ -1303,8 +1289,6 @@ async def servicios_pelo_excluir_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "cromo_pelo_excluir", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     async with AsyncSessionLocal() as sesion:
         if not await _servicio_existe(sesion, servicio_id):
@@ -1331,8 +1315,6 @@ async def servicios_pelo_restaurar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "cromo_pelo_restaurar", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     async with AsyncSessionLocal() as sesion:
         if not await _servicio_existe(sesion, servicio_id):
@@ -1357,21 +1339,18 @@ class OdfConfirmarRequestModel(BaseModel):
     """Payload para confirmar ODF de un Servicio en lote."""
 
     odfs: list[OdfConfirmadaItemModel] = Field(min_length=1, max_length=50)
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 class OdfDesconfirmarRequestModel(BaseModel):
     """Payload para quitar la confirmación de una ODF."""
 
     odf_n_id: int = Field(description="n_id de la ODF a des-confirmar")
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 class TrackingsEsperadosRequestModel(BaseModel):
     """Payload para declarar cuántos trackings espera el Servicio (`null` borra la declaración)."""
 
     cantidad: int | None = Field(default=None, gt=0, le=32767)
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.get("/api/admin/infra/servicios-odf/{servicio_id}/odf-confirmadas", dependencies=[Depends(usuario_admin)])
@@ -1403,8 +1382,6 @@ async def servicios_odf_confirmar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "cromo_odf_confirmar", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     async with AsyncSessionLocal() as sesion:
         if not await _servicio_existe(sesion, servicio_id):
@@ -1431,10 +1408,6 @@ async def servicios_odf_desconfirmar_web(
     from core.services.cromo.servicio_odf_confirmacion import desconfirmar, listar
     from db.session import AsyncSessionLocal
 
-    username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "cromo_odf_desconfirmar", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     async with AsyncSessionLocal() as sesion:
         if not await _servicio_existe(sesion, servicio_id):
             return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
@@ -1459,10 +1432,6 @@ async def servicios_trackings_esperados_web(
     from core.services.cromo.servicio_odf_confirmacion import declarar_trackings_esperados
     from db.session import AsyncSessionLocal
 
-    username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "cromo_trackings_esperados", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     async with AsyncSessionLocal() as sesion:
         if not await declarar_trackings_esperados(sesion, servicio_id, body.cantidad):
             return JSONResponse({"error": "Servicio no encontrado"}, status_code=404)
@@ -1475,14 +1444,12 @@ class PosicionVigenteDeclararRequestModel(BaseModel):
     conectores_n_id: list[int] = Field(
         min_length=1, max_length=8, description="Conectores (`cromo_odf_conectores.n_id`) a declarar"
     )
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 class PosicionVigenteRetirarRequestModel(BaseModel):
     """Payload para retirar a mano la posición vigente de un conector."""
 
     conector_n_id: int = Field(description="Conector declarado a retirar")
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 def _serializar_posicion_declarada(d: Any, aviso: Any) -> dict[str, Any]:
@@ -1589,8 +1556,6 @@ async def servicios_posicion_vigente_declarar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "cromo_posicion_vigente_declarar", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     async with AsyncSessionLocal() as sesion:
         if not await _servicio_existe(sesion, servicio_id):
@@ -1624,8 +1589,6 @@ async def servicios_posicion_vigente_retirar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "cromo_posicion_vigente_retirar", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     async with AsyncSessionLocal() as sesion:
         if not await _servicio_existe(sesion, servicio_id):
@@ -1658,7 +1621,6 @@ class CaminoNormalizarRequestModel(BaseModel):
         default=None,
         description="Elementos puntuales a normalizar. Sin esto se normaliza todo lo inconsistente.",
     )
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 class CaminoRelevarOdfRequestModel(BaseModel):
@@ -1668,7 +1630,6 @@ class CaminoRelevarOdfRequestModel(BaseModel):
     odfs_n_id: list[int] | None = Field(
         default=None, description="ODFs puntuales a relevar. Sin esto se relevan todas las del camino."
     )
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/admin/infra/servicios-odf/{servicio_id}/camino-optico/normalizar")
@@ -1697,8 +1658,6 @@ async def servicios_sin_odf_camino_normalizar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "camino_normalizar", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     try:
         async with AsyncSessionLocal() as sesion:
@@ -1765,8 +1724,6 @@ async def servicios_sin_odf_camino_relevar_odf_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "camino_relevar_odf", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     try:
         async with AsyncSessionLocal() as sesion:
@@ -1985,7 +1942,6 @@ async def servicios_detail_web(
 
 class ServicioCategoriaUpdateRequestModel(BaseModel):
     categoria: int
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.patch("/api/servicios/{id}/categoria")
@@ -1998,12 +1954,6 @@ async def servicio_categoria_web(
     """Cambia la categoría (C0-C6) de un Servicio individual — sólo admin. Proxya al endpoint
     interno, mismo patrón que `servicios_search_web`/`servicios_detail_web`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=servicio_categoria result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.patch(
@@ -2029,26 +1979,15 @@ async def servicio_categoria_web(
         return error_interno("servicio_categoria", exc, user=username, id=id)
 
 
-class ServicioCategoriaHeredarRequestModel(BaseModel):
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
-
-
 @router.patch("/api/servicios/{id}/categoria/heredar")
 async def servicio_categoria_heredar_web(
     request: Request,
     id: int,
-    body: ServicioCategoriaHeredarRequestModel,
     usuario: UsuarioSesion = Depends(usuario_admin),
 ) -> JSONResponse:
     """Quita la excepción de categoría de un Servicio para que vuelva a heredar la de su cliente —
     sólo admin. Proxya al endpoint interno, mismo patrón que `servicio_categoria_web`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=servicio_categoria_heredar result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.patch(
@@ -2074,7 +2013,6 @@ async def servicio_categoria_heredar_web(
 
 class ServicioVerificableUpdateRequestModel(BaseModel):
     es_verificable: bool
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.patch("/api/servicios/{id}/verificable")
@@ -2087,12 +2025,6 @@ async def servicio_verificable_web(
     """Fija el override de verificabilidad de un Servicio individual — sólo admin. Proxya al
     endpoint interno, mismo patrón que `servicio_categoria_web`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=servicio_verificable result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.patch(
@@ -2118,15 +2050,10 @@ async def servicio_verificable_web(
         return error_interno("servicio_verificable", exc, user=username, id=id)
 
 
-class ServicioProvRefrescarRequestModel(BaseModel):
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
-
-
 @router.post("/api/servicios/prov/refrescar")
 async def servicio_prov_refrescar_web(
     request: Request,
     id: str,
-    body: ServicioProvRefrescarRequestModel,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Dispara el refresco on-demand de un Servicio contra PROV. Proxya al endpoint interno, mismo
@@ -2137,12 +2064,6 @@ async def servicio_prov_refrescar_web(
     id_consultado = (id or "").strip()
     if not id_consultado:
         return JSONResponse({"error": "ID requerido"}, status_code=400)
-
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=servicio_prov_refrescar result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     try:
         # 70s, no los 30s del resto de los proxies de este archivo: el backend acota sus
@@ -2175,7 +2096,6 @@ async def servicio_prov_refrescar_web(
 class ServiciosCategoriaMasivaRequestModel(BaseModel):
     servicio_ids: list[int]
     categoria: int
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.patch("/api/servicios/bulk-categoria")
@@ -2186,12 +2106,6 @@ async def servicios_categoria_masiva_web(
 ) -> JSONResponse:
     """Cambia la categoría (C0-C6) de un lote de Servicios — sólo admin. Proxya al endpoint interno."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=servicios_categoria_masiva result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     if not body.servicio_ids:
         return JSONResponse({"error": "No se especificaron servicios a actualizar"}, status_code=400)
 

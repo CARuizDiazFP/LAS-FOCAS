@@ -200,7 +200,7 @@ def test_flow_repetitividad_db_sin_datos(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert "No hay reclamos" in response.json()["error"]
 
 
-def test_flow_repetitividad_invalid_csrf(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flow_repetitividad_invalid_csrf(monkeypatch: pytest.MonkeyPatch, csrf_real) -> None:  # noqa: ANN001
     client = TestClient(app)
     _login_as_user(client, monkeypatch)
 

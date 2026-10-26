@@ -180,20 +180,8 @@ def test_lista_clientes_conserva_401_y_403_de_require_admin(con_sesion, operacio
 
 # --- CSRF intacto ------------------------------------------------------------------------------------
 
-
-def test_csrf_se_sigue_validando(con_sesion, monkeypatch):
-    monkeypatch.setenv("TESTING", "false")
-    con_sesion("admin")
-    cliente = _cliente()
-    res = cliente.post(
-        "/api/admin/ingesta/cromo/config",
-        json={"csrf_token": "x", "habilitado": True, "intervalo_horas": 4, "psize": 5, "clases": [1]},
-    )
-    assert (res.status_code, res.json()) == (403, {"error": "CSRF inválido"})
-    res = cliente.patch("/api/admin/clientes/categoria", json={"csrf_token": "x", "cliente_ids": [1]})
-    assert (res.status_code, res.json()) == (403, {"error": "CSRF inválido"})
-    res = cliente.post("/api/admin/ingesta/camaras/asociar", json={"caso_ids": [1], "camara_id": 2})
-    assert (res.status_code, res.json()) == (403, {"error": "CSRF inválido"})
+# CSRF: lo valida `requiere_csrf` (router) con sesión real; ver tests/test_web_csrf.py. Con `con_sesion` la
+# cookie no tiene usuario y la dependencia no decide, así que acá ya no se puede probar.
 
 
 # --- 500 / 5xx con ref, sin texto interno ------------------------------------------------------------

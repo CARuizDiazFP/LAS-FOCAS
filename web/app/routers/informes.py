@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import os
 import shutil
 import time
 import zipfile
@@ -36,12 +35,12 @@ from ..comun import (
     UPLOADS_DIR,
     logger,
 )
-from ..dependencias import UsuarioSesion, usuario_sesion
+from ..dependencias import UsuarioSesion, requiere_csrf, usuario_sesion
 from ..errores import DatoInvalido, ErrorDeDominio, error_interno, nueva_ref
 
 # Sin dependencia a nivel router: `/reports/index` es pública (redirect). Cada endpoint pide la sesión
 # con Depends, en la firma si usa el usuario o en el decorador si no.
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(requiere_csrf)])
 
 REPORT_SERVICE_CONFIG = ReportConfig.from_settings()
 
@@ -54,7 +53,6 @@ _mount_reports.mkdir(parents=True, exist_ok=True)
 class VLANCompareRequest(BaseModel):
     text_a: str = Field(..., description="Configuración de la primera interfaz")
     text_b: str = Field(..., description="Configuración de la segunda interfaz")
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.get("/reports/index")
@@ -186,17 +184,6 @@ async def _cerrar_uploads_sla(upload_list: List[UploadFile]) -> None:
             await upload.close()
         except Exception:  # noqa: BLE001
             logger.debug("action=sla_web_report stage=close_upload warning", exc_info=True)
-
-
-async def _validar_csrf_sla(request: Request, csrf_token: str | None, files: List[UploadFile]) -> JSONResponse | None:
-    """Devuelve la respuesta 403 si el CSRF no coincide (se omite con TESTING=true)."""
-
-    expected_csrf = request.session.get("csrf")
-    if expected_csrf and os.getenv("TESTING", "false").lower() != "true":
-        if csrf_token != expected_csrf:
-            await _cerrar_uploads_sla(files)
-            return JSONResponse({"ok": False, "error": "CSRF inválido"}, status_code=403)
-    return None
 
 
 def _validar_periodo_sla(raw_mes: str | None, raw_anio: str | None) -> tuple[int, int] | JSONResponse:
@@ -371,15 +358,10 @@ async def generar_informe_sla_web(
     periodo_anio: str | None = Form(None),
     pdf_enabled: bool = Form(False),
     use_db: bool = Form(False),
-    csrf_token: str | None = Form(None),
     files: List[UploadFile] = File(default=[]),
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ):
     username = usuario.username
-    error_csrf = await _validar_csrf_sla(request, csrf_token, files)
-    if error_csrf is not None:
-        return error_csrf
-
     periodo = _validar_periodo_sla(mes or periodo_mes, anio or periodo_anio)
     if isinstance(periodo, JSONResponse):
         await _cerrar_uploads_sla(files)
@@ -442,17 +424,10 @@ async def generar_informe_sla_web(
 async def generar_informe_sla_consumo_web(
     request: Request,
     pdf_enabled: bool = Form(False),
-    csrf_token: str | None = Form(None),
     files: List[UploadFile] = File(default=[]),
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ):
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    if expected_csrf and os.getenv("TESTING", "false").lower() != "true" and csrf_token != expected_csrf:
-        for a_ in files:
-            await a_.close()
-        return JSONResponse({"ok": False, "error": "CSRF inválido"}, status_code=403)
-
     archivos = [a for a in files if a and a.filename]
     # period_month/year son NOT NULL en report_history: se usa el mes actual; la fecha de corte real
     # (derivada de los Excel) se registra en output_metadata.
@@ -543,12 +518,8 @@ async def flow_sla(
     eventos: str = Form(""),
     conclusion: str = Form(""),
     propuesta: str = Form(""),
-    csrf_token: str = Form(...),
 ):
-    # Autenticación (Depends en el decorador) + CSRF
-    if csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
+    # Autenticación (Depends en el decorador); CSRF: `requiere_csrf` del router
     use_db = use_db or not (file and file.filename)
     source = "db" if use_db else "excel"
 
@@ -651,7 +622,6 @@ async def flow_repetitividad(
     mes: int = Form(...),
     anio: int = Form(...),
     include_pdf: bool = Form(True),
-    csrf_token: str = Form(...),
     with_geo: bool = Form(False),
     use_db: bool = Form(False),
     usuario: UsuarioSesion = Depends(usuario_sesion),
@@ -659,9 +629,6 @@ async def flow_repetitividad(
     """Genera el informe de Repetitividad desde Excel o DB según los parámetros."""
 
     username = usuario.username
-    if csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     periodo_titulo = f"{mes:02d}/{anio}"
     use_db = use_db or file is None
     source = "db" if use_db else "excel"
@@ -840,7 +807,6 @@ async def flow_comparador_fo():
 async def tool_alarmas_ciena(
     request: Request,
     file: UploadFile = File(...),
-    csrf_token: str = Form(...),
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ):
     """
@@ -851,17 +817,14 @@ async def tool_alarmas_ciena(
     Args:
         request: Request de FastAPI
         file: Archivo CSV subido
-        csrf_token: Token CSRF para validación
         
     Returns:
         Response con el archivo Excel para descarga
     """
     from core.parsers.alarmas_ciena import parsear_alarmas_ciena, dataframe_to_excel
     
-    # Autenticación (Depends) y CSRF
+    # Autenticación (Depends); CSRF: `requiere_csrf` del router
     username = usuario.username
-    if csrf_token != request.session.get("csrf"):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     
     # Validar nombre y extensión
     if not file.filename or not file.filename.lower().endswith(".csv"):
@@ -977,12 +940,6 @@ async def tool_compare_vlans(
     """Compara las VLANs permitidas entre dos interfaces Cisco."""
 
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not payload.csrf_token or payload.csrf_token != expected_csrf):
-        logger.warning("action=vlan_compare result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     vlans_a = parse_cisco_vlans(payload.text_a)
     vlans_b = parse_cisco_vlans(payload.text_b)
     missing_sections: list[str] = []

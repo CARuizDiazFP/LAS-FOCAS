@@ -209,7 +209,7 @@ def test_iniciar_requiere_admin(monkeypatch):
     assert res.status_code == 403
 
 
-def test_iniciar_rechaza_csrf_invalido(monkeypatch):
+def test_iniciar_rechaza_csrf_invalido(monkeypatch, csrf_real):
     from web.app import main as web_main
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())

@@ -92,17 +92,6 @@ def _require_admin(request: Request) -> str:
     return username
 
 
-def _validar_csrf(request: Request, token: str | None, accion: str, username: str) -> bool:
-    """CSRF con el mismo criterio que el resto de los POST admin, incluida la excepción de tests."""
-    if os.getenv("TESTING", "false").lower() == "true":
-        return True
-    esperado = request.session.get("csrf")
-    if not token or token != esperado:
-        logger.warning("action=%s result=fail reason=csrf user=%s", accion, username)
-        return False
-    return True
-
-
 def _es_destino_slack_valido(destino: str) -> bool:
     """Valida nombres de canal o IDs de destino de Slack."""
     if not destino:

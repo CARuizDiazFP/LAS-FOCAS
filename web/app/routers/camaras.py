@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -24,13 +23,12 @@ from ..comun import (
     _incluye_anulados,
     _serializar_bloqueos,
     _serialize_camara_ingreso,
-    _validar_csrf,
     logger,
 )
-from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+from ..dependencias import UsuarioSesion, requiere_csrf, usuario_admin, usuario_sesion
 from ..errores import Conflicto, DatoInvalido, ErrorDeDominio, NoEncontrado, error_interno, nueva_ref
 
-router = APIRouter(dependencies=[Depends(usuario_sesion)])
+router = APIRouter(dependencies=[Depends(usuario_sesion), Depends(requiere_csrf)])
 
 # =============================================================================
 # INFRAESTRUCTURA / CÁMARAS
@@ -71,7 +69,6 @@ class CamaraEstadoUpdateRequest(BaseModel):
 
     estado: str
     motivo: str = Field(min_length=5, max_length=500)
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 def _serialize_camara_response(
@@ -811,7 +808,6 @@ class BaneosLiberarMasivoRequestModel(BaseModel):
     camara_ids: list[int]
     motivo: str
     forzar: bool = False
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/admin/baneos/grupos/liberar")
@@ -824,12 +820,6 @@ def baneos_grupos_liberar_web(
     Guard de incidente activo por grupo (`core.services.baneos_grupos_service.liberar_grupos_masivo`):
     sin `forzar`, un grupo con un `IncidenteBaneo` activo detrás se omite en vez de desbanearse."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=baneos_grupos_liberar result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     if not body.camara_ids:
         return JSONResponse({"error": "No se especificaron grupos a liberar"}, status_code=400)
     motivo = body.motivo.strip()
@@ -1592,12 +1582,6 @@ def update_camara_estado_web(
     """Permite a un administrador aplicar un override manual del estado."""
 
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=update_camara_estado result=fail reason=csrf user=%s camara_id=%s", username, camara_id)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         from core.services.camara_estado_service import override_camara_estado_manual
         from db.models.infra import CamaraEstado
@@ -1652,7 +1636,6 @@ class RegistrarEgresoWebRequestModel(BaseModel):
 
     momento: datetime
     motivo: str = Field(min_length=3, max_length=500)
-    csrf_token: str | None = None
 
 
 # Resultado de `registrar_egreso_web` → status HTTP. Todo lo que no es OK es un rechazo de negocio
@@ -1679,9 +1662,6 @@ def registrar_egreso_ingreso_web(
     Sin restricción de rol más allá de estar autenticado: mismo criterio que los comandos de Slack
     (cualquiera del canal puede corregir; la auditoría es el control — ver docstring del servicio)."""
     username, _ = usuario
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != request.session.get("csrf")):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     if body.momento.tzinfo is None:
         return JSONResponse({"error": "La fecha de egreso debe incluir zona horaria"}, status_code=422)
     motivo = body.motivo.strip()
@@ -1746,14 +1726,12 @@ class MoverIngresoWebRequestModel(BaseModel):
     camara_destino_id: int
     cromo_botella_destino_n_id: int | None = None
     motivo: str = Field(max_length=2000)
-    csrf_token: str | None = None
 
 
 class AnularIngresoWebRequestModel(BaseModel):
     """Mismo criterio de motivo que `MoverIngresoWebRequestModel`."""
 
     motivo: str = Field(max_length=2000)
-    csrf_token: str | None = None
 
 
 def _error_correccion_ingreso(resultado: Any) -> ErrorDeDominio:
@@ -1809,8 +1787,6 @@ def admin_mover_ingreso_web(
     409 ingreso anulado o mismo destino, 422 motivo o botella inválidos o destino que no es una
     cámara raíz (`camara_padre_id` seteado)."""
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "admin_mover_ingreso", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     try:
         from core.services import ingreso_correccion_service as ics
@@ -1854,8 +1830,6 @@ def admin_anular_ingreso_web(
     `ingreso_correccion_service.anular_ingreso_web`; 404 inexistente, 409 ya anulado, 422 motivo
     inválido. El `IngresoSinMatch` que lo había resuelto no se reabre (decisión 4 del plan)."""
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "admin_anular_ingreso", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
 
     try:
         from core.services import ingreso_correccion_service as ics
@@ -1951,7 +1925,6 @@ class MarcarRevisadoMasivoRequestModel(BaseModel):
     """Payload para marcar en lote varios `IngresoSinMatch` como revisados."""
 
     ids: list[int]
-    csrf_token: str | None = None
 
 
 @router.post("/api/admin/infra/ingresos-sin-match/marcar-revisado-masivo")
@@ -1964,11 +1937,6 @@ def admin_marcar_revisado_masivo_web(
     ingesta: sólo descarta de la vista, no muta ningún dato de infraestructura, la fila queda en la
     base para poder ajustar a futuro el regex/normalización de búsqueda."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     if not body.ids:
         return JSONResponse({"error": "No se especificaron casos"}, status_code=400)
 
@@ -2510,7 +2478,6 @@ class CamaraEliminarRequestModel(BaseModel):
     """Payload para eliminar permanentemente una Cámara raíz genuinamente vacía (cascada a sus Botellas)."""
 
     camara_id: int
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/infra/camaras/eliminar")
@@ -2525,12 +2492,6 @@ def camaras_eliminar_web(
     registra su n_id en `app.cromo_botella_alias` (`accion='ignorar'`). Ver
     `core/services/camara_botella_delete_service.py`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=camaras_eliminar result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         from core.services.camara_botella_delete_service import EliminacionBloqueadaError, eliminar_camara
         from db.session import SessionLocal
@@ -2581,7 +2542,6 @@ class CamaraMergeRequestModel(BaseModel):
     camara_principal_id: int
     camara_secundaria_id: int
     guardar_alias: bool = True
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/infra/camaras/merge")
@@ -2594,12 +2554,6 @@ def camaras_merge_web(
     (Botellas propias, Botellas Cromo, Cables, Empalmes, Ingresos, alias y auditoría/historial) y la
     secundaria se elimina físicamente. Ver `core/services/camara_merge_service.py`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=camaras_merge result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         from core.services.camara_merge_service import MergeCamarasError, unificar_camaras
         from db.session import SessionLocal
@@ -2661,7 +2615,6 @@ class CamaraMergeGrupoRequestModel(BaseModel):
     camara_principal_id: int
     camara_secundaria_ids: list[int]
     guardar_alias: bool = True
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/infra/camaras/merge-grupo")
@@ -2675,12 +2628,6 @@ def camaras_merge_grupo_web(
     loop con `session.expire_all()` entre cada llamada — ver
     `core/services/camara_merge_service.py::fusionar_grupo_camaras`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=camaras_merge_grupo result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         from core.services.camara_merge_service import MergeCamarasError, fusionar_grupo_camaras
         from db.session import SessionLocal
@@ -2740,7 +2687,6 @@ class CamaraMergeMasivoRequestModel(BaseModel):
     """Payload para fusionar automáticamente TODOS los grupos de Cámaras duplicadas detectados."""
 
     guardar_alias: bool = True
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/infra/camaras/merge-masivo")
@@ -2762,12 +2708,6 @@ def camaras_merge_masivo_web(
     (una única sesión/transacción por request) porque acá cada grupo es independiente por diseño
     (nunca comparten Cámaras entre sí) y una falla aislada no debe descartar el resto del lote."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=camaras_merge_masivo result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         from core.services.camara_duplicados_service import detectar_grupos_duplicados, sugerir_principal
         from core.services.camara_merge_service import MergeCamarasError, fusionar_grupo_camaras

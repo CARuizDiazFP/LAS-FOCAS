@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from starlette.middleware.sessions import SessionMiddleware
 
 from web import fo_monitor_routes as rutas
+from web.app.errores import ErrorDeDominio, manejar_error_de_dominio
 
 
 @pytest.fixture
@@ -20,6 +21,8 @@ def cliente(monkeypatch, tmp_path):
 
     app = FastAPI()
     app.add_middleware(SessionMiddleware, secret_key="test")
+    # Como en web/app/main.py: `requiere_csrf` responde 403 vía ErrorDeDominio.
+    app.add_exception_handler(ErrorDeDominio, manejar_error_de_dominio)
 
     @app.get("/_login/{rol}")
     def _login(request: Request, rol: str):

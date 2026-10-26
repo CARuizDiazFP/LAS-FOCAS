@@ -27,7 +27,7 @@ from core.repositories.messages import get_last_messages, insert_message
 
 from .. import comun
 from ..comun import DATA_DIR, DB_DSN, UPLOADS_DIR, logger
-from ..dependencias import UsuarioSesion
+from ..dependencias import UsuarioSesion, requiere_csrf
 from ..errores import ErrorDeDominio, error_interno, nueva_ref
 
 
@@ -45,7 +45,7 @@ async def usuario_chat(request: Request) -> UsuarioSesion:
 
 
 # Ninguna ruta del chat es pública (el WebSocket vive aparte, en web/chat_ws.py).
-router = APIRouter(dependencies=[Depends(usuario_chat)])
+router = APIRouter(dependencies=[Depends(usuario_chat), Depends(requiere_csrf)])
 
 NLP_INTENT_URL = os.getenv("NLP_INTENT_URL", "http://nlp_intent:8100")
 LOG_RAW_TEXT = os.getenv("LOG_RAW_TEXT", "false").lower() == "true"
@@ -113,19 +113,12 @@ class MCPInvokeRequest(BaseModel):
 async def chat_message(
     request: Request,
     text: str = Form(...),
-    csrf_token: str | None = Form(None),
     usuario: UsuarioSesion = Depends(usuario_chat),
 ) -> JSONResponse:
     """
     Recibe un mensaje del usuario (form-data o x-www-form-urlencoded) y
     devuelve intención y una respuesta simple.
     """
-    # CSRF: con sesión (siempre, vía Depends), exigir token válido
-    if os.getenv("TESTING", "false").lower() != "true":
-        sess_token = request.session.get("csrf")
-        if not sess_token or csrf_token != sess_token:
-            return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     # Rate limit simple del chat: 30 req/min por sesión
     rl = request.session.get("rl_chat", {"count": 0, "ts": now()})
     if now() - rl["ts"] > 60:
@@ -246,13 +239,9 @@ def chat_history(limit: int = 20, usuario: UsuarioSesion = Depends(usuario_chat)
 async def chat_upload_attachment(
     request: Request,
     file: UploadFile = File(...),
-    csrf_token: str | None = Form(None),
     usuario: UsuarioSesion = Depends(usuario_chat),
 ) -> JSONResponse:
     username = usuario.username
-    session_token = request.session.get("csrf")
-    if session_token and csrf_token != session_token and os.getenv("TESTING", "false").lower() != "true":
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     if not file.filename:
         return JSONResponse({"error": "Archivo sin nombre"}, status_code=400)
     safe_name = Path(file.filename).name

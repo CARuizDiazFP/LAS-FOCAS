@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -33,10 +32,9 @@ from ..comun import (
     _serializar_cromo_corrida,
     _serializar_pelo_semilla,
     _servicio_existe,
-    _validar_csrf,
     logger,
 )
-from ..dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+from ..dependencias import UsuarioSesion, requiere_csrf, usuario_admin, usuario_sesion
 from ..errores import (
     DatoInvalido,
     ErrorDeDominio,
@@ -46,7 +44,7 @@ from ..errores import (
     nueva_ref,
 )
 
-router = APIRouter(dependencies=[Depends(usuario_sesion)])
+router = APIRouter(dependencies=[Depends(usuario_sesion), Depends(requiere_csrf)])
 
 
 # ── Endpoints: verificador de servicios sobre inventario Cromo (Etapa 6) ─────
@@ -223,10 +221,6 @@ class CromoCableIdentidadResponseModel(BaseModel):
     n_id: int
     nombre: Optional[str] = None
     capacidad: Optional[str] = None
-
-
-class CromoServiciosUnicosRefrescarRequestModel(BaseModel):
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 # ── Modelos de error, sólo para documentar `/docs` (Fix round 1, Minor: `response_model` cubre el
@@ -618,7 +612,6 @@ async def cromo_servicios_unicos_por_buffer_web(cable_n_id: int, numero: int) ->
 async def cromo_servicios_unicos_refrescar_prov_web(
     request: Request,
     cable_n_id: int,
-    body: CromoServiciosUnicosRefrescarRequestModel,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Dispara el refresco PROV (Task 9) de los servicios únicos vencidos de este cable, awaiteado
@@ -631,12 +624,6 @@ async def cromo_servicios_unicos_refrescar_prov_web(
     from db.session import AsyncSessionLocal
 
     username, _ = usuario
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=cromo_servicios_unicos_refrescar_prov result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         async with AsyncSessionLocal() as sesion:
             resultado = await servicios_unicos_por_cable(sesion, cable_n_id)
@@ -1107,7 +1094,6 @@ class BotellasEstadoMasivoRequestModel(BaseModel):
     items: list[BotellaEstadoMasivoItemModel]
     estado: str
     motivo: str = "Cambio de estado masivo"
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.put("/api/infra/botellas/estado")
@@ -1120,12 +1106,6 @@ def botellas_estado_masivo_web(
     cascadea por grupo completo vía `aplicar_estado_a_grupo`; Cromo actualiza `CromoBotella.estado`
     directo (foto propia, ver `core/services/botellas_estado_masivo_service.py`)."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=botellas_estado_masivo result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     if not body.items:
         return JSONResponse({"error": "No se especificaron botellas a actualizar"}, status_code=400)
 
@@ -1330,7 +1310,6 @@ class BotellaApropiarRequestModel(BaseModel):
 
     legado_id: int
     cromo_n_id: int
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/infra/botellas/apropiar")
@@ -1343,12 +1322,6 @@ async def botellas_apropiar_web(
     elimina físicamente tras reasignar sus FKs reales a la Cámara padre. Ver
     `core/services/botella_merge_service.py`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=botellas_apropiar result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         from core.services.botella_merge_service import ApropiacionBotellaError, apropiar_legado_a_cromo
         from db.session import SessionLocal
@@ -1412,7 +1385,6 @@ async def botellas_apropiar_web(
 class BotellaApropiarMasivoRequestModel(BaseModel):
     """Payload para apropiar automáticamente TODOS los grupos de Botellas duplicadas resolubles."""
 
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/infra/botellas/apropiar-masivo")
@@ -1428,12 +1400,6 @@ async def botellas_apropiar_masivo_web(
     legado, todo cromo, o mixto con 2+ legado) se omiten — no tienen política de resolución
     automática definida, ver `core/services/botella_duplicados_service.py`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=botellas_apropiar_masivo result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         from core.services.botella_duplicados_service import (
             sugerir_apropiacion,
@@ -1522,7 +1488,6 @@ class BotellaConsolidarRequestModel(BaseModel):
     nombre_destino: str | None = None
     motivo: str | None = None
     force_camera_association: bool = False
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/infra/botellas/consolidar")
@@ -1537,12 +1502,6 @@ async def botellas_consolidar_web(
     corrige el nombre del destino si falta. Cierra el gap "Revisión manual" documentado 2026-08-14 en
     `core/services/botella_duplicados_service.py`. Ver `core/services/cromo/consolidacion_service.py`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=botellas_consolidar result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         from core.services.botella_merge_service import ApropiacionBotellaError
         from core.services.cromo.consolidacion_service import (
@@ -1692,7 +1651,6 @@ class BotellaEliminarRequestModel(BaseModel):
 
     origen: str
     id: int
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/infra/botellas/eliminar")
@@ -1708,12 +1666,6 @@ async def botellas_eliminar_web(
     Cámara padre queda vacía como consecuencia, también se elimina. Ver
     `core/services/camara_botella_delete_service.py`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=botellas_eliminar result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         from core.services.camara_botella_delete_service import EliminacionBloqueadaError, eliminar_botella
         from db.session import SessionLocal
@@ -1769,7 +1721,6 @@ class BotellaEliminarGrupoRequestModel(BaseModel):
     ver `core/services/camara_botella_delete_service.py::eliminar_y_excluir_grupo_cromo`."""
 
     ids_cromo: list[int] = Field(default_factory=list)
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/infra/botellas/eliminar-grupo")
@@ -1782,12 +1733,6 @@ async def botellas_eliminar_grupo_web(
     (`accion='ignorar'`) para que la ingesta no las resucite. Ver
     `core/services/camara_botella_delete_service.py::eliminar_y_excluir_grupo_cromo`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=botellas_eliminar_grupo result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         from core.services.camara_botella_delete_service import (
             EliminacionBloqueadaError,
@@ -1912,7 +1857,6 @@ class CromoBotellasAsociarRequestModel(BaseModel):
     n_ids: list[int]
     camara_id: Optional[int] = None
     nombre_nueva_camara: Optional[str] = None
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/infra/cromo-botellas/asociar")
@@ -1924,12 +1868,6 @@ def cromo_botellas_asociar_web(
     """Asocia una o más Botellas Cromo huérfanas a una Cámara existente o recién creada — resolución
     manual individual o masiva (Caso 1, huérfanas). Ver `core/services/cromo/orfanas_service.py`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=cromo_botellas_asociar result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     try:
         from core.services.cromo.orfanas_service import AsociarHuerfanasError, asociar_huerfanas
         from db.session import SessionLocal
@@ -2651,7 +2589,6 @@ class HuerfanosRevisarRequestModel(BaseModel):
     """Payload para normalizar o descartar filas de la auditoría de huérfanos, en lote."""
 
     ids: list[int] = Field(min_length=1, max_length=500, description="Ids de cromo_auditoria_huerfanos")
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 class HuerfanosAuditoriaGlobalRequestModel(BaseModel):
@@ -2660,7 +2597,6 @@ class HuerfanosAuditoriaGlobalRequestModel(BaseModel):
     max_servicios: int | None = Field(
         default=None, ge=1, le=2000, description="Tope de Servicios; default CROMO_AUDITORIA_MAX_SERVICIOS"
     )
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.get("/api/admin/infra/huerfanos", dependencies=[Depends(usuario_admin)])
@@ -2708,8 +2644,6 @@ async def huerfanos_normalizar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "cromo_huerfanos_normalizar", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
         resultado = await normalizar(sesion, body.ids, usuario=username)
     return JSONResponse(
@@ -2728,8 +2662,6 @@ async def huerfanos_descartar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "cromo_huerfanos_descartar", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
         resultado = await descartar(sesion, body.ids, usuario=username)
     return JSONResponse(
@@ -2774,8 +2706,6 @@ async def huerfanos_auditoria_global_iniciar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "cromo_huerfanos_auditoria_global", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     tope = body.max_servicios or max_servicios_configurado()
     async with AsyncSessionLocal() as sesion:
         # Chequeo + alta bajo advisory lock: dos POST simultáneos no lanzan dos auditorías.
@@ -2823,13 +2753,11 @@ class InconsistenciasEstadoRequestModel(BaseModel):
 
     ids: list[int] = Field(min_length=1, max_length=500, description="Ids de cromo_inconsistencia")
     estado: str = Field(description="CUARENTENA | ACEPTADA | REPORTADA | PENDIENTE (liberar)")
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 class InconsistenciasDeteccionRequestModel(BaseModel):
     """Payload para lanzar la detección manual de inconsistencias."""
 
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.get("/api/admin/infra/inconsistencias-cromo", dependencies=[Depends(usuario_admin)])
@@ -2937,7 +2865,6 @@ class InconsistenciasAvisoSlackRequestModel(BaseModel):
 
     slack_channels: str = Field(default="", description="Canales (#nombre o ID C/G/D...) separados por coma")
     activo: bool = Field(default=False, description="Si el aviso a Slack está encendido")
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.get("/api/admin/infra/inconsistencias-cromo/aviso-slack", dependencies=[Depends(usuario_admin)])
@@ -2962,8 +2889,6 @@ async def inconsistencias_cromo_aviso_slack_post_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "cromo_inconsistencias_aviso_slack", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     canales = normalizar_canales(body.slack_channels)
     if len(canales) > 512:
         return JSONResponse({"error": "Los canales no deben superar 512 caracteres"}, status_code=400)
@@ -2996,8 +2921,6 @@ async def inconsistencias_cromo_estado_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "cromo_inconsistencias_estado", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     if body.estado not in ESTADOS_DESTINO_MANUAL:
         return JSONResponse(
             {"error": f"estado inválido. Valores: {sorted(ESTADOS_DESTINO_MANUAL)}"}, status_code=400
@@ -3046,8 +2969,6 @@ async def inconsistencias_cromo_deteccion_iniciar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "cromo_inconsistencias_deteccion", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
         corrida, en_curso = await iniciar_si_no_hay_otra(sesion, usuario=username, origen="MANUAL")
         if corrida is None:
@@ -3085,7 +3006,6 @@ class ArbitroPropuestasRequestModel(BaseModel):
     """Payload para decidir propuestas del árbitro de Cromo (aplicar, rechazar, revertir), en lote."""
 
     ids: list[int] = Field(min_length=1, max_length=500, description="Ids de cromo_propuesta")
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 class ArbitroReglaRequestModel(BaseModel):
@@ -3095,14 +3015,12 @@ class ArbitroReglaRequestModel(BaseModel):
     modo: str = Field(description="APAGADA | SOMBRA | AUTO")
     umbral: int
     presupuesto_por_corrida: int
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 class ArbitroNormalizarRequestModel(BaseModel):
     """Payload del análisis retroactivo: reglas a correr (None = todas)."""
 
     reglas: Optional[list[str]] = None
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.get("/api/admin/infra/arbitro-cromo/propuestas", dependencies=[Depends(usuario_admin)])
@@ -3145,8 +3063,6 @@ async def arbitro_cromo_aplicar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_propuestas", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
         resultado = await motor.aplicar_manual(sesion, body.ids, username)
         await sesion.commit()
@@ -3164,8 +3080,6 @@ async def arbitro_cromo_rechazar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_propuestas", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
         resultado = await motor.rechazar(sesion, body.ids, username)
         await sesion.commit()
@@ -3181,8 +3095,6 @@ async def arbitro_cromo_revertir_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_propuestas", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
         resultado = await motor.revertir_manual(sesion, body.ids, username)
         await sesion.commit()
@@ -3212,8 +3124,6 @@ async def arbitro_cromo_reglas_actualizar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_reglas", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     async with AsyncSessionLocal() as sesion:
         try:
             await motor.actualizar_regla(
@@ -3243,8 +3153,6 @@ async def arbitro_cromo_normalizar_web(
     from db.session import AsyncSessionLocal
 
     username = usuario.username
-    if not _validar_csrf(request, body.csrf_token, "arbitro_cromo_normalizar", username):
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
     reglas = body.reglas or None  # lista vacía = todas las reglas
     desconocidas = sorted(set(reglas or []) - {r.codigo for r in REGLAS})
     if desconocidas:
@@ -3418,7 +3326,6 @@ async def cromo_botella_cables_detectados_web(n_id: int) -> JSONResponse:
 class BotellaRepoblarCablesRequestModel(BaseModel):
     """Payload para repoblar los cables detectados en Cromo hacia la base local de una Botella."""
 
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/infra/botellas/{n_id}/repoblar-cables")
@@ -3434,12 +3341,6 @@ async def botella_repoblar_cables_web(
     Cromo (`CromoClient` es de sólo lectura por diseño) ni toca `CromoBotella`/`CromoFusion`. Sólo
     admin — ver `core/services/cromo/repoblacion_service.py::repoblar_cables`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=botella_repoblar_cables result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     from core.services.cromo.client import CromoClient, CromoClientError
     from core.services.cromo.config import get_cromo_config
     from core.services.cromo.repoblacion_service import repoblar_cables
@@ -3478,7 +3379,6 @@ class BotellaActualizarNombreRequestModel(BaseModel):
     """Payload para corregir a mano el nombre de una Botella Cromo."""
 
     nombre: str = Field(min_length=1, max_length=500)
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.patch("/api/infra/botellas/{n_id}/nombre")
@@ -3499,12 +3399,6 @@ async def botella_actualizar_nombre_web(
     que el `n_id` de la respuesta es siempre el real, más `n_id_solicitado` cuando difieren.
     Sólo admin."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=botella_actualizar_nombre result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     from db.models.cromo import CromoBotella
     from db.session import AsyncSessionLocal
 
@@ -3607,7 +3501,6 @@ class BotellaSepararPadreRequestModel(BaseModel):
 
     nombre: str = Field(min_length=1, max_length=255)
     motivo: str = Field(min_length=1, max_length=1000)
-    csrf_token: str | None = Field(default=None, description="Token CSRF de la sesión")
 
 
 @router.post("/api/infra/botellas/{n_id}/separar-padre")
@@ -3623,12 +3516,6 @@ async def botella_separar_padre_web(
     existente. Nunca toca la Cámara padre anterior. Sólo admin — ver
     `core/services/cromo/separacion_service.py::separar_botella_de_padre`."""
     username = usuario.username
-    expected_csrf = request.session.get("csrf")
-    testing_mode = os.getenv("TESTING", "false").lower() == "true"
-    if not testing_mode and (not body.csrf_token or body.csrf_token != expected_csrf):
-        logger.warning("action=botella_separar_padre result=fail reason=csrf user=%s", username)
-        return JSONResponse({"error": "CSRF inválido"}, status_code=403)
-
     from core.services.cromo.separacion_service import (
         BotellaNoEncontradaError,
         SeparacionBotellaError,

@@ -3,8 +3,8 @@
 # Descripción: Endpoints /api/fo-monitor/* (intervenciones, GeoJSON del mapa, mapa base PMTiles con Range) y config admin
 
 """Rutas de FO Monitor para el SPA. Lectura: cualquier usuario autenticado. Mutaciones
-(verificación manual, reconocer como ajena, config del piloto): sólo admin + CSRF en el body
-(mismo criterio que `web/app/main.py`, `TESTING=true` lo saltea).
+(verificación manual, reconocer como ajena, config del piloto): sólo admin + CSRF
+(`requiere_csrf` de `web/app/dependencias.py`, el mismo criterio que los routers de la SPA).
 
 Mapa base offline: Starlette 0.38.6 (la versión fijada) no soporta HTTP Range en `FileResponse`/
 `StaticFiles` y la librería `pmtiles` del navegador lo necesita sí o sí, así que
@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -32,11 +32,14 @@ from core.services.fo_monitor import consultas_web
 # En el repo y en los tests el paquete es `web.app`; en la imagen de web, `web/app` se copia como `app`
 # (web/Dockerfile: COPY web/app /app/app). Sin el fallback, el contenedor no arranca (real 2026-10-23).
 try:
-    from web.app.dependencias import UsuarioSesion, usuario_admin, usuario_sesion
+    from web.app.dependencias import UsuarioSesion, requiere_csrf, usuario_admin, usuario_sesion
 except ModuleNotFoundError:  # pragma: no cover - layout del contenedor
-    from app.dependencias import UsuarioSesion, usuario_admin, usuario_sesion  # type: ignore[no-redef]
+    from app.dependencias import UsuarioSesion, requiere_csrf, usuario_admin, usuario_sesion  # type: ignore[no-redef]
 
 logger = logging.getLogger("web.fo_monitor")
+
+# Sesión admin antes que CSRF (401/403 de sesión primero); la firma reutiliza el `usuario_admin` cacheado.
+_ADMIN_CSRF = [Depends(usuario_admin), Depends(requiere_csrf)]
 
 BASEMAP_DIR = Path(os.getenv("FOMON_BASEMAP_DIR", "/app/data/fo_monitor"))
 BASEMAP_MODO = os.getenv("FOMON_BASEMAP_MODO", "local")  # local | osm
@@ -56,28 +59,18 @@ def _sesion_local():
     return SessionLocal()
 
 
-def _validar_csrf(request: Request, csrf_token: Optional[str]) -> None:
-    """CSRF en el body de las mutaciones admin; `TESTING=true` lo saltea."""
-    testing = os.getenv("TESTING", "false").lower() == "true"
-    if not testing and (not csrf_token or csrf_token != request.session.get("csrf")):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF inválido")
-
-
 class VerificacionManualBody(BaseModel):
-    csrf_token: Optional[str] = None
     camara_id: Optional[int] = None
     botella_n_id: Optional[int] = None
     cable_n_id: Optional[int] = None
 
 
 class ReconocimientoBody(BaseModel):
-    csrf_token: Optional[str] = None
     motivo: str = Field(min_length=3, max_length=500)
     servicio_pk: Optional[int] = None
 
 
 class ConfigBody(BaseModel):
-    csrf_token: Optional[str] = None
     activo: Optional[bool] = None
     ventana_desde: Optional[datetime] = None
     ventana_hasta: Optional[datetime] = None
@@ -235,10 +228,9 @@ def mount_fo_monitor_routes(app: FastAPI) -> None:  # noqa: C901 - rutas anidada
             return JSONResponse({"error": "Archivo inexistente"}, status_code=404)
         return servir_con_rango(destino, request)
 
-    @app.post("/api/fo-monitor/verificaciones")
+    @app.post("/api/fo-monitor/verificaciones", dependencies=_ADMIN_CSRF)
     def fomon_verificacion_manual(request: Request, body: VerificacionManualBody,
                                   admin: UsuarioSesion = Depends(usuario_admin)):
-        _validar_csrf(request, body.csrf_token)
         usuario = admin.username
         from datetime import timezone
 
@@ -257,10 +249,9 @@ def mount_fo_monitor_routes(app: FastAPI) -> None:  # noqa: C901 - rutas anidada
             logger.info("action=fomon_verificacion_manual user=%s intervencion=%s", usuario, interv.id)
             return {"intervencion_id": interv.id}
 
-    @app.post("/api/fo-monitor/intervenciones/{intervencion_id}/reconocimientos")
+    @app.post("/api/fo-monitor/intervenciones/{intervencion_id}/reconocimientos", dependencies=_ADMIN_CSRF)
     def fomon_reconocer(request: Request, intervencion_id: int, body: ReconocimientoBody,
                         admin: UsuarioSesion = Depends(usuario_admin)):
-        _validar_csrf(request, body.csrf_token)
         usuario = admin.username
         with _sesion_local() as s:
             try:
@@ -276,11 +267,10 @@ def mount_fo_monitor_routes(app: FastAPI) -> None:  # noqa: C901 - rutas anidada
         with _sesion_local() as s:
             return consultas_web.leer_config(s)
 
-    @app.put("/api/admin/fo-monitor/config")
+    @app.put("/api/admin/fo-monitor/config", dependencies=_ADMIN_CSRF)
     def fomon_config_actualizar(request: Request, body: ConfigBody, admin: UsuarioSesion = Depends(usuario_admin)):
-        _validar_csrf(request, body.csrf_token)
         usuario = admin.username
-        cambios = body.model_dump(exclude_unset=True, exclude={"csrf_token"})
+        cambios = body.model_dump(exclude_unset=True)
         with _sesion_local() as s:
             resultado = consultas_web.actualizar_config(s, cambios, usuario=usuario)
         logger.info("action=fomon_config user=%s cambios=%s", usuario, sorted(cambios))

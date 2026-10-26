@@ -370,6 +370,4 @@ def test_sla_flow_csrf_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     response = client.post("/api/reports/sla", data=data, files=files)
 
     assert response.status_code == 403
-    body = response.json()
-    assert body["ok"] is False
-    assert "CSRF inválido" in body["error"]
+    assert response.json() == {"error": "CSRF inválido"}

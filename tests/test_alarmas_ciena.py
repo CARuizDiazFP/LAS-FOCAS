@@ -434,7 +434,7 @@ def test_api_endpoint_sin_auth(csv_sitemanager: bytes):
     assert response.status_code in [401, 302, 303]
 
 
-def test_api_endpoint_csrf_invalido(csv_sitemanager: bytes, web_client_logged):
+def test_api_endpoint_csrf_invalido(csv_sitemanager: bytes, web_client_logged, csrf_real):
     """Debe validar el token CSRF."""
     from io import BytesIO
 

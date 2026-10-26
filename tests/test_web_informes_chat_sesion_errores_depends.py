@@ -178,6 +178,7 @@ def test_chat_mensaje_conserva_el_csrf(monkeypatch):
 
 def test_flow_sla_conserva_el_csrf(monkeypatch):
     client, _csrf = _login(monkeypatch)
+    monkeypatch.setenv("TESTING", "false")
     res = client.post("/api/flows/sla", data={"mes": "1", "anio": "2025", "csrf_token": "malo"})
     assert res.status_code == 403
     assert res.json() == {"error": "CSRF inválido"}
