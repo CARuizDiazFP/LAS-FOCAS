@@ -2,7 +2,7 @@
 # Ubicación de archivo: web/Dockerfile
 # Descripción: Imagen del servicio Web (UI) con FastAPI. Stage Python hereda dependencias comunes de focas-base:latest. La app vive en web/app/main.py (ensamblador) y web/app/routers/.
 
-FROM node:20.12.2-slim AS web-build
+FROM node:24.22.1-slim AS web-build
 WORKDIR /frontend
 # Copiamos sólo el frontend (el build context ahora es la raíz del repo)
 COPY web/frontend/package.json web/frontend/tsconfig.json web/frontend/vite.config.ts web/frontend/index.html ./

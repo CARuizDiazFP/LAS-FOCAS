@@ -196,6 +196,26 @@ docker exec lasfocasdev-web rm -rf /tmp/wt          # siempre al terminar
   módulos sueltos de `web/` (`:ro`), con los `Dev_*` secrets y `--env-file` sacado de
   `docker inspect lasfocasdev-web --format '{{range .Config.Env}}{{println .}}{{end}}'` (umask 077,
   borrarlo después). `/app/Logs` y `/app/data/*` van como `--tmpfs` con `uid=1001`.
+- **Copiar también el usuario del contenedor original** (`docker inspect <orig> --format
+  '{{.Config.User}}'` → `--user`). El compose corre `web`/`api` como `1001:1001`, y los `Dev_*` secrets
+  son 0600 de ese uid. Las imágenes, en cambio, traen `USER focas` (1000). Sin `--user`, el efímero no
+  lee el secret y `web` muere al arrancar por el fail-closed de la clave de sesión (`RuntimeError:
+  web_secret_key_v1 ausente`). Real 2026-10-26, P15: parecía un bug de la imagen y era la receta.
+- **Probar una `focas-base` nueva sin pisar `focas-base:latest`**, cuando cambian dependencias: los
+  Dockerfiles hijos dicen `FROM focas-base:latest`, y BuildKit permite redirigir ese `FROM` a un tag
+  propio. Real 2026-10-26, P15: 9 servicios reconstruidos con las versiones nuevas, sin tocar
+  `latest` ni los `lasfocasdev-*`:
+  ```bash
+  docker buildx build --load -f deploy/docker/base.Dockerfile \
+    --build-arg REQUIREMENTS_HASH=$(sha256sum common-requirements.txt | cut -d' ' -f1) -t focas-base:<tag> .
+  docker buildx build --load --build-context focas-base:latest=docker-image://focas-base:<tag> \
+    -f api/Dockerfile -t lasfocasdev-api:<tag> .
+  ```
+  **De a uno, con piso de disco** (`df --output=avail -BM /`, frenar por debajo de 2 GB), y sin otras
+  corridas pesadas en paralelo. En este host cada imagen nueva ocupa ~1,2 GB, y el build en paralelo
+  con dos suites en contenedor llenó el disco en medio del cierre de otra sesión (ver `disk-analysis`).
+  Al terminar el humo, `docker rmi` de **todos** los tags propios: el stack se reconstruye después
+  desde `dev`.
 - La primera corrida en frío de una consulta sobre tablas grandes puede tardar 10× más que las
   siguientes (real: 21,8 s → 0,4 s / 0,1 s). Repetir antes de sacar conclusiones de tiempo.
 - Para prod, el mismo patrón sirve empaquetado en un script operativo que el usuario lanza con
