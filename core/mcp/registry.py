@@ -158,24 +158,8 @@ class InformeRepetitividadArgs(BaseModel):
         return value
 
 
-class GenerarMapaGeoArgs(BaseModel):
-    points: List[Dict[str, float]]
-    out_path: str | None = None
-
-
-class CompararTrazasArgs(BaseModel):
-    file_a: str
-    file_b: str
-
-
 class ConvertirDocArgs(BaseModel):
     input_path: str
-    out_dir: str | None = None
-
-
-class RegistrarNotionArgs(BaseModel):
-    page: str
-    payload: Dict[str, Any]
 
 
 # --------------------------------------------------------------------------------------
@@ -229,101 +213,59 @@ async def _run_informe_repetitividad(args: InformeRepetitividadArgs, context: To
     return ToolResult(message=message, data=payload, metadata={"tool": "GenerarInformeRepetitividad"})
 
 
-async def _run_generar_mapa(args: GenerarMapaGeoArgs, context: ToolContext) -> ToolResult:
-    try:
-        import folium  # noqa: WPS433
-    except ImportError as exc:  # pragma: no cover - import guard
-        raise ToolInvocationError("MISSING_DEPENDENCY", "folium no está instalado", detail=str(exc)) from exc
-
-    if not args.points:
-        raise ToolInvocationError("INVALID_POINTS", "Se requieren puntos para generar el mapa")
-
-    latitudes = [float(p.get("lat", 0.0)) for p in args.points]
-    longitudes = [float(p.get("lon", 0.0)) for p in args.points]
-    center = (sum(latitudes) / len(latitudes), sum(longitudes) / len(longitudes))
-    fmap = folium.Map(location=center, zoom_start=6)
-    for point in args.points:
-        folium.Marker(
-            location=[float(point.get("lat", 0.0)), float(point.get("lon", 0.0))],
-            popup=point.get("label", "Punto"),
-            tooltip=point.get("label", "Punto"),
-        ).add_to(fmap)
-    reports_dir = Path(os.getenv("REPORTS_DIR", "/app/data/reports"))
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    output_name = args.out_path or f"mapa_{int(time.time())}.html"
-    output_path = reports_dir / output_name
-    fmap.save(str(output_path))
-    payload = {"status": "ok", "map": f"/reports/{output_path.name}"}
-    return ToolResult(
-        message="Mapa generado correctamente.",
-        data=payload,
-        metadata={"tool": "GenerarMapaGeo"},
-    )
+# office_service convierte con un timeout propio de 120 s (OFFICE_CONVERT_TIMEOUT); acá un margen extra.
+OFFICE_TIMEOUT = 150.0
 
 
-async def _run_comparar_trazas(args: CompararTrazasArgs, context: ToolContext) -> ToolResult:
-    # TODO: Integrar cuando el comparador FO esté disponible.
-    payload = {
-        "status": "pending",
-        "detail": "Comparador de trazas FO en desarrollo",
-        "inputs": {"file_a": args.file_a, "file_b": args.file_b},
-    }
-    return ToolResult(
-        message="El comparador FO todavía está en desarrollo. Guardé tu pedido para seguimiento.",
-        data=payload,
-        metadata={"tool": "CompararTrazasFO"},
-    )
+def _cliente_office(timeout: float) -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=timeout)
+
+
+def _resolver_documento(input_path: str) -> Path:
+    """Ruta real del documento: relativa a UPLOADS_DIR o absoluta dentro de UPLOADS_DIR/REPORTS_DIR.
+
+    El archivo se lee y se sube a office_service, así que cualquier otra ruta (`../`, `/etc/...`) se
+    rechaza antes de tocar el disco.
+    """
+
+    uploads_dir = Path(os.getenv("UPLOADS_DIR", "/app/data/uploads")).resolve()
+    reports_dir = Path(os.getenv("REPORTS_DIR", "/app/data/reports")).resolve()
+    ruta = Path(input_path)
+    if not ruta.is_absolute():
+        ruta = uploads_dir / ruta
+    ruta = ruta.resolve()
+    if not (ruta.is_relative_to(uploads_dir) or ruta.is_relative_to(reports_dir)):
+        raise ToolInvocationError("INVALID_PATH", "El documento tiene que estar entre los adjuntos o los informes")
+    if not ruta.is_file():
+        raise ToolInvocationError("FILE_NOT_FOUND", "No encuentro el documento a convertir")
+    return ruta
 
 
 async def _run_convertir_doc(args: ConvertirDocArgs, context: ToolContext) -> ToolResult:
-    base_url = os.getenv("OFFICE_SERVICE_BASE", "http://office_service:8003")
-    target_dir = args.out_dir or os.getenv("REPORTS_DIR", "/app/data/reports")
-    payload = {
-        "status": "pending",
-        "message": "Conversión delegada al office_service",
-        "input": args.input_path,
-        "output_dir": target_dir,
-    }
+    origen = _resolver_documento(args.input_path)
+    base_url = os.getenv("OFFICE_SERVICE_BASE", "http://office:8090").rstrip("/")
+    reports_dir = Path(os.getenv("REPORTS_DIR", "/app/data/reports"))
+    contenido = await asyncio.to_thread(origen.read_bytes)
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with _cliente_office(OFFICE_TIMEOUT) as client:
             response = await client.post(
                 f"{base_url}/convert",
-                json={
-                    "input_path": args.input_path,
-                    "output_dir": target_dir,
-                },
+                params={"output_format": "pdf"},
+                files={"file": (origen.name, contenido, "application/octet-stream")},
             )
         response.raise_for_status()
-        data = response.json()
-        payload.update(data)
-        status_msg = data.get("status", "ok")
-        message = data.get("message", "Documento convertido.")
-        metadata = {"tool": "ConvertirDocAPdf", "status": status_msg}
-        return ToolResult(message=message, data=payload, metadata=metadata)
     except httpx.HTTPStatusError as exc:
         raise ToolInvocationError("CONVERT_HTTP_ERROR", "Falló la conversión", detail=exc.response.text) from exc
-    except httpx.HTTPError as exc:  # noqa: BLE001
-        raise ToolInvocationError("CONVERT_NETWORK_ERROR", "No se pudo contactar al servicio de conversión", detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise ToolInvocationError(
+            "CONVERT_NETWORK_ERROR", "No se pudo contactar al servicio de conversión", detail=str(exc)
+        ) from exc
 
-
-async def _run_registrar_notion(args: RegistrarNotionArgs, context: ToolContext) -> ToolResult:
-    # Placeholder: se registrará la integración real con Notion.
-    logger.info(
-        "action=notion_placeholder user_id=%s page=%s payload_keys=%s",
-        context.user_id,
-        args.page,
-        sorted(args.payload.keys()),
-    )
-    payload = {
-        "status": "pending",
-        "detail": "Integración con Notion en preparación",
-        "page": args.page,
-    }
-    return ToolResult(
-        message="Notion aún no está integrado. Avisaremos cuando esté disponible.",
-        data=payload,
-        metadata={"tool": "RegistrarEnNotion"},
-    )
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    destino = reports_dir / f"{origen.stem}.pdf"
+    await asyncio.to_thread(destino.write_bytes, response.content)
+    payload = {"status": "ok", "input": origen.name, "pdf": _reports_href(destino, reports_dir)}
+    return ToolResult(message="Documento convertido a PDF.", data=payload, metadata={"tool": "ConvertirDocAPdf"})
 
 
 def get_default_registry() -> MCPRegistry:
@@ -338,36 +280,11 @@ def get_default_registry() -> MCPRegistry:
     )
     registry.register(
         ToolDefinition(
-            name="GenerarMapaGeo",
-            description="Construye un mapa Folium desde puntos lat/lon.",
-            input_model=GenerarMapaGeoArgs,
-            handler=_run_generar_mapa,
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="CompararTrazasFO",
-            description="Compara archivos de trazas FO (en desarrollo).",
-            input_model=CompararTrazasArgs,
-            handler=_run_comparar_trazas,
-        )
-    )
-    registry.register(
-        ToolDefinition(
             name="ConvertirDocAPdf",
             description="Envía documentos al servicio de LibreOffice para convertir a PDF.",
             input_model=ConvertirDocArgs,
             handler=_run_convertir_doc,
             roles=["admin", "ownergroup"],
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="RegistrarEnNotion",
-            description="Registra información en una página de Notion (placeholder).",
-            input_model=RegistrarNotionArgs,
-            handler=_run_registrar_notion,
-            roles=["admin"],
         )
     )
     return registry
