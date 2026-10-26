@@ -183,11 +183,11 @@ Invocar esta skill **siempre** que el agente vaya a: modificar código/config/do
     dependencias resueltas**: un `v-else` cuyo `v-if` no era su hermano adyacente. Antes de declarar
     verde cualquier cambio de frontend hecho en un worktree:
     ```bash
-    ln -s <checkout-principal>/web/frontend/node_modules web/frontend/node_modules
-    npx vue-tsc --noEmit   # tipos
-    npx vite build         # plantillas: encuentra lo que el type-check no ve
-    rm web/frontend/node_modules
+    cd web/frontend && npm ci --no-audit --no-fund   # en el worktree; ~3 s, lockfile completo
+    npm run build          # desde 2026-10-26 = vue-tsc --noEmit && vite build (tipos + plantillas)
     ```
+    No enlazar el `node_modules` del checkout de control: le faltan las dependencias de FO Monitor
+    (`maplibre-gl`, `pmtiles`, `@protomaps/basemaps`) y el chequeo da errores ajenos (real 2026-10-26).
     Sobre el symlink al terminar: `.gitignore` tiene `web/frontend/node_modules/` **con barra
     final**, y una barra final sólo matchea directorios — un symlink es un archivo para git, así que
     **no** queda ignorado por esa regla. **Resuelto estructuralmente el 2026-09-14**: el tooling de

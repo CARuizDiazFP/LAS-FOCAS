@@ -4,7 +4,6 @@
 
 import { ApiError, requestJson } from './client';
 
-export const ESTADOS_PROPUESTA = ['PROPUESTA', 'EN_OBSERVACION', 'APLICADA', 'RECHAZADA', 'REVERTIDA', 'OBSOLETA'] as const;
 export const MODOS_REGLA = ['APAGADA', 'SOMBRA', 'AUTO'] as const;
 export type ModoRegla = (typeof MODOS_REGLA)[number];
 

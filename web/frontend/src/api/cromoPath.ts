@@ -614,19 +614,6 @@ export async function resolverCaminosServicio(
   );
 }
 
-/** Saca pelos huérfanos del Servicio en local (uno o todos). Cromo no se toca. Admin. */
-export async function excluirPelosServicio(
-  servicioId: number,
-  pelosNId: number[],
-  motivo?: string,
-): Promise<{ ok: boolean; excluidos: number[]; ajenos: number[] }> {
-  return requestJson(`/api/admin/infra/servicios-odf/${servicioId}/pelos-excluidos`, {
-    method: 'POST',
-    json: { pelos_n_id: pelosNId, motivo: motivo ?? null },
-    csrf: true,
-  });
-}
-
 /** Devuelve al Servicio un pelo excluido. Admin. */
 export async function restaurarPeloServicio(
   servicioId: number,
