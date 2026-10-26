@@ -198,12 +198,20 @@ async def search_camaras_web(
     limit = min(limit, 500)
 
     try:
-        from core.services.camara_estado_service import get_camara_estado_contexto
-        from db.models.infra import Camara, CamaraEstado, Servicio
+        from sqlalchemy.orm import selectinload
+
+        from core.services.camara_estado_service import get_camara_estado_contexto_batch
+        from db.models.infra import Camara, CamaraEstado, Empalme, RutaServicio, Servicio
         from db.session import SessionLocal
 
         with SessionLocal() as session:
-            query = session.query(Camara)
+            # Lo que recorre la serialización, por lote: antes cada fila disparaba lazy loads de
+            # empalmes/rutas/servicio más las queries propias del contexto (~2000 sentencias con 500).
+            query = session.query(Camara).options(
+                selectinload(Camara.empalmes).selectinload(Empalme.rutas).selectinload(RutaServicio.servicio),
+                selectinload(Camara.botellas),
+                selectinload(Camara.camara_padre),
+            )
 
             # Filtro por estado
             if estado:
@@ -222,13 +230,29 @@ async def search_camaras_web(
 
             camaras_db = query.order_by(Camara.nombre).limit(limit).all()
 
+            # Buscar por servicio_id si no se encontraron cámaras: las cámaras de las rutas del servicio
+            if q and q.strip() and not camaras_db:
+                servicio = session.query(Servicio).filter(
+                    Servicio.servicio_id.ilike(f"%{q.strip()}%")
+                ).first()
+
+                if servicio:
+                    seen_cam_ids = set()
+                    for ruta in servicio.rutas:
+                        for empalme in ruta.empalmes:
+                            if empalme.camara and empalme.camara.id not in seen_cam_ids:
+                                seen_cam_ids.add(empalme.camara.id)
+                                camaras_db.append(empalme.camara)
+
+            contextos = get_camara_estado_contexto_batch(session, [cam.id for cam in camaras_db])
+
             # Construir respuesta con servicios y rutas
             camaras_response = []
             for cam in camaras_db:
                 # Obtener rutas asociadas a esta cámara a través de empalmes
                 rutas_info = []
                 seen_rutas = set()
-                
+
                 for empalme in cam.empalmes:
                     for ruta in empalme.rutas:
                         if ruta.id not in seen_rutas:
@@ -248,51 +272,10 @@ async def search_camaras_web(
                         camara=cam,
                         rutas_info=rutas_info,
                         servicios_ids=servicios_ids,
-                        contexto=get_camara_estado_contexto(session, cam.id),
+                        contexto=contextos.get(cam.id),
                         editable=role == "admin",
                     )
                 )
-
-            # Buscar por servicio_id si no se encontraron cámaras
-            if q and q.strip() and not camaras_response:
-                servicio = session.query(Servicio).filter(
-                    Servicio.servicio_id.ilike(f"%{q.strip()}%")
-                ).first()
-
-                if servicio:
-                    # Obtener cámaras a través de las rutas del servicio
-                    seen_cam_ids = set()
-                    for ruta in servicio.rutas:
-                        for empalme in ruta.empalmes:
-                            if empalme.camara and empalme.camara.id not in seen_cam_ids:
-                                seen_cam_ids.add(empalme.camara.id)
-                                cam = empalme.camara
-                                
-                                # Obtener todas las rutas de esta cámara
-                                rutas_info = []
-                                seen_rutas = set()
-                                for emp in cam.empalmes:
-                                    for r in emp.rutas:
-                                        if r.id not in seen_rutas:
-                                            seen_rutas.add(r.id)
-                                            rutas_info.append({
-                                                "ruta_id": r.id,
-                                                "servicio_id": r.servicio.servicio_id,
-                                                "ruta_nombre": r.nombre,
-                                                "ruta_tipo": r.tipo.value,
-                                            })
-                                
-                                servicios_ids = list(set(r["servicio_id"] for r in rutas_info))
-
-                                camaras_response.append(
-                                    _serialize_camara_response(
-                                        camara=cam,
-                                        rutas_info=rutas_info,
-                                        servicios_ids=servicios_ids,
-                                        contexto=get_camara_estado_contexto(session, cam.id),
-                                        editable=role == "admin",
-                                    )
-                                )
 
             logger.info(
                 "action=search_camaras user=%s query=%s estado=%s results=%d",
@@ -457,7 +440,7 @@ async def get_camara_botellas_web(
     _, role = usuario
 
     try:
-        from core.services.camara_estado_service import get_camara_estado_contexto
+        from core.services.camara_estado_service import get_camara_estado_contexto_batch
         from db.models.cromo import CromoBotella
         from db.models.infra import Camara
         from db.session import SessionLocal
@@ -467,13 +450,14 @@ async def get_camara_botellas_web(
             if not camara:
                 return JSONResponse({"error": "Cámara no encontrada"}, status_code=404)
 
+            contextos = get_camara_estado_contexto_batch(session, [botella.id for botella in camara.botellas])
             botellas_legado = [
                 {
                     **_serialize_camara_response(
                         camara=botella,
                         rutas_info=_collect_camara_rutas_info(botella),
                         servicios_ids=_collect_camara_servicios_ids(botella),
-                        contexto=get_camara_estado_contexto(session, botella.id),
+                        contexto=contextos.get(botella.id),
                         editable=role == "admin",
                     ),
                     "origen": "legado",
@@ -2353,7 +2337,7 @@ async def smart_search_camaras_web(
     username, role = usuario
 
     try:
-        from core.services.camara_estado_service import get_camara_estado_contexto
+        from core.services.camara_estado_service import get_camara_estado_contexto_batch
         from db.session import SessionLocal
 
         with SessionLocal() as session:
@@ -2366,6 +2350,9 @@ async def smart_search_camaras_web(
                 offset=body.offset,
             )
 
+            contextos = get_camara_estado_contexto_batch(
+                session, [encontrada.camara.id for encontrada in resultado.camaras]
+            )
             camaras_response = []
             for encontrada in resultado.camaras:
                 cam = encontrada.camara
@@ -2374,7 +2361,7 @@ async def smart_search_camaras_web(
                         camara=cam,
                         rutas_info=encontrada.rutas_info,
                         servicios_ids=encontrada.servicios_ids,
-                        contexto=get_camara_estado_contexto(session, cam.id),
+                        contexto=contextos.get(cam.id),
                         editable=role == "admin",
                     )
                 )
