@@ -133,7 +133,7 @@ Definidos en `.github/agents/`. Cada agente tiene dominio, herramientas y handof
 | `mcp-chatbot` | Model Context Protocol | MCPRegistry, ChatOrchestrator, streaming, tools | nlp, reports, web |
 | `infra` | Infraestructura FO Metrotel | Cámaras, rutas Ciena, mapas estáticos | db, api, reports |
 | `reports` | Informes SLA y Repetitividad | Plantillas DOCX/PDF, builders, procesadores | office, db, testing |
-| `office` | LibreOffice headless | `office_service` (UNO, `office:8090`, `/convert` placeholder) y `soffice` por subprocess | reports, docker |
+| `office` | LibreOffice headless | `office_service` (UNO, `office:8090`, `POST /convert` multipart → PDF) y `soffice` por subprocess | reports, docker |
 | `docker` | Infraestructura de contenedores | Compose, Dockerfiles, redes, healthchecks | testing, db |
 | `security` | Auditoría safe-by-design | Secretos, SAST, deps, CORS/XSS en FastAPI/Vue 3 | web, api, db |
 | `testing` | pytest y cobertura | Fixtures, mocks, cobertura (objetivo 60%, no forzado), CI manual | api, bot, reports |
@@ -142,13 +142,14 @@ Definidos en `.github/agents/`. Cada agente tiene dominio, herramientas y handof
 **Intents NLP reales** (`nlp_intent/app/schemas.py`): `Consulta`, `Acción`, `Otros`, normalizados por `/v1/intent:analyze` a `Consulta/Generico`, `Solicitud de acción` y `Otros`. La única acción soportada es `repetitividad_report`.
 
 **Herramientas MCP** (`core/mcp/registry.py::get_default_registry`, estado 2026-10-26):
-`GenerarInformeRepetitividad` (implementada; sin PDF, ver abajo), `GenerarMapaGeo` (sin `folium` en la imagen `web`: falla con
-`MISSING_DEPENDENCY`), `CompararTrazasFO` (stub), `ConvertirDocAPdf` (rota: apunta a
-`office_service:8003` con JSON, y el `/convert` real es un placeholder) y `RegistrarEnNotion` (stub).
+`GenerarInformeRepetitividad` (implementada; sin PDF, ver abajo) y `ConvertirDocAPdf` (roles admin/ownergroup;
+sube el documento a `office:8090/convert` y guarda el PDF en `REPORTS_DIR`). `GenerarMapaGeo`,
+`CompararTrazasFO` y `RegistrarEnNotion` se retiraron del registro el 2026-10-26 (P13, ver `docs/mcp.md`).
 
 > **PDF de informes**: la conversión real es `soffice` por subprocess
 > (`modules/common/libreoffice_export.py`) en el mismo contenedor, pero las imágenes `web`/`api` no
-> instalan LibreOffice: los informes salen sin PDF. Detalle en el agente `office` y la skill
+> instalan LibreOffice: los informes salen sin PDF. `office_service` sí convierte por `POST /convert`
+> desde el 2026-10-26 (hoy sólo lo usa `ConvertirDocAPdf`). Detalle en el agente `office` y la skill
 > `libreoffice-convert`.
 
 ---
@@ -194,7 +195,7 @@ Definidas en `.agentes-comunes/skills/` (fuente de verdad agnóstica) y espejada
 | `cromo-inventario` | Consultar/explotar datos ya ingeridos de Cromo Red (`app.cromo_*`) | `jerarquia`/`propietario` siempre `ILIKE`, nunca exacto |
 | `cromo-diagnostico-real` | Validar supuestos de ingesta/parseo contra la API o DB real de Cromo | Nunca declarar una fase "correcta" sin diagnóstico contra el sistema real |
 | `baneo-qa-real` | Probar create_ban/lift_ban y cascadas de estado de Cámara contra datos reales | Resolver el blast radius completo antes de mutar; revertir sólo vía `aplicar_estado_a_grupo`, nunca `UPDATE` directo |
-| `libreoffice-convert` | DOCX/XLSX→PDF via API puerto 8090 | Timeout 30-60s, máx 50 MB |
+| `libreoffice-convert` | DOCX/DOC/ODT/RTF→PDF vía `office:8090/convert` o `soffice` local | Timeout 120 s, máx 50 MB; `web`/`api` no tienen `soffice` |
 | `repo-updater` | Commits técnicos a la rama efímera activa con auditoría de docs | Nunca `git push origin main` ni `git push origin dev` directo |
 | `repo-update` | Legacy — redirige a `repo-updater` | — |
 | `skill-generator` | Crea nuevas skills con stack Vue 3 + FastAPI | Inyección obligatoria de stack y seguridad |
