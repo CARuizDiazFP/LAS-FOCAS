@@ -189,8 +189,8 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
 - Considerar integración con MCP (herramienta conversacional)
 
 2) MCP completo + herramientas
-- Implementar lógica real de `CompararTrazasFO` y `RegistrarEnNotion`.
-- Completar integración de `ConvertirDocAPdf` con `office_service` (manejo de errores y colas si es necesario).
+- ~~Implementar lógica real de `CompararTrazasFO` y `RegistrarEnNotion`.~~ Retiradas del registro el 2026-10-26 (P13): no hay comparador FO ni configuración de Notion. Junto con `GenerarMapaGeo` (sin `folium` en `web`). Ver `docs/mcp.md`.
+- ~~Completar integración de `ConvertirDocAPdf` con `office_service`.~~ Hecho el 2026-10-26: `POST /convert` real en office y la herramienta lo usa (sin colas: las conversiones se serializan en el servicio).
 - Definir taxonomía de mensajes/errores estandarizados para herramientas.
 
 3) Gestión de adjuntos y almacenamiento
@@ -336,7 +336,7 @@ Resumen por fecha a partir del historial de `dev` y de los títulos de `docs/cie
 - [x] Casos negativos del endpoint `/reports/repetitividad` (extensiones inválidas, fallos del runner, `incluir_pdf` sin PDF).
 - [x] Cobertura adicional para `modules.informes_repetitividad.processor.normalize` y `_detalles`.
 - [ ] Autenticación / limits adicionales para `/reports/repetitividad` (API key, tamaño máximo) y pruebas asociadas.
-- [ ] Completar implementación de herramientas MCP (`CompararTrazasFO`, `ConvertirDocAPdf`, `RegistrarEnNotion`).
+- [x] Herramientas MCP (2026-10-26, P13): `ConvertirDocAPdf` operativa contra `office:8090/convert`; `CompararTrazasFO`, `RegistrarEnNotion` y `GenerarMapaGeo` retiradas del registro.
 - [ ] Integrar parser de tracking con persistencia real en `empalmes`/`servicio_empalme_association` y exponer endpoint de importación.
 - [ ] Diseñar endpoints de baneo/desbaneo y métricas de ocupación usando el nuevo esquema `app.camaras`.
 - [ ] Definir estrategia de limpieza programada para archivos subidos en `/api/chat/uploads`.

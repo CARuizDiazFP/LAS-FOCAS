@@ -21,12 +21,14 @@ Soy el agente especializado en el microservicio de LibreOffice de LAS-FOCAS.
 
 ## Estado real (verificado 2026-10-26 en dev)
 
-Hay **dos caminos** y ninguno convierte desde el stack dockerizado de `web`/`api`:
+Hay **dos caminos**; el subprocess local no funciona en los contenedores `web`/`api`:
 
 1. **`office_service` (`office:8090`)**: `runner.py` levanta `soffice` en modo UNO (puerto 2002) y
-   uvicorn. `GET /health` informa el estado de UNO. `POST /convert` (multipart `file` + `output_format`)
-   es un **placeholder**: valida UNO y responde `"Conversión aún no implementada; placeholder OK"`
-   sin generar archivo (`office_service/app/main.py`, TODO).
+   uvicorn. `GET /health` informa el estado de UNO. `POST /convert` (multipart `file`, `output_format=pdf`
+   por query) **convierte** desde el 2026-10-26 (`office_service/app/conversion.py`): un
+   `soffice --convert-to` por pedido con perfil temporal propio, serializado; devuelve los bytes del PDF.
+   Entradas `.docx/.doc/.odt/.rtf` (sólo Writer); 400/413 (`OFFICE_MAX_FILE_SIZE`, 50 MB)/503/504
+   (`OFFICE_CONVERT_TIMEOUT`, 120 s)/500. Medido: DOCX de una página ≈ 6 s.
 2. **Subprocess local** (`modules/common/libreoffice_export.py::convert_to_pdf`): ejecuta
    `soffice --headless --convert-to pdf` en el **mismo contenedor** que lo llama, con `SOFFICE_BIN`.
    Lo usan `core/sla/report.py`, `core/sla/legacy_report.py`, `core/services/sla_consumo.py`,
@@ -36,8 +38,9 @@ Hay **dos caminos** y ninguno convierte desde el stack dockerizado de `web`/`api
    PDF (sin 500). Prod se construye desde los mismos Dockerfiles (`web/Dockerfile`, `api/Dockerfile`,
    `deploy/docker/base.Dockerfile`), que no instalan LibreOffice.
 
-La herramienta MCP `ConvertirDocAPdf` (`core/mcp/registry.py`) apunta a `office_service:8003` con
-JSON: también está rota.
+La herramienta MCP `ConvertirDocAPdf` (`core/mcp/registry.py`) es hoy el único consumidor de
+`/convert` (`OFFICE_SERVICE_BASE`, default `http://office:8090`). Los informes podrían migrar a ese
+camino en vez del subprocess sin `soffice`.
 
 Antes de prometer un PDF, verificar `docker exec <contenedor> sh -c 'command -v soffice'`.
 
@@ -49,7 +52,8 @@ office_service/
 ├── requirements.txt
 └── app/
     ├── config.py       # Settings con prefijo OFFICE_
-    ├── main.py         # FastAPI: /health, /convert (placeholder)
+    ├── main.py         # FastAPI: /health, /convert (multipart → PDF)
+    ├── conversion.py   # soffice --convert-to con perfil temporal, serializado
     ├── runner.py       # arranca soffice (UNO) + uvicorn; reenvía la salida de soffice al log
     ├── uno_client.py   # conexión y health de UNO
     └── logging_setup.py
