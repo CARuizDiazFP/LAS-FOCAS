@@ -38,15 +38,14 @@ core/chatbot/
 
 ## Herramientas MCP Definidas
 
-Registradas en `core/mcp/registry.py::get_default_registry` (estado verificado 2026-10-26 en dev):
+Registradas en `core/mcp/registry.py::get_default_registry` (estado verificado 2026-10-26 en dev, tras P13). Sólo se registran herramientas que funcionan en el contenedor `web`; una sin implementación no se expone.
 
 | Herramienta | Roles | Descripción | Estado real |
 |-------------|-------|-------------|-------------|
 | `GenerarInformeRepetitividad` | user, admin | DOCX/PDF desde un Excel (`modules/informes_repetitividad`) | ✅ Implementada (no probada de punta a punta; el PDF depende de `soffice`) |
-| `GenerarMapaGeo` | user, admin | Mapa Folium desde puntos lat/lon | ⚠️ `folium` no está en la imagen `web` → `MISSING_DEPENDENCY` |
-| `CompararTrazasFO` | user, admin | Comparación de trazas FO | 🔧 Stub: responde "en desarrollo" |
-| `ConvertirDocAPdf` | admin, ownergroup | Delegar conversión a `office_service` | ❌ Rota: default `office_service:8003` y JSON; el servicio real es `office:8090`, multipart y su `/convert` es placeholder |
-| `RegistrarEnNotion` | admin | Registrar en Notion | 🔧 Stub: "Notion aún no está integrado" |
+| `ConvertirDocAPdf` | admin, ownergroup | Sube el documento (sólo de `UPLOADS_DIR`/`REPORTS_DIR`) multipart a `{OFFICE_SERVICE_BASE}/convert` (default `http://office:8090`) y guarda el PDF en `REPORTS_DIR` | ✅ Probada de punta a punta en dev contra `office` (2026-10-26) |
+
+Retiradas el 2026-10-26 (dan `TOOL_NOT_FOUND`): `GenerarMapaGeo` (sin `folium` en `web`), `CompararTrazasFO` (no existe comparador FO: `/api/flows/comparador-fo` responde 501) y `RegistrarEnNotion` (stub sin configuración). El orquestador sólo reconoce el comando `/repetitividad`; el chat del SPA usa `/api/chat/message` y no invoca herramientas MCP. Detalle en `docs/mcp.md`.
 
 ## Arquitectura del Orquestador
 

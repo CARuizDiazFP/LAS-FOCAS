@@ -43,6 +43,20 @@ Decisiones y rulings: `docs/decisiones.md` (2026-10-14). Esquema: `docs/db.md` (
 - **Heredar** (`PATCH /servicios/{id}/categoria/heredar`) quita la excepción y re-sincroniza a su cliente.
 - "Sin categorizar" no se puede fijar como excepción de un servicio puntual (0 a 6); para eso está Heredar.
 
+`core/services/servicios_categoria_service.py` concentra la validación y el cambio masivo por servicio:
+
+- `validar_categoria(categoria, *, permitir_none=False)` exige el rango 0..6 y levanta
+  `CategoriaInvalidaError` (los endpoints la traducen a 400, no a 500). `None` sólo pasa con
+  `permitir_none=True`, que usa `clientes_categoria_service.py` para "Sin categorizar" a nivel cliente.
+  También la usa la ingesta Excel (`POST /servicios/ingest`) para descartar un "Nivel Cliente" fuera de
+  rango sin tumbar el archivo.
+- `actualizar_categoria_masiva(session, servicio_ids, categoria)` hace un `UPDATE` directo por
+  `Servicio.id` que fija `categoria` y `categoria_excepcion = True`, y devuelve
+  `ResultadoCategoriaMasiva` (`categoria_nueva`, `actualizados`, `no_encontrados`). Lo llama
+  `PATCH /servicios/bulk-categoria` en `api/app/routes/servicios.py`; el cambio individual
+  (`PATCH /servicios/{id}/categoria`) valida con `validar_categoria` y marca la excepción en el mismo
+  endpoint. No escribe auditoría dedicada: la categoría es prioridad de reporting, no estado operativo.
+
 ## Normalización de nombres
 
 `core/services/clientes_categoria_service.py::normalizar_clave_cliente`: `limpiar_clave` (sin acentos ni
@@ -106,8 +120,9 @@ esperado: mientras corre un Re-sincronizar global, las operaciones del módulo e
 | `POST /clientes/{cliente_id}/alias`, `DELETE /clientes/alias/{alias_id}` | Alias manuales. |
 | `POST /clientes/sincronizar` | Sync global. |
 
-**Proxy web** (`web/app/main.py`, sólo admin y con CSRF en los que escriben): los mismos bajo
-`/api/admin/clientes/...`, más `PATCH /api/servicios/{id}/categoria/heredar`. `GET /servicios/search` acepta
+**Proxy web** (sólo admin y con CSRF en los que escriben): los mismos bajo `/api/admin/clientes/...`
+(`web/app/routers/admin_datos.py`), más `PATCH /api/servicios/{id}/categoria/heredar`
+(`web/app/routers/servicios.py`). `GET /servicios/search` acepta
 el token `sin` en `categoria`.
 
 ## Script de regularización
@@ -138,6 +153,8 @@ como alias de BANCO MACRO SA y TEXPERT SA, renombres confirmados por el usuario)
 ## Archivos
 
 `core/services/clientes_categoria_service.py`, `core/services/clientes_categoria_hooks.py`,
-`core/parsers/lista_clientes.py`, `api/app/routes/clientes.py`, `web/app/main.py`,
+`core/services/servicios_categoria_service.py`, `core/parsers/lista_clientes.py`,
+`api/app/routes/clientes.py`, `api/app/routes/servicios.py`, `web/app/routers/admin_datos.py`,
+`web/app/routers/servicios.py`,
 `web/frontend/src/admin/views/AdminClientesCategoria.vue` (+ `admin/components/clientes/`,
 `admin/api/clientesCategoria.ts`).

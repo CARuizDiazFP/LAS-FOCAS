@@ -135,7 +135,7 @@ class ChatOrchestrator:
             if command:
                 yield ChatEvent(
                     type="assistant_done",
-                    content=f"Comando {command} no reconocido. Probá con /repetitividad o /comparador.",
+                    content=f"Comando {command} no reconocido. Probá con /repetitividad.",
                 )
                 await self._storage.append_message(
                     session_id,
@@ -147,7 +147,7 @@ class ChatOrchestrator:
         # Respuesta base si no se disparó herramienta
         template = (
             "Estoy listo para ayudarte a generar informes o consultar datos. "
-            "Podés usar /repetitividad o /comparador."
+            "Podés usar /repetitividad."
         )
         await self._storage.append_message(session_id, "assistant", template)
         yield ChatEvent(type="assistant_delta", content=template)
@@ -195,10 +195,6 @@ class ChatOrchestrator:
             if attachments:
                 args.setdefault("file_path", attachments[0].get("path"))
             return command, ToolRequest(name="GenerarInformeRepetitividad", args=args, attachments=attachments)
-        if command in {"comparador", "comparadorfo", "comparador-fo"}:
-            return command, ToolRequest(name="CompararTrazasFO", args=args, attachments=attachments)
-        if command in {"mapa", "map"}:
-            return command, ToolRequest(name="GenerarMapaGeo", args=args, attachments=attachments)
         return command, None
 
     async def _execute_tool(

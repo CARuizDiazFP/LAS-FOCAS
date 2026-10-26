@@ -4,21 +4,30 @@
 
 # Web (UI) — Uso rápido
 
-## Desarrollo local (opción rápida con uvicorn)
+La documentación completa del servicio (backend FastAPI por routers, SPA Vue 3, rutas, sesión,
+endpoints, variables y Docker) está en [`docs/web.md`](../docs/web.md). Este archivo sólo deja los
+comandos de trabajo.
 
-1. Crear entorno e instalar dependencias (ver `requirements.txt`).
-2. Ejecutar:
+## Rebuild en el stack dev (forma de validar)
 
+Desde la raíz del repo:
+
+```bash
+docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d --build web
 ```
-uvicorn app.main:app --reload --port 8080
-```
 
-Abrir `http://127.0.0.1:8080`.
+El `web/Dockerfile` compila el SPA (`npm ci` + `npm run build`) y lo copia en `/app/frontend/dist`.
+El panel dev queda en `http://127.0.0.1:8090` (ver `docs/entorno_dev.md`).
 
-## Docker/Compose
+## Frontend (`web/frontend/`)
 
-Se levanta con el stack general del proyecto:
+Scripts de `package.json`:
 
-- Servicio `web` en `8080:8080`.
-- `api` en `8001:8000` (para evitar conflicto con 8000 de la VM).
-- `nlp_intent` resuelto en la red interna de compose y proveedor LLM externo configurado vía `.env`.
+| Comando | Qué hace |
+|---|---|
+| `npm run dev` | servidor de Vite |
+| `npm run build` | build a `web/frontend/dist/` |
+| `npm run preview` | sirve el build en el puerto 5173 |
+| `npm run type-check` | `vue-tsc --noEmit -p tsconfig.json` |
+
+`vite.config.ts` no define proxy hacia el backend: el `npm run dev` por sí solo no alcanza `/api/*`.

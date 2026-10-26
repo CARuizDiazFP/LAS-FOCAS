@@ -50,7 +50,9 @@ Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`
 
 ## Uso por Web Panel
 
-**Endpoint**: `POST /api/reports/sla`
+**Endpoint**: `POST /api/reports/sla` (`web/app/routers/informes.py::generar_informe_sla_web`, requiere
+sesión y `csrf_token` en el form). Campos del form: `mes`/`anio` (o `periodo_mes`/`periodo_anio`),
+`pdf_enabled`, `use_db` y `files` (multipart).
 
 **URL productiva**: `http://172.18.208.162:8080/sla`
 
@@ -61,11 +63,11 @@ Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`
 2. Arrastrar y soltar **dos archivos Excel obligatorios**:
    - "Servicios Fuera de SLA.xlsx" (o similar)
    - "Reclamos SLA.xlsx" (o similar)
-3. Indicar el período: mes (1-12) y año (≥2000).
+3. Indicar el período: mes (1-12) y año (2000-2100).
 4. Opcional: activar "Generar PDF" si LibreOffice está disponible.
 5. Opcional: activar "Usar base de datos" para ignorar archivos y consultar desde `app.reclamos`.
 6. Click en "Generar informe".
-7. El sistema devuelve JSON con rutas de descarga del `.docx` y opcionalmente `.pdf`.
+7. El sistema devuelve JSON con las rutas de descarga (`report_paths`) del `.docx` y opcionalmente `.pdf`.
 
 Cada generación desde el panel web registra una entrada en `app.report_history` con usuario, período, fuente (`excel-legacy` o `db`), estado, duración, errores y enlaces de salida. La vista `/reports-history` consume ese histórico persistente.
 
@@ -73,16 +75,30 @@ Cada generación desde el panel web registra una entrada en `app.report_history`
 - Se requieren **exactamente 2 archivos** si no se usa DB.
 - Ambos archivos deben tener extensión `.xlsx`.
 - El sistema identifica automáticamente cuál es "Servicios" y cuál es "Reclamos" por las columnas.
-- Errores claros se muestran en la UI (ej: "Plantilla SLA no encontrada", "Debés adjuntar dos archivos").
+- Errores claros se muestran en la UI (ej: "Debés adjuntar dos archivos: servicios y reclamos"). Una
+  plantilla faltante (`FileNotFoundError` en `core/sla/`) ya no muestra su texto: cae en el 500 genérico.
+- Códigos de rechazo (`{"ok": false, "error": "..."}`, cada uno registrado en el historial): 403 CSRF
+  inválido, 422 período no numérico o fuera de rango, 400 si no llegan exactamente dos archivos o uno
+  está vacío, 415 si un archivo no es `.xlsx`, 422 si un Excel no se reconoce o se repite el tipo, y 500
+  `Error interno (ref …)` ante un fallo inesperado (la ref permite ubicarlo en `Logs/web.log`).
 
 ### Respuesta exitosa:
 ```json
 {
   "ok": true,
-  "docx": "/api/reports/download/sla/202510/InformeSLA_202510_abc123.docx",
-  "pdf": "/api/reports/download/sla/202510/InformeSLA_202510_abc123.pdf"
+  "message": "Informe SLA generado correctamente",
+  "report_paths": {
+    "docx": "/reports/sla/202510/InformeSLA_20251105_143012.docx",
+    "pdf": "/reports/sla/202510/InformeSLA_20251105_143012.pdf"
+  },
+  "source": "excel-legacy"
 }
 ```
+
+`report_paths.pdf` sólo aparece si se pidió PDF y la conversión funcionó. Las rutas son relativas al
+directorio de informes (`_report_href`) y se descargan con `GET /reports/{ruta}` (mismo router, requiere
+sesión). El nombre del archivo depende del modo: Excel → `sla/AAAAMM/InformeSLA_<AAAAMMDD_HHMMSS>.docx`
+(`core/sla/legacy_report.py`); DB (`"source": "db"`) → `sla/AAAAMM/sla_AAAAMM.docx` (`core/sla/report.py`).
 
 ## Uso por Telegram
 1. Enviar comando `/sla` o usar el botón correspondiente.
