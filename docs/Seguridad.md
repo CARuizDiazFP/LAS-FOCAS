@@ -188,18 +188,12 @@ al usuario; se resume acá lo accionable para no perderlo de vista en la próxim
   `starlette` (0.37.2–0.38.6 → mín. 0.40.0), `python-multipart` (0.0.9 → 0.0.31, usado en endpoints
   de upload reales de `api`/`web`/`office_service`), y `aiohttp` (3.10.11, transitiva de `aiogram`
   en `bot_telegram`, mitigado hoy porque el bot usa polling y no expone servidor).
-- **Medium-High** — CSRF ausente en ~12 endpoints mutantes del panel web que sí deberían llevarlo
-  por el patrón ya establecido en el resto. Desde el refactor de 2026-10-20 los endpoints viven en
-  `web/app/routers/` (`main.py` sólo ensambla). Reverificado el 2026-10-26: siguen sin chequeo
-  `POST /api/infra/ban/create` y `/ban/lift`, `POST /api/infra/notify/email` y `/notify/download-eml`,
-  los admin `aprobar`, `dar-de-alta`, `convertir-alias` y `DELETE .../camaras/pendientes/{id}`
-  (`web/app/routers/camaras.py`), y `POST /api/infra/upload_tracking`, `/trackings/analyze`,
-  `/trackings/resolve` y `DELETE /api/infra/servicios/{id}/empalmes` (`web/app/routers/servicios.py`).
-  Los merges de Cámaras ya lo validan. El token se genera en el login (`web/app/routers/sesion.py`,
-  `request.session["csrf"]`) y cada endpoint lo compara a mano o con `_validar_csrf()`
-  (`web/app/comun.py`); `web/app/dependencias.py` sólo da `usuario_sesion`/`usuario_admin`, no hay
-  dependencia de CSRF. Pendiente: aplicar el chequeo de forma uniforme vía dependencia compartida en
-  vez de por endpoint.
+- ~~**Medium-High** — CSRF ausente en ~12 endpoints mutantes del panel web~~ **Resuelto 2026-10-26
+  (P07)**: dependencia única `requiere_csrf` (`web/app/dependencias.py`) en todos los routers de
+  `web/app/routers/` y en FO Monitor; cubre los 98 `POST|PUT|PATCH|DELETE` salvo el login (no hay sesión
+  todavía). Acepta `X-CSRF-Token` o `csrf_token` en el body. `tests/test_web_csrf.py` falla ante una
+  ruta mutante nueva sin la dependencia. Ver `docs/web.md` → "CSRF". Mitigación previa que sigue:
+  cookie `SameSite=lax`.
 - **Medium** — Allowlist de Telegram (`bot_telegram/filters/allowlist.py`) falla **abierta** (admite
   a cualquiera) si `TELEGRAM_ALLOWED_IDS` queda vacío/sin setear, en vez de bloquear a todos.
 - **Medium** — Path traversal vía `document.file_name` sin sanitizar en

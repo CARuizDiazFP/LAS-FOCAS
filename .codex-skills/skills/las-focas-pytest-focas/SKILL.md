@@ -620,6 +620,12 @@ habría dado 500 apenas hubiera puntos terminales cargados (en dev y prod la tab
 - **Sesión simulada:** usar el fixture `con_sesion("admin" | "user" | None)` (`tests/soporte_sesion.py`),
   que llama a las dependencias reales con un request falso. No parchear `_require_auth` en el
   router (`comun.get_current_user` es un helper sin llamadores: tampoco sirve parchearlo). Si hace falta, parchear la única fuente, `comun._require_auth`.
+- **CSRF (desde 2026-10-26, P07): no se prueba por endpoint.** Lo valida `requiere_csrf` en el
+  router; `tests/test_web_csrf.py` ya recorre `app.routes` (inventario + 403/paso por ruta), así que
+  una ruta nueva en un router existente queda cubierta sola. Para un 403 puntual: fixture
+  `csrf_real` + **sesión real** (login con `psycopg.connect` parcheado): con `con_sesion` la cookie
+  no tiene `username` y la dependencia no decide (deja pasar). Los endpoints ya no reciben
+  `csrf_token`: un test que llama al handler directo no debe pasarlo.
 
 ## Endpoints web `async def` → `def` y tests de rendimiento (lección 2026-10-26, P04)
 

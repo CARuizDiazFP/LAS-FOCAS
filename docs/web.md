@@ -36,9 +36,10 @@ web/
   app/
     main.py            ← ensamblador: app FastAPI, handlers de error, SessionMiddleware, middleware
                          de log, montaje de /assets, WebSockets, FO Monitor, include_router y catch-all
-    comun.py           ← helpers compartidos: _require_auth/_require_admin, _validar_csrf, DB_DSN,
-                         rutas de datos (DATA_DIR, UPLOADS_DIR, REPORTS_DIR), BUILD_VERSION, logger
-    dependencias.py    ← Depends(usuario_sesion) / Depends(usuario_admin) → UsuarioSesion
+    comun.py           ← helpers compartidos: _require_auth/_require_admin, leer_upload (tope 413),
+                         DB_DSN, rutas de datos (DATA_DIR, UPLOADS_DIR, REPORTS_DIR), BUILD_VERSION, logger
+    dependencias.py    ← Depends(usuario_sesion) / Depends(usuario_admin) → UsuarioSesion;
+                         requiere_csrf (declarada en cada APIRouter)
     errores.py         ← ErrorDeDominio (NoEncontrado 404, DatoInvalido 422, Conflicto 409) y 500 con ref
     routers/           ← un APIRouter por dominio (tabla abajo)
   fo_monitor_routes.py ← /api/fo-monitor/* y /api/admin/fo-monitor/config (mount_fo_monitor_routes)
@@ -201,7 +202,31 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 ### CSRF
 
 El token CSRF se incluye en la respuesta de `/api/auth/session` y `/api/auth/login`. El composable `useSession.ts` lo almacena en estado reactivo y sincroniza un fallback `window.CSRF_TOKEN` solo por compatibilidad con superficies legacy aún no migradas.
-Todos los endpoints POST que mutan datos validan el CSRF token.
+
+Desde 2026-10-26 (P07) la validación es **una sola dependencia**, `requiere_csrf`
+(`web/app/dependencias.py`), declarada en cada `APIRouter` de `web/app/routers/` (después de la de
+sesión) y en las mutaciones de `web/fo_monitor_routes.py`. Los endpoints no reciben ni comparan el token.
+
+- Cubre **todo** `POST|PUT|PATCH|DELETE`, incluidas las búsquedas por POST (`search`, `smart-search`,
+  `trackings/analyze`, `notify/download-eml`, `previsualizar`), chat, informes, uploads y `logout`.
+  Única excepción (`RUTAS_SIN_CSRF`): `POST /api/auth/login`, que se llama antes de que exista sesión.
+- Token por header `X-CSRF-Token` (canónico) o `csrf_token` en el body JSON/form (transición). Si viene
+  el header, manda el header.
+- Falla → 403 `{"error": "CSRF inválido"}`. Sin usuario en la sesión no decide: responde la
+  autenticación del endpoint (401), así una sesión vencida no se confunde con un CSRF inválido.
+- `TESTING=true` la saltea; la fixture `csrf_real` (`tests/conftest.py`) la reactiva.
+- `tests/test_web_csrf.py` recorre `app.routes` y falla si aparece una ruta mutante sin la dependencia;
+  además prueba 403/paso en cada una. Una ruta nueva en un router existente ya queda cubierta; un
+  router nuevo tiene que declararla.
+- Front: `api/client.ts` manda `X-CSRF-Token` en todo pedido mutante (aunque no pida `csrf: true`); los
+  `fetch` crudos que quedan (InfraTab, migración en P10) lo mandan a mano.
+
+### Tope de uploads
+
+`leer_upload` / `leer_upload_sync` (`web/app/comun.py`) leen por chunks y cortan con 413
+`{"error": "<archivo> supera el límite de N MB"}`: `MAX_UPLOAD_MB` (default 20) para los Excel de SLA e
+ingestas; alarmas Ciena 10 MB; trackings 5 MB. Chat (`CHAT_UPLOAD_MAX_BYTES`), lista de clientes (5 MB) y
+Repetitividad (10 MB, a disco) tienen su propio tope.
 
 ### Cliente HTTP y composables
 
