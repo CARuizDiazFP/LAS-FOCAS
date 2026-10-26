@@ -73,11 +73,9 @@ def test_reports_history_endpoint_devuelve_items_autenticado(monkeypatch: pytest
     history.finish_error(report_id, error_code="HTTP_422", error_message="Archivo inválido")
     monkeypatch.setattr(web_informes, "REPORT_HISTORY", history)
 
-    response = asyncio.run(
-        web_informes.api_reports_history(
-            type="repetitividad",
-            status="error",
-        )
+    response = web_informes.api_reports_history(
+        type="repetitividad",
+        status="error",
     )
 
     assert response.status_code == 200
