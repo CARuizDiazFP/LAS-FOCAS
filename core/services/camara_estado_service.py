@@ -7,12 +7,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
+from collections.abc import Iterable
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from db.models.cromo import CromoBotella
-from db.models.infra import Camara, CamaraEstado, CamaraEstadoAuditoria, IncidenteBaneo, Ingreso, IngresoTipo
+from db.models.infra import (
+    Camara,
+    CamaraEstado,
+    CamaraEstadoAuditoria,
+    Empalme,
+    IncidenteBaneo,
+    Ingreso,
+    IngresoTipo,
+    RutaServicio,
+)
 
 logger = logging.getLogger("infra_camera_state")
 
@@ -163,41 +173,36 @@ def _estado_sugerido(tiene_baneo_activo: bool, tiene_ingreso_activo: bool) -> Ca
     return CamaraEstado.LIBRE
 
 
-def get_camara_estado_contexto(session: Session, camara_id: int) -> CamaraEstadoContexto | None:
-    """Obtiene el contexto de estado de una cámara."""
-    camara = session.query(Camara).filter(Camara.id == camara_id).first()
-    if not camara:
-        return None
-
-    servicios_ids, rutas_ids = _collect_servicios_y_rutas(camara)
-    incidentes_activos_db: list[IncidenteBaneo] = []
-    if servicios_ids:
-        candidatos = (
-            session.query(IncidenteBaneo)
-            .filter(
-                IncidenteBaneo.activo == True,
-                IncidenteBaneo.servicio_protegido_id.in_(sorted(servicios_ids)),
-            )
-            .order_by(IncidenteBaneo.fecha_inicio.desc())
-            .all()
+def _incidentes_activos_query(session: Session, servicios_ids: set[str]) -> list[IncidenteBaneo]:
+    """Incidentes activos de esos servicios, del más reciente al más viejo. El desempate por `id`
+    fija el orden entre incidentes con la misma `fecha_inicio` (de él depende `ticket_baneo`) — sin
+    él, la versión por fila y la por lote podían devolver empates en distinto orden."""
+    return (
+        session.query(IncidenteBaneo)
+        .filter(
+            IncidenteBaneo.activo == True,  # noqa: E712
+            IncidenteBaneo.servicio_protegido_id.in_(sorted(servicios_ids)),
         )
-        incidentes_activos_db = [
-            incidente for incidente in candidatos if _incidente_afecta_camara(incidente, servicios_ids, rutas_ids)
-        ]
+        .order_by(IncidenteBaneo.fecha_inicio.desc(), IncidenteBaneo.id.desc())
+        .all()
+    )
+
+
+def _armar_contexto(
+    camara: Camara,
+    candidatos: list[IncidenteBaneo],
+    ids_con_ingreso_activo: set[int],
+) -> CamaraEstadoContexto:
+    """Contexto de `camara` a partir de lo ya consultado: `candidatos` son incidentes activos (en
+    orden) de un superconjunto de los servicios del grupo, `ids_con_ingreso_activo` las cámaras con un
+    Ingreso abierto y vigente. Lo comparten la versión por fila y la por lote para no divergir."""
+    servicios_ids, rutas_ids = _collect_servicios_y_rutas(camara)
+    incidentes_activos_db = [
+        incidente for incidente in candidatos if _incidente_afecta_camara(incidente, servicios_ids, rutas_ids)
+    ]
 
     miembros = miembros_del_grupo(camara)
-    ids_grupo = [miembro.id for miembro in miembros]
-    tiene_ingreso_activo = (
-        session.query(Ingreso.id)
-        .filter(
-            Ingreso.camara_id.in_(ids_grupo),
-            Ingreso.tipo == IngresoTipo.INGRESO,
-            Ingreso.fecha_fin == None,  # noqa: E711
-            Ingreso.vigente(),
-        )
-        .first()
-        is not None
-    )
+    tiene_ingreso_activo = any(miembro.id in ids_con_ingreso_activo for miembro in miembros)
 
     estado_actual = camara.estado or CamaraEstado.LIBRE
     # Baneo manual (Camara.estado == BANEADA) de CUALQUIER miembro del grupo cuenta como baneo activo
@@ -243,6 +248,89 @@ def get_camara_estado_contexto(session: Session, camara_id: int) -> CamaraEstado
         incidentes_activos=incidentes_activos,
         ticket_baneo=ticket_baneo,
     )
+
+
+def _ids_con_ingreso_activo(session: Session, camara_ids: set[int]) -> set[int]:
+    """Cámaras (de `camara_ids`) con un Ingreso abierto y vigente (no anulado)."""
+    if not camara_ids:
+        return set()
+    filas = (
+        session.query(Ingreso.camara_id)
+        .filter(
+            Ingreso.camara_id.in_(sorted(camara_ids)),
+            Ingreso.tipo == IngresoTipo.INGRESO,
+            Ingreso.fecha_fin == None,  # noqa: E711
+            Ingreso.vigente(),
+        )
+        .distinct()
+        .all()
+    )
+    return {camara_id for (camara_id,) in filas}
+
+
+def get_camara_estado_contexto(session: Session, camara_id: int) -> CamaraEstadoContexto | None:
+    """Obtiene el contexto de estado de una cámara. Para listados usar
+    `get_camara_estado_contexto_batch` (mismo resultado, cantidad de queries constante)."""
+    camara = session.query(Camara).filter(Camara.id == camara_id).first()
+    if not camara:
+        return None
+
+    servicios_ids, _ = _collect_servicios_y_rutas(camara)
+    candidatos = _incidentes_activos_query(session, servicios_ids) if servicios_ids else []
+    ids_grupo = {miembro.id for miembro in miembros_del_grupo(camara)}
+    return _armar_contexto(camara, candidatos, _ids_con_ingreso_activo(session, ids_grupo))
+
+
+# Lo que recorre `_collect_servicios_y_rutas` por cada miembro del grupo, cargado por lote.
+_EMPALMES_RUTAS_SERVICIO = selectinload(Camara.empalmes).selectinload(Empalme.rutas).selectinload(RutaServicio.servicio)
+
+
+def get_camara_estado_contexto_batch(
+    session: Session, camara_ids: Iterable[int]
+) -> dict[int, CamaraEstadoContexto]:
+    """`get_camara_estado_contexto` para muchas cámaras con una cantidad de queries que no crece con
+    la cantidad de ids (cámaras, grupos con sus empalmes/rutas/servicios, incidentes e ingresos, cada
+    uno por lote). Los ids inexistentes no aparecen en el resultado (equivale al `None` por fila).
+
+    Las relaciones ya cargadas en la sesión se reusan (identity map): si el caller ya trajo las
+    cámaras con sus empalmes, no se vuelven a pedir."""
+    ids = sorted(set(camara_ids))
+    if not ids:
+        return {}
+
+    camaras = session.query(Camara).filter(Camara.id.in_(ids)).options(selectinload(Camara.camara_padre)).all()
+    if not camaras:
+        return {}
+
+    # Grupos completos (raíz + botellas) con lo que recorre `_collect_servicios_y_rutas`. El
+    # resultado no se usa: puebla el identity map, que es donde lo leen `miembros_del_grupo` y las
+    # relaciones de cada miembro.
+    raiz_ids = sorted({camara.camara_padre_id or camara.id for camara in camaras})
+    (
+        session.query(Camara)
+        .filter(Camara.id.in_(raiz_ids))
+        .options(
+            _EMPALMES_RUTAS_SERVICIO,
+            selectinload(Camara.botellas)
+            .selectinload(Camara.empalmes)
+            .selectinload(Empalme.rutas)
+            .selectinload(RutaServicio.servicio),
+        )
+        .all()
+    )
+
+    servicios_todos: set[str] = set()
+    ids_grupos: set[int] = set()
+    for camara in camaras:
+        servicios_ids, _ = _collect_servicios_y_rutas(camara)
+        servicios_todos |= servicios_ids
+        ids_grupos.update(miembro.id for miembro in miembros_del_grupo(camara))
+
+    # Los candidatos son un superconjunto ordenado; `_armar_contexto` filtra los de cada grupo y la
+    # subsecuencia conserva el orden de la query por fila.
+    candidatos = _incidentes_activos_query(session, servicios_todos) if servicios_todos else []
+    con_ingreso = _ids_con_ingreso_activo(session, ids_grupos)
+    return {camara.id: _armar_contexto(camara, candidatos, con_ingreso) for camara in camaras}
 
 
 def aplicar_estado_a_grupo(
