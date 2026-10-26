@@ -100,8 +100,11 @@ class _SesionFake:
         self._respuestas_execute = respuestas_execute or {}
         self.agregados: list[Any] = []
         self.eliminados: list[Any] = []
+        self.gets = 0
+        self.precargas = 0
 
     async def get(self, modelo_cls: type, pk: int) -> Any:
+        self.gets += 1
         return self._existentes.get((modelo_cls, pk))
 
     def add(self, obj: Any) -> None:
@@ -118,6 +121,18 @@ class _SesionFake:
         return _NestedCM()
 
     async def execute(self, stmt: Any, params: Optional[dict] = None) -> _ResultadoFilas:
+        # `precargar_por_n_id`: `select(Modelo).where(Modelo.n_id.in_(ids))`, respondido desde
+        # `_existentes` como lo haría la base. Sin esto la precarga vería todo como inexistente.
+        where = getattr(stmt, "whereclause", None)
+        if getattr(getattr(where, "left", None), "key", None) == "n_id" and getattr(
+            getattr(where, "operator", None), "__name__", ""
+        ) == "in_op":
+            self.precargas += 1
+            entidad = stmt.column_descriptions[0]["entity"]
+            ids = set(where.right.value)
+            return _ResultadoFilas(
+                [(obj,) for (cls, pk), obj in self._existentes.items() if cls is entidad and pk in ids]
+            )
         texto = str(stmt)
         for clave, filas in self._respuestas_execute.items():
             if clave in texto:
@@ -2583,6 +2598,62 @@ async def test_procesar_cable_tercero_guarda_cable_tubos_y_pelos():
     assert [p.n_id for p in pelos] == [7968010]
     assert pelos[0].cable_n_id == cable.n_id
     assert pelos[0].servicio_numero == "42351"
+
+
+@pytest.mark.asyncio
+async def test_procesar_cable_tercero_actualiza_pelo_existente_via_precarga_sin_get_por_objeto():
+    """Precarga por lote (2026-10-26): el pelo que ya existe se actualiza en su fila, no se agrega
+    otra, y ni tubos ni pelos cuestan un `sesion.get()` cada uno."""
+    pelo_existente = CromoPelo(n_id=7968010, tubo_n_id=7968009, cable_n_id=1, numero_pelo="1")
+    sesion = _SesionFake({(CromoPelo, 7968010): pelo_existente})
+    contadores = ingesta.ContadoresCorrida()
+
+    await ingesta._procesar_cable_tercero_directo(
+        sesion, corrida_id=1, obj=_cable_tercero_obj(60), contadores=contadores
+    )
+
+    assert contadores.errores == 0
+    assert not any(isinstance(o, CromoPelo) for o in sesion.agregados)
+    assert pelo_existente.servicio_numero == "42351"
+    assert pelo_existente.ultima_ingesta is not None
+    assert sesion.precargas == 2  # una para tubos, otra para pelos
+    assert sesion.gets == 2  # sólo el cable (upsert_versionado) y `_reactivar_si_estaba_de_baja`
+
+
+@pytest.mark.asyncio
+async def test_precargar_por_n_id_descarta_nulos_y_parte_en_lotes(monkeypatch):
+    monkeypatch.setattr(ingesta, "_LOTE_PRECARGA", 2)
+    tubos = {n: CromoTubo(n_id=n) for n in (1, 2, 3)}
+    sesion = _SesionFake({(CromoTubo, n): t for n, t in tubos.items()})
+
+    encontrados = await ingesta.precargar_por_n_id(sesion, CromoTubo, [3, None, 1, 2, 2, 99])
+
+    assert encontrados == tubos
+    assert sesion.precargas == 2  # [1, 2, 3, 99] en lotes de 2
+
+
+@pytest.mark.asyncio
+async def test_upsert_simple_con_precargados_registra_la_fila_creada():
+    """Un segundo arribo del mismo n_id dentro del lote encuentra la fila recién creada, igual que
+    `sesion.get()` la encontraba en el identity map."""
+    sesion = _SesionFake()
+    precargados: dict = {}
+
+    @dataclass(slots=True)
+    class _TuboFake:
+        n_id: int
+        cable_n_id: int = 1
+        orden: Optional[int] = None
+        nombre_color: Optional[str] = None
+
+    campos = ingesta.TUBO_CAMPOS
+    await ingesta.upsert_simple(sesion, CromoTubo, _TuboFake(n_id=5, orden=1), campos, precargados=precargados)
+    await ingesta.upsert_simple(sesion, CromoTubo, _TuboFake(n_id=5, orden=2), campos, precargados=precargados)
+
+    assert len(sesion.agregados) == 1
+    assert precargados[5] is sesion.agregados[0]
+    assert sesion.agregados[0].orden == 2
+    assert sesion.gets == 0
 
 
 @pytest.mark.asyncio

@@ -10,13 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 import logging
 import math
-from urllib.parse import quote
 
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from sqlalchemy.engine import Engine
 from typing import Optional
 
-from core.config import get_secret
 from core.maps.static_map import build_static_map_png
 
 
@@ -24,20 +23,13 @@ from core.maps.static_map import build_static_map_png
 logger = logging.getLogger(__name__)
 
 
-def _db_password_url() -> str:
-    return quote(get_secret("db_password_v1", "POSTGRES_PASSWORD"), safe="")
+def _engine() -> Engine:
+    """Engine compartido de `db/session.py`: un pool por proceso. Hasta 2026-10-26 cada llamada creaba
+    su propio engine (y su pool) sin `dispose()`, así que cada request abría una conexión nueva
+    (medido en dev: 10 de 10 llamadas). Import diferido para no acoplar el import de este módulo."""
+    from db.session import engine
 
-
-def _engine_url() -> str:
-    return get_secret(
-        "ALEMBIC_URL",
-        "ALEMBIC_URL",
-        get_secret(
-            "DATABASE_URL",
-            "DATABASE_URL",
-            f"postgresql+psycopg://{get_secret('POSTGRES_USER', 'POSTGRES_USER', 'lasfocas')}:{_db_password_url()}@{get_secret('POSTGRES_HOST', 'POSTGRES_HOST', 'postgres')}:{get_secret('POSTGRES_PORT', 'POSTGRES_PORT', '5432')}/{get_secret('POSTGRES_DB', 'POSTGRES_DB', 'lasfocas')}",
-        ),
-    )
+    return engine
 
 
 def upsert_reclamos(df: pd.DataFrame) -> Tuple[int, int]:
@@ -46,7 +38,7 @@ def upsert_reclamos(df: pd.DataFrame) -> Tuple[int, int]:
         return 0, 0
     from core.sla_consumo.persistencia import upsert_reclamos_df
 
-    engine = create_engine(_engine_url())
+    engine = _engine()
     with engine.begin() as conn:
         insertados, actualizados, _ = upsert_reclamos_df(conn, df, ingesta_id=None, preservar_no_nulos=True)
         return insertados, actualizados
@@ -69,7 +61,7 @@ def _period_range(mes: int, anio: int) -> Tuple[datetime, datetime]:
 
 
 def repetitividad_metrics_from_db(mes: int, anio: int) -> PeriodMetrics:
-    engine = create_engine(_engine_url())
+    engine = _engine()
     start, end = _period_range(mes, anio)
     with engine.begin() as conn:
         # total servicios: líneas únicas con al menos un reclamo en el período
@@ -168,7 +160,7 @@ def reclamos_from_db(mes: int, anio: int) -> pd.DataFrame:
     """Obtiene un DataFrame con columnas normalizadas desde la tabla app.reclamos."""
 
     start, end = _period_range(mes, anio)
-    engine = create_engine(_engine_url())
+    engine = _engine()
     query = text(
         """
         SELECT

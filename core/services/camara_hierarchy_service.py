@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import re
 import zlib
+from functools import lru_cache
 from typing import Iterable, Optional
 
 from sqlalchemy import text
@@ -124,6 +125,12 @@ def normalizar_para_agrupar_extendido(nombre: Optional[str]) -> str:
     return expandir_abreviaturas_y_sinonimos(normalizar_para_agrupar(limpiar_ruido_operativo(nombre or "")))
 
 
+# Caché del resolver: con ~10k raíces, normalizar todos los nombres en cada llamada costaba ~500 ms
+# de CPU (medido en dev, 2026-10-26). La normalización es una función pura del texto (tablas fijas de
+# `camara_search`), así que un nombre ya visto no se vuelve a procesar mientras viva el proceso.
+_normalizar_extendido_cacheado = lru_cache(maxsize=32768)(normalizar_para_agrupar_extendido)
+
+
 def estado_mas_restrictivo(estados: Iterable[CamaraEstado]) -> CamaraEstado:
     """Devuelve el estado más restrictivo de un grupo: BANEADA > OCUPADA/DETECTADA > LIBRE.
 
@@ -154,6 +161,29 @@ def ids_camaras_con_cromo_hijos(session: Session) -> set[int]:
         camara_id
         for (camara_id,) in session.query(CromoBotella.camara_id).filter(CromoBotella.camara_id.isnot(None)).all()
     }
+
+
+def ids_camaras_con_botellas_legado(session: Session) -> set[int]:
+    """IDs de `Camara` que tienen al menos una Botella legado (self-FK `camara_padre_id`). Equivale a
+    `bool(camara.botellas)` para todas las filas en una sola query, sin la carga lazy por fila."""
+    return {
+        camara_padre_id
+        for (camara_padre_id,) in session.query(Camara.camara_padre_id)
+        .filter(Camara.camara_padre_id.isnot(None))
+        .distinct()
+        .all()
+    }
+
+
+def _raices_id_nombre(session: Session) -> list[tuple[int, str]]:
+    """(id, nombre) de todas las Cámaras raíz (`camara_padre_id IS NULL`), por id ascendente."""
+    return [
+        (camara_id, nombre)
+        for camara_id, nombre in session.query(Camara.id, Camara.nombre)
+        .filter(Camara.camara_padre_id.is_(None))
+        .order_by(Camara.id)
+        .all()
+    ]
 
 
 def _advisory_lock_para(session: Session, clave: str) -> None:
@@ -194,21 +224,20 @@ def resolver_o_crear_padre_desde_base(
     base_norm = normalizar_para_agrupar_extendido(base)
     _advisory_lock_para(session, base_norm)
 
-    # O(n) sobre las filas raíz — mismo orden de magnitud que ya usa `_get_or_create_camara`
-    # (`core/services/infra_service.py`) para su propio dedup; el dataset es chico (~1800 filas).
-    raices = session.query(Camara).filter(Camara.camara_padre_id.is_(None)).all()
-    ids_con_cromo_hijos = ids_camaras_con_cromo_hijos(session)
-
-    def _tiene_hijos(candidata: Camara) -> bool:
-        # Botella legado (self-FK) O Botella Cromo propia — ver `ids_camaras_con_cromo_hijos`.
-        return bool(candidata.botellas) or candidata.id in ids_con_cromo_hijos
+    # O(n) sobre las filas raíz, pero sólo (id, nombre) y con "tiene hijos" resuelto en dos sets
+    # precargados. Antes se cargaban las ~10k raíces como ORM y `candidata.botellas` (lazy) disparaba
+    # una query por raíz: medido en dev (2026-10-26), una base sin padre costaba 10.140 queries y
+    # ~12 s, todo bajo el advisory lock.
+    raices = _raices_id_nombre(session)
+    ids_con_hijos = ids_camaras_con_botellas_legado(session) | ids_camaras_con_cromo_hijos(session)
+    ids_mismo_nombre = [camara_id for camara_id, nombre in raices if _normalizar_extendido_cacheado(nombre) == base_norm]
 
     # 1. ¿Ya existe un padre para esta base? Sólo cuentan como "padre" las filas que YA tienen al
-    #    menos una botella — una fila raíz sin botellas es una cámara normal, no un padre, aunque su
-    #    nombre coincida (evita promover una fila ajena por casualidad de nombre).
-    for candidata in raices:
-        if _tiene_hijos(candidata) and normalizar_para_agrupar_extendido(candidata.nombre) == base_norm:
-            return candidata
+    #    menos una botella (legado o Cromo) — una fila raíz sin botellas es una cámara normal, no un
+    #    padre, aunque su nombre coincida (evita promover una fila ajena por casualidad de nombre).
+    for camara_id in ids_mismo_nombre:
+        if camara_id in ids_con_hijos:
+            return session.get(Camara, camara_id)
 
     # 2. No existe ningún padre todavía — crear uno nuevo. Antes de devolverlo, absorber como
     #    botella cualquier fila raíz "pelada" preexistente cuyo nombre normalizado coincida
@@ -223,16 +252,14 @@ def resolver_o_crear_padre_desde_base(
     session.flush()
 
     hermanas_absorbidas = []
-    for candidata in raices:
-        if normalizar_para_agrupar_extendido(candidata.nombre) != base_norm:
-            continue
-        if _tiene_hijos(candidata):
+    for camara_id in ids_mismo_nombre:
+        if camara_id in ids_con_hijos:
             # No debería llegar acá (el paso 1 ya habría devuelto esta fila) — defensivo: nunca
             # absorber una raíz con Botellas propias, rompería el invariante "camara_id siempre
             # apunta a una raíz" (ver `ids_camaras_con_cromo_hijos`).
             continue
-        candidata.camara_padre_id = nuevo_padre.id
-        hermanas_absorbidas.append(candidata.id)
+        session.get(Camara, camara_id).camara_padre_id = nuevo_padre.id
+        hermanas_absorbidas.append(camara_id)
 
     logger.info(
         "action=camara_hierarchy evento=padre_creado padre_id=%s nombre='%s' estado=%s "
@@ -261,6 +288,7 @@ def resolver_o_crear_padre(session: Session, nombre_hijo: str, *, usuario: str =
 
 __all__ = [
     "ids_camaras_con_cromo_hijos",
+    "ids_camaras_con_botellas_legado",
     "extraer_base",
     "normalizar_para_agrupar",
     "normalizar_para_agrupar_extendido",
