@@ -1,19 +1,56 @@
 # Nombre de archivo: .dockerignore
 # Ubicación de archivo: .dockerignore
-# Descripción: Excluye del contexto de build (context: .. en deploy/*.yml) logs, secretos, entornos y artefactos locales
+# Descripción: Excluye del contexto de build (context: .. en deploy/*.yml) logs, secretos, entornos, datos y artefactos locales
 
 # Los builds de deploy/compose.yml y docker-compose.dev.yml usan la raíz del repo como contexto, y
-# repetitividad_worker.Dockerfile hace `COPY . /app`: sin este archivo, Logs/, .env y .secrets/
-# terminaban dentro de la imagen. Ningún Dockerfile copia estas rutas a propósito.
-Logs/
+# repetitividad_worker.Dockerfile hace `COPY . /app`: sin este archivo, Logs/, .env, .secrets/, el
+# dump de prod y los TSV de tmp/ terminaban dentro de la imagen. Ningún Dockerfile copia estas rutas
+# a propósito (verificado con `grep -n COPY` sobre api/, web/ y deploy/docker/). Los datos que un
+# contenedor necesita en runtime (data/fo_monitor, Templates en los workers) entran por bind mount.
+# Antes de excluir una ruta nueva, confirmar que ningún Dockerfile la copie: api/Dockerfile copia
+# scripts/ y Templates/, que por eso NO se excluyen.
+
+# Secretos y entornos (incluye los respaldos .env.bak-*)
 .env
 .env.*
 .secrets/
 docs/Doc Privada/
+
+# Datos locales, dumps y salidas generadas (data/ pesa ~77 MB y web/data/reports ~300 MB)
+**/*.dump
+**/*.sql.gz
+tmp/
+data/
+devs/
+Reports/
+web/data/
+Logs/
+
+# Entornos, caches y herramientas locales
 .git/
 .venv/
+.venv.*/
 **/__pycache__/
 **/*.pyc
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.vscode/
 web/frontend/node_modules/
 web/frontend/dist/
+
+# Documentación y tests: no forman parte de ninguna imagen
+docs/
+tests/
+
+# Ecosistema agéntico (gobernanza, skills y estado de agentes)
+.claude/
+.agents/
+.agentes-comunes/
+.codex-skills/
+.gemini/
+.github/
+.superpowers/
+.agent-worktree.json

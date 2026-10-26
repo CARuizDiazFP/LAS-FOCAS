@@ -1,0 +1,15 @@
+# Nombre de archivo: .dockerignore
+# Ubicación de archivo: office_service/.dockerignore
+# Descripción: Excluye del contexto de build de office_service (COPY . /app) caches, tests y archivos locales
+
+# deploy/compose.yml construye office con `context: ../office_service` y el Dockerfile hace
+# `COPY . /app`: todo lo que quede en este directorio termina en la imagen.
+.env
+.env.*
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+tests/
+*.log
