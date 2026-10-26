@@ -5,6 +5,12 @@
 # Las imágenes se construyen con common-requirements.txt (focas-base) más el requirements.txt de
 # cada servicio; este archivo replica esos pins para correr los tests fuera de Docker. Si cambiás
 # una versión acá, cambiala también en common-requirements.txt o en el requirements del servicio.
+#
+# El .venv local es Python 3.13 (el único intérprete del host) y las imágenes son 3.11. Por eso el
+# venv NO puede instalar exactamente estos pins: asyncpg 0.29.0, pandas 2.2.2, pyproj 3.6.1 y
+# psycopg 3.2.1 no tienen wheel para 3.13, y el venv corre versiones más nuevas (verificado
+# 2026-10-26). Decisión del usuario: no reinstalar el venv compartido; la CI (3.11) sí instala
+# estos pins tal cual.
 
 fastapi==0.112.2  # Framework web para APIs (unificado)
 uvicorn[standard]==0.30.6  # Servidor ASGI para FastAPI (unificado)
