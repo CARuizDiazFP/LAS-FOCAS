@@ -25,16 +25,25 @@ metadata:
   commands:
     - |
       OUT=<scratchpad>/audit; mkdir -p "$OUT"
-      docker run --rm -v "$PWD":/w:ro -v "$OUT":/out --entrypoint sh python:3.11-slim-bookworm -c '
+      docker run --rm -v "$PWD":/w:ro -v "$OUT":/out -w /w --entrypoint sh python:3.11-slim-bookworm -c '
       pip install -q pip-audit==2.7.3
       for f in common-requirements.txt requirements.txt requirements-dev.txt api/requirements.txt \
       web/requirements.txt bot_telegram/requirements.txt office_service/requirements.txt \
       modules/*/requirements.txt; do
-      (cd /w && pip-audit -r "$f" -f json --progress-spinner off > "/out/$(echo $f | tr / _).json")
+      pip-audit -r "$f" -f json --progress-spinner off > "/out/$(echo $f | tr / _).json"
       echo "$f rc=$?"
       done'
-      # resumen: paquete, versión, cantidad de vulns y fix mínimo/máximo por archivo (leer los JSON con python)
-      cd web/frontend && npm audit --audit-level=high
+      # resumen: paquete, versión, cantidad de vulns y "mínima que cierra todas" = máximo, entre los CVEs,
+      # del menor fix_version de cada uno (leer los JSON con python)
+      cd web/frontend && npm audit --omit=dev && npm audit
+    - |
+      OUT=<scratchpad>/audit_img; mkdir -p "$OUT"
+      for i in web api bot nlp_intent office cromo_worker slack_baneo_worker botellas_recalculo_worker fo_monitor_worker; do
+      docker run --rm --entrypoint pip lasfocasdev-$i:latest freeze | grep -v '^-e\|@ file' > "$OUT/$i.txt"
+      done
+      docker run --rm -v "$OUT":/w -w /w --entrypoint sh python:3.11-slim-bookworm -c '
+      pip install -q pip-audit==2.7.3
+      for f in *.txt; do pip-audit -r "$f" --no-deps --disable-pip -f json --progress-spinner off > "${f%.txt}.json"; done'
 ---
 
 # Nombre de archivo: SKILL.md
