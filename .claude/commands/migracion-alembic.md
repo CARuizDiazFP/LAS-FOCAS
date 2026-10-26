@@ -1,15 +1,15 @@
 ---
-description: "Crear una migración Alembic reversible (autogenerate o manual), validarla y aplicarla"
-argument-hint: "descripción del cambio de esquema [autogenerate|manual]"
+description: "Crear una migración Alembic reversible (manual: el autogenerate está inactivo), validarla y aplicarla"
+argument-hint: "descripción del cambio de esquema"
 ---
 
 # Nombre de archivo: migracion-alembic.md
 # Ubicación de archivo: .claude/commands/migracion-alembic.md
 # Descripción: Comando Claude Code para crear migraciones Alembic de base de datos
 
-Crea una migración Alembic a partir de la descripción del usuario. Argumento requerido: $ARGUMENTS (descripción del cambio de esquema; opcionalmente tipo: autogenerate o manual).
+Crea una migración Alembic a partir de la descripción del usuario. Argumento requerido: $ARGUMENTS (descripción del cambio de esquema).
 
-Si no se especifica tipo, inferir: `autogenerate` si el cambio está en modelos SQLAlchemy; `manual` si requiere SQL personalizado, backfill, enums o transformaciones no detectables.
+La migración se escribe **siempre a mano**: `db/alembic/env.py` tiene `target_metadata = None`, así que `--autogenerate` produce un archivo vacío. Encenderlo no es trivial, porque el drift modelo↔base ya suma ~180 índices (ver la skill `alembic-migrations`, gotcha 5). Después de cambiar un modelo, copiar a mano en la migración los nombres de índice y los tipos exactos.
 
 ## Objetivo
 
@@ -30,10 +30,7 @@ alembic -c db/alembic.ini current
 ### 2. Crear la migración
 
 ```bash
-# Autogenerate (modelos SQLAlchemy actualizados)
-alembic -c db/alembic.ini revision --autogenerate -m "descripcion"
-
-# Manual (SQL explícito, backfill, enums, etc.)
+# Manual (único modo efectivo: target_metadata = None)
 alembic -c db/alembic.ini revision -m "descripcion"
 ```
 

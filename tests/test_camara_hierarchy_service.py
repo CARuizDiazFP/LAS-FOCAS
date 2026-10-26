@@ -20,6 +20,16 @@ from core.services.camara_hierarchy_service import (
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
 
 
+def simular_raices(session: MagicMock, raices: list[Camara]) -> None:
+    """Simula sobre el mock de sesión las tres lecturas de `resolver_o_crear_padre_desde_base`: las
+    raíces como (id, nombre), los ids con Botellas legado (`.botellas` no vacío) y `session.get`."""
+    consulta = session.query.return_value.filter.return_value
+    consulta.order_by.return_value.all.return_value = [(c.id, c.nombre) for c in raices]
+    consulta.distinct.return_value.all.return_value = [(c.id,) for c in raices if c.botellas]
+    por_id = {c.id: c for c in raices}
+    session.get.side_effect = lambda _modelo, camara_id: por_id[camara_id]
+
+
 @pytest.fixture(autouse=True)
 def _sin_botellas_cromo(monkeypatch):
     """Por defecto, ninguna Cámara candidata tiene Botellas Cromo propias — los tests que sí quieren
@@ -197,7 +207,7 @@ def test_resolver_o_crear_padre_reusa_padre_ya_establecido() -> None:
     session = MagicMock()
     padre_existente = Camara(id=99, nombre="Cra 14 de Julio 240 CF", camara_padre_id=None)
     padre_existente.botellas = [Camara(id=50, nombre="Cra 14 de Julio 240 Bot 5 CF")]
-    session.query.return_value.filter.return_value.all.return_value = [padre_existente]
+    simular_raices(session, [padre_existente])
 
     resultado = resolver_o_crear_padre(session, "Cra 14 de Julio 240 Bot 2 CF", usuario="test")
 
@@ -213,7 +223,7 @@ def test_resolver_o_crear_padre_no_promueve_una_fila_pelada_sin_botellas_a_padre
     botella más (mismo criterio que el backfill)."""
     session = MagicMock()
     pelada = Camara(id=5, nombre="Cra 14 de Julio 240 CF", camara_padre_id=None)
-    session.query.return_value.filter.return_value.all.return_value = [pelada]
+    simular_raices(session, [pelada])
 
     resultado = resolver_o_crear_padre(session, "Cra 14 de Julio 240 Bot 2 CF", usuario="test")
 
@@ -227,7 +237,7 @@ def test_resolver_o_crear_padre_no_promueve_una_fila_pelada_sin_botellas_a_padre
 def test_resolver_o_crear_padre_ignora_una_camara_con_nombre_distinto() -> None:
     session = MagicMock()
     otra_camara = Camara(id=5, nombre="Cra Otra Dirección 999 CF", camara_padre_id=None)
-    session.query.return_value.filter.return_value.all.return_value = [otra_camara]
+    simular_raices(session, [otra_camara])
 
     resultado = resolver_o_crear_padre(session, "Cra 14 de Julio 240 Bot 2 CF", usuario="test")
 
@@ -239,7 +249,7 @@ def test_resolver_o_crear_padre_ignora_una_camara_con_nombre_distinto() -> None:
 
 def test_resolver_o_crear_padre_crea_uno_nuevo_si_no_existe() -> None:
     session = MagicMock()
-    session.query.return_value.filter.return_value.all.return_value = []
+    simular_raices(session, [])
 
     resultado = resolver_o_crear_padre(session, "Cra 14 de Julio 240 Bot 2 CF", usuario="test")
 
@@ -255,7 +265,7 @@ def test_resolver_o_crear_padre_desde_base_permite_estado_y_origen_custom() -> N
     """Núcleo reutilizable por otros backfills (ej. Botellas Cromo) — parametrizado en
     estado_si_nuevo/origen_si_nuevo, sin duplicar la lógica de advisory lock/absorción."""
     session = MagicMock()
-    session.query.return_value.filter.return_value.all.return_value = []
+    simular_raices(session, [])
 
     resultado = resolver_o_crear_padre_desde_base(
         session,
@@ -277,7 +287,7 @@ def test_resolver_o_crear_padre_desde_base_reusa_padre_existente_sin_tocar_su_es
     session = MagicMock()
     padre_existente = Camara(id=99, nombre="Cra 14 de Julio 240 CF", estado=CamaraEstado.BANEADA, camara_padre_id=None)
     padre_existente.botellas = [Camara(id=50, nombre="Cra 14 de Julio 240 Bot 5 CF")]
-    session.query.return_value.filter.return_value.all.return_value = [padre_existente]
+    simular_raices(session, [padre_existente])
 
     resultado = resolver_o_crear_padre_desde_base(
         session,
@@ -299,7 +309,7 @@ def test_resolver_o_crear_padre_desde_base_reusa_camara_con_solo_botellas_cromo(
     session = MagicMock()
     padre_cromo = Camara(id=6526, nombre="Cra Bernardo de Irigoyen 194 CF", estado=CamaraEstado.NO_OPERATIVA, camara_padre_id=None)
     padre_cromo.botellas = []  # cero Botellas legado — sus hijas son CromoBotella, tabla distinta
-    session.query.return_value.filter.return_value.all.return_value = [padre_cromo]
+    simular_raices(session, [padre_cromo])
     monkeypatch.setattr(
         "core.services.camara_hierarchy_service.ids_camaras_con_cromo_hijos",
         lambda session: {6526},
@@ -317,7 +327,7 @@ def test_resolver_o_crear_padre_desde_base_reusa_padre_que_solo_coincide_por_nor
     session = MagicMock()
     padre_existente = Camara(id=10, nombre="Bot Tza San Antonio 640", camara_padre_id=None)
     padre_existente.botellas = [Camara(id=11, nombre="Bot Tza San Antonio 640 Bot 2")]
-    session.query.return_value.filter.return_value.all.return_value = [padre_existente]
+    simular_raices(session, [padre_existente])
 
     resultado = resolver_o_crear_padre_desde_base(session, "Bot. Tza.San Antonio 640 CF", usuario="test")
 
@@ -330,7 +340,7 @@ def test_resolver_o_crear_padre_desde_base_absorbe_pelada_que_solo_coincide_por_
     vez de quedar como una segunda fila raíz para el mismo sitio."""
     session = MagicMock()
     pelada = Camara(id=20, nombre="Cra Balcarce 302", camara_padre_id=None)
-    session.query.return_value.filter.return_value.all.return_value = [pelada]
+    simular_raices(session, [pelada])
 
     resultado = resolver_o_crear_padre_desde_base(session, "Cra Balcarce 302 CF", usuario="test")
 
