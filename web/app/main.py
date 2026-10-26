@@ -53,10 +53,31 @@ def _env_bool(name: str, default: bool = False) -> bool:
 WEB_SESSION_HTTPS_ONLY = _env_bool("WEB_SESSION_HTTPS_ONLY", False)
 WEB_SESSION_MAX_AGE = _env_int("WEB_SESSION_MAX_AGE", 60 * 60 * 8)
 
+# Los placeholders de deploy/env.sample y env.dev.sample empiezan así y son públicos (README).
+_PREFIJO_CLAVE_PLACEHOLDER = "cambiar_por"
+
+
+def _resolver_web_secret_key() -> str:
+    """Clave que firma la cookie de sesión; sin una real el proceso no arranca (fail-closed).
+
+    Con la clave publicada en env.sample cualquiera puede forjar una cookie de sesión de admin, así
+    que vacía o placeholder sólo se aceptan con TESTING=true.
+    """
+    clave = get_secret("web_secret_key_v1", "WEB_SECRET_KEY").strip()
+    if clave and not clave.startswith(_PREFIJO_CLAVE_PLACEHOLDER):
+        return clave
+    if os.getenv("TESTING", "false").lower() == "true":
+        logger.warning("action=web_secret_key evento=placeholder_en_testing")
+        return clave or f"{_PREFIJO_CLAVE_PLACEHOLDER}_clave_web_testing"
+    raise RuntimeError(
+        "web_secret_key_v1 ausente o con el valor de ejemplo: configurar .secrets/web_secret_key_v1.txt "
+        "(o WEB_SECRET_KEY) con una clave aleatoria antes de arrancar el panel web"
+    )
+
 
 def _session_middleware_options() -> dict[str, Any]:
     return {
-        "secret_key": get_secret("web_secret_key_v1", "WEB_SECRET_KEY", "cambiar_por_clave_web_segura"),
+        "secret_key": _resolver_web_secret_key(),
         "https_only": WEB_SESSION_HTTPS_ONLY,
         "same_site": "lax",
         "max_age": WEB_SESSION_MAX_AGE,
