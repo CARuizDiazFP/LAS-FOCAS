@@ -73,10 +73,6 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def get_current_user(request: Request) -> str | None:
-    return request.session.get("username")
-
-
 def _require_auth(request: Request) -> tuple[str, str]:
     username = request.session.get("username")
     role = request.session.get("role", "user")

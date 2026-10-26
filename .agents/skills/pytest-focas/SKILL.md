@@ -579,7 +579,7 @@ habría dado 500 apenas hubiera puntos terminales cargados (en dev y prod la tab
   cubría 11 de 20 rutas en Servicios y 12 de 33 en Cromo.
 - **Sesión simulada:** usar el fixture `con_sesion("admin" | "user" | None)` (`tests/soporte_sesion.py`),
   que llama a las dependencias reales con un request falso. No parchear `_require_auth` en el
-  router (`comun.get_current_user` es un helper sin llamadores: tampoco sirve parchearlo). Si hace falta, parchear la única fuente, `comun._require_auth`.
+  router. Si hace falta, parchear la única fuente, `comun._require_auth` (el helper `comun.get_current_user`, que no tenía llamadores, se borró el 2026-10-26).
 
 ## Endpoints web `async def` → `def` y tests de rendimiento (lección 2026-10-26, P04)
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, asdict, field
-from typing import Iterable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -446,27 +446,3 @@ def parse_tracking(raw_text: str, filename: str = "") -> TrackingParseResult:
         terminal_a=terminal_a,
         terminal_b=terminal_b,
     )
-
-
-def parse_tracking_as_dicts(raw_text: str, filename: str = "") -> dict:
-    """Helper para obtener la salida como diccionario completo."""
-
-    return parse_tracking(raw_text, filename).to_dict()
-
-
-def parse_tracking_entries(raw_text: str) -> List[TrackingEntry]:
-    """Parsea y retorna solo las entradas (compatibilidad hacia atrás)."""
-
-    return parse_tracking(raw_text).entries
-
-
-def iter_empalmes(entries: Iterable[TrackingEntry]) -> Iterable[TrackingEntry]:
-    """Filtra solo nodos de empalme."""
-
-    return (entry for entry in entries if entry.tipo == "empalme")
-
-
-def iter_tramos(entries: Iterable[TrackingEntry]) -> Iterable[TrackingEntry]:
-    """Filtra solo tramos de fibra."""
-
-    return (entry for entry in entries if entry.tipo == "tramo")

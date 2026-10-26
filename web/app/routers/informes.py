@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import os
 import shutil
 import time
@@ -137,27 +136,6 @@ def _legacy_files_from_report_history(records: List[Dict[str, Any]]) -> List[Dic
                     }
                 )
     return files
-
-
-def _merge_excel_sources(sources: List[tuple[str, bytes]]) -> bytes:
-    if not sources:
-        raise ValueError("No hay archivos para combinar")
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:  # type: ignore[arg-type]
-        sheet_index = 1
-        for name, content in sources:
-            try:
-                workbook = pd.ExcelFile(io.BytesIO(content))
-            except Exception as exc:  # noqa: BLE001
-                raise ValueError(f"El archivo {name} no parece un Excel válido") from exc
-            for sheet in workbook.sheet_names:
-                dataframe = workbook.parse(sheet)
-                prefix = Path(name).stem[:18] or "Hoja"
-                sheet_label = f"{prefix}_{sheet_index}"[:31]
-                dataframe.to_excel(writer, sheet_name=sheet_label, index=False)
-                sheet_index += 1
-    buffer.seek(0)
-    return buffer.getvalue()
 
 
 def _report_href(path: Path) -> str:

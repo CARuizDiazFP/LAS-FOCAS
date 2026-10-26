@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import func, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from core.parsers.tracking_parser import TrackingParseResult, parse_tracking
@@ -617,56 +617,6 @@ class InfraService:
                 message="Error inesperado durante el análisis del archivo",
             )
 
-    def _find_service_by_endpoints(
-        self,
-        punta_a_sitio: Optional[str],
-        punta_b_sitio: Optional[str],
-    ) -> Optional[Servicio]:
-        """Busca un servicio que tenga las mismas puntas A y B (por sitio_descripcion).
-        
-        DEPRECATED: Usar _find_service_by_terminals para búsqueda por ODF ID.
-        
-        Args:
-            punta_a_sitio: Descripción del sitio de la punta A
-            punta_b_sitio: Descripción del sitio de la punta B
-            
-        Returns:
-            Servicio encontrado o None
-        """
-        if not punta_a_sitio and not punta_b_sitio:
-            return None
-        
-        # Buscar en puntos_terminales
-        query = self.session.query(PuntoTerminal).join(
-            RutaServicio, PuntoTerminal.ruta_id == RutaServicio.id
-        )
-        
-        # Filtrar por punta A
-        if punta_a_sitio:
-            punta_a_norm = punta_a_sitio.strip().upper()
-            matching_a = query.filter(
-                PuntoTerminal.tipo == PuntoTerminalTipo.A,
-                func.upper(PuntoTerminal.sitio_descripcion) == punta_a_norm,
-            ).first()
-            
-            if matching_a:
-                ruta = self.session.query(RutaServicio).get(matching_a.ruta_id)
-                if ruta:
-                    # Verificar también punta B si se proporcionó
-                    if punta_b_sitio:
-                        punta_b_norm = punta_b_sitio.strip().upper()
-                        punta_b_db = self.session.query(PuntoTerminal).filter(
-                            PuntoTerminal.ruta_id == ruta.id,
-                            PuntoTerminal.tipo == PuntoTerminalTipo.B,
-                            func.upper(PuntoTerminal.sitio_descripcion) == punta_b_norm,
-                        ).first()
-                        if punta_b_db:
-                            return ruta.servicio
-                    else:
-                        return ruta.servicio
-        
-        return None
-
     def _find_service_by_terminals(
         self,
         terminal_a: Optional[Tuple[str, str]],
@@ -877,45 +827,6 @@ class InfraService:
                 "success": False,
                 "error": f"Error durante el upgrade: {exc!s}",
             }
-
-    def _routes_have_same_path(
-        self,
-        ruta: RutaServicio,
-        punta_a_sitio: Optional[str],
-        punta_b_sitio: Optional[str],
-    ) -> bool:
-        """Verifica si una ruta tiene las mismas puntas A y B.
-        
-        Args:
-            ruta: Ruta a verificar
-            punta_a_sitio: Descripción del sitio de la punta A del archivo
-            punta_b_sitio: Descripción del sitio de la punta B del archivo
-            
-        Returns:
-            True si las puntas coinciden
-        """
-        if not punta_a_sitio and not punta_b_sitio:
-            return False
-        
-        # Obtener puntas de la ruta
-        ruta_punta_a = ruta.punta_a
-        ruta_punta_b = ruta.punta_b
-        
-        # Comparar punta A
-        if punta_a_sitio and ruta_punta_a:
-            if punta_a_sitio.strip().upper() != (ruta_punta_a.sitio_descripcion or "").strip().upper():
-                return False
-        elif punta_a_sitio or ruta_punta_a:
-            return False  # Una tiene y la otra no
-        
-        # Comparar punta B
-        if punta_b_sitio and ruta_punta_b:
-            if punta_b_sitio.strip().upper() != (ruta_punta_b.sitio_descripcion or "").strip().upper():
-                return False
-        elif punta_b_sitio or ruta_punta_b:
-            return False  # Una tiene y la otra no
-        
-        return True
 
     # -------------------------------------------------------------------------
     # FASE 2: RESOLUCIÓN

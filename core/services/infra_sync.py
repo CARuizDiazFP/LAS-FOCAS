@@ -32,15 +32,6 @@ class InfraSyncResult:
     created: int
     skipped: int
 
-    def to_response(self) -> dict[str, int | str]:
-        return {
-            "status": "ok",
-            "processed": self.processed,
-            "updated": self.updated,
-            "created": self.created,
-        }
-
-
 def _build_gspread_client() -> gspread.Client:
     raw_credentials = getenv("GOOGLE_CREDENTIALS_JSON")
     if raw_credentials:

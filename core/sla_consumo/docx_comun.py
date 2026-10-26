@@ -345,8 +345,3 @@ class FichasServicio:
             parrafo(doc, "Sin eventos reales.")
         else:
             tabla_df(doc, self._eventos.iloc[idx_ev], _EVENTOS_FICHA, _EVENTOS_ANCHOS)
-
-
-def ficha_servicio(doc, res, fila_servicio) -> None:
-    """Ficha completa de un servicio (para usos sueltos; en lote conviene `FichasServicio`)."""
-    FichasServicio(res).escribir(doc, fila_servicio)

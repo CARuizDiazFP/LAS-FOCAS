@@ -168,24 +168,6 @@ def generate_report_from_computation(
     )
 
 
-def compute_preview_from_excel(
-    excel_bytes: bytes,
-    *,
-    mes: int,
-    anio: int,
-    cliente: Optional[str] = None,
-    servicio: Optional[str] = None,
-    service_id: Optional[str] = None,
-) -> dict:
-    computation = compute_from_excel(excel_bytes, mes=mes, anio=anio)
-    return build_preview_from_computation(
-        computation,
-        cliente=cliente,
-        servicio=servicio,
-        service_id=service_id,
-    )
-
-
 def compute_from_db(
     *,
     mes: int,
