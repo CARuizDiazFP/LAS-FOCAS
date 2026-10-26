@@ -1,338 +1,117 @@
 # Nombre de archivo: README.md
 # Ubicación de archivo: README.md
-# Descripción: Información general del proyecto
+# Descripción: Puerta de entrada al proyecto: qué es, cómo está armado y a qué documento ir para cada tema
 
 # LAS-FOCAS
 
-Automatizaciones operativas para Metrotel: generación de informes, asistente conversacional para tareas repetitivas y base técnica para integrar sistemas internos a futuro.
+Sistema operativo de la infraestructura de fibra óptica de Metrotel: informes SLA y de
+Repetitividad, inventario FO sincronizado desde Cromo Red, panel web (SPA), bots de Slack y
+Telegram, chatbot con herramientas MCP y una API para otras áreas.
 
-## 🌟 Objetivos
+> Este README es una puerta de entrada corta. El detalle vive en `docs/`; para orientarse por
+> dominio, empezar por [docs/REPOSITORY_MAP.md](docs/REPOSITORY_MAP.md). Las reglas para agentes
+> IA están en [AGENTS.md](AGENTS.md) (y [CLAUDE.md](CLAUDE.md) para Claude Code).
 
-1. **Automatizar informes** (Repetitividad, SLA, y otros).
-2. **Asistente conversacional** para tareas repetitivas (inicio con Telegram; Web en paralelo).
-3. **Integración futura** con sistemas internos (APIs, Slack, Salesforce).
+## Qué hace
 
-> **Ámbito operativo actual:** Debian 13, despliegue dockerizado (microservicios), base de datos PostgreSQL local, panel web publicado en `172.18.208.162:8080` y proveedor LLM por API externa.
+| Área | Qué hay | Documento |
+|---|---|---|
+| Panel web | SPA Vue 3 + Vite + TypeScript servida por FastAPI (`web/`), con sesión y CSRF | [docs/web.md](docs/web.md) |
+| Informes | SLA (incluido el informe de consumo), Repetitividad y alarmas Ciena en DOCX | [docs/informes/](docs/informes/) |
+| Inventario FO | Ingesta de Cromo Red (cámaras, botellas, cables, ODF), tracking de servicios | [docs/modulo_ingesta_cromo.md](docs/modulo_ingesta_cromo.md), [docs/infra.md](docs/infra.md) |
+| FO Monitor | Verificación PRE/POST de servicios por cable y mapa | [docs/fo_monitor.md](docs/fo_monitor.md) |
+| Slack | Bot de cables/servicios/track, baneos e ingresos (`modules/slack_baneo_notifier/`) | [docs/slack_app_cables.md](docs/slack_app_cables.md) |
+| Telegram | Bot aiogram con flujos de informes (`bot_telegram/`) | [docs/bot.md](docs/bot.md) |
+| Chatbot y MCP | Chat del panel, clasificación de intención (`nlp_intent/`) y herramientas MCP | [docs/chatbot.md](docs/chatbot.md), [docs/mcp.md](docs/mcp.md), [docs/nlp/intent.md](docs/nlp/intent.md) |
+| API | API interna con API key y API v1 OAuth2 (`client_credentials`) para otras áreas | [docs/api.md](docs/api.md) |
 
----
+## Arquitectura
 
-## 🧩 Alcance (MVP y próximos hitos)
-
-- **Migraciones desde Sandy**
-
-  - Informe de **Repetitividad y SLA** → reescritura para **LibreOffice (soffice headless)** en lugar de Word/pywin32.
-  - **Comparador de trazas FO**.
-  - (Luego) Verificación de ingresos, y demás módulos.
-
-- **Interfaces**
-
-  - **Telegram Bot** (primer canal de operación, con menú accesible por `/menu` o por intención). Incluye los flujos `/repetitividad` y `/sla` y un teclado opcional con atajos a ambos comandos. Ver [docs/bot.md](docs/bot.md) para guía rápida.
-  - **Web Panel** (autenticación simple, Panel con Chat por defecto, accesible por `172.18.208.162:8080`).
-  - **nlp_intent** (microservicio NLP para clasificación de intención).
-  - CLI opcional para utilidades.
-
-- **Integraciones externas**
-
-  - **Notion**, **Correo** (SMTP).
-  - A futuro: **APIs internas**, Slack, Salesforce.
-
-- **Autenticación**
-
-  - **Allowlist de IDs de Telegram** para uso del bot.
-  - **Web:** usuario/contraseña (básico al inicio; SSO interno a futuro).
-
----
-
-## 🏰 Arquitectura (microservicios)
+Servicios de `deploy/compose.yml` (producción, proyecto `lasfocas`):
 
 ```
-                        ┌───────────────────┐
-                        │   Web Panel (FastAPI)│  ← Login básico
-                        └───────┬───────┘
-                                │
-                        ┌────────┬────────┐
-                        │                 │
-        ┌─────────────┐                    ┌────────────┐
-        │  API Core   │← FastAPI/SQLAlchemy│  Worker    │← Celery/RQ (opcional)
-        └─────┬─────┘                      └─────┬────┘
-               │                                 │
-               │                                 │ Jobs/colas (opcional)
-               │                                 │
-        ┌───────┬─────┐                     ┌─────┬───┐
-        │ PostgreSQL  │                     │  Redis  │ (opcional)
-        └───────┘                           └───────┘
-               │
-        ┌───────┬─────┐
-        │ Storage/Files │ (Informes, plantillas LibreOffice)
-        └───────┘
+usuarios ──► web :8080 (FastAPI + SPA) ──► api :8001→8000 (FastAPI)
+               │                               │
+               ├──► nlp_intent :8100           ▼
+               ├──► redis :6379 ◄──────┐    postgres :5432 ◄── todos los servicios con datos
+               └──► docker-socket-proxy :2375 (red interna aparte; el panel gestiona el worker de Slack)
 
-        ┌─────────┐
-        │ Telegram Bot   │  ← Allowlist de IDs
-        └─────────┘
-
-        ┌───────────────┐
-        │ nlp_intent    │  ← Clasificación de intención
-        └───────────────┘
-
-        ┌────────────────────────┐
-        │ LibreOffice Service    │ ← Conversión de documentos vía UNO
-        └────────────────────────┘
-
-        ┌─────────┐
-        │ Notion/Email   │  (Integraciones)
-        └─────────┘
-
-        ┌─────────┐
-        │ Logging/Metrics│  (Prometheus/Grafana opcional)
-        └─────────┘
+workers:  cromo_worker (ingesta Cromo Red)          ─┐
+          botellas_recalculo_worker (duplicados)     ├─ usan redis
+          slack_baneo_worker (bot de Slack)         ─┘
+          fo_monitor_worker (FO Monitor, sólo postgres)
+otros:    bot (Telegram) · office :8090 (LibreOffice/UNO)
+          pgadmin :5050 (profile pgadmin) · repetitividad_worker (profile reports-worker, placeholder)
 ```
 
-**Stack recomendado**
+- **Redis es obligatorio** (colas y estado de `cromo_worker`, `botellas_recalculo_worker`,
+  `slack_baneo_worker` y el panel). No hay Celery ni RQ.
+- Sólo `web` (`172.18.208.162:8080`), `api` (8001), `postgres` y `pgadmin` (estos dos en
+  `127.0.0.1`) publican puertos; el resto usa `expose`.
+- **PDF de informes**: hoy los informes se entregan en DOCX. La conversión a PDF usa `soffice` en
+  el propio contenedor y las imágenes `web`/`api` no traen LibreOffice; el `/convert` de `office`
+  es un placeholder. Ver [docs/office_service.md](docs/office_service.md).
 
-- **Python 3.11+**, **FastAPI**, **SQLAlchemy + Alembic**, **pydantic**, **pandas**.
-- **PostgreSQL 15+**.
-- **Uvicorn/Gunicorn** para serving.
-- **LibreOffice (soffice headless)** para documentos.
-- **Celery o RQ + Redis** (opcional) para tareas asíncronas.
-- **Prometheus + Grafana** (opcional) para métricas.
-- **Docker / docker-compose** para orquestación.
+Stack: Python 3.11, FastAPI, SQLAlchemy + Alembic, PostgreSQL 16, Redis 7, Vue 3, Docker Compose.
 
----
-
-## 🗂️ Estructura de carpetas
+## Estructura
 
 ```
-las-focas/
-├─ api/
-├─ bot_telegram/
-├─ core/
-├─ db/
-├─ deploy/
-├─ docs/
-├─ Logs/
-├─ modules/
-├─ nlp_intent/
-├─ office_service/
-├─ scripts/
-├─ Templates/
-├─ tests/
-├─ web/
-├─ .env
-├─ .env.dev
-├─ .gitignore
-├─ README.md
-└─ Start
+api/            FastAPI interna + API v1 (OAuth2)
+web/            backend del panel (web/app/main.py + web/app/routers/) y SPA (web/frontend/)
+core/           configuración, logging, parsers, repositorios, servicios, MCP y chatbot
+modules/        informes, utilidades comunes y workers (cromo, botellas, fo_monitor, slack)
+db/             modelos SQLAlchemy y migraciones Alembic
+bot_telegram/   bot de Telegram
+nlp_intent/     microservicio de intención
+office_service/ microservicio LibreOffice
+deploy/         compose de prod y dev, Dockerfiles, env de ejemplo
+scripts/        operación, diagnóstico y tooling de agentes
+Templates/      plantillas DOCX de los informes
+docs/           documentación (empezar por REPOSITORY_MAP.md)
+tests/          pytest
 ```
 
-**Plantillas**
+## Entornos
 
-- `Templates/` concentra todas las plantillas productivas (SLA, Repetitividad y futuras). Mantener los archivos maestros en este directorio y versionar cambios junto con la documentación del flujo correspondiente.
+| | Producción | Desarrollo |
+|---|---|---|
+| Compose | `deploy/compose.yml` (proyecto `lasfocas`) | `deploy/docker-compose.dev.yml` (proyecto `lasfocasdev`) |
+| Panel web | `172.18.208.162:8080` | `localhost:8090` |
+| API docs | `:8001/docs` | `:8011/docs` |
+| PostgreSQL | `127.0.0.1:5432` | `127.0.0.1:5433` |
+| Cómo se levanta | runbook [docs/despliegue_produccion.md](docs/despliegue_produccion.md) | `./scripts/start_dev.sh`, ver [docs/entorno_dev.md](docs/entorno_dev.md) |
 
-**Recursos locales de desarrollo**
+Siempre con `--env-file`: `docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev ...`.
+La configuración de ejemplo está en `deploy/env.sample` (prod) y `deploy/env.dev.sample` (dev); los
+secretos van como Docker Secrets en `.secrets/` (ver [docs/Seguridad.md](docs/Seguridad.md)). No
+copiar valores de ejemplo a un entorno real.
 
-- `devs/` queda reservado para materiales de apoyo en desarrollo (datasets de prueba, informes generados localmente, etc.). El directorio completo está en `.gitignore`, por lo que su contenido no se versiona.
-
-**Workers**
-
-- `repetitividad_worker` (perfil `reports-worker`) encapsula `geopandas/contextily` para generar mapas sin incrementar el tamaño de los servicios principales.
-
----
-
-## 🔐 Configuración y credenciales
-
-**.env / secretos (ejemplo)**
-
-```
-POSTGRES_HOST=postgres
-POSTGRES_PORT=5432
-POSTGRES_DB=lasfocas
-POSTGRES_USER=lasfocas
-POSTGRES_PASSWORD=cambiar_por_password_seguro
-WEB_SECRET_KEY=cambiar_por_clave_web_segura
-ENV=development
-TELEGRAM_BOT_TOKEN=cambiar_por_token_telegram
-TELEGRAM_ALLOWED_IDS=11111111,22222222
-NOTION_TOKEN=cambiar_por_token_notion
-NOTION_DB_ID=xxxxx
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_USER=notificaciones@example.com
-SMTP_PASS=cambiar_por_password_smtp
-# NLP / LLM
-LLM_PROVIDER=openai
-OPENAI_API_KEY=
-INTENT_THRESHOLD=0.7
-LANG=es
-LOG_RAW_TEXT=false
-TEMPLATES_DIR=/app/Templates
-SLA_TEMPLATE_PATH=${TEMPLATES_DIR}/Template_Informe_SLA.docx
-REP_TEMPLATE_PATH=${TEMPLATES_DIR}/Plantilla_Informe_Repetitividad.docx
-REPORTS_DIR=/app/data/reports
-UPLOADS_DIR=/app/data/uploads
-SOFFICE_BIN=/usr/bin/soffice
-MAPS_ENABLED=false
-MAPS_LIGHTWEIGHT=true
-# Plantillas (host)
-# TEMPLATES_HOST_DIR=./Templates
-# LibreOffice Service
-OFFICE_ENABLE_UNO=true
-OFFICE_LOG_LEVEL=INFO
-OFFICE_SOFFICE_PORT=2002
-OFFICE_SOFFICE_CONNECT_HOST=127.0.0.1
-# API de reportes
-REPORTS_API_BASE=http://api:8000
-REPORTS_API_TIMEOUT=60
-```
-
-En desarrollo local, el stack `deploy/docker-compose.dev.yml` prefiere Docker Secrets
-montados desde `.secrets/*.txt` y mantiene fallback a estas variables para la transición.
-
----
-
-## 🗳️ Logging & Métricas
-
-- **Logging** desde el día 1 (rotación, exclusión en `.gitignore`).
-- **Métricas** opcionales (Prometheus/Grafana).
-
----
-
-## 🛥️ Despliegue
-
-Se recomienda **docker-compose** desde el inicio para reproducibilidad.
-
-**Requisitos (Debian 13)**
+Verificación rápida (sin credenciales):
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl git make
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker "$USER"
+curl -sS http://localhost:8001/health                 # API (prod)
+curl -sS http://172.18.208.162:8080/health/version    # versión de build del panel
 ```
 
-**Primer arranque**
+`/db-check` y el resto de la API interna exigen API key (`Authorization: Bearer` o `X-API-Key`);
+ver [docs/api.md](docs/api.md).
+
+## Desarrollo
 
 ```bash
-cp deploy/env.sample .env
-./Start  # levanta Postgres, NLP, API (8001) y Web (8080) con proveedor LLM externo por API
-# Reconstruir sólo el front (estáticos/JS/CSS del panel):
-./Start --rebuild-frontend
+source .venv/bin/activate
+LLM_PROVIDER=heuristic pytest -q        # sin llamadas reales a LLM
+ruff check .
 ```
 
-Luego de iniciar los contenedores, puede verificarse el estado del servicio:
+- Cada tarea trabaja en una rama efímera y un worktree propio (`scripts/agent_worktree.py start`);
+  prohibido commitear directo en `dev` o `main`. Detalle en
+  [docs/arquitectura_agentes_worktrees.md](docs/arquitectura_agentes_worktrees.md).
+- **CI**: `.github/workflows/ci.yml` corre **sólo a mano** (`workflow_dispatch`). El control
+  efectivo es el gate local de `agent_worktree.py ready` (ruff + tests focales + `vue-tsc`).
+- PRs diarios en `docs/PR/YYYY-MM-DD.md`; cierres de sesión en `docs/cierres/`.
 
-```bash
-curl -sS http://localhost:8001/health   # API (remapeada)
-curl -sS http://localhost:8001/db-check
-curl -sS http://172.18.208.162:8080/health   # Web UI (IP privada de la VM)
-curl -sS http://172.18.208.162:8080/health/version  # versión de build del Web UI
-```
-
-Para `nlp_intent`, el proveedor por defecto es `openai` y requiere `OPENAI_API_KEY`. El soporte legado para `ollama` quedó fuera de la topología operativa de producción y no forma parte del despliegue estándar.
-
-### ⚡ Prueba rápida (API + DB)
-
-1) Salud del servicio y DB
-
-- `GET /health` → estado general del microservicio API.
-- `GET /db-check` → `SELECT 1` y versión de PostgreSQL.
-
-2) Ingesta de reclamos (opcional)
-
-- Enviar un Excel de prueba al endpoint `POST /ingest/reclamos` para validar mapeo/fechas/GEO.
-- Archivo de ejemplo: `devs/Reclamos Nuevo.xlsx` (editar y adaptar a tu dataset real).
-
-3) Métricas de Repetitividad desde DB
-
-- `GET /reports/repetitividad?periodo_mes=7&periodo_anio=2024` devuelve métricas básicas del período.
-- Alternativamente, `POST /reports/repetitividad` sin archivo usa modo DB y genera el DOCX (y ZIP si `incluir_pdf=true`).
-- El DOCX exportado reemplaza por completo la portada, muestra Horas Netas en formato `HH:MM` y embebe mapas PNG por servicio ajustados a media hoja A4.
-
----
-
-## 📪 CI/CD
-
-**CI (Integración Continua):** test, lint, build docker en cada push/PR.\
-**CD (Entrega Continua):** despliegue automático opcional.
-
----
-
-## 🔒 Seguridad
-
-- Allowlist de IDs Telegram.
-- Login básico en Web.
-- Tokens rotados.
-- Usuario DB de mínimos privilegios.
-
----
-
-## 🧠 Agente autónomo (futuro)
-
-Microservicio adicional usando el core y la DB.
-
-Modelos/proveedores sugeridos por API:
-
-- OpenAI para clasificación y respuestas generativas iniciales.
-- Otros proveedores HTTP compatibles sólo mediante configuración explícita y validación operativa.
-
----
-
-## 💡 Tecnologías clave
-
-- **Python**: FastAPI, SQLAlchemy, Alembic, pydantic, pandas, python-telegram-bot/aiogram.
-- **Office**: LibreOffice headless.
-- **DB**: PostgreSQL.
-- **Infra**: Docker, docker-compose.
-- Utilidades propias: `core/utils/timefmt` para normalizar duraciones en minutos ↔ `HH:MM` dentro de los informes.
-
----
-
-## ▶️ Uso rápido
-
-```bash
-git clone https://github.com/CARuizDiazFP/LAS-FOCAS
-cd LAS-FOCAS
-cp deploy/env.sample .env
-docker compose -f deploy/compose.yml up -d --build
-
-# Notas de UI:
-# - El histórico persistente de reportes se navega en /reports-history (salidas servidas en /reports).
-# - En el panel, Repetitividad/SLA muestran enlaces directos a /reports/*.docx|.pdf|.html.
-```
-
----
-
-## �️ Entorno de Desarrollo
-
-Ver [docs/entorno_dev.md](docs/entorno_dev.md) para el flujo completo.
-
-```bash
-git checkout dev             # Rama de trabajo habitual
-cp deploy/env.dev.sample .env.dev
-./scripts/start_dev.sh       # Levanta stack lasfocasdev (puertos alternativos)
-```
-
-| | Producción | Dev |
-|-|-----------|-----|
-| Web panel | `172.18.208.162:8080` | `localhost:8090` |
-| API docs  | `:8001/docs` | `:8011/docs` |
-| PostgreSQL | `5432` | `5433` |
-
----
-
-## �📅 Roadmap
-
-1. Infra base.
-2. Migrar Repetitividad/SLA.
-3. Migrar Comparador FO.
-4. Integraciones Notion/Email.
-5. Métricas.
-6. Agente autónomo.
-7. Seguridad avanzada.
-
----
-
-## 📓 Licencia
+## Licencia
 
 MIT: libre uso/modificación con aviso de copyright.
-
----

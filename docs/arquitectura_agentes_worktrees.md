@@ -402,7 +402,7 @@ Casos de recuperación cubiertos por el tooling:
 
 `Growen` resolvió primero el problema de *Agent Awareness* con locks cooperativos en
 JSON sobre un **único worktree físico**. Su propio
-`docs/architecture/AGENT_ORCHESTRATION.md` deja el paso siguiente escrito como ítem 8
+`docs/architecture/AGENT_ORCHESTRATION.md` (archivo del repositorio de Growen, no de LAS-FOCAS) deja el paso siguiente escrito como ítem 8
 del plan de acción: *"Evaluar `git worktree add` por sesión para agentes que sí
 necesiten paralelismo físico real (no sólo lógico) — propuesto, requiere decisión
 explícita del equipo"*.
