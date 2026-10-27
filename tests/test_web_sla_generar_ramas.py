@@ -175,7 +175,7 @@ def _falso_resultado(tmp_path: Path, con_pdf: bool):
     if con_pdf:
         pdf = docx.with_suffix(".pdf")
         pdf.write_bytes(b"p")
-    return SimpleNamespace(docx=docx, pdf=pdf)
+    return SimpleNamespace(docx=docx, pdf=pdf, pdf_error=None)
 
 
 def test_excel_exito_con_pdf_historia_y_logs(monkeypatch, cliente, historia, tmp_path, caplog) -> None:  # noqa: ANN001
