@@ -30,7 +30,7 @@ leerlo antes de ejecutar.
 
 #### Operación y entorno dev
 
-- `start_dev.sh`: Levanta el stack de desarrollo (`lasfocasdev`) en puertos alternativos, con migraciones y healthchecks (`--clone-db`, `--no-build`, `--down`). Ver `docs/entorno_dev.md`.
+- `start_dev.sh`: Levanta el stack de desarrollo (`lasfocasdev`) en puertos alternativos, con migraciones y healthchecks (`--clone-db`, `--no-build`, `--down`, `--dry-run`). Ver `docs/entorno_dev.md`.
 - `build_base.sh`: Construye la imagen base `focas-base:latest` (multi-stage) a partir de `common-requirements.txt`.
 - `setup_local_secrets.sh`: Bootstrap idempotente de `.secrets/*.txt` (Docker Secrets) para desarrollo local y CI, sin imprimir secretos.
 - `check_no_plaintext_secrets.sh`: Control preventivo contra secretos versionados y passwords en texto plano.

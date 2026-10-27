@@ -25,14 +25,10 @@ metadata:
       # Desde la raíz del proyecto:
       docker compose -f deploy/compose.yml --env-file .env build <servicio>
 
-      # Servicios disponibles:
-      # - api
-      # - web
-      # - bot
-      # - nlp_intent
-      # - office
-      # - postgres
-      # - pgadmin (profile: pgadmin)
+      # Servicios con build (compose config --services, 2026-10-27; el bot de Telegram se retiró en P19):
+      # - api, web, nlp_intent, office
+      # - slack_baneo_worker, cromo_worker, botellas_recalculo_worker, fo_monitor_worker
+      # Sin build: postgres, redis, docker-socket-proxy, pgadmin (profile: pgadmin)
     - |
       docker compose -f deploy/compose.yml --env-file .env build --no-cache <servicio>
     - |
@@ -218,14 +214,10 @@ Comandos y procedimientos para reconstruir contenedores Docker en LAS-FOCAS.
 # Desde la raíz del proyecto:
 docker compose -f deploy/compose.yml --env-file .env build <servicio>
 
-# Servicios disponibles:
-# - api
-# - web
-# - bot
-# - nlp_intent
-# - office
-# - postgres
-# - pgadmin (profile: pgadmin)
+# Servicios con build (compose config --services, 2026-10-27; el bot de Telegram se retiró en P19):
+# - api, web, nlp_intent, office
+# - slack_baneo_worker, cromo_worker, botellas_recalculo_worker, fo_monitor_worker
+# Sin build: postgres, redis, docker-socket-proxy, pgadmin (profile: pgadmin)
 ```
 
 ### Reconstruir sin cache
