@@ -155,6 +155,11 @@ class CromoBotella(Base):
         # `camara_botella_busqueda.py` ("CromoBotella.nombre no tiene índice") es impreciso: sí tenía
         # uno, sólo que no del tipo que esa cascada podía aprovechar.
         Index("ix_cromo_botellas_nombre_btree", "nombre"),
+        # Índices creados por migración (20260805_01) que el modelo no declaraba. El GIN de texto
+        # completo sigue sin consumidores (idx_scan = 0 en dev, 2026-10-27): se declara, no se borra.
+        Index("ix_cromo_botellas_nombre", text("to_tsvector('spanish'::regconfig, nombre)"), postgresql_using="gin"),
+        Index("ix_cromo_botellas_legacy", "id_legacy", postgresql_where=text("id_legacy IS NOT NULL")),
+        Index("ix_cromo_botellas_geo", "latitud", "longitud"),
         {"schema": "app"},
     )
 
@@ -274,7 +279,11 @@ class CromoCable(Base):
     """Cable de FO ingerido desde Cromo. Extremos sin FK dura: pueden apuntar a una botella que todavía no bajó."""
 
     __tablename__ = "cromo_cables"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        Index("ix_cromo_cables_clase", "clase"),
+        Index("ix_cromo_cables_extremos", "extremo_a_n_id", "extremo_b_n_id"),
+        {"schema": "app"},
+    )
 
     n_id = Column(BigInteger, primary_key=True)
     version_id = Column(BigInteger, nullable=False)
@@ -315,10 +324,13 @@ class CromoTubo(Base):
     """Tubo/buffer dentro de un cable. `cable_n_id` es el `parent` (n_id), sin FK dura."""
 
     __tablename__ = "cromo_tubos"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        Index("ix_cromo_tubos_cable", "cable_n_id"),
+        {"schema": "app"},
+    )
 
     n_id = Column(BigInteger, primary_key=True)
-    cable_n_id = Column(BigInteger, nullable=False, index=True)
+    cable_n_id = Column(BigInteger, nullable=False)
     orden = Column(SmallInteger, nullable=True)
     nombre_color = Column(Text, nullable=True)
     vigente = Column(Boolean, nullable=False, server_default=true())
@@ -332,11 +344,16 @@ class CromoPelo(Base):
     """Pelo/hilo dentro de un tubo. Pertenece al tubo, nunca directamente a la botella."""
 
     __tablename__ = "cromo_pelos"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        Index("ix_cromo_pelos_tubo", "tubo_n_id"),
+        Index("ix_cromo_pelos_cable", "cable_n_id"),
+        Index("ix_cromo_pelos_servicio", "servicio_numero", postgresql_where=text("servicio_numero IS NOT NULL")),
+        {"schema": "app"},
+    )
 
     n_id = Column(BigInteger, primary_key=True)
-    tubo_n_id = Column(BigInteger, nullable=False, index=True)  # parent, sin FK dura
-    cable_n_id = Column(BigInteger, nullable=False, index=True)  # derivado del tubo, desnormalizado a propósito
+    tubo_n_id = Column(BigInteger, nullable=False)  # parent, sin FK dura
+    cable_n_id = Column(BigInteger, nullable=False)  # derivado del tubo, desnormalizado a propósito
     numero_pelo = Column(Text, nullable=True)
     orden = Column(SmallInteger, nullable=True)
     color = Column(Text, nullable=True)
@@ -375,10 +392,14 @@ class CromoFusion(Base):
     como cables) — este segundo camino no trae `parent`, por eso `botella_n_id` es nullable."""
 
     __tablename__ = "cromo_fusiones"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        Index("ix_cromo_fusiones_botella", "botella_n_id"),
+        Index("ix_cromo_fusiones_pelos", "pelo_a_n_id", "pelo_b_n_id"),
+        {"schema": "app"},
+    )
 
     n_id = Column(BigInteger, primary_key=True)
-    botella_n_id = Column(BigInteger, nullable=True, index=True)  # parent, sin FK dura; ver docstring
+    botella_n_id = Column(BigInteger, nullable=True)  # parent, sin FK dura; ver docstring
     nombre_par = Column(Text, nullable=True)  # at.84 / name, ej. "53-17"
     tipo = Column(Text, nullable=True)  # at.85, no siempre "FUSION"
     pelo_a_n_id = Column(BigInteger, nullable=True)  # tp[0].id_to
@@ -463,10 +484,13 @@ class CromoBotellaAlias(Base):
     """
 
     __tablename__ = "cromo_botella_alias"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        Index("uq_cromo_botella_alias_id_cromo_origen", "id_cromo_origen", unique=True),
+        {"schema": "app"},
+    )
 
     id = Column(Integer, primary_key=True)
-    id_cromo_origen = Column(BigInteger, nullable=False, unique=True, index=True)
+    id_cromo_origen = Column(BigInteger, nullable=False)
     id_cromo_destino = Column(BigInteger, nullable=True, index=True)
     accion = Column(String(20), nullable=False)  # 'fusionar' | 'ignorar' — CHECK en la migración
     motivo = Column(Text, nullable=True)
@@ -617,7 +641,10 @@ class CromoArbitroEvaluacion(Base):
     las reglas activas. `resumen` guarda un `ResumenEvaluacion.a_dict()`. Sin FK a Cromo."""
 
     __tablename__ = "cromo_arbitro_evaluacion"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        Index("ix_cromo_arbitro_evaluacion_encolada_en", text("encolada_en DESC")),
+        {"schema": "app"},
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     disparo = Column(Text, nullable=False)  # CHECK en la migración
@@ -730,12 +757,16 @@ class CromoServicioMatch(Base):
     """Puente entre un pelo con servicio parseado (`at.61`) y el maestro `app.servicios`."""
 
     __tablename__ = "cromo_servicio_match"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        Index("ix_cromo_match_servicio", "servicio_id"),
+        Index("ux_cromo_match_pelo_nro", "pelo_n_id", "servicio_numero", unique=True),
+        {"schema": "app"},
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     pelo_n_id = Column(BigInteger, ForeignKey("app.cromo_pelos.n_id", ondelete="CASCADE"), nullable=False)
     servicio_numero = Column(Text, nullable=False)
-    servicio_id = Column(Integer, ForeignKey("app.servicios.id"), nullable=True, index=True)  # NULL si no matcheó
+    servicio_id = Column(Integer, ForeignKey("app.servicios.id"), nullable=True)  # NULL si no matcheó
     metodo = Column(String(32), nullable=False)  # REGEX_EXACTO | REGEX_PARCIAL | MANUAL
     confianza = Column(SmallInteger, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))

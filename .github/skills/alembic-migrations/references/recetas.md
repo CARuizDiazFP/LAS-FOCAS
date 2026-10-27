@@ -15,8 +15,18 @@ alembic -c db/alembic.ini heads
 ## Crear migración
 
 ```bash
-# manual: target_metadata = None en env.py deja vacío a --autogenerate
+# autogenerate (encendido desde 2026-10-27): contra dev, con ALEMBIC_URL/DATABASE_URL de dev
+alembic -c db/alembic.ini revision --autogenerate -m "descripcion"
+# manual (datos, CONCURRENTLY, DDL que el autogenerate no ve)
 alembic -c db/alembic.ini revision -m "descripcion"
+```
+
+## Chequear drift modelo↔base
+
+```bash
+alembic -c db/alembic.ini check                       # "No new upgrade operations detected."
+python scripts/check_drift_modelos.py --detalle       # clasificado; usa POSTGRES_* como los tests
+scripts/check_drift_desde_cero.sh                     # Postgres efímero + cadena completa
 ```
 
 ## Aplicar o revertir

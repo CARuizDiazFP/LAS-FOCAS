@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Column, Date, DateTime, Integer, Numeric, String, UniqueConstraint, func
+from sqlalchemy import BigInteger, Column, Date, DateTime, Integer, Numeric, String, UniqueConstraint, func, text
 
 from db.base import Base
 
@@ -19,9 +19,9 @@ class SlaIngesta(Base):
     hash_servicios = Column(String(64), nullable=False)
     hash_reclamos = Column(String(64), nullable=False)
     usuario = Column(String(128), nullable=True)
-    reclamos_insertados = Column(Integer, nullable=False, default=0)
-    reclamos_actualizados = Column(Integer, nullable=False, default=0)
-    servicios_snapshot = Column(Integer, nullable=False, default=0)
+    reclamos_insertados = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    reclamos_actualizados = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    servicios_snapshot = Column(Integer, nullable=False, default=0, server_default=text("0"))
     report_history_id = Column(BigInteger, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 

@@ -44,8 +44,11 @@ Guía breve para crear, validar y aplicar migraciones Alembic sin sobrecargar el
 ## Procedimiento
 
 1. Revisar estado actual de migraciones.
-2. Escribir la migración **a mano** (`revision -m`): con `target_metadata = None` en `env.py`,
-   `--autogenerate` genera un archivo vacío (ver punto 5 de los gotchas).
+2. Declarar el cambio en el modelo y generar la migración con `revision --autogenerate -m "..."`
+   contra la DB de dev (encendido desde 2026-10-27, P18). Revisar lo generado: renombrar el archivo
+   y completar el encabezado de 3 líneas (la plantilla deja `<slug>`), y escribir a mano lo que el
+   autogenerate no ve (datos, `CONCURRENTLY`, triggers, `IF EXISTS` cuando prod puede diferir).
+   Antes y después: `python scripts/check_drift_modelos.py` tiene que dar 0 (ver gotcha 5).
 3. Implementar `upgrade()` y `downgrade()`.
 4. Validar con `--sql` y aplicar solo si corresponde.
 5. Actualizar `docs/db.md` o PR diario cuando el cambio tenga impacto visible.
@@ -88,16 +91,21 @@ Guía breve para crear, validar y aplicar migraciones Alembic sin sobrecargar el
    publicado en `127.0.0.1:5433`; prod en `5432`. Antes de `upgrade`, correr `alembic -c
    db/alembic.ini current` y confirmar el head esperado de **dev** — si no coincide, detenerse.
    La contraseña se lee de `.secrets/Dev_db_password_v1.txt` dentro de la URL, nunca impresa.
-   Además `target_metadata = None` en `env.py`: `autogenerate`/`alembic check` no detectan drift
-   modelo↔migración, así que nombres de índices y tipos se verifican a mano contra el modelo.
-   Hallazgo real (2026-10-05, `20261005_02_sla_consumo_historico`, ver `docs/cierres/2026-10-05.md`).
-   El drift ya es grande: medido el 2026-10-26 con `alembic.autogenerate.compare_metadata` contra
-   dev, hay ~180 operaciones de índice en todo `app.*`. La mayoría son la convención `ix_app_*` del
-   modelo frente a los `ix_*` de las migraciones, más índices creados por migración que el modelo
-   no declara. Por eso **no conviene encender** `target_metadata` sin reconciliar antes: el primer
-   autogenerate propondría borrar y recrear decenas de índices en prod. Para verificar un índice
-   puntual, correr `compare_metadata(MigrationContext.configure(conn, opts={"include_schemas": True}),
-   Base.metadata)` en sólo lectura y filtrar por tabla (`docs/PR/2026-10-26.md`, P05).
+   **Autogenerate encendido desde 2026-10-27 (P18)**: `env.py` usa `Base.metadata` con el alcance
+   de `db/models/autogenerate.py` (sólo `app`, sin las 7 tablas listadas en `TABLAS_SIN_MODELO`,
+   comparando tipos y `server_default`). Los modelos se alinearon con dev (149 diferencias → 0): la
+   convención `ix_<tabla>_<columnas>` en `db/base.py`, `Index(...)` explícito cuando el nombre real
+   es otro, y `server_default`/comentarios iguales a los de la base. Reglas para no reabrir el drift:
+   (a) todo índice/constraint/default creado por migración se declara también en el modelo, con el
+   mismo nombre; (b) `alembic check` (o `scripts/check_drift_modelos.py --detalle`) tiene que dar 0
+   antes de integrar, y `tests/test_drift_modelos_real_db.py` lo exige contra dev; (c) una tabla sin
+   modelo se agrega a `TABLAS_SIN_MODELO`, nunca a un filtro genérico. **Dev no es la cadena**: dev
+   tenía nombres y defaults que las migraciones no crean, así que una base nueva difería en 9 puntos
+   (normalizados por `20261027_02`). `scripts/check_drift_desde_cero.sh` migra un Postgres efímero
+   desde cero y exige drift 0; corre local (no está en GitHub Actions, por decisión del usuario).
+   Antes de P18, `env.py` tenía `target_metadata = None` y la plantilla `script.py.mako` usaba
+   `${repr(revision)}` y `pass` fijo: `alembic revision` fallaba y el autogenerate descartaba lo
+   detectado (ver `docs/cierres/2026-10-05.md` y `docs/PR/2026-10-27.md`).
 6. **Una migración de una rama SIN integrar aplicada al Postgres de dev compartido bloquea a las
    demás ramas.** El dev DB queda en un head que `dev` (y toda rama que parte de él) no conoce:
    `alembic upgrade` de otra rama falla ("Can't locate revision"), y si esa rama también encadenó

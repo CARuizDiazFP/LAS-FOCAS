@@ -27,7 +27,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import relationship
 
 from db.base import Base
@@ -138,7 +138,7 @@ ruta_empalme_association = Table(
     Base.metadata,
     Column("ruta_id", Integer, ForeignKey("app.rutas_servicio.id", ondelete="CASCADE"), primary_key=True),
     Column("empalme_id", Integer, ForeignKey("app.empalmes.id", ondelete="CASCADE"), primary_key=True),
-    Column("orden", Integer, nullable=True),  # Orden del empalme en la ruta (1, 2, 3...)
+    Column("orden", Integer, nullable=True, comment="Orden del empalme en la secuencia de la ruta"),  # 1, 2, 3...
     schema="app",
 )
 
@@ -159,10 +159,13 @@ class Camara(Base):
     """
 
     __tablename__ = "camaras"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        UniqueConstraint("fontine_id", name="camaras_fontine_id_key"),
+        {"schema": "app"},
+    )
 
     id = Column(Integer, primary_key=True)
-    fontine_id = Column(String(64), nullable=True, unique=True, index=True)
+    fontine_id = Column(String(64), nullable=True)
     nombre = Column(String(255), nullable=False, index=True)
     latitud = Column(Float, nullable=True)
     longitud = Column(Float, nullable=True)
@@ -171,11 +174,13 @@ class Camara(Base):
         SQLEnum(CamaraEstado, name="camara_estado", create_type=False, schema="app"),
         nullable=False,
         default=CamaraEstado.LIBRE,
+        server_default=text("'LIBRE'::app.camara_estado"),
     )
     origen_datos = Column(
         SQLEnum(CamaraOrigenDatos, name="camara_origen_datos", create_type=False, schema="app"),
         nullable=False,
         default=CamaraOrigenDatos.MANUAL,
+        server_default=text("'MANUAL'::app.camara_origen_datos"),
     )
     last_update = Column(DateTime(timezone=True), nullable=True)
     camara_padre_id = Column(
@@ -275,7 +280,7 @@ class Empalme(Base):
     tracking_empalme_id = Column(String(64), nullable=False, index=True)
     camara_id = Column(Integer, ForeignKey("app.camaras.id"), nullable=True, index=True)
     tipo = Column(String(64), nullable=True)
-    es_transito = Column(Boolean, nullable=False, default=False)  # True si es punto de tránsito (ODF/NODO/RACK)
+    es_transito = Column(Boolean, nullable=False, default=False, server_default=text("false"))  # True si es punto de tránsito (ODF/NODO/RACK)
 
     camara = relationship("Camara", back_populates="empalmes")
     
@@ -313,24 +318,30 @@ class RutaServicio(Base):
     """
 
     __tablename__ = "rutas_servicio"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        Index("ix_app_rutas_servicio_servicio_id", "servicio_id"),
+        Index("ix_rutas_servicio_servicio_tipo_activa", "servicio_id", "tipo", "activa"),
+        {"schema": "app"},
+    )
 
     id = Column(Integer, primary_key=True)
-    servicio_id = Column(Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), nullable=False, index=True)
-    nombre = Column(String(255), nullable=False, default="Principal")
+    servicio_id = Column(Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), nullable=False)
+    nombre = Column(String(255), nullable=False, default="Principal", server_default=text("'Principal'::character varying"))
     tipo = Column(
         SQLEnum(RutaTipo, name="ruta_tipo", create_type=False, schema="app"),
         nullable=False,
         default=RutaTipo.PRINCIPAL,
+        server_default=text("'PRINCIPAL'::app.ruta_tipo"),
     )
     cantidad_pelos = Column(Integer, nullable=True)  # Cantidad de pelos/hilos de la ruta (extraído del tracking)
-    hash_contenido = Column(String(64), nullable=True, index=True)  # SHA256
+    hash_contenido = Column(String(64), nullable=True, index=True, comment="SHA256 del contenido del tracking")
     nombre_archivo_origen = Column(String(255), nullable=True)
-    contenido_original = Column(Text, nullable=True)  # JSON parseado del tracking
+    contenido_original = Column(Text, nullable=True, comment="Contenido raw del tracking para debugging")  # JSON parseado
     raw_file_content = Column(Text, nullable=True)  # Contenido EXACTO del archivo .txt original
-    activa = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=lambda: datetime.now(timezone.utc))
+    activa = Column(Boolean, nullable=False, default=True, server_default=text("true"))
+    # Nullable en la base (0 NULL en dev al 2026-10-27); el default de Python siempre la llena.
+    created_at = Column(DateTime(timezone=True), nullable=True, default=lambda: datetime.now(timezone.utc), server_default=text("now()"))
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=lambda: datetime.now(timezone.utc), server_default=text("now()"))
 
     # Relaciones
     servicio = relationship("Servicio", back_populates="rutas")
@@ -382,13 +393,15 @@ class PuntoTerminal(Base):
     __tablename__ = "puntos_terminales"
     __table_args__ = (
         UniqueConstraint("ruta_id", "tipo", name="uq_punto_terminal_ruta_tipo"),
+        Index("ix_app_puntos_terminales_ruta_id", "ruta_id"),
         {"schema": "app"},
     )
 
     id = Column(Integer, primary_key=True)
-    ruta_id = Column(Integer, ForeignKey("app.rutas_servicio.id", ondelete="CASCADE"), nullable=False, index=True)
+    ruta_id = Column(Integer, ForeignKey("app.rutas_servicio.id", ondelete="CASCADE"), nullable=False)
     tipo = Column(
-        SQLEnum(PuntoTerminalTipo, name="punto_terminal_tipo", create_type=False, schema="app"),
+        # Sin `schema`: el tipo existe en `public`, no en `app` (verificado en dev 2026-10-27).
+        SQLEnum(PuntoTerminalTipo, name="punto_terminal_tipo", create_type=False),
         nullable=False,
     )
     sitio_descripcion = Column(String(255), nullable=True)  # ODF MAIPU 316 1
@@ -429,8 +442,7 @@ class Servicio(Base):
         nullable=True,
         unique=True,
         index=True,
-        comment="ID lógico padre usado por ingesta SLA",
-    )
+    )  # ID lógico padre usado por la ingesta SLA
     nombre_cliente = Column(String(255), nullable=True)
     numero_linea = Column(String(128), nullable=True, index=True)
     tipo_servicio = Column(String(128), nullable=True, index=True)
@@ -439,7 +451,9 @@ class Servicio(Base):
     localidad = Column(String(128), nullable=True)
     provincia = Column(String(128), nullable=True)
     direccion_2 = Column(String(255), nullable=True)
-    estado_servicio = Column(String(128), nullable=False, default="DESCONOCIDO", index=True)
+    estado_servicio = Column(
+        String(128), nullable=False, default="DESCONOCIDO", server_default=text("'DESCONOCIDO'::character varying"), index=True
+    )
     cliente = Column(String(255), nullable=True)
     # 0-6 o NULL, CHECK ck_servicios_categoria_valida (DDL-only, ver migración 20260814_01). Desde
     # 20261014_01: NULL = "sin categorizar" (ya no hay default 6), 6 = sólo C6 real, 0 = placeholder
@@ -467,7 +481,7 @@ class Servicio(Base):
     # 20261016_03). El tracking por tramos la compara contra los tramos que genera.
     trackings_esperados = Column(SmallInteger, nullable=True)
     nombre_archivo_origen = Column(String(255), nullable=True)  # DEPRECATED: Mover a RutaServicio
-    raw_tracking_data = Column(JSON, nullable=True)  # DEPRECATED: Mover a RutaServicio
+    raw_tracking_data = Column(JSONB, nullable=True)  # DEPRECATED: Mover a RutaServicio
 
     # Nueva relación: un servicio tiene múltiples rutas
     rutas = relationship(
@@ -552,7 +566,7 @@ class ServicioHistorialId(Base):
     estado_comercial = Column(String(128), nullable=True)
     motivo_baja = Column(String(255), nullable=True)
     es_vigente = Column(Boolean, nullable=False, server_default=text("false"))
-    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=text("now()"))
 
     servicio = relationship("Servicio", back_populates="historial_ids")
 
@@ -578,7 +592,7 @@ class ServicioEquipoUltimaMilla(Base):
     puerto = Column(String(128), nullable=True)
     direccion = Column(String(255), nullable=True)
     provincia = Column(String(128), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=text("now()"))
 
     servicio = relationship("Servicio", back_populates="equipos_ultima_milla")
 
@@ -624,15 +638,16 @@ class ServicioSyncProv(Base):
     """
 
     __tablename__ = "servicios_sync_prov"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        Index("uq_servicios_sync_prov_servicio_id", "servicio_id", unique=True),
+        {"schema": "app"},
+    )
 
     id = Column(Integer, primary_key=True)
     servicio_id = Column(
         Integer,
         ForeignKey("app.servicios.id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
-        index=True,
     )
     # Nullable desde `20260923_03` (revierte el `NOT NULL` de `20260923_02`) — ver "Se escribe en
     # DOS embudos" arriba. `NULL` = "nunca sincronizó con éxito", mismo encoding que ya esperaba
@@ -641,8 +656,8 @@ class ServicioSyncProv(Base):
     ultimo_intento = Column(DateTime(timezone=True), nullable=True)
     ultimo_error = Column(Text, nullable=True)
     nro_servicio_consultado = Column(String(64), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=text("now()"))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=text("now()"))
 
     servicio = relationship("Servicio", back_populates="sync_prov")
 
@@ -740,6 +755,7 @@ class Ingreso(Base):
         SQLEnum(IngresoTipo, name="ingreso_tipo", create_type=False, schema="app"),
         nullable=False,
         default=IngresoTipo.INGRESO,
+        server_default=text("'INGRESO'::app.ingreso_tipo"),
     )
     fecha_inicio = Column(DateTime(timezone=True), nullable=True)
     fecha_fin = Column(DateTime(timezone=True), nullable=True)
@@ -813,14 +829,14 @@ class IngresoSinMatch(Base):
     texto_original = Column(String(512), nullable=False)
     origen = Column(String(32), nullable=False)  # "slack" | "tracking"
     contexto = Column(Text, nullable=True)  # canal Slack, nombre de archivo de tracking, etc.
-    revisado = Column(Boolean, nullable=False, default=False)
+    revisado = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     thread_ts = Column(String(32), nullable=True)  # ts del hilo Slack — habilita el seguimiento por empalme
-    resuelto_via_empalme = Column(Boolean, nullable=False, default=False)
+    resuelto_via_empalme = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     # Mensaje completo del evento de Slack (no sólo el nombre recortado en `texto_original`) —
     # habilita re-extraer tipo/persona/nombre con el código ACTUAL al revalidar. `None` en filas
     # creadas antes de 2026-09-07 — esos casos históricos no son revalidables automáticamente.
     texto_mensaje = Column(Text, nullable=True)
-    resuelto_via_revalidacion = Column(Boolean, nullable=False, default=False)
+    resuelto_via_revalidacion = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     # Vínculo de trazabilidad al `Ingreso` real creado cuando "Revalidar ingreso" resuelve el caso.
     ingreso_id = Column(
         Integer, ForeignKey("app.ingresos.id", ondelete="SET NULL"), nullable=True
@@ -829,6 +845,7 @@ class IngresoSinMatch(Base):
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
+        server_default=text("CURRENT_TIMESTAMP"),
         index=True,
     )
 
@@ -908,6 +925,7 @@ class IngresoCorreccion(Base):
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
         index=True,
     )
 
@@ -942,17 +960,23 @@ class IncidenteBaneo(Base):
     """
 
     __tablename__ = "incidentes_baneo"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        Index("ix_incidentes_baneo_ticket", "ticket_asociado"),
+        Index("ix_incidentes_baneo_afectado", "servicio_afectado_id"),
+        Index("ix_incidentes_baneo_protegido", "servicio_protegido_id"),
+        Index("ix_incidentes_baneo_ruta", "ruta_protegida_id"),
+        Index("ix_incidentes_baneo_servicio_activo", "servicio_protegido_id", "activo"),
+        {"schema": "app"},
+    )
 
     id = Column(Integer, primary_key=True)
-    ticket_asociado = Column(String(64), nullable=True, index=True)
-    servicio_afectado_id = Column(String(64), nullable=False, index=True)  # El que se cortó
-    servicio_protegido_id = Column(String(64), nullable=False, index=True)  # El que vamos a banear
+    ticket_asociado = Column(String(64), nullable=True)
+    servicio_afectado_id = Column(String(64), nullable=False)  # El que se cortó
+    servicio_protegido_id = Column(String(64), nullable=False)  # El que vamos a banear
     ruta_protegida_id = Column(
         Integer,
         ForeignKey("app.rutas_servicio.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
     )
     usuario_ejecutor = Column(String(128), nullable=True)
     motivo = Column(String(512), nullable=True)
@@ -960,9 +984,10 @@ class IncidenteBaneo(Base):
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
     )
     fecha_fin = Column(DateTime(timezone=True), nullable=True)
-    activo = Column(Boolean, nullable=False, default=True, index=True)
+    activo = Column(Boolean, nullable=False, default=True, server_default=text("true"), index=True)
     email_subject = Column(String(512), nullable=True)
     email_body = Column(Text, nullable=True)
 
@@ -1015,6 +1040,7 @@ class CamaraEstadoAuditoria(Base):
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
+        server_default=text("CURRENT_TIMESTAMP"),
         index=True,
     )
 

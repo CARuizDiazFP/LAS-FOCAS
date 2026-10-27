@@ -28,12 +28,14 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     SmallInteger,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -52,20 +54,25 @@ class FomonConfig(Base):
     __tablename__ = "fomon_config"
     __table_args__ = {"schema": "app"}
 
-    id = Column(SmallInteger, primary_key=True, default=1)
+    # La base la creó como serial (fila única, siempre id=1 desde Python).
+    id = Column(SmallInteger, primary_key=True, default=1, server_default=text("nextval('app.fomon_config_id_seq'::regclass)"))
     ventana_desde = Column(DateTime(timezone=True), nullable=True)
     ventana_hasta = Column(DateTime(timezone=True), nullable=True)
-    tope_mensajes_diario = Column(Integer, nullable=False, default=400)
-    max_ids_por_mensaje = Column(Integer, nullable=False, default=10)
-    timeout_base_s = Column(Integer, nullable=False, default=240)
-    timeout_por_servicio_s = Column(Integer, nullable=False, default=20)
-    concurrencia = Column(Integer, nullable=False, default=3)
-    burrito_user_id = Column(String(32), nullable=False, default="U0A2HE3K950")
-    prompt_version = Column(String(8), nullable=False, default="v4")
-    ultimo_ingreso_id_procesado = Column(Integer, nullable=False, default=0)
+    tope_mensajes_diario = Column(Integer, nullable=False, default=400, server_default=text("400"))
+    max_ids_por_mensaje = Column(Integer, nullable=False, default=10, server_default=text("10"))
+    timeout_base_s = Column(Integer, nullable=False, default=240, server_default=text("240"))
+    timeout_por_servicio_s = Column(Integer, nullable=False, default=20, server_default=text("20"))
+    concurrencia = Column(Integer, nullable=False, default=3, server_default=text("3"))
+    burrito_user_id = Column(
+        String(32), nullable=False, default="U0A2HE3K950", server_default=text("'U0A2HE3K950'::character varying")
+    )
+    prompt_version = Column(String(8), nullable=False, default="v4", server_default=text("'v4'::character varying"))
+    ultimo_ingreso_id_procesado = Column(Integer, nullable=False, default=0, server_default=text("0"))
     # Canales de Slack cuyos ingresos se verifican (coma-separados; vacío = todos). Default: sólo
     # #baneo-de-camaras-prueba — el canal productivo queda en stand-by hasta nuevo aviso (2026-10-14).
-    canales_ingreso = Column(String(256), nullable=False, default="C08UB8ML3LP")
+    canales_ingreso = Column(
+        String(256), nullable=False, default="C08UB8ML3LP", server_default=text("'C08UB8ML3LP'::character varying")
+    )
     actualizado_por = Column(String(128), nullable=True)
     actualizado_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -88,18 +95,20 @@ class FomonIntervencion(Base):
     origen = Column(String(16), nullable=False)  # INGRESO | MANUAL
     camara_id = Column(Integer, ForeignKey("app.camaras.id", ondelete="SET NULL"), nullable=True, index=True)
     botella_objetivo_n_id = Column(BigInteger, nullable=True)
-    botella_1_inferida = Column(Boolean, nullable=False, default=False)
+    botella_1_inferida = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     cable_n_id_manual = Column(BigInteger, nullable=True)
     tecnico = Column(String(128), nullable=True)
     thread_ts_ingreso = Column(String(32), nullable=True)
     canal_ingreso = Column(String(32), nullable=True)
-    estado = Column(String(24), nullable=False, default="PRE_PENDIENTE", index=True)
+    estado = Column(
+        String(24), nullable=False, default="PRE_PENDIENTE", server_default=text("'PRE_PENDIENTE'::character varying"), index=True
+    )
     fecha_ingreso = Column(DateTime(timezone=True), nullable=True)
     fecha_egreso = Column(DateTime(timezone=True), nullable=True)
-    sin_linea_base = Column(Boolean, nullable=False, default=False)
-    post_tardio = Column(Boolean, nullable=False, default=False)
-    egreso_inferido = Column(Boolean, nullable=False, default=False)
-    atribucion_compartida = Column(Boolean, nullable=False, default=False)
+    sin_linea_base = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    post_tardio = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    egreso_inferido = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    atribucion_compartida = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     aviso_canal = Column(String(32), nullable=True)
     aviso_ts = Column(String(32), nullable=True)
     proximo_evento_en = Column(DateTime(timezone=True), nullable=True, index=True)
@@ -130,7 +139,7 @@ class FomonIntervencionServicio(Base):
     cable_nombre = Column(Text, nullable=True)
     cable_clase = Column(SmallInteger, nullable=True)
     botella_n_id = Column(BigInteger, nullable=True)
-    es_objetivo = Column(Boolean, nullable=False, default=False)
+    es_objetivo = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     servicio_pk = Column(Integer, nullable=True)
     servicio_id_externo = Column(String(64), nullable=True)
     tipo_servicio = Column(String(64), nullable=True)
@@ -145,8 +154,10 @@ class FomonConsulta(Base):
     id = Column(Integer, primary_key=True)
     intervencion_id = Column(Integer, ForeignKey("app.fomon_intervenciones.id"), nullable=False, index=True)
     fase = Column(String(8), nullable=False)
-    intento = Column(SmallInteger, nullable=False, default=1)
-    estado = Column(String(12), nullable=False, default="PENDIENTE", index=True)
+    intento = Column(SmallInteger, nullable=False, default=1, server_default=text("'1'::smallint"))
+    estado = Column(
+        String(12), nullable=False, default="PENDIENTE", server_default=text("'PENDIENTE'::character varying"), index=True
+    )
     servicios_pk = Column(ARRAY(Integer), nullable=False)
     ids_solicitados = Column(ARRAY(String(64)), nullable=False)
     prompt_version = Column(String(8), nullable=True)
@@ -195,7 +206,11 @@ class FomonReconocimiento(Base):
 
 class FomonCableGeo(Base):
     __tablename__ = "fomon_cable_geo"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        # Creado por migración; sin uso en dev (idx_scan = 0, 2026-10-27): se declara, no se borra.
+        Index("ix_fomon_cable_geo_bbox", "min_lon", "max_lon", "min_lat", "max_lat"),
+        {"schema": "app"},
+    )
 
     cable_n_id = Column(BigInteger, primary_key=True)
     coords = Column(JSONB, nullable=False)  # [[lon, lat], ...] WGS84 simplificado

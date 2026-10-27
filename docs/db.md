@@ -1388,6 +1388,70 @@ Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;
 - El enum `app.camara_estado` se crea sólo si no existe (`create_type=False` + `checkfirst=True`), lo que permite reintentos sin tener que limpiar tipos manualmente.
 - En entornos dockerizados, reemplazar `localhost` por el hostname del contenedor (`postgres`) y dejar que Compose gestione las credenciales.
 
+## Autogenerate y drift modelo↔base (2026-10-27, P18)
+
+`db/alembic/env.py` compara contra `Base.metadata` (antes tenía `target_metadata = None`). El
+alcance vive en `db/models/autogenerate.py` y lo comparten `env.py`, el script de chequeo y el test:
+
+- sólo el esquema `app` (`public` tiene `alembic_version` y el enum `punto_terminal_tipo`);
+- fuera del alcance van `TABLAS_SIN_MODELO`: `chat_messages`, `chat_sessions`, `conversations`,
+  `example`, `messages`, `report_history` y `web_users`. Existen y se usan con SQL crudo, pero no
+  tienen modelo. La lista es explícita a propósito: una tabla nueva sin modelo aparece como drift;
+- se comparan tipos, nulabilidad, `server_default`, comentarios, índices y constraints.
+
+`db/base.py` define la convención de nombres `ix_<tabla>_<columnas>` para `index=True`, la misma
+que usan las migraciones. Sin ella, SQLAlchemy nombraba `ix_app_<tabla>_<col>`. Cuando el nombre
+real es otro (`ix_cromo_pelos_cable`, `uq_servicios_sync_prov_servicio_id`…), el modelo lo declara
+con un `Index(...)` explícito en `__table_args__`.
+
+**Alineación (la base manda).** Antes había 149 diferencias contra dev: 77 índices con otro nombre,
+12 índices creados por migración que el modelo no declaraba, 47 `server_default`, 9 comentarios,
+2 tipos (`servicios.raw_tracking_data` es `JSONB`, y el enum de `puntos_terminales.tipo` vive en
+`public`), la nulabilidad de `rutas_servicio.created_at` y la constraint
+`camaras_fontine_id_key`. Ahora hay 0. Se resolvieron declarando todo en los modelos, sin tocar la
+base, salvo dos migraciones:
+
+- `20261027_01` borra `ix_camaras_fontine_id`, un índice UNIQUE duplicado exacto de
+  `camaras_fontine_id_key` (los dos venían de `20251230_01`);
+- `20261027_02` normaliza lo que **dev tiene y la cadena de migraciones no crea**: 6 nombres de
+  índice (`incidentes_baneo` ×4, `config_servicios`, `rutas_servicio`), el `DEFAULT true` de
+  `incidentes_baneo.activo` y 2 comentarios de `config_servicios`. Cada renombre se aplica sólo si
+  el índice existe con el nombre de la cadena y no con el de dev, así que la migración es idempotente
+  y prod converge tenga la variante que tenga.
+
+Índices que se declaran pero en dev tienen `idx_scan = 0` (se informan, **no se borran**; dev no es
+prod): `ix_cromo_botellas_nombre` (GIN `to_tsvector`, 2,4 MB), `ix_fomon_cable_geo_bbox` (2,1 MB) e
+`ix_incidentes_baneo_servicio_activo`.
+
+**Chequeos.** Los tres dan 0 diferencias al 2026-10-27:
+
+```bash
+# Contra dev (mismas variables que los tests *_real_db); exit 0 sin drift, 1 con drift, 2 sin conexión
+POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5433 POSTGRES_DB=focas_dev POSTGRES_USER=FOCALBOT \
+  POSTGRES_PASSWORD="$(cat .secrets/Dev_db_password_v1.txt)" python scripts/check_drift_modelos.py --detalle
+alembic -c db/alembic.ini check            # con ALEMBIC_URL de dev: "No new upgrade operations detected."
+scripts/check_drift_desde_cero.sh          # Postgres efímero: init.sql + cadena completa + drift 0
+```
+
+`tests/test_drift_modelos_real_db.py` falla si vuelve el drift contra dev, y
+`tests/test_check_drift_modelos.py` cubre la clasificación y el alcance sin base.
+`check_drift_desde_cero.sh` corre local: no está en GitHub Actions, por decisión del usuario, para
+no gastar minutos.
+
+**Producción** no se leyó (no hubo autorización). Para chequearla cuando se autorice, desde el
+checkout de control y en sólo lectura (el script abre una transacción `READ ONLY`):
+
+```bash
+POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5432 POSTGRES_DB=FOCALDB POSTGRES_USER=<usuario de prod> \
+  POSTGRES_PASSWORD="$(cat .secrets/db_password_v1.txt)" python scripts/check_drift_modelos.py --detalle
+```
+
+Qué esperar: con prod en una revisión anterior a `20261027_01`, aparece al menos
+`indice_solo_base: camaras.ix_camaras_fontine_id`. Según de dónde salió cada índice, también pueden
+aparecer los 6 nombres de `20261027_02` y diferencias por las migraciones de dev que prod todavía no
+tiene. Todo eso lo resuelven las dos migraciones del deploy. Cualquier otra diferencia es drift
+propio de prod y se decide antes del deploy, nunca con un autogenerate a ciegas.
+
 ## Historial de migraciones
 
 Tabla **generada** desde `db/alembic/versions/` por `scripts/gen_tabla_migraciones.py` (solo
@@ -1478,6 +1542,8 @@ generarla (2026-10-26): 72 migraciones en una sola cadena lineal, raíz `2025100
 | `20261020_01` | `20261017_04` | 2026-10-20 | `20261020_01_cromo_arbitro.py` | Tablas del árbitro de Cromo (reglas, propuestas, evidencia de camino, evaluaciones) y origen AUTO en el override de ODF |
 | `20261021_01` | `20261020_01` | 2026-10-21 | `20261021_01_servicio_posicion_vigente.py` | Tabla app.servicio_posicion_vigente (posición de ODF por conector que un operador declara como la vigente de un Servicio, con la foto del conector y el retiro automático o manual) |
 | `20261023_01` | `20261021_01` | 2026-10-23 | `20261023_01_ingresos_anulacion_y_mover.py` | Baja lógica de app.ingresos (anulado_at/por/motivo), origen del movimiento en app.ingresos_correcciones y fin de sus FKs (ids históricos) |
+| `20261027_01` | `20261023_01` | 2026-10-27 | `20261027_01_camaras_fontine_id_indice_duplicado.py` | Borra app.ix_camaras_fontine_id, índice UNIQUE duplicado exacto de la constraint camaras_fontine_id_key |
+| `20261027_02` | `20261027_01` | 2026-10-27 | `20261027_02_normalizar_esquema_cadena_vs_dev.py` | Normaliza (idempotente) las 9 diferencias entre una base creada desde la cadena de migraciones y la base de dev: 6 nombres de índice, un DEFAULT y 2 comentarios |
 <!-- tabla-migraciones:fin -->
 
 **Notas que no entran en la tabla** (leídas de cada migración):

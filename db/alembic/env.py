@@ -5,10 +5,20 @@
 from __future__ import annotations
 
 import os
+import sys
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
+
+# `alembic -c db/alembic.ini` corre desde la raíz del repo; en el contenedor la raíz también es el cwd.
+# Se agrega por las dudas para que `db.models` sea importable desde cualquier cwd.
+_RAIZ = Path(__file__).resolve().parents[2]
+if str(_RAIZ) not in sys.path:
+    sys.path.insert(0, str(_RAIZ))
+
+from db.models.autogenerate import OPCIONES_COMPARACION, target_metadata  # noqa: E402
 
 
 config = context.config
@@ -32,7 +42,9 @@ config.set_section_option(
     section["sqlalchemy.url"].replace("%", "%%"),
 )
 
-target_metadata = None
+# Autogenerate encendido desde 2026-10-27 (P18): los modelos quedaron alineados con la base y el
+# alcance (sólo `app`, sin las tablas que no se modelan) vive en db/models/autogenerate.py, que
+# comparte con scripts/check_drift_modelos.py.
 
 
 def run_migrations_offline() -> None:
@@ -41,6 +53,7 @@ def run_migrations_offline() -> None:
         url=url,
         target_metadata=target_metadata,
         dialect_opts={"paramstyle": "named"},
+        **OPCIONES_COMPARACION,
     )
 
     with context.begin_transaction():
@@ -55,7 +68,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(connection=connection, target_metadata=target_metadata, **OPCIONES_COMPARACION)
 
         with context.begin_transaction():
             context.run_migrations()

@@ -75,8 +75,8 @@ class User(Base):
 ```bash
 # Crear nueva migración
 cd /home/focal/proyectos/LAS-FOCAS
-# manual: target_metadata = None en env.py deja vacío a --autogenerate
-alembic -c db/alembic.ini revision -m "descripcion"
+# autogenerate encendido (P18): revisar lo generado; `revision -m` sólo para cambios que no ve
+alembic -c db/alembic.ini revision --autogenerate -m "descripcion"
 
 # Aplicar migraciones
 alembic -c db/alembic.ini upgrade head

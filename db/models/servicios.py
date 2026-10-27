@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, SmallInteger, String, Text, false as sa_false
+from sqlalchemy import Boolean, Column, DateTime, Index, Integer, SmallInteger, String, Text, false as sa_false, text
 
 from db.base import Base
 
@@ -17,19 +17,22 @@ class ConfigServicios(Base):
     """
 
     __tablename__ = "config_servicios"
-    __table_args__ = {"schema": "app"}
+    __table_args__ = (
+        Index("ix_app_config_servicios_nombre_servicio", "nombre_servicio", unique=True),
+        {"schema": "app"},
+    )
 
     id = Column(Integer, primary_key=True)
     nombre_servicio = Column(
-        String(128), nullable=False, unique=True, index=True,
-        comment="Identificador único del servicio (ej: slack_baneo_notifier)",
-    )
+        String(128), nullable=False,
+        comment="Identificador único del servicio",
+    )  # ej: slack_baneo_notifier
     intervalo_horas = Column(
-        Integer, nullable=False, default=4,
+        Integer, nullable=False, default=4, server_default=text("4"),
         comment="Intervalo de ejecución en horas",
     )
     slack_channels = Column(
-        String(512), nullable=False, default="",
+        String(512), nullable=False, default="", server_default=text("''::character varying"),
         comment="Canales Slack separados por coma",
     )
     ultima_ejecucion = Column(
@@ -37,16 +40,16 @@ class ConfigServicios(Base):
         comment="Timestamp de la última ejecución exitosa",
     )
     activo = Column(
-        Boolean, nullable=False, default=True,
+        Boolean, nullable=False, default=True, server_default=text("true"),
         comment="Si el servicio está habilitado",
     )
     ultimo_error = Column(
         Text, nullable=True,
-        comment="Último error registrado (NULL si la última ejecución fue exitosa)",
-    )
+        comment="Último error registrado",
+    )  # NULL si la última ejecución fue exitosa
     hora_inicio = Column(
         SmallInteger, nullable=True,
-        comment="Hora del día (0-23, GMT-3) que ancla el primer ciclo; NULL = arrancar de inmediato",
+        comment="Hora del día (0-23) en GMT-3 en que se ancla el primer ciclo; NULL = arrancar de inmediato",
     )
     workflow_ids = Column(
         String(512), nullable=True,

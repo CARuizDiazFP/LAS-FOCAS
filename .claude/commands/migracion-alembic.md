@@ -1,5 +1,5 @@
 ---
-description: "Crear una migración Alembic reversible (manual: el autogenerate está inactivo), validarla y aplicarla"
+description: "Crear una migración Alembic reversible (autogenerate contra dev + revisión manual), validarla y aplicarla"
 argument-hint: "descripción del cambio de esquema"
 ---
 
@@ -9,7 +9,7 @@ argument-hint: "descripción del cambio de esquema"
 
 Crea una migración Alembic a partir de la descripción del usuario. Argumento requerido: $ARGUMENTS (descripción del cambio de esquema).
 
-La migración se escribe **siempre a mano**: `db/alembic/env.py` tiene `target_metadata = None`, así que `--autogenerate` produce un archivo vacío. Encenderlo no es trivial, porque el drift modelo↔base ya suma ~180 índices (ver la skill `alembic-migrations`, gotcha 5). Después de cambiar un modelo, copiar a mano en la migración los nombres de índice y los tipos exactos.
+Desde 2026-10-27 (P18) el autogenerate está **encendido**: `db/alembic/env.py` compara contra `Base.metadata` con el alcance de `db/models/autogenerate.py`, y los modelos están alineados con dev (drift 0). Declarar primero el cambio en el modelo, generar con `--autogenerate` y revisar el resultado; escribir a mano sólo lo que no detecta (datos, `CONCURRENTLY`, triggers). Ver la skill `alembic-migrations`, gotcha 5.
 
 ## Objetivo
 
@@ -30,8 +30,12 @@ alembic -c db/alembic.ini current
 ### 2. Crear la migración
 
 ```bash
-# Manual (único modo efectivo: target_metadata = None)
+# Autogenerate contra dev (por defecto); revisar y completar el encabezado de 3 líneas
+alembic -c db/alembic.ini revision --autogenerate -m "descripcion"
+# Manual (datos, CONCURRENTLY, DDL que el autogenerate no ve)
 alembic -c db/alembic.ini revision -m "descripcion"
+# Debe dar "No new upgrade operations detected." una vez aplicada la migración
+alembic -c db/alembic.ini check
 ```
 
 ### 3. Implementar la migración

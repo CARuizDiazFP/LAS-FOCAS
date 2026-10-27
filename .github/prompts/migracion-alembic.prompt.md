@@ -11,7 +11,7 @@ agent: "agent"
 
 # Crear Migración Alembic
 
-Crear una migración Alembic a partir de la descripción dada por el usuario. La migración se escribe siempre a mano: `db/alembic/env.py` tiene `target_metadata = None` y `--autogenerate` genera un archivo vacío (skill `alembic-migrations`, gotcha 5).
+Crear una migración Alembic a partir de la descripción dada por el usuario. Desde 2026-10-27 (P18) el autogenerate está encendido: se declara el cambio en el modelo y `revision --autogenerate` contra dev genera las operaciones; después se revisa y se completa a mano lo que no ve (skill `alembic-migrations`, paso 2 y gotcha 5).
 
 ## Objetivo
 
@@ -22,7 +22,7 @@ Crear una migración Alembic a partir de la descripción dada por el usuario. La
 ## Entradas esperadas
 
 - descripción del cambio de esquema
-- tipo: `manual` (el autogenerate está inactivo)
+- tipo: `autogenerate` (por defecto) o `manual` (datos, `CONCURRENTLY`, DDL que el autogenerate no ve)
 - contexto adicional sobre tablas, columnas, índices o datos existentes
 
 ## Flujo de trabajo
@@ -37,10 +37,10 @@ alembic -c db/alembic.ini current
 
 ### 2. Elegir estrategia de creación
 
-Usar siempre `revision -m` y escribir `upgrade()`/`downgrade()` a mano, copiando del modelo los nombres de índice y los tipos exactos: con `target_metadata = None`, `revision --autogenerate` no detecta ningún cambio.
+Por defecto `revision --autogenerate` contra dev, después de declarar el cambio en el modelo; `revision -m` a mano sólo para lo que el autogenerate no detecta. Antes de integrar, `alembic check` (o `python scripts/check_drift_modelos.py`) tiene que dar 0.
 
 ```bash
-# manual: target_metadata = None en env.py deja vacío a --autogenerate
+# autogenerate encendido (P18): revisar lo generado; `revision -m` sólo para cambios que no ve
 alembic -c db/alembic.ini revision -m "descripcion"
 ```
 
