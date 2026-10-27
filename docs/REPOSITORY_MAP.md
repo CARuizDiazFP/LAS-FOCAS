@@ -1,4 +1,4 @@
-<!-- repository-map: {"source_commit": "fbb7e1ec01d1", "generated_at_utc": "2026-10-26T10:16:18Z", "manifest_sha256": "569a344474f83c654944c82aef9c8f513a245ad33fc4e62b634f7b634ff6d372"} -->
+<!-- repository-map: {"source_commit": "4f0c76f2d222", "generated_at_utc": "2026-10-27T11:55:59Z", "manifest_sha256": "30252b996a88c5bfbb65f4b3badcb8e3cbf8b1bbaa78fd01e26f3a7fbc3e5a80"} -->
 # Nombre de archivo: REPOSITORY_MAP.md
 # Ubicación de archivo: docs/REPOSITORY_MAP.md
 # Descripción: Mapa canónico del repositorio por dominio (generado; no editar a mano)
@@ -65,14 +65,14 @@ Backend web (puerto dev 8090, sesión/CSRF/WebSocket) y SPA Vue 3 + Vite.
 - Comandos: `pytest tests/test_web_*.py -q`, `cd web/frontend && npm run build  # sólo deploy`
 - No indexar: `web/frontend/node_modules/`, `web/frontend/dist/`
 
-## `bots-workers` — Bots, NLP y workers
+## `bots-workers` — Slack, NLP y workers
 
-Bot Telegram, notificador/app de Slack, clasificador de intención y FO Monitor.
+Notificador/app de Slack, clasificador de intención y FO Monitor.
 
-- Raíces: `bot_telegram/`, `modules/slack_baneo_notifier/`, `nlp_intent/`, `modules/fo_monitor_worker/`, `core/services/fo_monitor/`
-- Entradas: `bot_telegram/app.py`, `nlp_intent/app/`
+- Raíces: `modules/slack_baneo_notifier/`, `nlp_intent/`, `modules/fo_monitor_worker/`, `core/services/fo_monitor/`
+- Entradas: `modules/slack_baneo_notifier/worker.py`, `nlp_intent/app/`
 - Docs: `docs/bot.md`, `docs/slack_app_cables.md`, `docs/nlp/`, `docs/fo_monitor.md`
-- Tests: `tests/test_bot*.py`, `tests/test_slack*.py`, `tests/test_fo_monitor*.py`, `nlp_intent/tests/`
+- Tests: `tests/test_slack*.py`, `tests/test_fo_monitor*.py`, `nlp_intent/tests/`
 - Comandos: `LLM_PROVIDER=heuristic pytest tests/test_slack*.py -q`
 
 ## `chatbot-mcp` — Chatbot y MCP

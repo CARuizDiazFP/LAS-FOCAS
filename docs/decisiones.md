@@ -2941,6 +2941,25 @@ su propia ventana de mantenimiento.
   `lasfocas-web` hay clientes que entran directo por HTTP a `:8080`, y `WEB_INFERRED_ORIGIN` es
   `http://172.18.208.162:8080`. Con `Secure`, el acceso directo por HTTP no puede iniciar sesión.
 
+## 2026-10-27 — Retiro del bot de Telegram
+
+- Contexto: el bot de Telegram no arrancaba en ninguna imagen desde antes de la auditoría del 2026-10-24 (su
+  Dockerfile no copiaba `modules/` y los flujos importaban `modules.informes_repetitividad`), no había contenedor
+  `bot` en dev ni en prod y `Start` ya lo excluía. El usuario confirmó que no lo usa.
+- Decisión (del usuario, P19): borrar todo lo del repositorio: código, Dockerfile, servicio `bot`, volumen y secret del
+  token de Telegram de los dos compose, variables `TELEGRAM_*` de los samples, paso de `pip-audit` de la CI,
+  sus dos tests, el agente `bot` (y su copia de `.gemini/rules/`) y las menciones en agentes, skills, prompts y
+  docs. `Start` ya no tiene exclusiones por defecto y `--with-bot` queda aceptada como obsoleta (avisa y se ignora).
+- Se conserva: `nlp_intent` (lo usa el chat del panel), `modules/informes_repetitividad` (panel, API y MCP),
+  `core/repositories/conversations.py::insert_conversation` (la usa el chat web vía
+  `get_or_create_conversation_for_web_user`) y la columna `tg_user_id` de `app.conversations`/`app.messages` (el
+  chat web guarda ahí un pseudo-id). No había tablas propias del bot.
+- Queda para decidir: `modules/informes_sla` sólo tenía al bot como consumidor productivo; ahora sólo lo usan
+  `tests/test_sla_processor.py` y `tests/test_sla_report_builder.py`. Se deja intacto hasta el análisis de pilas de
+  SLA de P11 (Parte C). Los volúmenes `*bot*data` y los archivos de `.secrets/` del token quedan fuera del repo.
+- Consecuencia: en el próximo deploy a prod, `compose.yml` ya no define `bot`; no hay contenedor que bajar. `up
+  --remove-orphans` no hace falta (el servicio nunca corrió en prod).
+
 ## 2026-10-27 — Eventos de ingesta Cromo: sin `SIN_CAMBIOS` y retención de 90 días
 
 - Contexto: `app.cromo_ingesta_eventos` tenía 441.487 filas (61 MB) en dev. Una corrida COMPLETA genera ≈ 89.000
@@ -2958,6 +2977,7 @@ su propia ventana de mantenimiento.
   con `sin_cambios = 50` en la corrida en los dos casos.
 - Sin índice nuevo: cada lote de borrado es un range scan sobre la PK (≈ 200 ms con 19.446 borrados) y el conteo
   previo un seq scan de ≈ 160 ms. Se conservan los eventos de corridas `EN_CURSO` (reanudación por
-  `CABLE_INNER_OK` / `CABLE_SNAPSHOT_OK`) y todas las filas de corrida.- Aplicado en `focas_dev` (decisión del usuario, 2026-10-27): `--incluir-sin-cambios --aplicar` borró 121.981
+  `CABLE_INNER_OK` / `CABLE_SNAPSHOT_OK`) y todas las filas de corrida.
+- Aplicado en `focas_dev` (decisión del usuario, 2026-10-27): `--incluir-sin-cambios --aplicar` borró 121.981
   `SIN_CAMBIOS` en 23 lotes y `VACUUM (FULL, ANALYZE)` (1,2 s) llevó la tabla de 61 MB a 45 MB (319.574 filas).
   La retención de 90 días no borró nada: el evento más viejo es del 2026-08-06. Prod no se tocó.

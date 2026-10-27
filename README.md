@@ -5,8 +5,8 @@
 # LAS-FOCAS
 
 Sistema operativo de la infraestructura de fibra óptica de Metrotel: informes SLA y de
-Repetitividad, inventario FO sincronizado desde Cromo Red, panel web (SPA), bots de Slack y
-Telegram, chatbot con herramientas MCP y una API para otras áreas.
+Repetitividad, inventario FO sincronizado desde Cromo Red, panel web (SPA), bot de Slack,
+chatbot con herramientas MCP y una API para otras áreas.
 
 > Este README es una puerta de entrada corta. El detalle vive en `docs/`; para orientarse por
 > dominio, empezar por [docs/REPOSITORY_MAP.md](docs/REPOSITORY_MAP.md). Las reglas para agentes
@@ -20,8 +20,7 @@ Telegram, chatbot con herramientas MCP y una API para otras áreas.
 | Informes | SLA (incluido el informe de consumo), Repetitividad y alarmas Ciena en DOCX | [docs/informes/](docs/informes/) |
 | Inventario FO | Ingesta de Cromo Red (cámaras, botellas, cables, ODF), tracking de servicios | [docs/modulo_ingesta_cromo.md](docs/modulo_ingesta_cromo.md), [docs/infra.md](docs/infra.md) |
 | FO Monitor | Verificación PRE/POST de servicios por cable y mapa | [docs/fo_monitor.md](docs/fo_monitor.md) |
-| Slack | Bot de cables/servicios/track, baneos e ingresos (`modules/slack_baneo_notifier/`) | [docs/slack_app_cables.md](docs/slack_app_cables.md) |
-| Telegram | Bot aiogram con flujos de informes (`bot_telegram/`) | [docs/bot.md](docs/bot.md) |
+| Slack | Bot de cables/servicios/track, baneos e ingresos (`modules/slack_baneo_notifier/`) | [docs/slack_app_cables.md](docs/slack_app_cables.md), [docs/bot.md](docs/bot.md) |
 | Chatbot y MCP | Chat del panel, clasificación de intención (`nlp_intent/`) y herramientas MCP | [docs/chatbot.md](docs/chatbot.md), [docs/mcp.md](docs/mcp.md), [docs/nlp/intent.md](docs/nlp/intent.md) |
 | API | API interna con API key y API v1 OAuth2 (`client_credentials`) para otras áreas | [docs/api.md](docs/api.md) |
 
@@ -40,7 +39,7 @@ workers:  cromo_worker (ingesta Cromo Red)          ─┐
           botellas_recalculo_worker (duplicados)     ├─ usan redis
           slack_baneo_worker (bot de Slack)         ─┘
           fo_monitor_worker (FO Monitor, sólo postgres)
-otros:    bot (Telegram) · office :8090 (LibreOffice/UNO)
+otros:    office :8090 (LibreOffice/UNO)
           pgadmin :5050 (profile pgadmin)
 ```
 
@@ -62,7 +61,6 @@ web/            backend del panel (web/app/main.py + web/app/routers/) y SPA (we
 core/           configuración, logging, parsers, repositorios, servicios, MCP y chatbot
 modules/        informes, utilidades comunes y workers (cromo, botellas, fo_monitor, slack)
 db/             modelos SQLAlchemy y migraciones Alembic
-bot_telegram/   bot de Telegram
 nlp_intent/     microservicio de intención
 office_service/ microservicio LibreOffice
 deploy/         compose de prod y dev, Dockerfiles, env de ejemplo

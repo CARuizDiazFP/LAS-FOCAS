@@ -146,5 +146,4 @@ contra `lasfocasdev-*`, no sólo baneos.
 ## Traspasos (Handoffs)
 
 - **→ API Agent**: cuando tests de endpoints REST fallan
-- **→ Bot Agent**: cuando tests de handlers de Telegram fallan
 - **→ Reports Agent**: cuando tests de informes SLA/Repetitividad fallan

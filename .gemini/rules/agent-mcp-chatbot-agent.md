@@ -21,7 +21,6 @@ triggers:
 globs:
   - "web/**"
   - "db/**"
-  - "bot_telegram/**"
   - "modules/informes_repetitividad/**"
   - "docs/informes/repetitividad.md"
   - "nlp_intent/**"

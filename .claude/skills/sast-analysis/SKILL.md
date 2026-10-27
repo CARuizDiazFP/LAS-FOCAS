@@ -33,8 +33,8 @@ Checklist de análisis estático orientado a riesgos explotables en el código.
 
 ```bash
 rg -n '@app\.(get|post|put|delete)|@router\.(get|post|put|delete)' api web
-rg -n 'subprocess|os\.system|shell=True|eval\(|exec\(|yaml\.load\(|pickle\.loads|text\(' core api web modules bot_telegram
-rg -n 'Authorization|SessionMiddleware|secret_key|password|token|LOG_RAW_TEXT' core api web nlp_intent bot_telegram
+rg -n 'subprocess|os\.system|shell=True|eval\(|exec\(|yaml\.load\(|pickle\.loads|text\(' core api web modules
+rg -n 'Authorization|SessionMiddleware|secret_key|password|token|LOG_RAW_TEXT' core api web nlp_intent
 ./scripts/check_no_plaintext_secrets.sh
 ```
 
