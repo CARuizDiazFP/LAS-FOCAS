@@ -2958,4 +2958,6 @@ su propia ventana de mantenimiento.
   con `sin_cambios = 50` en la corrida en los dos casos.
 - Sin índice nuevo: cada lote de borrado es un range scan sobre la PK (≈ 200 ms con 19.446 borrados) y el conteo
   previo un seq scan de ≈ 160 ms. Se conservan los eventos de corridas `EN_CURSO` (reanudación por
-  `CABLE_INNER_OK` / `CABLE_SNAPSHOT_OK`) y todas las filas de corrida.
+  `CABLE_INNER_OK` / `CABLE_SNAPSHOT_OK`) y todas las filas de corrida.- Aplicado en `focas_dev` (decisión del usuario, 2026-10-27): `--incluir-sin-cambios --aplicar` borró 121.981
+  `SIN_CAMBIOS` en 23 lotes y `VACUUM (FULL, ANALYZE)` (1,2 s) llevó la tabla de 61 MB a 45 MB (319.574 filas).
+  La retención de 90 días no borró nada: el evento más viejo es del 2026-08-06. Prod no se tocó.
