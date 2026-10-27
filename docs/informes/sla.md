@@ -1,6 +1,6 @@
 # Nombre de archivo: sla.md
 # Ubicación de archivo: docs/informes/sla.md
-# Descripción: Documentación del informe de SLA para consumo desde SPA, bot y API
+# Descripción: Documentación del informe de SLA para consumo desde SPA y API
 
 ## Resumen
 
@@ -9,7 +9,7 @@ El informe de SLA analiza el cumplimiento de tiempos de resolución de tickets/r
 1. **Modo Excel (legacy)**: Dos archivos separados ("Servicios Fuera de SLA" + "Reclamos SLA").
 2. **Modo DB**: Consulta directa a la tabla `app.reclamos` con normalización automática.
 
-**Estado actual (2026-01-13)**: ✅ Flujo web completamente funcional. Corrección crítica aplicada para usar la columna correcta de horas (columna U "Horas Netas Reclamo"). El flujo moderno se consume desde la SPA Vue 3, el bot y la API.
+**Estado actual (2026-01-13)**: ✅ Flujo web completamente funcional. Corrección crítica aplicada para usar la columna correcta de horas (columna U "Horas Netas Reclamo"). El flujo moderno se consume desde la SPA Vue 3 y la API (el bot de Telegram se retiró el 2026-10-27).
 
 ## Columnas esperadas y mapeos
 
@@ -64,7 +64,7 @@ sesión y `csrf_token` en el form). Campos del form: `mes`/`anio` (o `periodo_me
    - "Servicios Fuera de SLA.xlsx" (o similar)
    - "Reclamos SLA.xlsx" (o similar)
 3. Indicar el período: mes (1-12) y año (2000-2100).
-4. Opcional: activar "Generar PDF" si LibreOffice está disponible.
+4. Opcional: activar "Generar PDF" (lo convierte `office_service`; si falla, se entrega el DOCX y el aviso `pdf_error`).
 5. Opcional: activar "Usar base de datos" para ignorar archivos y consultar desde `app.reclamos`.
 6. Click en "Generar informe".
 7. El sistema devuelve JSON con las rutas de descarga (`report_paths`) del `.docx` y opcionalmente `.pdf`.
@@ -100,15 +100,9 @@ directorio de informes (`_report_href`) y se descargan con `GET /reports/{ruta}`
 sesión). El nombre del archivo depende del modo: Excel → `sla/AAAAMM/InformeSLA_<AAAAMMDD_HHMMSS>.docx`
 (`core/sla/legacy_report.py`); DB (`"source": "db"`) → `sla/AAAAMM/sla_AAAAMM.docx` (`core/sla/report.py`).
 
-## Uso por Telegram
-1. Enviar comando `/sla` o usar el botón correspondiente.
-2. Subir el Excel `.xlsx`.
-3. Indicar el período `mm/aaaa`.
-4. El bot devuelve un `.docx` y opcionalmente `.pdf`.
-
 ## Contratos y alineación
 
-- La lógica de cálculo vive en backend y se consume desde UI web, bot y API sin duplicación.
+- La lógica de cálculo vive en backend y se consume desde UI web y API sin duplicación.
 - La interfaz moderna no depende de Jinja ni de JavaScript legacy; solo expone contratos JSON y enlaces de descarga.
 - Cualquier ajuste nuevo debe mantener validación de entrada, trazabilidad de report history y respuesta tipada.
 
@@ -128,7 +122,7 @@ sesión). El nombre del archivo depende del modo: Excel → `sla/AAAAMM/InformeS
 - `SLA_TEMPLATE_PATH=${TEMPLATES_DIR}/Template_Informe_SLA.docx` — ruta de la plantilla oficial (se resuelve automáticamente desde `TEMPLATES_DIR`).
 - `REPORTS_DIR=/app/data/reports` — destino de los informes generados.
 - `UPLOADS_DIR=/app/data/uploads` — ubicación temporal de archivos subidos.
-- `SOFFICE_BIN=/usr/bin/soffice` — para habilitar conversión a PDF (opcional, requiere LibreOffice en el contenedor).
+- `OFFICE_SERVICE_BASE` (default `http://office:8090`) — servicio que convierte el PDF (`core/services/office_client.py`); `web`/`api` no tienen LibreOffice.
 
 **Volúmenes montados:**
 ```yaml

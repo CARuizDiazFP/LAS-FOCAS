@@ -178,7 +178,7 @@ Archivos en `REPORTS_DIR/sla_consumo/AAAAMM/SLA_consumido_<fecha_corte>_<sello>[
   eventos reales (sin límite; **sin gráfico de magnitud**), ficha completa de **todos los servicios con
   reclamos**, **tabla compacta** de los servicios sin reclamos (todos figuran), reclamos sin evento,
   inconsistencias y no vinculados.
-- **PDF** opcional sólo del ejecutivo (si `SOFFICE_BIN` está disponible). El **exhaustivo nunca se
+- **PDF** opcional sólo del ejecutivo (lo convierte `office_service`, ~47 s medido). El **exhaustivo nunca se
   convierte dentro del request**: LibreOffice tarda ~6,5 min.
 - Tablas: `app.reclamos` (ampliada), `app.sla_ingestas`, `app.servicio_sla_snapshot` y la vista de
   eventos (migración `20261005_02`). Esta ampliación **no requiere migración nueva**.
@@ -205,8 +205,8 @@ recibe `(res, destino)`, crea la carpeta si falta y devuelve el `Path` escrito:
   `<nombre del docx>_graficos/` junto al DOCX: `torta_causas.png` y, sólo en el ejecutivo,
   `magnitud_eventos.png`.
 
-El PDF del ejecutivo lo convierte después el servicio (`modules/common/libreoffice_export.convert_to_pdf`)
-si se pidió y hay `SOFFICE_BIN`; los builders no convierten.
+El PDF del ejecutivo lo convierte después el servicio (`core/services/office_client.intentar_pdf`,
+contra `office:8090/convert`) si se pidió; los builders no convierten.
 
 ## Endpoint y SPA
 
@@ -222,7 +222,7 @@ si se pidió y hay `SOFFICE_BIN`; los builders no convierten.
   `cuenta_sla`) y `sla_historico` (una fila por línea y fecha de corte, en orden cronológico; la vista
   toma la última como "Última foto de SLA"). Usa una ventana propia de **ahora − 365 días** y el
   `sla_prometido` de `app.servicios`, por lo que puede diferir levemente del informe.
-- Si se pide PDF y `SOFFICE_BIN` no está configurado, la respuesta trae `pdf_omitido` y el SPA lo muestra.
+- Si se pide PDF y office falla (caído, timeout, rechazo), la respuesta trae `pdf_omitido` con el motivo y el SPA lo muestra.
 
 ## Limitaciones
 

@@ -133,7 +133,7 @@ docker compose -f deploy/compose.yml --env-file .env up -d --force-recreate \
   api web nlp_intent office slack_baneo_worker botellas_recalculo_worker fo_monitor_worker
 ```
 
-`bot` (Telegram) no corre en prod: decisión explícita del usuario, no es un olvido.
+El bot de Telegram se retiró el 2026-10-27 (P19): el servicio `bot` ya no existe en `compose.yml`.
 
 ## 6. Verificación
 
@@ -305,10 +305,22 @@ el pedido es "pasar a prod **este** fix" y `dev` tiene más trabajo que no debe 
 
 Rollback del hotfix:
 `docker tag lasfocas-web:pre-hotfix-<fecha> lasfocas-web:latest` (ídem `api`) y
-`up -d --no-deps --force-recreate` de esos servicios.
+`up -d --no-deps --force-recreate` de esos servicios. El `:pre-hotfix-*` pasa a ser el juego vigente
+de esos servicios; la retención sigue la sección "Rollback".
 
 ## Rollback
 
+- Imágenes: se conserva **sólo el último juego** (regla única en la skill `docker-cleanup` →
+  "Rollback de prod"). **Antes del build del paso 2** (que mueve `:latest` a la imagen nueva aunque
+  prod siga corriendo la vieja), etiquetar cada servicio que se va a reconstruir:
+  `docker tag lasfocas-<svc>:latest lasfocas-<svc>:pre-deploy-$(date +%Y%m%d)`. Volver
+  atrás: `docker tag lasfocas-<svc>:pre-deploy-<fecha> lasfocas-<svc>:latest` y
+  `up -d --no-deps --force-recreate` de esos servicios, desde el checkout de control.
+- Tras verificar el deploy (sección 6 y prueba del usuario), el juego anterior queda superado: los
+  `:pre-deploy-*`/`:pre-hotfix-*` de cada servicio que tenga uno más nuevo y las `focas-base` más
+  viejas que la anterior. Se borran por tag exacto (`docker image rm <repo>:<tag>`, nunca `prune -a`),
+  con confirmación del usuario en esa sesión. Cada juego ocupa ~0,9 GB reales en un disco de 40 GB
+  compartido con dev.
 - Código: `docker compose ... up -d` desde el commit anterior de `main`.
 - Esquema: `alembic downgrade <revisión previa>` (todas las migraciones tienen `downgrade()`) o
   `pg_restore --clean --if-exists` del backup de ventana.

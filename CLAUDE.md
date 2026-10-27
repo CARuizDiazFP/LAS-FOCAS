@@ -4,7 +4,7 @@
 
 # LAS-FOCAS — Claude Code
 
-Sistema operativo de infraestructura de fibra óptica de Metrotel: informes SLA/Repetitividad, chatbot con MCP, bot Telegram, panel web y búsqueda de infraestructura FO.
+Sistema operativo de infraestructura de fibra óptica de Metrotel: informes SLA/Repetitividad, chatbot con MCP, bot de Slack, panel web y búsqueda de infraestructura FO.
 
 > Las convenciones de código, arquitectura, build/test, gotchas, seguridad y documentación fuente están en `AGENTS.md`. Este archivo agrega lo exclusivo de Claude Code: comandos slash, catálogo de agentes y catálogo de skills.
 
@@ -128,15 +128,14 @@ Definidos en `.github/agents/`. Cada agente tiene dominio, herramientas y handof
 | `api` | FastAPI async | Endpoints REST, Pydantic, OpenAPI, healthchecks | db, testing, security |
 | `web` | Vue 3 + Vite + TypeScript | SPA, Vue Router, WebSocket, sesión/CSRF | api, mcp-chatbot, security |
 | `db` | PostgreSQL async | SQLAlchemy, sesiones, Alembic, esquema `app.*` | api, docker |
-| `bot` | Telegram aiogram 3.x | Handlers, FSM, filtros, teclados | nlp, testing, mcp-chatbot |
-| `nlp` | Clasificación de intención | Providers heurístico/OpenAI/Ollama, 3 intents (Consulta/Acción/Otros) | mcp-chatbot, bot |
+| `nlp` | Clasificación de intención | Providers heurístico/OpenAI/Ollama, 3 intents (Consulta/Acción/Otros) | mcp-chatbot |
 | `mcp-chatbot` | Model Context Protocol | MCPRegistry, ChatOrchestrator, streaming, tools | nlp, reports, web |
 | `infra` | Infraestructura FO Metrotel | Cámaras, rutas Ciena, mapas estáticos | db, api, reports |
 | `reports` | Informes SLA y Repetitividad | Plantillas DOCX/PDF, builders, procesadores | office, db, testing |
 | `office` | LibreOffice headless | `office_service` (UNO, `office:8090`, `POST /convert` multipart → PDF) y `soffice` por subprocess | reports, docker |
 | `docker` | Infraestructura de contenedores | Compose, Dockerfiles, redes, healthchecks | testing, db |
 | `security` | Auditoría safe-by-design | Secretos, SAST, deps, CORS/XSS en FastAPI/Vue 3 | web, api, db |
-| `testing` | pytest y cobertura | Fixtures, mocks, cobertura (objetivo 60%, no forzado), CI manual | api, bot, reports |
+| `testing` | pytest y cobertura | Fixtures, mocks, cobertura (objetivo 60%, no forzado), CI manual | api, reports |
 | `skill-generator` | Arquitecto meta-agéntico | Crea agentes/prompts/skills (solo reglas, no app code) | — |
 
 **Intents NLP reales** (`nlp_intent/app/schemas.py`): `Consulta`, `Acción`, `Otros`, normalizados por `/v1/intent:analyze` a `Consulta/Generico`, `Solicitud de acción` y `Otros`. La única acción soportada es `repetitividad_report`.
@@ -146,11 +145,11 @@ Definidos en `.github/agents/`. Cada agente tiene dominio, herramientas y handof
 sube el documento a `office:8090/convert` y guarda el PDF en `REPORTS_DIR`). `GenerarMapaGeo`,
 `CompararTrazasFO` y `RegistrarEnNotion` se retiraron del registro el 2026-10-26 (P13, ver `docs/mcp.md`).
 
-> **PDF de informes**: la conversión real es `soffice` por subprocess
-> (`modules/common/libreoffice_export.py`) en el mismo contenedor, pero las imágenes `web`/`api` no
-> instalan LibreOffice: los informes salen sin PDF. `office_service` sí convierte por `POST /convert`
-> desde el 2026-10-26 (hoy sólo lo usa `ConvertirDocAPdf`). Detalle en el agente `office` y la skill
-> `libreoffice-convert`.
+> **PDF de informes** (desde P16, 2026-10-27): SLA, SLA consumido, Repetitividad y `ConvertirDocAPdf`
+> convierten con un único cliente, `core/services/office_client.py`, contra `office:8090/convert`
+> (`web`/`api` no tienen LibreOffice; ya no existen `libreoffice_export.py` ni `SOFFICE_BIN`). Si la
+> conversión falla, el informe sale con el DOCX y el motivo en `pdf_error` (`pdf_omitido` en SLA
+> consumido), nunca con un 500. Detalle en el agente `office` y la skill `libreoffice-convert`.
 
 ---
 

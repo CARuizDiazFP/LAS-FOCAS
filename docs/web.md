@@ -276,7 +276,7 @@ Centralizado vía `core.logging.setup_logging`.
 - `GET /api/chat/metrics` → métricas simples en memoria.
 - `POST /api/users/change-password` → Form: `current_password, new_password, csrf_token`.
 - `POST /api/admin/users` → Crear usuario (admin). Form: `username, password, role?, csrf_token`.
-- `POST /api/reports/sla` → informe SLA. FormData: `mes, anio, periodo_mes?, periodo_anio?, pdf_enabled?, use_db?, files*, csrf_token`. Respuesta: `{ok, message, report_paths: {docx, pdf?}, source}`.
+- `POST /api/reports/sla` → informe SLA. FormData: `mes, anio, periodo_mes?, periodo_anio?, pdf_enabled?, use_db?, files*, csrf_token`. Respuesta: `{ok, message, report_paths: {docx, pdf?}, source, pdf_error?}` (`pdf_error`: motivo si se pidió PDF y `office_service` no lo generó; el SPA lo muestra en el estado).
 - `POST /api/reports/sla-consumo` → informe de **SLA consumido** (pestaña "SLA consumido" de `/sla`,
   `components/sla/SlaConsumoPanel.vue` + `composables/useSlaConsumo.ts`). FormData: `files` (exactamente
   dos `.xlsx`, Servicios y Reclamos; el tipo se identifica por contenido), `pdf_enabled?`, `csrf_token`.
@@ -286,8 +286,8 @@ Centralizado vía `core.logging.setup_logging`.
   docx_exhaustivo, pdf_ejecutivo?, pdf_exhaustivo?}, pdf_omitido?}`. Errores: 400 (no son dos archivos
   o falta uno de los tipos), 415 (no `.xlsx` o vacío), 422 (Excel no reconocido o duplicado), 500 con
   ref. Ver `docs/informes/sla_consumo.md`.
-- `POST /api/flows/sla` → flujo SLA completo. FormData: `file?, mes, anio, usar_db?, incluir_pdf?, eventos?, conclusion?, propuesta?, csrf_token`.
-- `POST /api/flows/repetitividad` → flujo Repetitividad. FormData: `file?, mes, anio, include_pdf?, csrf_token, with_geo?, use_db?`. Responde: `{docx, pdf?, map_images, stats, source}`.
+- `POST /api/flows/sla` → flujo SLA completo. FormData: `file?, mes, anio, use_db?, include_pdf?, eventos?, conclusion?, propuesta?, csrf_token`. Responde `{status, docx, pdf, pdf_error, report_paths, metrics, …}` (`pdf_error` null si no hubo falla).
+- `POST /api/flows/repetitividad` → flujo Repetitividad. FormData: `file?, mes, anio, include_pdf?, csrf_token, with_geo?, use_db?`. Responde: `{docx, pdf?, pdf_generated?, pdf_error?, map_images, stats, source}` (`pdf_generated: false` y `pdf_error` cuando se pidió PDF y falló).
 - `POST /api/flows/comparador-fo` → Placeholder (501).
 - `POST /api/tools/compare-vlans` → JSON `{text_a, text_b, csrf_token}`. Devuelve `{only_a, common, only_b, vlans_a, vlans_b, total_a, total_b}`.
 - `POST /api/tools/alarmas-ciena` → multipart con archivo CSV. Devuelve Excel como blob.

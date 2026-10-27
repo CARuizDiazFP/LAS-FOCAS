@@ -11,7 +11,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
-from modules.common.libreoffice_export import convert_to_pdf
+from core.services.office_client import intentar_pdf
 from .config import MESES_ES
 from .schemas import Params, ResultadoSLA
 
@@ -100,12 +100,7 @@ def export_docx(data: ResultadoSLA, periodo: Params, out_dir: str) -> str:
     return str(docx_path)
 
 
-def maybe_export_pdf(docx_path: str, soffice_bin: Optional[str]) -> Optional[str]:
-    """Convierte el DOCX a PDF si LibreOffice está disponible."""
-    if not soffice_bin:
-        return None
-    try:
-        return convert_to_pdf(docx_path, soffice_bin)
-    except Exception:  # pragma: no cover - logging
-        logger.exception("action=maybe_export_pdf error")
-        return None
+def maybe_export_pdf(docx_path: str) -> Optional[str]:
+    """Convierte el DOCX a PDF vía office_service; ``None`` si falla (el motivo queda en el log)."""
+    pdf, _motivo = intentar_pdf(docx_path, contexto="informes_sla")
+    return str(pdf) if pdf else None

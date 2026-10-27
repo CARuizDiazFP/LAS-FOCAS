@@ -116,7 +116,7 @@ def test_repetitividad_success_registra_salidas(monkeypatch: pytest.MonkeyPatch,
 
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
-    config = ReportConfig(reports_dir=reports_dir, soffice_bin=None, maps_enabled=False)
+    config = ReportConfig(reports_dir=reports_dir, maps_enabled=False)
     monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
     docx_path = reports_dir / "reporte.docx"

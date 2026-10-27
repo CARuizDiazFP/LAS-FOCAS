@@ -13,7 +13,6 @@ from docx.oxml.ns import qn
 from docx.shared import Pt, Inches
 from docx.shape import InlineShape
 
-from modules.common.libreoffice_export import convert_to_pdf
 from core.docx_utils.text_replace import replace_title_everywhere
 from core.maps.static_map import MapStyle, build_static_map_png
 from core.utils.timefmt import minutes_to_hhmm
@@ -238,28 +237,6 @@ def _fit_inline_picture(
     ratio = min(max_width / width, max_height / height)
     picture.width = int(width * ratio)
     picture.height = int(height * ratio)
-
-
-def maybe_export_pdf(docx_path: str, soffice_bin: Optional[str]) -> Optional[str]:
-    """Convierte el DOCX a PDF si LibreOffice está disponible."""
-
-    if not soffice_bin:
-        logger.debug("action=maybe_export_pdf reason=missing_binary")
-        return None
-
-    binary_path = Path(soffice_bin)
-    if not binary_path.exists():
-        logger.info(
-            "action=maybe_export_pdf reason=binary_not_found soffice_bin=%s",
-            soffice_bin,
-        )
-        return None
-
-    try:
-        return convert_to_pdf(docx_path, soffice_bin)
-    except Exception:  # pragma: no cover - logging
-        logger.exception("action=maybe_export_pdf error")
-        return None
 
 
 def generate_service_maps(

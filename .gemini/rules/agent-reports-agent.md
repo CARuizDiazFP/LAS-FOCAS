@@ -26,7 +26,6 @@ globs:
   - "db/**"
   - "tests/**"
   - "pytest.ini"
-  - "bot_telegram/**"
   - "modules/informes_sla/**"
   - "core/sla/**"
   - "Templates/**"
@@ -95,7 +94,7 @@ core/sla/
 ## Flujo de Generación de Informe
 
 ```
-1. Recibir solicitud (API/Bot/Web)
+1. Recibir solicitud (API/Web/MCP)
        ↓
 2. Validar parámetros (schemas.py)
        ↓

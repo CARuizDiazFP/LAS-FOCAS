@@ -47,7 +47,7 @@ Entrada desde Docker: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
 Definido en `api/app/errores.py` y registrado en `create_app()` (`api/app/main.py`) con
 `add_exception_handler`. La API interna responde sus errores con el cuerpo de FastAPI
 (`{"detail": ...}`), el mismo de `HTTPException`, para no cambiarles el contrato a sus consumidores
-(proxies de la web, bot):
+(proxies de la web):
 
 - `HTTPException` y `RequestValidationError` (422) conservan los handlers de FastAPI.
 - `ErrorDeDominio` y sus subclases (`NoEncontrado` 404, `DatoInvalido` 422, `Conflicto` 409; la base
@@ -1587,7 +1587,7 @@ Genera el informe de Repetitividad para un mes/año determinado ya sea a partir 
 - **Autenticación:** requiere API key interna.
 
 #### Descripción general
-Procesa los casos del período indicado, calcula métricas de repetitividad y construye un documento DOCX basado en la plantilla oficial `Plantilla_Informe_Repetitividad.docx`. Las Horas Netas se normalizan a minutos enteros y al renderizar el informe se muestran como `HH:MM`. Cuando hay datos georreferenciados genera un PNG por servicio repetitivo usando `matplotlib` (con tiles de `contextily` si están disponibles) y adjunta las rutas en la respuesta. Si se solicita, intenta producir un PDF (LibreOffice headless vía `SOFFICE_BIN`). Cuando existen PDFs y/o mapas, el endpoint empaqueta todos los artefactos en un ZIP.
+Procesa los casos del período indicado, calcula métricas de repetitividad y construye un documento DOCX basado en la plantilla oficial `Plantilla_Informe_Repetitividad.docx`. Las Horas Netas se normalizan a minutos enteros y al renderizar el informe se muestran como `HH:MM`. Cuando hay datos georreferenciados genera un PNG por servicio repetitivo usando `matplotlib` (con tiles de `contextily` si están disponibles) y adjunta las rutas en la respuesta. Si se solicita, intenta producir un PDF (vía `office_service`, `core/services/office_client.py`). Cuando existen PDFs y/o mapas, el endpoint empaqueta todos los artefactos en un ZIP.
 
 #### Parámetros (multipart/form-data)
 | Campo | Tipo | Requerido | Validación | Descripción |
@@ -1650,8 +1650,8 @@ X-Map-Filenames: repetitividad_202407_servicio_a.png,repetitividad_202407_servic
 - Mapas: `core.maps.static_map` utiliza `matplotlib` con backend Agg y agrega basemap de `contextily`+`pyproj` cuando están instalados; en ausencia de tiles, queda un scatter sobre lat/lon.
 - Las imágenes generadas se escalan automáticamente para no superar media hoja A4 dentro del DOCX.
 - Dependencias del sistema: las imágenes Docker instalan `gdal-bin`, `libgdal-dev`, `libproj-dev`, `libgeos-dev` y `build-essential` para soportar `pyproj/rasterio`.
-- La conversión a PDF se realiza sólo si `incluir_pdf=true` y `SOFFICE_BIN` apunta a un binario válido (modo directo) o se integra a futuro con `office_service`.
-- Si la conversión falla, se devuelve el DOCX sin elevar excepción (fail-safe) y `X-PDF-Generated=false`.
+- La conversión a PDF se realiza si `incluir_pdf=true`, contra `office_service` (`OFFICE_SERVICE_BASE`, default `http://office:8090`).
+- Si la conversión falla, se devuelve el DOCX sin elevar excepción (fail-safe), `X-PDF-Generated=false` y `X-PDF-Error` con el motivo (ASCII).
 - Los archivos se escriben en el directorio configurado (`REPORTS_DIR`). Limpiar o rotar periódicamente para evitar acumulación.
 - Validar tamaño máximo del Excel (pendiente: establecer límite y documentación — TODO).
 - `core.utils.timefmt` centraliza la conversión de valores de Horas Netas (decimales, `HH:MM`, `timedelta`, enteros) a minutos enteros y los formatea luego como `HH:MM`.
@@ -1681,7 +1681,8 @@ servicio `core/services/sla.py`).
   `usar_db` (bool, default `false`), `incluir_pdf` (bool, default `false`) y los textos libres
   `eventos`, `conclusion`, `propuesta`. Sin archivo (o con `usar_db=true`) se calcula desde la DB
   (`sla_service.compute_from_db`).
-- **Respuesta 200 (JSON):** `{"docx": "<ruta>", "pdf": "<ruta>" | null, "preview": {...}}`, con los
+- **Respuesta 200 (JSON):** `{"docx": "<ruta>", "pdf": "<ruta>" | null, "pdf_error": "<motivo>" | null, "preview": {...}}`
+  (`pdf_error` sólo cuando se pidió PDF y `office_service` no lo generó), con los
   headers `X-Source` (`db` o `excel`), `X-Docx-Path`, `X-Servicios`, `X-Disponibilidad` y, si se
   generó, `X-Pdf-Path`. Las rutas son del filesystem del contenedor `api`.
 - **Errores:** `400` si el archivo no es `.xlsx` o está vacío; `422` ante un `ValueError` del
@@ -1704,7 +1705,7 @@ Vista JSON del cálculo SLA de un período, sin generar documentos.
   mtbf_h}], "anexo": [...]}`.
 - **Errores:** `501` con `usar_db=false` (el preview basado en Excel no está implementado); `500`
   con referencia si falla el cálculo contra la DB.
-- **Consumidores:** ninguno en `web/`, `bot_telegram/` ni `modules/` (verificado por grep).
+- **Consumidores:** ninguno en `web/` ni `modules/` (verificado por grep).
 
 ### Ingesta de reclamos (nuevo)
 
@@ -1896,12 +1897,13 @@ Compara las VLANs permitidas de dos configuraciones Cisco IOS.
   - `400 Bad Request` si el archivo no es `.xlsx` o faltan columnas requeridas.
 - **Encabezados de respuesta:**
   - `X-PDF-Requested`: `true` si el cliente envió `incluir_pdf=true`, `false` en caso contrario.
-  - `X-PDF-Generated`: `true` cuando se generó y adjuntó un PDF (ZIP); `false` si LibreOffice no estaba disponible o no se pidió.
+  - `X-PDF-Generated`: `true` cuando se generó y adjuntó un PDF (ZIP); `false` si la conversión falló o no se pidió.
+  - `X-PDF-Error`: motivo de la falla del PDF (ASCII, sólo cuando se pidió y falló).
 - **Notas:**
-  - La conversión a PDF sólo se intenta cuando `incluir_pdf=true` *y* el binario configurado en `SOFFICE_BIN` existe en el contenedor.
+  - La conversión a PDF se intenta cuando `incluir_pdf=true`, contra `office_service`.
   - Si el PDF no puede generarse, la respuesta se degrada a DOCX sin error y `X-PDF-Generated=false`.
   - Los mapas PNG embebidos se escalan automáticamente para no superar media hoja A4 dentro del documento.
-- **Dependencias:** utiliza `modules.informes_repetitividad`, el helper `core.utils.timefmt` para normalizar Horas Netas, plantillas de `Templates/` y, si está configurado, `SOFFICE_BIN` o el servicio `office_service` para la conversión a PDF.
+- **Dependencias:** utiliza `modules.informes_repetitividad`, el helper `core.utils.timefmt` para normalizar Horas Netas, plantillas de `Templates/` y el servicio `office_service` (vía `core/services/office_client.py`) para la conversión a PDF.
 ---
 
 ## Protocolo de Protección (Baneo de Cámaras)

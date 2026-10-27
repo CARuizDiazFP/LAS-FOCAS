@@ -158,6 +158,11 @@ async function generate() {
     links.value = newLinks;
     resultText.value = newLinks.length ? 'Listo.' : 'Generado sin archivos de salida.';
     resultClass.value = 'success';
+    // El PDF lo convierte office: si falla, el DOCX igual se entrega y se avisa el motivo.
+    if (j.pdf_error) {
+      resultText.value = `${resultText.value} PDF no generado: ${j.pdf_error}.`;
+      resultClass.value = 'info';
+    }
   } catch (e: unknown) {
     resultText.value = `Error: ${e instanceof Error ? e.message : String(e)}`;
     resultClass.value = 'error';

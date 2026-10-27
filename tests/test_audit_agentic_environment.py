@@ -228,3 +228,24 @@ def test_comando_sin_description_falla(raiz: Path) -> None:
 
     assert "error:command_description_missing:.claude/commands/viejo.md" in errores
     assert not any("commands/ok.md" in h for h in errores)
+
+
+def test_commands_de_frontmatter_con_prune_a_falla(raiz: Path) -> None:
+    # Real 2026-10-27 (P20): la copia Gemini del prompt de mantenimiento sugería `docker image prune -a -f`.
+    regla = raiz / ".gemini" / "rules" / "prompt-limpieza.md"
+    regla.parent.mkdir(parents=True, exist_ok=True)
+    regla.write_text(
+        '---\nname: "prompt-limpieza"\ndescription: "Nunca prune -a"\ncommands:\n  - |\n'
+        "    docker image prune -a -f\n    docker builder prune -f\n---\n\n# Cuerpo\n",
+        encoding="utf-8",
+    )
+    sano = raiz / ".gemini" / "rules" / "prompt-sano.md"
+    sano.write_text(
+        '---\nname: "prompt-sano"\ncommands:\n  - |\n    docker image prune -f   # sólo dangling; NUNCA -a\n---\n',
+        encoding="utf-8",
+    )
+
+    errores = _errores(raiz)
+
+    assert "error:forbidden_command:.gemini/rules/prompt-limpieza.md:docker image prune -a -f" in errores
+    assert not any("prompt-sano.md" in h for h in errores)

@@ -2,7 +2,7 @@
 # Nombre de archivo: start_dev.sh
 # Ubicación de archivo: scripts/start_dev.sh
 # Descripción: Script para levantar el entorno de DESARROLLO (Dev) de LAS-FOCAS en puertos alternativos.
-# Uso: ./scripts/start_dev.sh [--clone-db] [--no-build] [--down] [-h]
+# Uso: ./scripts/start_dev.sh [--clone-db] [--no-build] [--down] [--dry-run] [-h]
 
 set -euo pipefail
 
@@ -17,11 +17,14 @@ ENV_DEV_FILE="$ROOT_DIR/.env.dev"
 DEV_SECRETS_DIR="$ROOT_DIR/.secrets"
 COMPOSE_DEV=(docker compose -f "$DEV_COMPOSE_FILE" --env-file "$ENV_DEV_FILE")
 
-SERVICES=(postgres nlp_intent api web office slack_baneo_worker cromo_worker)
+# redis y docker-socket-proxy no tienen build: se nombran (o llegan por depends_on) para que `up` los levante.
+SERVICES=(postgres redis nlp_intent api web office slack_baneo_worker cromo_worker
+          botellas_recalculo_worker fo_monitor_worker)
 
 CLONE_DB=false
 NO_BUILD=false
 DO_DOWN=false
+DRY_RUN=false
 
 read_env_file() {
   local key="$1" default="${2:-}"
@@ -52,6 +55,7 @@ Opciones:
   --clone-db    Clona la base de datos de producción a focas_dev antes de levantar
   --no-build    No rebuildenar imágenes (usa caché existente)
   --down        Detiene el stack dev antes de levantar (útil para reinicio limpio)
+  --dry-run     Muestra servicios, chequeos previos y comandos sin ejecutar nada
   -h, --help    Muestra esta ayuda
 
 Ejemplos:
@@ -70,6 +74,7 @@ while [[ $# -gt 0 ]]; do
     --clone-db) CLONE_DB=true ;;
     --no-build) NO_BUILD=true ;;
     --down)     DO_DOWN=true ;;
+    --dry-run)  DRY_RUN=true ;;
     -h|--help)  usage; exit 0 ;;
     *) echo -e "${RED}Opción desconocida: $1${NC}"; usage; exit 1 ;;
   esac
@@ -83,6 +88,43 @@ echo -e "${GREEN}=== LAS-FOCAS :: Start DEV ===${NC}"
 ########################################
 command -v docker >/dev/null 2>&1 || { echo -e "${RED}Docker no está instalado.${NC}"; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo -e "${RED}Plugin 'docker compose' (v2) no encontrado.${NC}"; exit 1; }
+
+########################################
+# 1.1) cromo_worker con corrida en curso #
+########################################
+# Recrear cromo_worker corta la ingesta o detección que esté corriendo (una SOLO_ODF tarda ~3,5 h):
+# skill docker-rebuild, Consideración 11. Sólo se puede consultar si postgres dev ya está arriba.
+if docker ps --format '{{.Names}}' | grep -q '^lasfocasdev-postgres$'; then
+  EN_CURSO=$(docker exec lasfocasdev-postgres psql -U "$(read_env_file POSTGRES_USER FOCALBOT)" \
+    -d "$(read_env_file POSTGRES_DB focas_dev)" -tAc \
+    "select string_agg(id::text, ',') from app.cromo_ingesta_corridas where estado='EN_CURSO'" 2>/dev/null || echo "?")
+  if [ "$EN_CURSO" = "?" ]; then
+    echo -e "${YELLOW}No se pudo consultar app.cromo_ingesta_corridas: cromo_worker queda fuera por precaución.${NC}"
+  fi
+  if [ -n "$EN_CURSO" ] && $DO_DOWN; then
+    echo -e "${RED}--down bajaría cromo_worker con una corrida en curso (o sin poder verificarlo). Abortando.${NC}"
+    exit 1
+  fi
+  if [ -n "$EN_CURSO" ]; then
+    [ "$EN_CURSO" != "?" ] && echo -e "${YELLOW}Corrida(s) de Cromo EN_CURSO: ${EN_CURSO}. cromo_worker NO se reconstruye ni se recrea.${NC}"
+    echo -e "${YELLOW}Cuando termine: docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d --build --no-deps cromo_worker${NC}"
+    RESTO=()
+    for svc in "${SERVICES[@]}"; do [ "$svc" = cromo_worker ] || RESTO+=("$svc"); done
+    SERVICES=("${RESTO[@]}")
+  fi
+fi
+
+if $DRY_RUN; then
+  BUILD_FLAG="--build"; $NO_BUILD && BUILD_FLAG=""
+  echo "Servicios: ${SERVICES[*]}"
+  $DO_DOWN && echo "+ ${COMPOSE_DEV[*]} down --remove-orphans"
+  echo "+ $ROOT_DIR/scripts/build_base.sh"
+  echo "+ ${COMPOSE_DEV[*]} up -d $BUILD_FLAG ${SERVICES[*]}"
+  $CLONE_DB && echo "+ pg_dump (lasfocas-postgres) | pg_restore (lasfocasdev-postgres)"
+  echo "+ alembic upgrade head (dentro de api) y health checks"
+  echo -e "${GREEN}Dry-run: no se ejecutó nada.${NC}"
+  exit 0
+fi
 
 if [ ! -f "$ENV_DEV_FILE" ]; then
   echo -e "${YELLOW}No existe .env.dev en la raíz. Creando desde deploy/env.dev.sample...${NC}"
@@ -238,6 +280,8 @@ check_internal "Web dev"         "web"               "http://localhost:8080/heal
 check_internal "NLP dev"         "nlp_intent"        "http://localhost:8100/health" || ((FAIL++)) || true
 check_internal "LibreOffice dev" "office"            "http://localhost:8090/health" || ((FAIL++)) || true
 check_internal "SlackWorker dev" "slack_baneo_worker" "http://localhost:8095/health" || ((FAIL++)) || true
+check_internal "BotellasWorker dev" "botellas_recalculo_worker" "http://localhost:8097/health" || ((FAIL++)) || true
+check_internal "FOMonitor dev"   "fo_monitor_worker" "http://localhost:8098/health" || ((FAIL++)) || true
 
 ########################################
 # 7) Resumen                            #

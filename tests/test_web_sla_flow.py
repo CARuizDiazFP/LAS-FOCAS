@@ -118,7 +118,6 @@ def test_sla_flow_success_with_two_excel_files(monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
     monkeypatch.setenv("UPLOADS_DIR", str(uploads_dir))
     monkeypatch.setenv("TEMPLATES_DIR", str(templates_dir))
-    monkeypatch.setenv("SOFFICE_BIN", "")
     monkeypatch.setenv("TESTING", "true")
 
     # Preparar archivos
@@ -274,7 +273,6 @@ def test_sla_flow_use_db_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 
     monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
     monkeypatch.setenv("TEMPLATES_DIR", str(templates_dir))
-    monkeypatch.setenv("SOFFICE_BIN", "")
     monkeypatch.setenv("TESTING", "true")
 
     # Mock de la función que genera desde DB
@@ -371,3 +369,80 @@ def test_sla_flow_csrf_validation(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert response.status_code == 403
     assert response.json() == {"error": "CSRF inválido"}
+
+
+def _post_sla_dos_excel(client: TestClient, csrf: str, pdf_enabled: bool):
+    files = [
+        ("files", ("Servicios Fuera de SLA.xlsx", io.BytesIO(_servicios_excel_bytes()), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+        ("files", ("Reclamos Sla.xlsx", io.BytesIO(_reclamos_excel_bytes()), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+    ]
+    data = {"mes": "10", "anio": "2025", "pdf_enabled": str(pdf_enabled).lower(), "use_db": "false", "csrf_token": csrf}
+    return client.post("/api/reports/sla", data=data, files=files)
+
+
+def test_sla_excel_pdf_via_office_queda_en_report_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_pdf(docx_path, *, contexto):  # noqa: ANN001
+        pdf = Path(docx_path).with_suffix(".pdf")
+        pdf.write_bytes(b"%PDF")
+        return pdf, None
+
+    monkeypatch.setattr("core.sla.legacy_report.intentar_pdf", _fake_pdf)
+    client = TestClient(app)
+    csrf = _login_as_user(client, monkeypatch)
+
+    body = _post_sla_dos_excel(client, csrf, pdf_enabled=True).json()
+
+    assert body["ok"] is True
+    assert body["report_paths"]["pdf"].endswith(".pdf")
+    assert "pdf_error" not in body
+
+
+def test_sla_excel_pdf_fallido_entrega_docx_y_pdf_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "core.sla.legacy_report.intentar_pdf",
+        lambda docx_path, *, contexto: (None, "El servicio de conversión a PDF no está disponible"),
+    )
+    client = TestClient(app)
+    csrf = _login_as_user(client, monkeypatch)
+
+    response = _post_sla_dos_excel(client, csrf, pdf_enabled=True)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["report_paths"]["docx"].endswith(".docx")
+    assert "pdf" not in body["report_paths"]
+    assert body["pdf_error"] == "El servicio de conversión a PDF no está disponible"
+
+
+def test_flow_sla_db_expone_pdf_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from core.services.sla import SLAReportResult
+    from core.sla import engine
+
+    computation = engine.calcular_sla(
+        pd.DataFrame(columns=["ticket_id", "service_id", "cliente", "tipo_servicio", "inicio", "fin", "duracion_h"]),
+        mes=10,
+        anio=2025,
+        servicios=None,
+        merge_gap_minutes=15,
+    )
+    docx = tmp_path / "sla_202510.docx"
+    docx.write_bytes(b"DOCX")
+
+    monkeypatch.setattr("core.services.sla.compute_from_db", lambda mes, anio: computation)
+    monkeypatch.setattr(
+        "core.services.sla.generate_report_from_computation",
+        lambda computation, **kw: SLAReportResult(
+            docx=docx, pdf=None, computation=computation, preview={}, pdf_error="La conversión a PDF tardó demasiado"
+        ),
+    )
+    client = TestClient(app)
+    csrf = _login_as_user(client, monkeypatch)
+
+    response = client.post(
+        "/api/flows/sla", data={"mes": "10", "anio": "2025", "include_pdf": "true", "use_db": "true", "csrf_token": csrf}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pdf"] is None
+    assert body["pdf_error"] == "La conversión a PDF tardó demasiado"

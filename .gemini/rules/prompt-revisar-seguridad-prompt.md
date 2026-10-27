@@ -31,7 +31,6 @@ globs:
   - "web/frontend/package.json"
   - "core/**"
   - "modules/**"
-  - "bot_telegram/**"
   - "core/sla/**"
   - "Templates/**"
 commands:
@@ -43,13 +42,12 @@ commands:
     pip-audit -r requirements-dev.txt
     pip-audit -r api/requirements.txt
     pip-audit -r nlp_intent/requirements.txt
-    pip-audit -r bot_telegram/requirements.txt
     pip-audit -r office_service/requirements.txt
     cd web/frontend && npm audit --audit-level=high
   - |
     rg -n '@app\.(get|post|put|delete)|@router\.(get|post|put|delete)' api web
-    rg -n 'subprocess|os\.system|shell=True|eval\(|exec\(|yaml\.load\(|pickle\.loads' core api web modules bot_telegram
-    rg -n 'Authorization|SessionMiddleware|secret_key|password|token|LOG_RAW_TEXT' core api web nlp_intent bot_telegram
+    rg -n 'subprocess|os\.system|shell=True|eval\(|exec\(|yaml\.load\(|pickle\.loads' core api web modules
+    rg -n 'Authorization|SessionMiddleware|secret_key|password|token|LOG_RAW_TEXT' core api web nlp_intent
   - |
     rg -n 'ports:|expose:|privileged:|user:|read_only:|no-new-privileges|cap_drop' deploy/compose.yml deploy/docker api/Dockerfile office_service/Dockerfile
     rg -n 'chmod 777|sudo|chown.*root' scripts deploy .
@@ -105,7 +103,6 @@ pip-audit -r requirements.txt
 pip-audit -r requirements-dev.txt
 pip-audit -r api/requirements.txt
 pip-audit -r nlp_intent/requirements.txt
-pip-audit -r bot_telegram/requirements.txt
 pip-audit -r office_service/requirements.txt
 cd web/frontend && npm audit --audit-level=high
 ```
@@ -114,8 +111,8 @@ cd web/frontend && npm audit --audit-level=high
 
 ```bash
 rg -n '@app\.(get|post|put|delete)|@router\.(get|post|put|delete)' api web
-rg -n 'subprocess|os\.system|shell=True|eval\(|exec\(|yaml\.load\(|pickle\.loads' core api web modules bot_telegram
-rg -n 'Authorization|SessionMiddleware|secret_key|password|token|LOG_RAW_TEXT' core api web nlp_intent bot_telegram
+rg -n 'subprocess|os\.system|shell=True|eval\(|exec\(|yaml\.load\(|pickle\.loads' core api web modules
+rg -n 'Authorization|SessionMiddleware|secret_key|password|token|LOG_RAW_TEXT' core api web nlp_intent
 ```
 
 ### 5. Hardening de contenedores, red y base de datos

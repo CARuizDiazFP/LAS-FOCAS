@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.services.office_client import intentar_pdf
 from core.sla_consumo.docx_builder import construir_docx_ejecutivo, construir_docx_exhaustivo
 from core.sla_consumo.engine import calcular
 from core.sla_consumo.parser import parse_reclamos, parse_servicios
@@ -70,18 +70,12 @@ def generar_informe_sla_consumo(servicios_bytes: bytes, reclamos_bytes: bytes, *
     docx_exhaustivo = construir_docx_exhaustivo(resultado, carpeta / f"{base}_exhaustivo.docx")
     pdf_ejecutivo = None
     pdf_omitido = None
-    soffice = os.getenv("SOFFICE_BIN")
-    if incluir_pdf and soffice:
-        from modules.common.libreoffice_export import convert_to_pdf
-
-        # El exhaustivo tarda ~6,5 min en LibreOffice: nunca se convierte dentro del request.
+    if incluir_pdf:
+        # El exhaustivo tarda ~6,5 min en LibreOffice: nunca se convierte dentro del request. La
+        # ingesta ya se persistió: una falla de office nunca es un 500 (intentar_pdf no levanta).
         pdf_omitido = PDF_EXHAUSTIVO_OMITIDO
-        try:
-            pdf_ejecutivo = Path(convert_to_pdf(str(docx_ejecutivo), soffice))
-        except Exception:  # noqa: BLE001 - la ingesta ya se persistió: nunca 500 por el PDF
-            logger.exception("action=sla_consumo stage=pdf_ejecutivo")
-            pdf_omitido = f"No se pudo generar el PDF ejecutivo; {PDF_EXHAUSTIVO_OMITIDO}"
-    elif incluir_pdf:
-        pdf_omitido = "LibreOffice no configurado"
+        pdf_ejecutivo, motivo = intentar_pdf(docx_ejecutivo, contexto="sla_consumo")
+        if motivo:
+            pdf_omitido = f"No se pudo generar el PDF ejecutivo ({motivo}); {PDF_EXHAUSTIVO_OMITIDO}"
     return InformeSlaConsumo(xlsx, docx_ejecutivo, docx_exhaustivo, pdf_ejecutivo, None, ingesta,
                              _json_safe(resultado.totales), pdf_omitido)

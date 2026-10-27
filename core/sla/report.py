@@ -17,9 +17,9 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 from core.docx_utils.text_replace import replace_title_everywhere
-from modules.common.libreoffice_export import convert_to_pdf
+from core.services.office_client import intentar_pdf
 
-from .config import MESES_ES, REPORTS_DIR, SLA_TEMPLATE_PATH, SOFFICE_BIN
+from .config import MESES_ES, REPORTS_DIR, SLA_TEMPLATE_PATH
 from .engine import SLAComputation, ServiceMetrics
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ class DocumentoSLA:
 
     docx: Path
     pdf: Optional[Path]
+    pdf_error: Optional[str] = None  # motivo si se pidió PDF y no se generó
 
 
 def generar_documento(
@@ -41,9 +42,8 @@ def generar_documento(
     propuesta: str = "",
     incluir_pdf: bool = False,
     reports_dir: Path | None = None,
-    soffice_bin: Optional[str] = None,
 ) -> DocumentoSLA:
-    """Crea el DOCX (y PDF opcional) usando la plantilla oficial."""
+    """Crea el DOCX (y PDF opcional, vía office_service) usando la plantilla oficial."""
 
     if not SLA_TEMPLATE_PATH.exists():
         raise FileNotFoundError(f"Plantilla SLA no encontrada en {SLA_TEMPLATE_PATH}")
@@ -69,19 +69,11 @@ def generar_documento(
     documento.save(docx_path)
 
     pdf_path: Optional[Path] = None
+    pdf_error: Optional[str] = None
     if incluir_pdf:
-        binario = soffice_bin or SOFFICE_BIN
-        if binario:
-            try:
-                pdf_generado = convert_to_pdf(str(docx_path), binario)
-            except Exception:  # pragma: no cover - logging y fallback
-                logger.exception("action=sla_report stage=pdf error")
-            else:
-                pdf_path = Path(pdf_generado)
-        else:
-            logger.info("action=sla_report stage=pdf reason=missing_soffice")
+        pdf_path, pdf_error = intentar_pdf(docx_path, contexto="sla_report")
 
-    return DocumentoSLA(docx=docx_path, pdf=pdf_path)
+    return DocumentoSLA(docx=docx_path, pdf=pdf_path, pdf_error=pdf_error)
 
 
 def _cargar_plantilla() -> Document:

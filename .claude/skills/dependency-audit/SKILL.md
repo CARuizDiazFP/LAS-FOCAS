@@ -22,10 +22,10 @@ Guía para revisar dependencias vulnerables y desactualizadas en LAS-FOCAS.
 
 Qué corre en cada imagen (ver la cabecera de `common-requirements.txt`):
 
-- `common-requirements.txt` → **`focas-base`**, la base de api, web, bot, nlp_intent y todos los workers.
+- `common-requirements.txt` → **`focas-base`**, la base de api, web, nlp_intent y todos los workers.
   Es el manifest más importante y el que más fácil se olvida. Hasta el 2026-10-26 ni la CI ni esta
   skill lo auditaban, así que `redis` y `asyncpg` nunca pasaron por `pip-audit`.
-- `api/requirements.txt`, `web/requirements.txt`, `bot_telegram/requirements.txt` y
+- `api/requirements.txt`, `web/requirements.txt` y
   `modules/*/requirements.txt` → se instalan encima de `focas-base` en el Dockerfile de cada servicio.
 - `office_service/requirements.txt` → imagen propia, con LibreOffice.
 - `requirements.txt` (raíz) y `requirements-dev.txt` → sólo el venv local y la CI; ningún Dockerfile los usa.
@@ -56,7 +56,7 @@ OUT=<scratchpad>/audit; mkdir -p "$OUT"
 docker run --rm -v "$PWD":/w:ro -v "$OUT":/out -w /w --entrypoint sh python:3.11-slim-bookworm -c '
   pip install -q pip-audit==2.7.3
   for f in common-requirements.txt requirements.txt requirements-dev.txt api/requirements.txt \
-           web/requirements.txt bot_telegram/requirements.txt office_service/requirements.txt \
+           web/requirements.txt office_service/requirements.txt \
            modules/*/requirements.txt; do
     pip-audit -r "$f" -f json --progress-spinner off > "/out/$(echo $f | tr / _).json"
     echo "$f rc=$?"
@@ -72,12 +72,12 @@ se expande en `/` del contenedor, no matchea y los cuatro workers **no se audita
 Pasó el 2026-10-26 con la receta anterior, que hacía `cd /w` recién dentro del loop.
 
 **Auditar también lo que corre en las imágenes.** `pip-audit -r` resuelve las transitivas a las versiones de
-hoy, pero una imagen vieja conserva las que tenía al construirse. El 2026-10-26, `lasfocasdev-bot` (de cuatro
-días antes) tenía `certifi` y `urllib3` vulnerables que ningún requirements mostraba:
+hoy, pero una imagen vieja conserva las que tenía al construirse. El 2026-10-26, la imagen del bot de Telegram (de cuatro
+días antes, ya retirada) tenía `certifi` y `urllib3` vulnerables que ningún requirements mostraba:
 
 ```bash
 OUT=<scratchpad>/audit_img; mkdir -p "$OUT"
-for i in web api bot nlp_intent office cromo_worker slack_baneo_worker botellas_recalculo_worker fo_monitor_worker; do
+for i in web api nlp_intent office cromo_worker slack_baneo_worker botellas_recalculo_worker fo_monitor_worker; do
   docker run --rm --entrypoint pip lasfocasdev-$i:latest freeze | grep -v '^-e\|@ file' > "$OUT/$i.txt"
 done
 docker run --rm -v "$OUT":/w -w /w --entrypoint sh python:3.11-slim-bookworm -c '
@@ -106,7 +106,7 @@ git ls-files -z | tar --null -T - -cf - | tar -x -C <scratchpad>/src_new   # ár
 # por cada árbol (de a uno: ver disco abajo):
 docker run --rm -v <src>:/src -v <out>:/out --entrypoint sh python:3.11.16-slim-bookworm -c '
   cd /src && pip install -q -r common-requirements.txt -r requirements.txt -r api/requirements.txt \
-    -r web/requirements.txt -r requirements-dev.txt -r bot_telegram/requirements.txt \
+    -r web/requirements.txt -r requirements-dev.txt \
     -r modules/cromo_worker/requirements.txt
   LLM_PROVIDER=heuristic pytest -q -p no:cacheprovider --junitxml=/out/junit.xml > /out/pytest.log 2>&1'
 # comparar los dos junit.xml por classname::name con python (pass/skip/failure/error)
@@ -139,6 +139,6 @@ docker run --rm -v <src>:/src -v <out>:/out --entrypoint sh python:3.11.16-slim-
    2026-10-26: no se reinstala, el drift queda documentado en la cabecera de `requirements.txt`).
 5. No tratar dependencias de desarrollo como equivalentes a runtime sin aclararlo.
 6. Un paquete que hoy llega como transitiva y se sube por un CVE se fija **explícito** en el manifest
-   (`starlette` bajo `fastapi`, `aiohttp` bajo `aiogram`): si no, el próximo rebuild puede resolver otra versión.
+   (p. ej. `starlette` bajo `fastapi`): si no, el próximo rebuild puede resolver otra versión.
 7. Al subir fastapi, mirar si cambia `router.routes`: desde 0.137 es un árbol y unos 20 tests lo recorren
    como lista plana. Por eso P15 (2026-10-26) se quedó en 0.136.1, que ya admite starlette 1.x.

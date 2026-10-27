@@ -41,7 +41,7 @@ def test_flow_repetitividad_success_excel(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
-    config = ReportConfig(reports_dir=reports_dir, soffice_bin=None, maps_enabled=False)
+    config = ReportConfig(reports_dir=reports_dir, maps_enabled=False)
     monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
     docx_path = reports_dir / "reporte.docx"
@@ -95,7 +95,7 @@ def test_flow_repetitividad_success_excel_with_geo(monkeypatch: pytest.MonkeyPat
 
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
-    config = ReportConfig(reports_dir=reports_dir, soffice_bin=None, maps_enabled=True)
+    config = ReportConfig(reports_dir=reports_dir, maps_enabled=True)
     monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
     docx_path = reports_dir / "reporte.docx"
@@ -143,7 +143,7 @@ def test_flow_repetitividad_success_db(monkeypatch: pytest.MonkeyPatch, tmp_path
 
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
-    config = ReportConfig(reports_dir=reports_dir, soffice_bin=None, maps_enabled=True)
+    config = ReportConfig(reports_dir=reports_dir, maps_enabled=True)
     monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
     df_raw = pd.DataFrame({"numero_reclamo": [1], "cliente": ["Metrotel"], "servicio": ["FO"], "fecha": ["2024-07-01"]})
@@ -188,7 +188,7 @@ def test_flow_repetitividad_db_sin_datos(monkeypatch: pytest.MonkeyPatch, tmp_pa
     client = TestClient(app)
     csrf = _login_as_user(client, monkeypatch)
 
-    config = ReportConfig(reports_dir=tmp_path, soffice_bin=None, maps_enabled=True)
+    config = ReportConfig(reports_dir=tmp_path, maps_enabled=True)
     monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
     monkeypatch.setattr(web_informes, "reclamos_from_db", lambda mes, anio: pd.DataFrame())  # noqa: ARG005
     monkeypatch.setattr(web_informes, "db_to_processor_frame", lambda df: df)
@@ -216,7 +216,7 @@ def test_flow_repetitividad_validation_error(monkeypatch: pytest.MonkeyPatch, tm
     client = TestClient(app)
     csrf = _login_as_user(client, monkeypatch)
 
-    config = ReportConfig(reports_dir=tmp_path, soffice_bin=None, maps_enabled=False)
+    config = ReportConfig(reports_dir=tmp_path, maps_enabled=False)
     monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
     async def _fake_to_thread(func, *args, **kwargs):  # noqa: ANN001, ANN003
@@ -237,7 +237,7 @@ def test_flow_repetitividad_error_generico(monkeypatch: pytest.MonkeyPatch, tmp_
     client = TestClient(app)
     csrf = _login_as_user(client, monkeypatch)
 
-    config = ReportConfig(reports_dir=tmp_path, soffice_bin=None, maps_enabled=False)
+    config = ReportConfig(reports_dir=tmp_path, maps_enabled=False)
     monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
     async def _fake_to_thread(func, *args, **kwargs):  # noqa: ANN001, ANN003
@@ -277,3 +277,26 @@ def test_flow_repetitividad_rechaza_archivo_no_xlsx(monkeypatch: pytest.MonkeyPa
     assert resp.status_code == 400
     assert "no es un Excel" in resp.json()["error"]
     assert called is False
+
+
+def test_flow_repetitividad_pdf_fallido_expone_pdf_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = TestClient(app)
+    csrf = _login_as_user(client, monkeypatch)
+    monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", ReportConfig(reports_dir=tmp_path, maps_enabled=False))
+    docx_path = tmp_path / "reporte.docx"
+    docx_path.write_bytes(b"DOCX")
+
+    def _fake_generar_informe(excel_bytes, periodo_titulo, export_pdf, config_arg, with_geo=False):  # noqa: ANN001
+        return ReportResult(docx=docx_path, pdf=None, pdf_error="La conversión a PDF tardó demasiado")
+
+    monkeypatch.setattr(web_informes, "generar_informe_desde_excel", _fake_generar_informe)
+
+    files = {"file": ("casos.xlsx", io.BytesIO(_excel_bytes()), "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")}
+    response = client.post("/api/flows/repetitividad", data={"mes": 7, "anio": 2024, "csrf_token": csrf}, files=files)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["docx"] == "/reports/reporte.docx"
+    assert "pdf" not in body
+    assert body["pdf_generated"] is False
+    assert body["pdf_error"] == "La conversión a PDF tardó demasiado"

@@ -4,14 +4,13 @@
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 # Paths configurables mediante variables de entorno
 TEMPLATES_DIR = Path(os.getenv("TEMPLATES_DIR", "/app/Templates"))
 SLA_TEMPLATE_PATH = Path(os.getenv("SLA_TEMPLATE_PATH", TEMPLATES_DIR / "Template_Informe_SLA.docx"))
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "/app/data/reports"))
 UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "/app/data/uploads"))
-SOFFICE_BIN: Optional[str] = os.getenv("SOFFICE_BIN")
 
 # Alias para compatibilidad con módulos existentes
 BASE_UPLOADS = UPLOADS_DIR

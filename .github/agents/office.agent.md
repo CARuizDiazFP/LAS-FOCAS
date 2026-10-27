@@ -16,33 +16,36 @@ Soy el agente especializado en el microservicio de LibreOffice de LAS-FOCAS.
 ## Mi Alcance
 
 - Microservicio `office_service` (LibreOffice headless + UNO)
-- Conversión DOCX→PDF de los informes (`modules/common/libreoffice_export.py`)
+- Cliente único de conversión `core/services/office_client.py` (DOCX→PDF de los informes y de la
+  herramienta MCP `ConvertirDocAPdf`)
 - Diagnóstico de PDFs que no se generan
 
-## Estado real (verificado 2026-10-26 en dev)
+## Estado real (verificado 2026-10-27 en dev)
 
-Hay **dos caminos**; el subprocess local no funciona en los contenedores `web`/`api`:
+Hay **un solo camino** desde P16 (2026-10-27): `office_service` (`office:8090`), el único contenedor con
+`soffice`. Las imágenes `web` y `api` (`focas-base`) no instalan LibreOffice; ya no existen
+`modules/common/libreoffice_export.py` ni `SOFFICE_BIN`.
 
-1. **`office_service` (`office:8090`)**: `runner.py` levanta `soffice` en modo UNO (puerto 2002) y
-   uvicorn. `GET /health` informa el estado de UNO. `POST /convert` (multipart `file`, `output_format=pdf`
-   por query) **convierte** desde el 2026-10-26 (`office_service/app/conversion.py`): un
-   `soffice --convert-to` por pedido con perfil temporal propio, serializado; devuelve los bytes del PDF.
-   Entradas `.docx/.doc/.odt/.rtf` (sólo Writer); 400/413 (`OFFICE_MAX_FILE_SIZE`, 50 MB)/503/504
-   (`OFFICE_CONVERT_TIMEOUT`, 120 s)/500. Medido: DOCX de una página ≈ 6 s.
-2. **Subprocess local** (`modules/common/libreoffice_export.py::convert_to_pdf`): ejecuta
-   `soffice --headless --convert-to pdf` en el **mismo contenedor** que lo llama, con `SOFFICE_BIN`.
-   Lo usan `core/sla/report.py`, `core/sla/legacy_report.py`, `core/services/sla_consumo.py`,
-   `modules/informes_sla` y `modules/informes_repetitividad`. Las imágenes `web` y `api`
-   (`focas-base`) **no instalan LibreOffice**: con `SOFFICE_BIN=/usr/bin/soffice` el subprocess
-   falla con `FileNotFoundError` (reproducido en `lasfocasdev-web`), se loguea y el informe sale sin
-   PDF (sin 500). Prod se construye desde los mismos Dockerfiles (`web/Dockerfile`, `api/Dockerfile`,
-   `deploy/docker/base.Dockerfile`), que no instalan LibreOffice.
+- **Servicio**: `runner.py` levanta `soffice` en modo UNO (puerto 2002) y uvicorn. `GET /health`
+  informa el estado de UNO. `POST /convert` (multipart `file`, `output_format=pdf` por query): un
+  `soffice --convert-to` por pedido con perfil temporal propio, serializado (`Semaphore(1)`); devuelve
+  los bytes del PDF. Entradas `.docx/.doc/.odt/.rtf` (sólo Writer); 400/413 (`OFFICE_MAX_FILE_SIZE`,
+  50 MB)/503/504 (`OFFICE_CONVERT_TIMEOUT`, 120 s)/500.
+- **Cliente** (`core/services/office_client.py`, sync, `OFFICE_SERVICE_BASE` default
+  `http://office:8090`): `convertir_a_pdf(origen, destino=None)` levanta errores tipados
+  (`DocumentoDemasiadoGrande`, `OfficeInalcanzable`, `OfficeTimeout`, `OfficeRechazo`) con `mensaje`
+  para el usuario y `detalle` para el log; `intentar_pdf(docx, contexto=...)` nunca levanta y devuelve
+  `(pdf, motivo)`. Timeout 150 s (cubre la cola de office), tope 50 MB, valida `%PDF`.
+- **Consumidores**: SLA (`core/sla/report.py`, `core/sla/legacy_report.py`), SLA consumido
+  (`core/services/sla_consumo.py`, sólo el ejecutivo), Repetitividad
+  (`modules/informes_repetitividad/service.py`), `modules/informes_sla` (sin consumidores desde P19) y `ConvertirDocAPdf`.
+  Desde `async def` siempre por `asyncio.to_thread`.
+- **Hacia el usuario**: `pdf_error` en web (SLA, Repetitividad), `pdf_omitido` en SLA consumido,
+  `X-PDF-Error` en la API de Repetitividad. Nunca un 500 por el PDF.
+- **Tiempos medidos** (2026-10-27): Repetitividad 12,8 s, SLA 20,5 s, SLA consumido ejecutivo 46,9 s.
 
-La herramienta MCP `ConvertirDocAPdf` (`core/mcp/registry.py`) es hoy el único consumidor de
-`/convert` (`OFFICE_SERVICE_BASE`, default `http://office:8090`). Los informes podrían migrar a ese
-camino en vez del subprocess sin `soffice`.
-
-Antes de prometer un PDF, verificar `docker exec <contenedor> sh -c 'command -v soffice'`.
+Antes de diagnosticar un PDF faltante: `pdf_error` de la respuesta + `grep "stage=pdf"` en el log del
+contenedor que generó el informe + `GET /health` de office desde ese contenedor.
 
 ## Estructura
 
@@ -59,7 +62,7 @@ office_service/
     └── logging_setup.py
 ```
 
-## Comando de conversión (camino que sí funciona donde hay `soffice`)
+## Comando de conversión (dentro del contenedor `office`)
 
 ```bash
 soffice --headless --convert-to pdf --outdir /output /input/documento.docx
@@ -67,9 +70,9 @@ soffice --headless --convert-to pdf --outdir /output /input/documento.docx
 
 ## Reglas que Sigo
 
-1. **Timeout generoso**: conversiones pueden tardar, usar 60s mínimo
+1. **Timeout generoso**: 150 s en el cliente (office corta a los 120 s y encola)
 2. **Archivos temporales**: limpiar después de conversión
-3. **No concurrencia excesiva**: LibreOffice es single-threaded, usar cola
+3. **No concurrencia excesiva**: office convierte de a una (`Semaphore(1)`)
 4. **Validar formato de entrada**: rechazar archivos no soportados
 5. **Logging de conversiones**: registrar tiempo, tamaño, éxito/fallo
 6. **No documentar como operativo** un camino de conversión sin verificarlo en el contenedor real
@@ -83,7 +86,7 @@ OFFICE_SOFFICE_PORT=2002
 OFFICE_SOFFICE_CONNECT_HOST=127.0.0.1
 OFFICE_SOFFICE_BINARY=/usr/bin/soffice
 OFFICE_UVICORN_PORT=8090
-SOFFICE_BIN=/usr/bin/soffice   # lo leen los módulos de informes (subprocess local), no office_service
+OFFICE_SERVICE_BASE=http://office:8090   # lo lee el cliente (web/api), no office_service
 ```
 
 ## Servicio Docker (`deploy/compose.yml`)

@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Iterable, List
 if TYPE_CHECKING:  # pragma: no cover - usado solo para type checking
     import pandas as pd
 
+from core.services.office_client import intentar_pdf
+
 from . import processor, report
 from . import config as repet_config
 from .schemas import Params, ResultadoRepetitividad
@@ -28,7 +30,6 @@ class ReportConfig:
     """Parámetros de configuración para la generación del informe."""
 
     reports_dir: Path
-    soffice_bin: str | None = None
     maps_enabled: bool = True
 
     @classmethod
@@ -36,11 +37,9 @@ class ReportConfig:
         """Construye la configuración a partir de las variables globales del módulo."""
         # Leer dinámicamente desde el módulo de config para respetar monkeypatch/env en tests
         reports_dir = Path(getattr(repet_config, "REPORTS_DIR"))
-        soffice_bin = getattr(repet_config, "SOFFICE_BIN", None)
         maps_enabled = bool(getattr(repet_config, "MAPS_ENABLED", True))
         return cls(
             reports_dir=reports_dir,
-            soffice_bin=soffice_bin,
             maps_enabled=maps_enabled,
         )
 
@@ -55,6 +54,7 @@ class ReportResult:
     total_filas: int = 0
     total_repetitivos: int = 0
     periodos_detectados: List[str] | None = None
+    pdf_error: str | None = None  # motivo si se pidió PDF y no se generó
 
 
 def _infer_periodo(periodo_titulo: str, periodos_detectados: List[str]) -> tuple[int, int]:
@@ -156,10 +156,9 @@ def generar_informe_desde_excel(
     )
 
     pdf_path: Path | None = None
-    if export_pdf and config.soffice_bin:
-        pdf_result = report.maybe_export_pdf(str(docx_path), config.soffice_bin)
-        if pdf_result:
-            pdf_path = Path(pdf_result)
+    pdf_error: str | None = None
+    if export_pdf:
+        pdf_path, pdf_error = intentar_pdf(docx_path, contexto="repetitividad_service")
 
     logger.info(
         "action=repetitividad_service stage=success docx=%s pdf=%s map_images=%s",
@@ -175,6 +174,7 @@ def generar_informe_desde_excel(
         total_filas=total_filas,
         total_repetitivos=resultado.total_repetitivos,
         periodos_detectados=resultado.periodos,
+        pdf_error=pdf_error,
     )
 
 
@@ -218,10 +218,9 @@ def generar_informe_desde_dataframe(
     )
 
     pdf_path: Path | None = None
-    if export_pdf and config.soffice_bin:
-        pdf_result = report.maybe_export_pdf(str(docx_path), config.soffice_bin)
-        if pdf_result:
-            pdf_path = Path(pdf_result)
+    pdf_error: str | None = None
+    if export_pdf:
+        pdf_path, pdf_error = intentar_pdf(docx_path, contexto="repetitividad_service")
 
     return ReportResult(
         docx=docx_path,
@@ -230,6 +229,7 @@ def generar_informe_desde_dataframe(
         total_filas=len(df_normalizado),
         total_repetitivos=resultado.total_repetitivos,
         periodos_detectados=resultado.periodos,
+        pdf_error=pdf_error,
     )
 
 

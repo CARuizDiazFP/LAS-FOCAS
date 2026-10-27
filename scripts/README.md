@@ -30,7 +30,7 @@ leerlo antes de ejecutar.
 
 #### Operación y entorno dev
 
-- `start_dev.sh`: Levanta el stack de desarrollo (`lasfocasdev`) en puertos alternativos, con migraciones y healthchecks (`--clone-db`, `--no-build`, `--down`). Ver `docs/entorno_dev.md`.
+- `start_dev.sh`: Levanta el stack de desarrollo (`lasfocasdev`) en puertos alternativos, con migraciones y healthchecks (`--clone-db`, `--no-build`, `--down`, `--dry-run`). Ver `docs/entorno_dev.md`.
 - `build_base.sh`: Construye la imagen base `focas-base:latest` (multi-stage) a partir de `common-requirements.txt`.
 - `setup_local_secrets.sh`: Bootstrap idempotente de `.secrets/*.txt` (Docker Secrets) para desarrollo local y CI, sin imprimir secretos.
 - `check_no_plaintext_secrets.sh`: Control preventivo contra secretos versionados y passwords en texto plano.
@@ -76,6 +76,7 @@ reaplicarlos en otro entorno si hiciera falta.
 - `cromo_backfill_repoblar_cables_empalmes.py`: Repuebla cables en botellas sin cables y empalmes en todas las botellas Cromo.
 - `cromo_backfill_servicio_prefijos.py`: `servicio_numero`/`tipo_asociacion` en `cromo_pelos` ya ingeridos, tras ampliar los prefijos reconocidos.
 - `cromo_bajas_cables_fantasma.py`: Fix retroactivo de cables fantasma — alta de los que faltan, sus pelos por `/inner` y baja lógica de los que Cromo borró (dry-run por defecto).
+- `cromo_retencion_eventos.py`: Retención manual de `app.cromo_ingesta_eventos` (90 días por defecto) y purga opcional de los `SIN_CAMBIOS` históricos (`--incluir-sin-cambios`); dry-run por defecto, `--aplicar` borra por lotes.
 - `cromo_fix_nombre_camara_padre_residual.py`: Quita el punto residual al inicio del nombre de Cámaras padre sintetizadas desde Cromo.
 - `resync_cromo_botella_estado.py`: Resincroniza `CromoBotella.estado` con el estado real actual de su Cámara padre.
 - `retirar_estado_detectada.py`: Migra toda Cámara/Botella con estado `DETECTADA` a su estado real (`LIBRE`/`OCUPADA`/`BANEADA`).

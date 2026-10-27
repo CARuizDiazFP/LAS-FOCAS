@@ -18,15 +18,12 @@ COMPOSE_BASE=(docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE")
 HOST_IP="172.18.208.162" # Requerido según infraestructura de la VM
 PROYECTO_PROD="lasfocas"
 VOLUMEN_DB="lasfocas_postgres_data"
-# El bot de Telegram está en el perfil por defecto pero no corre en prod: sólo con --with-bot.
-EXCLUIDOS_POR_DEFECTO=(bot)
 # Orden de la guía de despliegue: infraestructura y cromo_worker primero (un worker viejo trata
 # tipos de corrida que no conoce como una ingesta COMPLETA), después el resto.
 PRIMERA_TANDA=(postgres redis docker-socket-proxy cromo_worker)
 
 YES_PROD=false
 DRY_RUN=false
-WITH_BOT=false
 PURGE=false
 REBUILD_FRONTEND=false
 REBUILD_API=false
@@ -44,13 +41,12 @@ Para desarrollo usar ./scripts/start_dev.sh. El procedimiento completo de despli
 
 Qué hace: construye las imágenes, aplica las migraciones Alembic, levanta los servicios con
 'up -d' (sólo recrea los que cambiaron; no hace 'down' del proyecto) y espera su healthcheck.
-Por defecto levanta el perfil por defecto de compose.yml menos: ${EXCLUIDOS_POR_DEFECTO[*]}.
+Por defecto levanta todos los servicios del perfil por defecto de compose.yml.
 
 Opciones:
   --yes-prod            Confirma que se opera sobre producción (sin esto pide tipear '$PROYECTO_PROD')
   --dry-run             Muestra el plan y los comandos sin ejecutar nada
   --service <nombre>    Sólo ese servicio (repetible); también acepta servicios de perfiles (pgadmin)
-  --with-bot            Incluye el bot de Telegram
   --rebuild-frontend    Rebuild sin cache de la imagen web
   --rebuild-api         Rebuild sin cache de la imagen api
   --forzar-cromo        Recrea cromo_worker aunque haya una corrida de ingesta EN_CURSO (la corta)
@@ -74,7 +70,7 @@ while [[ $# -gt 0 ]]; do
     --service)
       [[ $# -ge 2 ]] || { echo -e "${RED}--service requiere un nombre${NC}"; exit 1; }
       PEDIDOS+=("$2"); shift ;;
-    --with-bot) WITH_BOT=true ;;
+    --with-bot) echo -e "${YELLOW}--with-bot es obsoleta: el bot de Telegram se retiró (2026-10-27). Se ignora.${NC}" ;;
     --rebuild-frontend) REBUILD_FRONTEND=true ;;
     --rebuild-api) REBUILD_API=true ;;
     --forzar-cromo) FORZAR_CROMO=true ;;
@@ -143,10 +139,7 @@ if [[ ${#PEDIDOS[@]} -gt 0 ]]; then
     SERVICES+=("$s")
   done
 else
-  $WITH_BOT && EXCLUIDOS_POR_DEFECTO=()
-  for s in "${POR_DEFECTO[@]}"; do
-    contiene "$s" "${EXCLUIDOS_POR_DEFECTO[@]}" || SERVICES+=("$s")
-  done
+  SERVICES=("${POR_DEFECTO[@]}")
 fi
 
 TANDA_1=(); TANDA_2=()

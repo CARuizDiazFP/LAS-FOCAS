@@ -13,9 +13,8 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Backend de la SPA: `web/app/main.py` (ensamblador: app, middleware, mounts, websockets, `include_router`, catch-all) + `web/app/routers/<dominio>.py` (sesion, informes, chat, admin_datos, servicios, cromo, camaras) + `web/app/comun.py` (auth, CSRF, config y estado compartidos).
 - Regla de routers: importan con `from ..comun import ...` y nunca importan `main`; al mover o parchear nombres en tests, parchear el módulo donde se lee.
 - Búsqueda y exportación de Cámaras del panel: `core/services/camaras_consulta.py` (smart search) y `core/services/camaras_exportacion.py`. Las variantes `search_camaras*` y `advanced_search_camaras*` (SPA y API interna) y `smart_search_camaras` y `export_cameras` (API interna) se conservan a propósito: tienen poco uso pero siguen operativas; no se borran sin decisión explícita del usuario.
-- `bot_telegram/`: bot aiogram que consume flujos y servicios; evitar lógica de negocio duplicada.
 - `core/`: configuración, logging, parsers, repositorios y servicios compartidos.
-- `modules/`: informes (`informes_sla`, `informes_repetitividad`), utilidades comunes (`common`, incluida la conversión `soffice` de `libreoffice_export.py`) y los workers de fondo: `cromo_worker` (ingesta Cromo Red), `botellas_recalculo_worker` (Botellas duplicadas, cola Redis), `fo_monitor_worker` (FO Monitor) y `slack_baneo_notifier` (bot de Slack, servicio `slack_baneo_worker`).
+- `modules/`: informes (`informes_sla`, `informes_repetitividad`), utilidades comunes (`common`; la conversión a PDF vive en `core/services/office_client.py`, contra `office:8090`) y los workers de fondo: `cromo_worker` (ingesta Cromo Red), `botellas_recalculo_worker` (Botellas duplicadas, cola Redis), `fo_monitor_worker` (FO Monitor) y `slack_baneo_notifier` (bot de Slack, servicio `slack_baneo_worker`).
 - `db/`: modelos SQLAlchemy async, sesión y migraciones Alembic.
 - `nlp_intent/`: microservicio aislado para clasificación de intención por HTTP.
 - `office_service/`: microservicio de LibreOffice headless (UNO). Su `POST /convert` convierte a PDF desde el 2026-10-26 (multipart; lo usa la herramienta MCP `ConvertirDocAPdf`); los informes siguen convirtiendo con `soffice` por subprocess en su propio contenedor, que en `web`/`api` no tiene LibreOffice (ver agente `office`).
@@ -35,7 +34,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Idioma obligatorio: español en código, commits, PRs y documentación.
 - Rama de trabajo: ramas efímeras `<tipo>/<slug>` creadas desde `origin/dev` (obligatorio — prohibido commitear directo en `dev`), en un **worktree propio** creado con `scripts/agent_worktree.py start` (convención `<tipo>/<agent-id>-<task-slug>`; ver "Conciencia agéntica y control de concurrencia"). La integración a `dev` es automática al cierre de sesión (`cierre-sesion`) y está serializada por el lease `git:integrate-dev`. Push directo a `main` prohibido desde agentes; los merges a `main` se realizan únicamente por PR revisado.
 - Compose de desarrollo: `deploy/docker-compose.dev.yml`. No usar `deploy/compose.yml` en entorno local ni de agentes.
-- Mantener límites claros: `api` expone lógica por HTTP, `web` resuelve UI/sesión, `bot_telegram` consume servicios, `nlp_intent` no accede directo a la DB.
+- Mantener límites claros: `api` expone lógica por HTTP, `web` resuelve UI/sesión, `nlp_intent` no accede directo a la DB.
 - Usar `logging`, no `print()`. Seguir el patrón de `core/logging.py`.
 - Mantener type hints y estilos cercanos a PEP 8. Las dependencias se versionan de forma estricta.
 - En nuevas APIs y repositorios usar `async/await` y modelos Pydantic para validar entrada/salida.
@@ -142,7 +141,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
   actualizar el manifiesto y regenerar (`--check` falla si quedó vencido o si una ruta no existe).
 - **Context-Splitting por dominio**: un contexto de trabajo carga un solo dominio a la vez —
   `api`, `core/services/cromo` (infra FO), `core/sla*` (informes), `web/frontend` (SPA),
-  `bot_telegram`/`modules/slack_baneo_notifier` (bots), `db/alembic` (esquema) y gobernanza
+  `modules/slack_baneo_notifier` (bot de Slack), `db/alembic` (esquema) y gobernanza
   (skills, agentes, scripts de agentes). Si la tarea cruza dominios, resolver cada parte por
   separado (o con un subagente por dominio) en vez de cargar todo junto.
 - **Acceso a Logs Bajo Demanda**: `Logs/` y `*.log` están excluidos del indexado de todos los
@@ -170,10 +169,14 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
   **por ID exacto** (`docker container rm -v <id>`, `docker network rm <id>`, `docker volume rm
   <nombre>`) tras comprobar mounts y consumidores. Nunca `docker system prune` ni
   `docker volume prune` para esto.
-- **Retención de imágenes en producción**: por servicio se conservan sólo la imagen activa
-  (`current`, `lasfocas-<servicio>:latest`) y un único `rollback` inmediato validado
-  (`lasfocas-<servicio>:rollback`). Cada despliegue rota `current -> rollback` y retira el rollback
-  desplazado por ID exacto, sin `prune`. Procedimiento en la skill `docker-cleanup`.
+- **Piso de disco para agentes** (el host de 40 GB es compartido con prod): antes de cada corrida
+  pesada, `df --output=avail -BM /`; con menos de 3 GB libres, limpiar primero los efímeros propios
+  y, si no alcanza, DETENERSE Y PREGUNTAR. Builds y suites en contenedor de a uno. Regla única en la
+  skill `disk-analysis` → "Piso de disco para agentes".
+- **Rollback de prod**: se conserva sólo el último juego (`lasfocas-<servicio>:pre-deploy-*`, o el
+  `:pre-hotfix-*` posterior), más `focas-base:latest` y la base anterior. El juego superado se borra
+  por tag exacto tras verificar el deploy y con confirmación del usuario, nunca con `prune`. Regla
+  única en la skill `docker-cleanup` → "Rollback de prod".
 - El servicio `api` tiene **dos superficies de autenticación que no se mezclan**: rutas internas con `require_api_key` (`api/app/security.py`, la usa la web) y `/api/v1/*` para otras áreas con OAuth2 `client_credentials` (`require_oauth_token(scope)` de `api/app/oauth.py`, scopes `servicios:read`/`cables:read`). Un endpoint nuevo para terceros va bajo `/api/v1` con su scope, nunca detrás de la API key. Referencia: `docs/api.md`, sección "API v1".
 
 ## Documentación Fuente
@@ -182,7 +185,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 - Decisiones técnicas: `docs/decisiones.md`
 - API: `docs/api.md`
 - DB: `docs/db.md`
-- Bot: `docs/bot.md`
+- Monitor de ingresos de Slack: `docs/bot.md`
 - Mapa del repositorio por dominio (leer primero): `docs/REPOSITORY_MAP.md`
 - Chatbot y MCP: `docs/chatbot.md`, `docs/mcp.md`
 - Web: `docs/web.md`
@@ -202,7 +205,7 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
 
 ## Agentes y Skills
 
-- Usar agentes de `.github/agents/` cuando el trabajo sea claramente de `api`, `db`, `web`, `bot`, `reports`, `security`, `docker` o `testing`.
+- Usar agentes de `.github/agents/` cuando el trabajo sea claramente de `api`, `db`, `web`, `reports`, `security`, `docker` o `testing`.
 - Usar skills de `.agentes-comunes/skills/` como fuente central para workflows repetibles (pytest, alembic, Docker, mantenimiento, sincronización trazable y verificación de arquitectura frontend).
 - Mantener mirrors por plataforma (`.github/skills/`, `.claude/skills/`, `.agents/skills/`, `.gemini/rules/`, `.codex-skills/skills/`) sincronizados con `.agentes-comunes/skills/`.
 - `python scripts/audit_agentic_environment.py` audita de forma determinista los contratos del entorno (archivos de gobernanza y exclusión, mapa vigente, frontmatter de skills, contrato de `cierre-sesion`, drift de mirrors); sale 1 ante un contrato roto y avisa (`warning:stale_lease:*`, `warning:stale_agent:*`) sin bloquear.

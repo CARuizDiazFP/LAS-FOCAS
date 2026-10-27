@@ -73,7 +73,6 @@ chmod 700 "$SECRETS_DIR"
 write_secret Dev_db_password_v1.txt
 write_secret Dev_web_secret_key_v1.txt
 write_secret Dev_api_key_v1.txt
-write_secret Dev_telegram_bot_token_v1.txt
 write_secret Dev_openai_api_key_v1.txt
 write_secret Dev_smtp_password_v1.txt
 write_secret Dev_slack_bot_token_v1.txt

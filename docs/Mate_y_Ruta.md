@@ -49,7 +49,6 @@ de gobernanza actualizados en los 5 entornos (`.agentes-comunes/`, `.github/`, `
 │   ├── testing.agent.md
 │   ├── reports.agent.md
 │   ├── mcp-chatbot.agent.md
-│   ├── bot.agent.md
 │   ├── web.agent.md
 │   ├── api.agent.md
 │   ├── db.agent.md
@@ -80,14 +79,13 @@ de gobernanza actualizados en los 5 entornos (`.agentes-comunes/`, `.github/`, `
 | Agente | Especialidad | Handoffs |
 |--------|--------------|----------|
 | `docker.agent.md` | Despliegue, contenedores, compose | → testing, db |
-| `testing.agent.md` | Pytest, mocks, cobertura 60% | → api, bot, reports |
+| `testing.agent.md` | Pytest, mocks, cobertura 60% | → api, reports |
 | `reports.agent.md` | Informes SLA/Repetitividad | → office, db, testing |
 | `mcp-chatbot.agent.md` | MCP Registry, orquestador | → nlp, reports, web |
-| `bot.agent.md` | Telegram (aiogram), flows | → nlp, testing, mcp |
 | `web.agent.md` | SPA Vue 3 (Composition API), auth web y consumo API JSON desacoplado | → api, mcp, security |
 | `api.agent.md` | FastAPI async, Pydantic, contratos JSON y dependencias | → db, testing, security |
 | `db.agent.md` | PostgreSQL async, SQLAlchemy, Alembic y repositorios | → api, docker |
-| `nlp.agent.md` | Clasificación de intención | → mcp, bot |
+| `nlp.agent.md` | Clasificación de intención | → mcp |
 | `office.agent.md` | LibreOffice, conversiones | → reports, docker |
 | `security.agent.md` | Seguridad de APIs/SPAs, XSS Vue 3, CORS, tokens | → web, api, db |
 | `infra.agent.md` | Cámaras, rutas, servicios | → db, api, reports |
@@ -141,7 +139,7 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
     - Infra/Cámaras: las tarjetas ahora exponen edición manual del `estado` para usuarios `admin`, muestran inconsistencias entre estado persistido y estado sugerido, y consumen endpoints web protegidos por sesión + CSRF para consultar/aplicar overrides.
     - Protocolo de Protección: el badge y el modal de baneos distinguen entre cámaras cubiertas por incidentes y cámaras efectivamente persistidas como `BANEADA`, evitando falsos positivos cuando hay normalización manual.
   - `nlp_intent` (FastAPI): `POST /v1/intent:classify` y `POST /v1/intent:analyze` con `openai` como proveedor LLM por defecto; `heuristic` se mantiene como opción de desarrollo/local test sin dependencia GPU.
-  - `bot` (Telegram): definido en `deploy/compose.yml`.
+  - Bot de Telegram: retirado el 2026-10-27 (P19); ya no está en `deploy/compose.yml`.
   - `office` (FastAPI + LibreOffice UNO): servicio dockerizado para conversiones de documentos (en preparación).
   - DB: esquema `app` con conversaciones legacy y nuevas tablas de chat web + migraciones Alembic (`db/alembic`).
     - Infra: además de `app.incidentes_baneo`, el dominio ahora cuenta con `app.config_servicios` para workers configurables y `app.camaras_estado_auditoria` para trazabilidad de overrides manuales de cámaras.
@@ -162,7 +160,7 @@ El archivo `AGENTS.md` en raíz ahora contiene solo:
     - **Frontend**: botón `Editar estado` por tarjeta, modal con contexto operativo, incidentes activos relacionados y motivo obligatorio.
     - **Conteos**: `GET /api/infra/ban/active` informa `camaras_count`, `camaras_baneadas_count` y `total_camaras_baneadas` para separar cobertura topológica de estado efectivo.
 - Compose
-  - Define `postgres`, `api`, `nlp_intent`, `bot` (y `pgadmin` opcional). Red `lasfocas_net`.
+  - Define `postgres`, `api`, `nlp_intent` (y `pgadmin` opcional). Red `lasfocas_net`.
   - El puerto 8000 de la VM está actualmente ocupado por otro contenedor externo al stack del repo.
   - Volúmenes `reports_data` y `uploads_data` montados en `web` (`/app/data/...`); parámetros `REPORTS_DIR`, `UPLOADS_DIR`, `WEB_CHAT_ALLOWED_ORIGINS` declarados en `deploy/compose.yml`.
 - Tests y calidad
@@ -328,7 +326,7 @@ Resumen por fecha a partir del historial de `dev` y de los títulos de `docs/cie
 - [ ] Unificar versiones FastAPI/pydantic (root vs `office_service`).
 - [ ] Validaciones de tamaño y tipo en `/reports/repetitividad`.
 - [x] Pruebas automatizadas para `POST /api/flows/repetitividad` (web) cubriendo paths feliz y errores.
-- [ ] Pruebas FSM del flujo Telegram de repetitividad (aiogram) con escenarios de error/éxito.
+- [x] ~~Pruebas FSM del flujo Telegram de repetitividad~~: descartado, el bot de Telegram se retiró el 2026-10-27 (P19).
 - [ ] Revisar `docs/api.md` con ejemplos curl de modo DB vs Excel (actualización hecha; validar).
 - [ ] Entrada decisiones sobre hashes de plantillas y versión unificada FastAPI.
 - [ ] Auth (API key) básica para `/reports/*`.

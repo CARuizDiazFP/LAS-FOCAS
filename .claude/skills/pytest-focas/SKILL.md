@@ -36,6 +36,14 @@ módulo tocado, su `tests/test_<módulo>*.py` y los tests que lo importan
 (`grep -rln "<módulo>" tests/`). Reportar qué se corrió y el resultado real; un fallo focal
 bloquea la integración, un fallo ajeno al diff se documenta (ver "Diagnóstico de Fallas").
 
+**Lista de archivos vacía = suite completa (lección 2026-10-27).** `pytest $(grep -l … | grep -v …)`
+con una sustitución que no devuelve nada corre **toda** la suite: real en P21, un filtro que sólo
+matcheaba archivos `*_real_db` dejó `$files` vacío y la corrida superó los 600 s del tool. Expandir
+con guard: `pytest ${files:?sin archivos focales} -q`. Para ver por qué se salteó un test, correr
+`-rs` sólo sobre los archivos con `pytest.skip(` (`grep -l "pytest.skip(" tests/...`). Y para matar un
+pytest colgado usar el ID del proceso (`pgrep -af pytest`), no `pkill -f "<patrón>"`: el patrón
+matchea la propia línea de comando del shell que lo ejecuta y lo mata (exit 144).
+
 ### Todos los tests
 
 ```bash
@@ -560,6 +568,11 @@ habría dado 500 apenas hubiera puntos terminales cargados (en dev y prod la tab
   `db/models/...`), nunca del código bajo prueba.
 - Al encontrar un bug de atributo, buscar el mismo nombre en los fakes de `tests/`
   (`grep -rn "SimpleNamespace(<attr>=" tests`): el test que no lo detectó suele estar ahí.
+- El caso inverso también pasa: al **agregar un campo** a un dataclass de resultado que lee un router
+  (real, P16 2026-10-27: `DocumentoSLA.pdf_error`), los dobles `SimpleNamespace(docx=..., pdf=...)` no
+  lo tienen y el endpoint da 500 sólo en esos tests (`tests/test_web_sla_generar_ramas.py`, fuera de la
+  suite focal). Antes de cerrar, `grep -rn "SimpleNamespace(<campo_existente>=" tests` y agregar el
+  campo nuevo a cada doble, o leerlo en el router con un default sólo si el contrato lo justifica.
 
 ## Tests web nuevos: fijar `TESTING` en el módulo y probar el 403 por introspección (lección 2026-10-23)
 
@@ -627,6 +640,28 @@ trampas reales:
 
 Para bajarlos, matar por PID o con `pgrep -f "[a]pp_medicion"`: un `pkill -f app_medicion` corrido
 desde el mismo `bash -c` matchea su propia línea de comando y mata la shell (exit 144).
+
+## E2E contra dev sin rebuild ni deploy (lección 2026-10-27, P16)
+
+Para validar código de una rama sin integrar contra la DB y los servicios reales de dev (p. ej.
+`office:8090`) sin recompilar ni pisar el `web`/`api` que comparten otras sesiones: copiar sólo los
+paquetes Python de la rama a `/tmp` del contenedor y anteponerlos al `PYTHONPATH`.
+
+```bash
+git archive HEAD core modules | tar -x -C <scratchpad>/src     # sólo lo commiteado
+docker cp <scratchpad>/src lasfocasdev-web:/tmp/rama
+docker cp <scratchpad>/e2e.py lasfocasdev-web:/tmp/e2e.py
+docker exec -w /tmp -e PYTHONPATH=/tmp/rama:/app lasfocasdev-web python /tmp/e2e.py
+docker exec lasfocasdev-web rm -rf /tmp/rama /tmp/e2e.py /tmp/<salida>   # siempre al terminar
+```
+
+- En el script, `assert modulo.__file__.startswith("/tmp/rama/")`: sin eso se prueba el código viejo
+  de la imagen sin darse cuenta.
+- `docker exec` sin `-i` no pasa el heredoc por stdin (sale sin output): copiar el script con `docker cp`.
+- Escribir las salidas en `/tmp/<salida>`, no en `REPORTS_DIR` (volumen compartido). Si el flujo
+  ingesta en la DB, simular sólo esa función (asignarla en el módulo) y dejar real la lectura.
+- Prueba la lógica y la integración con los servicios, **no** la imagen: el rebuild y la prueba logueada
+  del usuario siguen pendientes después de integrar (un TestClient o este E2E no ven la imagen desplegada).
 
 ## Checklist Pre-Commit
 

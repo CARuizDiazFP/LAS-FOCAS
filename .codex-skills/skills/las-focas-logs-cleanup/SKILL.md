@@ -40,7 +40,7 @@ metadata:
 
 - Servicios Python: `Logs/<servicio>.log` (prod) y `Logs/dev/<servicio>.log` (dev), escritos por
   `core/logging.py` (`office` usa su copia en `office_service/app/logging_setup.py`). Nombres: `api`,
-  `web`, `nlp_intent`, `bot`, `office`, `slack_baneo_worker`, `cromo_worker`,
+  `web`, `nlp_intent`, `office`, `slack_baneo_worker`, `cromo_worker`,
   `botellas_recalculo_worker`. Los scripts de `scripts/` escriben el suyo (`Logs/<script>.log`).
 - Todos los contenedores (incluidos postgres, redis y docker-socket-proxy): `docker logs`, con
   rotación `json-file` 20 MB × 5 (anchor `x-logging` de los compose).
