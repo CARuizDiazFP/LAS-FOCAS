@@ -114,6 +114,14 @@ módulo tocado, su `tests/test_<módulo>*.py` y los tests que lo importan
 (`grep -rln "<módulo>" tests/`). Reportar qué se corrió y el resultado real; un fallo focal
 bloquea la integración, un fallo ajeno al diff se documenta (ver "Diagnóstico de Fallas").
 
+**Lista de archivos vacía = suite completa (lección 2026-10-27).** `pytest $(grep -l … | grep -v …)`
+con una sustitución que no devuelve nada corre **toda** la suite: real en P21, un filtro que sólo
+matcheaba archivos `*_real_db` dejó `$files` vacío y la corrida superó los 600 s del tool. Expandir
+con guard: `pytest ${files:?sin archivos focales} -q`. Para ver por qué se salteó un test, correr
+`-rs` sólo sobre los archivos con `pytest.skip(` (`grep -l "pytest.skip(" tests/...`). Y para matar un
+pytest colgado usar el ID del proceso (`pgrep -af pytest`), no `pkill -f "<patrón>"`: el patrón
+matchea la propia línea de comando del shell que lo ejecuta y lo mata (exit 144).
+
 ### Todos los tests
 
 ```bash
