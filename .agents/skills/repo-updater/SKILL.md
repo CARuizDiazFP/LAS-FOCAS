@@ -57,7 +57,6 @@ Usar esta skill cuando el usuario pida:
 
 - `api/`, `api_app/` -> `docs/api.md`
 - `web/` -> `docs/web.md`
-- `bot_telegram/` -> `docs/bot.md`
 - `db/` -> `docs/db.md`
 - `core/chatbot/`, `core/mcp/` -> `docs/chatbot.md`, `docs/mcp.md`
 - `modules/informes_*` -> `docs/informes/`

@@ -14,7 +14,7 @@ Esta guía describe los prerrequisitos, configuraciones necesarias y pasos detal
    - POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB.
    - LLM_PROVIDER y OPENAI_API_KEY para la clasificación por proveedor externo vía API.
    - REPORTS_DIR y UPLOADS_DIR (rutas dentro del contenedor web).
-4. Ejecutar `./Start` para levantar el stack base (`postgres`, `api`, `web`, `nlp_intent`, opcionalmente `bot`).
+4. Ejecutar `./Start` para levantar el stack base (todos los servicios del perfil por defecto de `deploy/compose.yml`).
 5. Verificar que la API responde en `http://localhost:8001/health` (o el puerto configurado) y que la web está disponible en `http://172.18.208.162:8080`.
 6. Aplicar migraciones con Alembic desde la raíz del proyecto:
    ```bash

@@ -51,7 +51,6 @@ Validar trazabilidad entre el diff real, el PR diario vigente y la documentació
    - documentación temática según el área impactada:
      - `docs/api.md` para `api/`
      - `docs/web.md` para `web/`
-     - `docs/bot.md` para `bot_telegram/`
      - `docs/db.md` para `db/`
      - `docs/chatbot.md` y `docs/mcp.md` para `core/chatbot/` o `core/mcp/`
      - `docs/informes/` para `modules/informes_*`

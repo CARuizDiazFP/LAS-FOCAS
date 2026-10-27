@@ -22,7 +22,6 @@ triggers:
 globs:
   - "api/**"
   - "api_app/**"
-  - "bot_telegram/**"
   - "modules/informes_sla/**"
   - "core/sla/**"
   - "Templates/**"
@@ -197,4 +196,3 @@ NLP_CONFIDENCE_THRESHOLD=0.6
 ## Traspasos (Handoffs)
 
 - **→ MCP Chatbot Agent**: cuando la clasificación está lista para integrar
-- **→ Bot Agent**: para ajustar clasificación de comandos de Telegram

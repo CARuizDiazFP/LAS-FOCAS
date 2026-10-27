@@ -68,8 +68,6 @@ jobs:
         run: pip-audit -r api/requirements.txt
       - name: Audit web requirements
         run: pip-audit -r web/requirements.txt
-      - name: Audit bot_telegram requirements
-        run: pip-audit -r bot_telegram/requirements.txt
       - name: Audit office_service requirements
         run: pip-audit -r office_service/requirements.txt
       - name: Audit workers requirements

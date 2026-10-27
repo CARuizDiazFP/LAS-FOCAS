@@ -1,6 +1,6 @@
 # Nombre de archivo: repetitividad.md
 # Ubicación de archivo: docs/informes/repetitividad.md
-# Descripción: Documentación del informe de Repetitividad para SPA, bot y API
+# Descripción: Documentación del informe de Repetitividad para SPA, API y MCP
 
 ## Insumos requeridos
 - Excel "Casos" en formato `.xlsx` con encabezados en español.
@@ -16,14 +16,8 @@
 - El conteo de servicios repetitivos se realiza con operaciones vectorizadas (`groupby().size()`), lo que mejora el rendimiento.
 - Se genera una tabla con servicio, cantidad y detalles/IDs; cada fila incluye Horas Netas en formato `HH:MM`.
 
-## Uso por Telegram
-1. Enviar comando `/repetitividad` o usar el botón correspondiente.
-2. Subir el Excel.
-3. Indicar el período `mm/aaaa`.
-4. El bot devuelve el `.docx`, adjunta el `.pdf` si está disponible y reenvía cada mapa `.png` generado.
-
 ## Integración con otros canales
-- Tanto la SPA web como el bot de Telegram llaman a la misma función de servicio: `modules.informes_repetitividad.service.generar_informe_desde_excel`.
+- El panel (`web/app/routers/informes.py`), la API (`api/app/routes/reports.py`) y la herramienta MCP `GenerarInformeRepetitividad` (`core/mcp/registry.py`) llaman a la misma función de servicio: `modules.informes_repetitividad.service.generar_informe_desde_excel`. El bot de Telegram, que también la usaba, se retiró el 2026-10-27 (P19).
 - La API web (`/api/flows/repetitividad`) devuelve rutas absolutas de descarga bajo `/reports/*` incluyendo los mapas `.png` generados por servicio y la lista completa en `assets`.
 - Cada generación desde la UI web registra una entrada en `app.report_history` con usuario, período, fuente (`excel` o `db`), estado, duración, estadísticas y enlaces de salida.
 - El histórico persistente se consulta desde `/reports-history`.
@@ -32,7 +26,7 @@
 
 - La lógica funcional vive en backend y se expone a canales distintos sin duplicarse.
 - La UI moderna no utiliza Jinja ni DOM directo; consume enlaces y estados desde JSON.
-- El worker geoespacial y el bot son consumidores del mismo servicio, no fuentes de lógica divergente.
+- Panel, API y MCP son consumidores del mismo servicio, no fuentes de lógica divergente.
 
 ## Cobertura de pruebas automatizadas
 - `tests/test_docx_utils.py`, `tests/test_static_map.py`, `tests/test_repetitividad_docx_render.py`: casos actualizados para nuevas funcionalidades.
@@ -40,7 +34,6 @@
 - `tests/test_ingest_parser.py`: asegura que el parser normalice Horas Netas a minutos y limpie GEO fuera de rango.
 
 ### Pendientes (# TODO)
-- Crear pruebas funcionales del flujo de Telegram con `aiogram` (al menos simulando estados felices y errores).
 - Añadir cobertura adicional para escenarios donde `/reports/repetitividad` deba limitar tamaño de archivos y autenticar requests (incluyendo verificación de headers `X-PDF-*`).
 - Evaluar pruebas integrales que verifiquen la generación y descarga de archivos desde la UI (end-to-end en Docker compose).
 
@@ -85,10 +78,10 @@
    - Maquetación (2026-10-19): **una tabla por hoja** (cada servicio arranca en hoja nueva) y, si el servicio tiene coordenadas, **el mapa ocupa la hoja siguiente** a página completa. El PNG se genera con la proporción del área útil A4 (`MAP_PAGE_STYLE`, 6.9 × 9.8 in, 150 dpi, paleta de 256 colores) y el encuadre se expande en el eje corto (`fit_bounds_to_aspect`) para que el zoom llene la hoja sin deformar ni recortar puntos.
    - Tiles: OSM bloquea el User-Agent genérico de contextily y responde HTTP 200 con una imagen "Access blocked" (el log igual decía `basemap=True`). `static_map` fija `contextily.tile.USER_AGENT` con un UA identificable (`MAPS_TILE_USER_AGENT` lo sobrescribe).
    - Descarga: los PNG viven en `REPORTS_DIR/maps_YYYYMM/`; la web y la herramienta MCP publican `/reports/maps_YYYYMM/<archivo>.png` (antes se perdía la subcarpeta y el link daba 404).
-   - Los mapas se generan en el mismo proceso que arma el informe (sin worker aparte ni `geopandas`); API/web/bot consumen los PNG almacenados en `REPORTS_DIR`.
+   - Los mapas se generan en el mismo proceso que arma el informe (sin worker aparte ni `geopandas`); API/web/MCP consumen los PNG almacenados en `REPORTS_DIR`.
 5. **Integraciones**
-   - Exponer servicio REST (`POST /reports/repetitividad`) reutilizable por bot y web.
-   - Orquestar envío de archivos desde web/Telegram usando `REPORTS_DIR`.
+   - Exponer servicio REST (`POST /reports/repetitividad`) reutilizable por la web y otras áreas.
+   - Orquestar envío de archivos desde la web usando `REPORTS_DIR`.
 6. **Documentación y CI**
    - Actualizar esta guía al finalizar y registrar las decisiones.
    - Añadir pruebas end-to-end (web o CLI) que generen el reporte y validen el DOCX.

@@ -133,7 +133,7 @@ docker compose -f deploy/compose.yml --env-file .env up -d --force-recreate \
   api web nlp_intent office slack_baneo_worker botellas_recalculo_worker fo_monitor_worker
 ```
 
-`bot` (Telegram) no corre en prod: decisión explícita del usuario, no es un olvido.
+El bot de Telegram se retiró el 2026-10-27 (P19): el servicio `bot` ya no existe en `compose.yml`.
 
 ## 6. Verificación
 
