@@ -5,8 +5,8 @@
 """Smart search de Cámaras movida desde `web/app/routers/camaras.py`.
 
 Cada término se busca en múltiples campos (nombre, dirección, fontine_id, servicios, cables,
-estado, origen) y los términos se combinan con AND. El orden de evaluación es: query -> filtros ->
-matching -> paginación. La query se ordena por nombre y se filtra en Python ANTES de paginar.
+estado, origen) y los términos se combinan con AND. Filtro, conteo y paginación corren en SQL
+(`condicion_termino`); sólo la página se carga con sus relaciones.
 """
 
 from __future__ import annotations
@@ -14,9 +14,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session, aliased, selectinload
 
-from db.models.infra import Camara, Empalme, RutaServicio
+from db.models.infra import (
+    Cable,
+    Camara,
+    CamaraOrigenDatos,
+    Empalme,
+    RutaServicio,
+    Servicio,
+    ruta_empalme_association,
+    servicio_empalme_association,
+)
 from db.models.infra import CamaraEstado as _CamaraEstado
 
 LIMITE_MAXIMO = 500
@@ -117,44 +127,77 @@ def _collect_camara_servicios_ids(camara: Any, rutas_info: list[dict[str, Any]] 
     return servicios_ids
 
 
-def _cables_nombres(camara: Any) -> list[str]:
-    cables_nombres: list[str] = []
-    for cable in camara.cables:
-        if cable.nombre and cable.nombre not in cables_nombres:
-            cables_nombres.append(cable.nombre)
-    return cables_nombres
-
-
 def normalizar_terminos(terminos: list[str]) -> list[str]:
     """Strip de cada término y descarte de los vacíos (se conservan repetidos y el orden)."""
 
     return [limpio for limpio in (t.strip() for t in terminos) if limpio]
 
 
-def termino_coincide(termino: str, camara: Any, servicios_ids: list[str], cables_nombres: list[str]) -> bool:
-    """`True` si el término (insensible a mayúsculas) aparece en algún campo de la cámara."""
+def _raiz_del_grupo() -> tuple[Any, Any]:
+    """(alias de cámara, id de la cámara raíz de su grupo): la propia si es raíz, la padre si es Botella.
+
+    Replica `_collect_camara_rutas_info(incluir_botellas=True)`: una raíz ve los empalmes propios y los
+    de sus Botellas directas (un solo nivel)."""
+
+    grupo = aliased(Camara)
+    return grupo, func.coalesce(grupo.camara_padre_id, grupo.id)
+
+
+def condicion_termino(termino: str) -> Any:
+    """Condición SQL de un término sobre la cámara raíz: aparece (insensible a mayúsculas, como subcadena)
+    en nombre, dirección, `fontine_id`, servicios, cables, estado u origen.
+
+    Mismo criterio que el matching en Python que reemplaza: los servicios salen de las rutas de los
+    empalmes de la raíz y sus Botellas y, sólo si el grupo no tiene ninguna ruta, de la relación legacy
+    `servicio_empalme_association` de los empalmes propios; los cables son los de la raíz (origen o
+    destino). Estado y origen se resuelven en Python contra los valores del enum. `autoescape` neutraliza
+    `%` y `_` del término."""
 
     termino_lower = termino.lower()
 
-    if camara.nombre and termino_lower in camara.nombre.lower():
-        return True
-    if camara.direccion and termino_lower in camara.direccion.lower():
-        return True
-    if camara.fontine_id and termino_lower in camara.fontine_id.lower():
-        return True
-    for svc_id in servicios_ids:
-        if termino_lower in svc_id.lower():
-            return True
-    for cable_nombre in cables_nombres:
-        if termino_lower in cable_nombre.lower():
-            return True
+    def contiene(columna: Any) -> Any:
+        return columna.icontains(termino, autoescape=True)
 
-    estado_actual = camara.estado.value if camara.estado else "LIBRE"
-    if termino_lower in estado_actual.lower():
-        return True
+    grupo, raiz = _raiz_del_grupo()
+    servicios_por_ruta = (
+        select(raiz)
+        .select_from(Servicio)
+        .join(RutaServicio, RutaServicio.servicio_id == Servicio.id)
+        .join(ruta_empalme_association, ruta_empalme_association.c.ruta_id == RutaServicio.id)
+        .join(Empalme, Empalme.id == ruta_empalme_association.c.empalme_id)
+        .join(grupo, grupo.id == Empalme.camara_id)
+        .where(contiene(Servicio.servicio_id))
+    )
+    grupo_r, raiz_r = _raiz_del_grupo()
+    grupos_con_rutas = (
+        select(raiz_r)
+        .select_from(ruta_empalme_association)
+        .join(Empalme, Empalme.id == ruta_empalme_association.c.empalme_id)
+        .join(grupo_r, grupo_r.id == Empalme.camara_id)
+    )
+    servicios_legacy = (
+        select(Empalme.camara_id)
+        .join(servicio_empalme_association, servicio_empalme_association.c.empalme_id == Empalme.id)
+        .join(Servicio, Servicio.id == servicio_empalme_association.c.servicio_id)
+        .where(contiene(Servicio.servicio_id))
+    )
 
-    origen_actual = camara.origen_datos.value if camara.origen_datos else "MANUAL"
-    return termino_lower in origen_actual.lower()
+    condiciones = [
+        contiene(Camara.nombre),
+        contiene(Camara.direccion),
+        contiene(Camara.fontine_id),
+        Camara.id.in_(servicios_por_ruta),
+        and_(Camara.id.in_(servicios_legacy), Camara.id.not_in(grupos_con_rutas)),
+        Camara.id.in_(select(Cable.origen_camara_id).where(contiene(Cable.nombre))),
+        Camara.id.in_(select(Cable.destino_camara_id).where(contiene(Cable.nombre))),
+    ]
+    estados = [e for e in _CamaraEstado if termino_lower in e.value.lower()]
+    if estados:
+        condiciones.append(Camara.estado.in_(estados))
+    origenes = [o for o in CamaraOrigenDatos if termino_lower in o.value.lower()]
+    if origenes:
+        condiciones.append(Camara.origen_datos.in_(origenes))
+    return or_(*condiciones)
 
 
 def _consulta_base(session: Session, estado: str | None, incluir_no_operativas: bool) -> tuple[Any, str | None]:
@@ -182,16 +225,6 @@ def _rutas_y_servicios(camara: Any) -> tuple[list[dict[str, Any]], list[str]]:
     return rutas_info, _collect_camara_servicios_ids(camara, rutas_info)
 
 
-def _coincide_con_todos(camara: Any, terminos_limpios: list[str]) -> CamaraEncontrada | None:
-    """Devuelve la cámara con lo calculado si cumple todos los términos (AND); si no, `None`."""
-
-    rutas_info, servicios_ids = _rutas_y_servicios(camara)
-    cables_nombres = _cables_nombres(camara)
-    if all(termino_coincide(t, camara, servicios_ids, cables_nombres) for t in terminos_limpios):
-        return CamaraEncontrada(camara, rutas_info, servicios_ids)
-    return None
-
-
 def buscar_camaras_por_terminos(
     session: Session,
     terminos: list[str],
@@ -208,18 +241,13 @@ def buscar_camaras_por_terminos(
     query, estado_filter = _consulta_base(session, estado, incluir_no_operativas)
     terminos_limpios = normalizar_terminos(terminos)
 
-    # Sin términos (lista vacía): LIMIT/OFFSET real en SQL, no hay nada que matchear en Python.
-    if not terminos:
-        total = query.count()
-        pagina = query.order_by(Camara.nombre).offset(offset).limit(limit).all()
-        encontradas = [CamaraEncontrada(c, *_rutas_y_servicios(c)) for c in pagina]
-        return ResultadoSmartSearch(total, limit, offset, estado_filter, 0, encontradas)
-
-    # Con términos: el match incluye campos computados (servicios/cables/rutas), se filtra en
-    # Python sobre el set completo ordenado y DESPUÉS se pagina.
-    todas = query.order_by(Camara.nombre).all()
-    coinciden = [e for e in (_coincide_con_todos(c, terminos_limpios) for c in todas) if e is not None]
-    return ResultadoSmartSearch(
-        len(coinciden), limit, offset, estado_filter, len(terminos_limpios),
-        coinciden[offset:offset + limit],
-    )
+    # Cada término es una condición SQL (AND entre términos): el filtro, el conteo y el LIMIT/OFFSET
+    # corren en la base y sólo se carga la página. Antes se cargaba el grafo de todas las raíces
+    # (~10.000 en dev) para matchear en Python: ~6 s por búsqueda.
+    for termino in terminos_limpios:
+        query = query.filter(condicion_termino(termino))
+    total = query.count()
+    # `Camara.id` desempata nombres repetidos: sin él, el orden entre páginas no es determinista.
+    pagina = query.order_by(Camara.nombre, Camara.id).offset(offset).limit(limit).all()
+    encontradas = [CamaraEncontrada(c, *_rutas_y_servicios(c)) for c in pagina]
+    return ResultadoSmartSearch(total, limit, offset, estado_filter, len(terminos_limpios), encontradas)
