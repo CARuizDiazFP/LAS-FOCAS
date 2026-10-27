@@ -146,11 +146,11 @@ Definidos en `.github/agents/`. Cada agente tiene dominio, herramientas y handof
 sube el documento a `office:8090/convert` y guarda el PDF en `REPORTS_DIR`). `GenerarMapaGeo`,
 `CompararTrazasFO` y `RegistrarEnNotion` se retiraron del registro el 2026-10-26 (P13, ver `docs/mcp.md`).
 
-> **PDF de informes**: la conversión real es `soffice` por subprocess
-> (`modules/common/libreoffice_export.py`) en el mismo contenedor, pero las imágenes `web`/`api` no
-> instalan LibreOffice: los informes salen sin PDF. `office_service` sí convierte por `POST /convert`
-> desde el 2026-10-26 (hoy sólo lo usa `ConvertirDocAPdf`). Detalle en el agente `office` y la skill
-> `libreoffice-convert`.
+> **PDF de informes** (desde P16, 2026-10-27): SLA, SLA consumido, Repetitividad y `ConvertirDocAPdf`
+> convierten con un único cliente, `core/services/office_client.py`, contra `office:8090/convert`
+> (`web`/`api` no tienen LibreOffice; ya no existen `libreoffice_export.py` ni `SOFFICE_BIN`). Si la
+> conversión falla, el informe sale con el DOCX y el motivo en `pdf_error` (`pdf_omitido` en SLA
+> consumido), nunca con un 500. Detalle en el agente `office` y la skill `libreoffice-convert`.
 
 ---
 

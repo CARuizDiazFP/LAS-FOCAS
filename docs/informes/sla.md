@@ -64,7 +64,7 @@ sesión y `csrf_token` en el form). Campos del form: `mes`/`anio` (o `periodo_me
    - "Servicios Fuera de SLA.xlsx" (o similar)
    - "Reclamos SLA.xlsx" (o similar)
 3. Indicar el período: mes (1-12) y año (2000-2100).
-4. Opcional: activar "Generar PDF" si LibreOffice está disponible.
+4. Opcional: activar "Generar PDF" (lo convierte `office_service`; si falla, se entrega el DOCX y el aviso `pdf_error`).
 5. Opcional: activar "Usar base de datos" para ignorar archivos y consultar desde `app.reclamos`.
 6. Click en "Generar informe".
 7. El sistema devuelve JSON con las rutas de descarga (`report_paths`) del `.docx` y opcionalmente `.pdf`.
@@ -128,7 +128,7 @@ sesión). El nombre del archivo depende del modo: Excel → `sla/AAAAMM/InformeS
 - `SLA_TEMPLATE_PATH=${TEMPLATES_DIR}/Template_Informe_SLA.docx` — ruta de la plantilla oficial (se resuelve automáticamente desde `TEMPLATES_DIR`).
 - `REPORTS_DIR=/app/data/reports` — destino de los informes generados.
 - `UPLOADS_DIR=/app/data/uploads` — ubicación temporal de archivos subidos.
-- `SOFFICE_BIN=/usr/bin/soffice` — para habilitar conversión a PDF (opcional, requiere LibreOffice en el contenedor).
+- `OFFICE_SERVICE_BASE` (default `http://office:8090`) — servicio que convierte el PDF (`core/services/office_client.py`); `web`/`api` no tienen LibreOffice.
 
 **Volúmenes montados:**
 ```yaml

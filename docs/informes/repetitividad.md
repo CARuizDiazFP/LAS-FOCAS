@@ -52,7 +52,7 @@
 - `REP_TEMPLATE_PATH=/app/Templates/Plantilla_Informe_Repetitividad.docx` ruta de la plantilla oficial (copiada desde `Templates/`).
 - `REPORTS_DIR=/app/data/reports` destino de los informes.
 - `UPLOADS_DIR=/app/data/uploads` ubicación temporal de archivos subidos.
-- `SOFFICE_BIN=/usr/bin/soffice` para habilitar la conversión a PDF (opcional).
+- `OFFICE_SERVICE_BASE` (default `http://office:8090`): el PDF lo convierte `office_service` vía `core/services/office_client.py`; si falla, la respuesta trae `pdf_error` y el DOCX.
 - `MAPS_ENABLED=true` activa la generación de mapas PNG.
 - Dependencias geoespaciales instaladas en los contenedores: `matplotlib==3.9.2`, `contextily==1.5.2`, `pyproj==3.6.1` + paquetes nativos (`gdal-bin`, `libgdal-dev`, `libproj-dev`, `libgeos-dev`, `build-essential`).
 

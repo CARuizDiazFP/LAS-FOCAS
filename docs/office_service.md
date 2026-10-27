@@ -35,7 +35,17 @@ El proyecto LAS-FOCAS requiere generar informes y transformar plantillas heredad
   un perfil de usuario propio (`-env:UserInstallation`), porque el perfil por defecto lo tiene tomado
   la instancia UNO del `runner`. Las conversiones se serializan. Medido en dev: DOCX de una página
   ≈ 6 s (arranque en frío de `soffice`); la instancia UNO sigue disponible después.
-- **Consumidor**: la herramienta MCP `ConvertirDocAPdf` (`core/mcp/registry.py`, ver `docs/mcp.md`).
+- **Consumidores** (desde P16, 2026-10-27): todos pasan por el cliente único
+  `core/services/office_client.py` (sync, `OFFICE_SERVICE_BASE`, timeout 150 s que cubre la cola,
+  tope 50 MB, valida `%PDF`, errores tipados): informes SLA (`core/sla/report.py`,
+  `core/sla/legacy_report.py`), SLA consumido (`core/services/sla_consumo.py`, sólo el ejecutivo),
+  Repetitividad (`modules/informes_repetitividad/service.py`), `modules/informes_sla` (bot) y la
+  herramienta MCP `ConvertirDocAPdf` (`core/mcp/registry.py`, ver `docs/mcp.md`). Si la conversión
+  falla, los informes entregan el DOCX y el motivo en `pdf_error` (`pdf_omitido` en SLA consumido;
+  header `X-PDF-Error` en la API de Repetitividad).
+- **Tiempos medidos** (dev, 2026-10-27, DOCX reales): Repetitividad 12,8 s, SLA 20,5 s, SLA consumido
+  ejecutivo 46,9 s. Como office atiende de a uno, dos SLA consumidos simultáneos entran en los 150 s
+  del cliente; más que eso termina en `pdf_error` por timeout.
 
 ```bash
 curl -fsS -X POST "http://office:8090/convert?output_format=pdf" -F "file=@informe.docx" -o informe.pdf

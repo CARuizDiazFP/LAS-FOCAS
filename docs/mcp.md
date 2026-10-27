@@ -12,7 +12,7 @@ Las herramientas se definen en `core/mcp/registry.py` mediante `ToolDefinition` 
 
 | Nombre | Rol requerido | Estado | Depende de |
 |--------|---------------|--------|------------|
-| `GenerarInformeRepetitividad` | `user` / `admin` | Operativa | `modules/informes_repetitividad` (PDF sólo si hay `SOFFICE_BIN` válido) |
+| `GenerarInformeRepetitividad` | `user` / `admin` | Operativa | `modules/informes_repetitividad` (PDF vía `office:8090`; si falla, `pdf_error` en el resultado) |
 | `ConvertirDocAPdf` | `admin` / `ownergroup` | Operativa (2026-10-26) | Servicio `office` (`OFFICE_SERVICE_BASE`, default `http://office:8090`), `POST /convert` |
 
 **Cómo se llega a ellas.** No hay un LLM que elija herramientas: el orquestador (`core/chatbot/orchestrator.py`) las invoca por comando de texto en el WebSocket `/ws/chat` (`/repetitividad mes=9 anio=2025` con un `.xlsx` adjunto) o por pedido explícito `tool_call` (WebSocket o `POST /mcp/invoke`). El chat del SPA (`ChatTab.vue`) usa `/api/chat/message` (clasificación NLP) y hoy no invoca herramientas MCP.
@@ -66,7 +66,7 @@ Un nombre retirado responde `TOOL_NOT_FOUND`.
 - **Flujo**: lee el archivo, lo sube multipart a `{OFFICE_SERVICE_BASE}/convert?output_format=pdf` (timeout 150 s) y guarda el PDF en `REPORTS_DIR/<nombre>.pdf`.
 - **Output**: `{ "status": "ok", "input": "chat_..._reporte.docx", "pdf": "/reports/chat_..._reporte.pdf" }`.
 - **Formatos**: `.docx`, `.doc`, `.odt`, `.rtf` (la imagen de `office` sólo trae Writer); máximo 50 MB. Ver `docs/office_service.md`.
-- **Errores**: `INVALID_PATH`, `FILE_NOT_FOUND`, `CONVERT_HTTP_ERROR` (el detalle trae la respuesta de office, p. ej. extensión no soportada), `CONVERT_NETWORK_ERROR`.
+- **Errores**: `INVALID_PATH`, `FILE_NOT_FOUND`, `CONVERT_HTTP_ERROR` (rechazo, timeout, archivo de más de 50 MB o respuesta que no es PDF; el detalle trae la respuesta de office, p. ej. extensión no soportada), `CONVERT_NETWORK_ERROR`. Convierte con el cliente compartido `core/services/office_client.py` (desde P16).
 
 ## 🛡️ Auditoría
 
@@ -96,8 +96,9 @@ La respuesta incluye cada evento emitido por el orquestador (útil para depurar 
 ## 🧪 Pruebas y dobles
 
 - `tests/test_mcp_registry.py` verifica registros duplicados, validación y respuesta base.
-- `tests/test_mcp_herramientas.py` prueba cada herramienta del registro por defecto (éxito y error), con el HTTP de office simulado con `httpx.MockTransport` (`_cliente_office` se reemplaza en el test).
+- `tests/test_mcp_herramientas.py` prueba cada herramienta del registro por defecto (éxito y error), con el HTTP de office simulado con `httpx.MockTransport` (se reemplaza `core.services.office_client._cliente`).
 - `tests/test_office_service_convert.py` prueba `POST /convert` de office con `soffice` simulado.
+- `tests/test_office_client.py` prueba el cliente compartido (éxito, timeout, 4xx/5xx, no-PDF, archivo grande); `-m office_real` con `OFFICE_REAL_URL` lo corre contra un office real.
 - Para pruebas unitarias del orquestador puede utilizarse `InMemoryChatStorage` y registrar herramientas de prueba.
 
 ## 🚧 Próximos pasos
