@@ -97,7 +97,10 @@ class CromoIngestaCorrida(Base):
 
 
 class CromoIngestaEvento(Base):
-    """Evento puntual de una corrida (por objeto): creado, actualizado, sin cambios, error o referencia colgada."""
+    """Evento puntual de una corrida (por objeto): creado, actualizado, error o referencia colgada.
+
+    Retención de 90 días: `core/services/cromo/retencion_eventos.py`.
+    """
 
     __tablename__ = "cromo_ingesta_eventos"
     __table_args__ = (
@@ -112,7 +115,8 @@ class CromoIngestaEvento(Base):
     )
     n_id = Column(BigInteger, nullable=True)
     clase = Column(SmallInteger, nullable=True)
-    accion = Column(String(32), nullable=False)  # CREADA | ACTUALIZADA | SIN_CAMBIOS | ERROR | REF_COLGADA
+    # CREADA | ACTUALIZADA | ERROR | REF_COLGADA | ... (SIN_CAMBIOS ya no se escribe desde 2026-10-27).
+    accion = Column(String(32), nullable=False)
     detalle = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
 

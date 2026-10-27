@@ -807,11 +807,26 @@ Evento puntual por objeto dentro de una corrida. `corrida_id → cromo_ingesta_c
 | `id` (PK) | BigInteger | — |
 | `corrida_id` (FK) | BigInteger | — |
 | `n_id`, `clase` | BigInteger, SmallInteger | Identifica el objeto de Cromo afectado. |
-| `accion` | String(32) | `CREADA` \| `ACTUALIZADA` \| `SIN_CAMBIOS` \| `ERROR` \| `REF_COLGADA`. |
+| `accion` | String(32) | `CREADA` \| `ACTUALIZADA` \| `OMITIDA` \| `ERROR` \| `REF_COLGADA`, más los de control (`INICIO`, `FASE`, `PAGINA`, `RESUMEN`), los de reanudación (`CABLE_INNER_OK`, `CABLE_SNAPSHOT_OK`) y los de bajas. `SIN_CAMBIOS` ya no se escribe desde 2026-10-27; quedan filas anteriores. |
 | `detalle` | Text | Mensaje libre. |
 | `created_at` | DateTime(tz) | — |
 
 Índice: `(corrida_id, id)`.
+
+**Sin `SIN_CAMBIOS` (2026-10-27)**: `ingesta.registrar_evento` descarta esa acción. Era el 79 % de una
+corrida COMPLETA (≈ 89.000 eventos) y ningún lector la usaba: el total sigue en
+`cromo_ingesta_corridas.sin_cambios` (y en el evento `RESUMEN`), y la marca "visto en esta corrida" es
+`ultima_ingesta` del objeto. El stream SSE del panel nunca la emitía, y el detalle de una corrida
+(`GET /api/admin/ingesta/cromo/corridas/{id}`, últimos 200 eventos) deja de llenarse con ella.
+
+**Retención (2026-10-27)**: `core/services/cromo/retencion_eventos.py` borra los eventos con
+`created_at` anterior a `ahora - 90 días` y, con `--incluir-sin-cambios`, todos los `SIN_CAMBIOS`
+históricos. Nunca toca eventos de una corrida `EN_CURSO` (la reanudación lee `CABLE_INNER_OK` /
+`CABLE_SNAPSHOT_OK`) ni las filas de `cromo_ingesta_corridas`. Borra por rangos de 20.000 `id` (range
+scan sobre la PK, commit por lote): en dev, un lote con 19.446 borrados tarda ≈ 200 ms y el conteo
+previo es un seq scan de ≈ 160 ms sobre 441.487 filas, así que no lleva índice propio. No hay cron
+(el scheduler de ingesta está deshabilitado): se corre a mano con `scripts/cromo_retencion_eventos.py`
+(dry-run por defecto, `--aplicar`, `--dias`).
 
 ### Tabla `cromo_botellas`
 

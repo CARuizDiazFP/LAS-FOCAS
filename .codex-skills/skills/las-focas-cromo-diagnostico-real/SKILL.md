@@ -343,6 +343,20 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
      creado. Verificar después en `pg_extension`/`pg_indexes`. Antes de proponerlo, comprobar que la
      consulta real use la columna desnuda: `unaccent(lower(nombre)) ILIKE` no usa un GIN sobre `nombre`.
 
+17. **Validar un cambio de la ingesta con una corrida acotada antes/después, en el `cromo-worker`.**
+   Real (P21, 2026-10-27): `ejecutar_ingesta(cliente, sesion, usuario=..., psize=50, max_paginas=1,
+   modo="SOLO_ODF")` re-barre 50 ODF reales en ~1 min, casi todas `SIN_CAMBIOS`. Se corre dos veces
+   con el mismo script: "antes" con `-w /app -e PYTHONPATH=/app` (la imagen de `dev`: verificar con
+   `docker image inspect … --format '{{.Created}}'` contra la fecha de `origin/dev` y con
+   `diff -rq /app/core /tmp/wt/core`) y "después" con el código del worktree en `/tmp/wt` (regla 13).
+   Comparar los contadores de la fila de la corrida y `count(*) GROUP BY accion` de sus eventos.
+   - Escribe en `focas_dev` como cualquier ingesta, y cada corrida `COMPLETA`/`SOLO_ODF`/
+     `SOLO_PELOS_INNER` dispara `detectar_post_ingesta`: aparece una corrida
+     `detector-inconsistencias` entre las tuyas. Es esperable; no es otra sesión.
+   - Un `DELETE` masivo sobre una tabla de la ingesta no achica el disco: el espacio queda para la
+     propia tabla. Para recuperarlo hace falta `VACUUM (FULL, ANALYZE)` (lock exclusivo; en dev,
+     1,2 s para `cromo_ingesta_eventos`: 61 → 45 MB). Chequear antes que no haya corridas `EN_CURSO`.
+
 ## Documentación relacionada
 
 - `docs/Doc Privada/ingesta_cromo.md` §12 (Puntos abiertos) y §13 (Notas de implementación por etapa)

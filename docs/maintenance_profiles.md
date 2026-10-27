@@ -48,10 +48,11 @@ Usar cuando:
 Incluye:
 
 1. todo el perfil estandar
-2. consumidores fuera del repo en la misma partición: `~/.vscode-server`, dumps de prod en
+2. juego de rollback de prod superado, si lo hay (guardrail 5), sólo con confirmación
+3. consumidores fuera del repo en la misma partición: `~/.vscode-server`, dumps de prod en
    `~/lasfocas-prod-sync-*`, `~/.cache`, `/tmp` (ver `disk-analysis` §7)
-3. validación post-limpieza obligatoria
-4. reporte de riesgo residual y acciones manuales pendientes
+4. validación post-limpieza obligatoria
+5. reporte de riesgo residual y acciones manuales pendientes
 
 ## Guardrails comunes
 
@@ -60,6 +61,11 @@ Incluye:
 3. Confirmación explícita previa cuando la acción impacta servicios activos.
 4. Nunca `docker image prune -a` ni `docker system prune -a`: el host corre prod y dev en el mismo
    daemon y borrarían los rollback de prod y `focas-base` (ver `docker-cleanup`).
+5. Rollback de prod: se conserva sólo el último juego (`:pre-deploy-*` o el `:pre-hotfix-*` posterior)
+   más `focas-base:latest` y la base anterior. El juego superado se borra por tag exacto tras verificar
+   el deploy y con confirmación del usuario. Regla única en `docker-cleanup` → "Rollback de prod".
+6. Un mantenimiento no reemplaza el piso de disco de los agentes (3 GB libres antes de una corrida
+   pesada): ver `disk-analysis` → "Piso de disco para agentes".
 
 ## Salida mínima por perfil
 

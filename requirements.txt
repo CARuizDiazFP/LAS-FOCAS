@@ -6,11 +6,12 @@
 # cada servicio; este archivo replica esos pins para correr los tests fuera de Docker. Si cambiás
 # una versión acá, cambiala también en common-requirements.txt o en el requirements del servicio.
 #
-# El .venv local es Python 3.13 (el único intérprete del host) y las imágenes son 3.11. Por eso el
-# venv NO puede instalar exactamente estos pins: asyncpg 0.29.0, pandas 2.2.2, pyproj 3.6.1 y
-# psycopg 3.2.1 no tienen wheel para 3.13, y el venv corre versiones más nuevas (verificado
-# 2026-10-26). Decisión del usuario: no reinstalar el venv compartido; la CI (3.11) sí instala
-# estos pins tal cual.
+# El .venv local es Python 3.13 (el único intérprete del host) y las imágenes son 3.11. El venv
+# compartido se realineó el 2026-10-27 con los pins que tienen wheel para 3.13 (revierte la decisión
+# de 2026-10-26 de no tocarlo). Siguen distintos, porque estos pins no tienen wheel para 3.13:
+# psycopg 3.2.13, asyncpg 0.31.0, pandas 2.2.3 y pyproj 3.7.2 en el venv. gspread también difiere
+# (6.2.1; el pin 6.0.0 es puro Python y sí instala en 3.13, pero quedó fuera). Verificado 2026-10-27 con
+# `pip freeze` y `pip check` limpio. La CI (3.11) instala estos pins tal cual.
 
 fastapi==0.136.1  # Framework web para APIs (unificado; CVEs de starlette)
 starlette==1.3.1  # Pin explícito: cierra los 7 CVEs de 0.38.6 (misma versión que common-requirements.txt)

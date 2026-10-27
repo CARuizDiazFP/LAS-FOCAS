@@ -219,6 +219,18 @@ async def test_upsert_versionado_sin_cambios_no_toca_campos():
 
 
 @pytest.mark.asyncio
+async def test_registrar_evento_omite_sin_cambios_y_conserva_el_resto():
+    """Decisión 2026-10-27: `SIN_CAMBIOS` no genera evento (era el 79 % de una corrida COMPLETA);
+    el total sigue en `CromoIngestaCorrida.sin_cambios`. El resto se registra igual."""
+    sesion = _SesionFake()
+
+    for accion in ("SIN_CAMBIOS", "CREADA", "ACTUALIZADA", "OMITIDA", "ERROR", "REF_COLGADA"):
+        await ingesta.registrar_evento(sesion, 1, 10, 51, accion)
+
+    assert [e.accion for e in sesion.agregados] == ["CREADA", "ACTUALIZADA", "OMITIDA", "ERROR", "REF_COLGADA"]
+
+
+@pytest.mark.asyncio
 async def test_upsert_versionado_actualizada_pisa_campos_y_marca_modificacion():
     # "nombre" ya no está en BOTELLA_CAMPOS (ver comentario ahí) — lo protege
     # _procesar_botella_completa, no este helper genérico. Este test verifica el resto de los
@@ -1747,8 +1759,10 @@ async def test_procesar_odf_directo_objeto_malformado_no_rompe_registra_error():
 @pytest.mark.asyncio
 async def test_fase_odfs_procesa_pagina_y_registra_creada_actualizada_sin_cambios():
     """Contrato central del brief: `fase_odfs` crea/actualiza filas `CromoOdf` a partir de una
-    respuesta paginada fake, y registra correctamente los eventos CREADA/ACTUALIZADA/SIN_CAMBIOS —
-    mismo objeto (n_id=800100) a través de tres páginas con `vmax` creciente y luego repetido."""
+    respuesta paginada fake, y registra correctamente los eventos CREADA/ACTUALIZADA —
+    mismo objeto (n_id=800100) a través de tres páginas con `vmax` creciente y luego repetido.
+    El tercer arribo (SIN_CAMBIOS) no genera evento (decisión 2026-10-27), pero sí suma al contador
+    de la corrida."""
 
     def _odf_obj(vmax: int) -> dict[str, Any]:
         return {
@@ -1783,7 +1797,7 @@ async def test_fase_odfs_procesa_pagina_y_registra_creada_actualizada_sin_cambio
     eventos_del_odf = [
         o.accion for o in sesion.agregados if isinstance(o, CromoIngestaEvento) and o.n_id == 800100
     ]
-    assert eventos_del_odf == ["CREADA", "ACTUALIZADA", "SIN_CAMBIOS"]
+    assert eventos_del_odf == ["CREADA", "ACTUALIZADA"]
     assert corrida.creadas == 1
     assert corrida.actualizadas == 1
     assert corrida.sin_cambios == 1

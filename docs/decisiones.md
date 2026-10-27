@@ -2959,3 +2959,25 @@ su propia ventana de mantenimiento.
   SLA de P11 (Parte C). Los volúmenes `*bot*data` y los archivos de `.secrets/` del token quedan fuera del repo.
 - Consecuencia: en el próximo deploy a prod, `compose.yml` ya no define `bot`; no hay contenedor que bajar. `up
   --remove-orphans` no hace falta (el servicio nunca corrió en prod).
+
+## 2026-10-27 — Eventos de ingesta Cromo: sin `SIN_CAMBIOS` y retención de 90 días
+
+- Contexto: `app.cromo_ingesta_eventos` tenía 441.487 filas (61 MB) en dev. Una corrida COMPLETA genera ≈ 89.000
+  eventos y el 79 % eran `SIN_CAMBIOS` (P05, 2026-10-26). En el acumulado de dev son 121.931 (27,6 %), porque
+  pesan las 221.041 `CREADA` de las cargas iniciales.
+- Verificado antes de decidir: nadie lee `SIN_CAMBIOS` de la tabla. Los contadores de la corrida salen de
+  `ContadoresCorrida` en memoria (`cromo_ingesta_corridas.sin_cambios` y el evento `RESUMEN`), el stream SSE nunca
+  los emitía, el recálculo de duplicados mira los contadores y la marca "visto en esta corrida" es
+  `ultima_ingesta` del objeto. El `SIN_CAMBIOS` del front (`api/botellas.ts`) es la respuesta de "Repoblar
+  Cables", no un evento.
+- Decisión (del usuario): `ingesta.registrar_evento` descarta `SIN_CAMBIOS` (punto único: lo usan la ingesta,
+  la repoblación y la normalización). Retención de 90 días con `core/services/cromo/retencion_eventos.py` +
+  `scripts/cromo_retencion_eventos.py`, a mano y sin cron mientras el scheduler siga deshabilitado.
+- Medido en dev con una corrida `SOLO_ODF` de una página (50 ODF): antes, 50 eventos `SIN_CAMBIOS`; después, 0,
+  con `sin_cambios = 50` en la corrida en los dos casos.
+- Sin índice nuevo: cada lote de borrado es un range scan sobre la PK (≈ 200 ms con 19.446 borrados) y el conteo
+  previo un seq scan de ≈ 160 ms. Se conservan los eventos de corridas `EN_CURSO` (reanudación por
+  `CABLE_INNER_OK` / `CABLE_SNAPSHOT_OK`) y todas las filas de corrida.
+- Aplicado en `focas_dev` (decisión del usuario, 2026-10-27): `--incluir-sin-cambios --aplicar` borró 121.981
+  `SIN_CAMBIOS` en 23 lotes y `VACUUM (FULL, ANALYZE)` (1,2 s) llevó la tabla de 61 MB a 45 MB (319.574 filas).
+  La retención de 90 días no borró nada: el evento más viejo es del 2026-08-06. Prod no se tocó.
