@@ -219,10 +219,12 @@ def test_flow_repetitividad_validation_error(monkeypatch: pytest.MonkeyPatch, tm
     config = ReportConfig(reports_dir=tmp_path, maps_enabled=False)
     monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
-    async def _fake_to_thread(func, *args, **kwargs):  # noqa: ANN001, ANN003
+    # Se intercepta la generación, no `asyncio.to_thread`: el historial y la lectura del upload
+    # también pasan por el threadpool.
+    def _fake_generar(*args, **kwargs):  # noqa: ANN002, ANN003
         raise ValueError("Columnas faltantes")
 
-    monkeypatch.setattr(web_main.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(web_informes, "generar_informe_desde_excel", _fake_generar)
 
     files = {"file": ("casos.xlsx", io.BytesIO(_excel_bytes()), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
     data = {"mes": 7, "anio": 2024, "csrf_token": csrf}
@@ -240,10 +242,10 @@ def test_flow_repetitividad_error_generico(monkeypatch: pytest.MonkeyPatch, tmp_
     config = ReportConfig(reports_dir=tmp_path, maps_enabled=False)
     monkeypatch.setattr(web_informes, "REPORT_SERVICE_CONFIG", config)
 
-    async def _fake_to_thread(func, *args, **kwargs):  # noqa: ANN001, ANN003
+    def _fake_generar(*args, **kwargs):  # noqa: ANN002, ANN003
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(web_main.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(web_informes, "generar_informe_desde_excel", _fake_generar)
 
     files = {"file": ("casos.xlsx", io.BytesIO(_excel_bytes()), "application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")}
     data = {"mes": 7, "anio": 2024, "csrf_token": csrf}
@@ -262,12 +264,12 @@ def test_flow_repetitividad_rechaza_archivo_no_xlsx(monkeypatch: pytest.MonkeyPa
 
     called = False
 
-    async def _should_not_run(*args, **kwargs):  # noqa: ANN002, ANN003
+    def _should_not_run(*args, **kwargs):  # noqa: ANN002, ANN003
         nonlocal called
         called = True
         raise AssertionError("no debería ejecutarse")
 
-    monkeypatch.setattr(web_main.asyncio, "to_thread", _should_not_run)
+    monkeypatch.setattr(web_informes, "generar_informe_desde_excel", _should_not_run)
 
     files = {"file": ("casos.xlsx", io.BytesIO(b"not-a-zip"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
     data = {"mes": 7, "anio": 2024, "csrf_token": csrf}
