@@ -1,6 +1,6 @@
 # Nombre de archivo: sla.md
 # Ubicación de archivo: docs/informes/sla.md
-# Descripción: Documentación del informe de SLA para consumo desde SPA, bot y API
+# Descripción: Documentación del informe de SLA para consumo desde SPA y API
 
 ## Resumen
 
@@ -9,7 +9,7 @@ El informe de SLA analiza el cumplimiento de tiempos de resolución de tickets/r
 1. **Modo Excel (legacy)**: Dos archivos separados ("Servicios Fuera de SLA" + "Reclamos SLA").
 2. **Modo DB**: Consulta directa a la tabla `app.reclamos` con normalización automática.
 
-**Estado actual (2026-01-13)**: ✅ Flujo web completamente funcional. Corrección crítica aplicada para usar la columna correcta de horas (columna U "Horas Netas Reclamo"). El flujo moderno se consume desde la SPA Vue 3, el bot y la API.
+**Estado actual (2026-01-13)**: ✅ Flujo web completamente funcional. Corrección crítica aplicada para usar la columna correcta de horas (columna U "Horas Netas Reclamo"). El flujo moderno se consume desde la SPA Vue 3 y la API (el bot de Telegram se retiró el 2026-10-27).
 
 ## Columnas esperadas y mapeos
 
@@ -100,15 +100,9 @@ directorio de informes (`_report_href`) y se descargan con `GET /reports/{ruta}`
 sesión). El nombre del archivo depende del modo: Excel → `sla/AAAAMM/InformeSLA_<AAAAMMDD_HHMMSS>.docx`
 (`core/sla/legacy_report.py`); DB (`"source": "db"`) → `sla/AAAAMM/sla_AAAAMM.docx` (`core/sla/report.py`).
 
-## Uso por Telegram
-1. Enviar comando `/sla` o usar el botón correspondiente.
-2. Subir el Excel `.xlsx`.
-3. Indicar el período `mm/aaaa`.
-4. El bot devuelve un `.docx` y opcionalmente `.pdf`.
-
 ## Contratos y alineación
 
-- La lógica de cálculo vive en backend y se consume desde UI web, bot y API sin duplicación.
+- La lógica de cálculo vive en backend y se consume desde UI web y API sin duplicación.
 - La interfaz moderna no depende de Jinja ni de JavaScript legacy; solo expone contratos JSON y enlaces de descarga.
 - Cualquier ajuste nuevo debe mantener validación de entrada, trazabilidad de report history y respuesta tipada.
 

@@ -2,9 +2,9 @@
 # Ubicación de archivo: common-requirements.txt
 # Descripción: Dependencias Python comunes a todos los servicios. Forman la imagen base focas-base:latest.
 # Qué archivo alimenta qué (2026-10-26):
-#   - common-requirements.txt  → focas-base (deploy/docker/base.Dockerfile), base de api, web, bot,
+#   - common-requirements.txt  → focas-base (deploy/docker/base.Dockerfile), base de api, web,
 #     nlp_intent y todos los workers. Es lo que corre en las imágenes.
-#   - {api,web,bot_telegram}/requirements.txt y modules/*/requirements.txt → se suman encima de
+#   - {api,web}/requirements.txt y modules/*/requirements.txt → se suman encima de
 #     focas-base en el Dockerfile de cada servicio (p. ej. folium/gspread/PyJWT en api, slack_sdk).
 #   - requirements.txt (raíz) → sólo el venv local y la CI; no lo usa ningún Dockerfile.
 # NOTA: office_service queda excluido: imagen propia con LibreOffice (office_service/requirements.txt).

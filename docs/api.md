@@ -47,7 +47,7 @@ Entrada desde Docker: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
 Definido en `api/app/errores.py` y registrado en `create_app()` (`api/app/main.py`) con
 `add_exception_handler`. La API interna responde sus errores con el cuerpo de FastAPI
 (`{"detail": ...}`), el mismo de `HTTPException`, para no cambiarles el contrato a sus consumidores
-(proxies de la web, bot):
+(proxies de la web):
 
 - `HTTPException` y `RequestValidationError` (422) conservan los handlers de FastAPI.
 - `ErrorDeDominio` y sus subclases (`NoEncontrado` 404, `DatoInvalido` 422, `Conflicto` 409; la base
@@ -1705,7 +1705,7 @@ Vista JSON del cálculo SLA de un período, sin generar documentos.
   mtbf_h}], "anexo": [...]}`.
 - **Errores:** `501` con `usar_db=false` (el preview basado en Excel no está implementado); `500`
   con referencia si falla el cálculo contra la DB.
-- **Consumidores:** ninguno en `web/`, `bot_telegram/` ni `modules/` (verificado por grep).
+- **Consumidores:** ninguno en `web/` ni `modules/` (verificado por grep).
 
 ### Ingesta de reclamos (nuevo)
 

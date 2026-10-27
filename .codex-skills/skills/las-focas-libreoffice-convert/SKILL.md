@@ -56,7 +56,7 @@ Hay **un solo camino**: el cliente `core/services/office_client.py` sube el docu
 | SLA (`core/sla/report.py`, `core/sla/legacy_report.py`) | `intentar_pdf(docx, contexto=...)` → `DocumentoSLA.pdf_error` |
 | SLA consumido (`core/services/sla_consumo.py`) | `intentar_pdf` sólo del ejecutivo → `pdf_omitido` |
 | Repetitividad (`modules/informes_repetitividad/service.py`) | `intentar_pdf` → `ReportResult.pdf_error` |
-| `modules/informes_sla` (sólo el bot de Telegram) | `maybe_export_pdf(docx)` → `intentar_pdf` |
+| `modules/informes_sla` (sin consumidores de producción desde P19; sólo tests) | `maybe_export_pdf(docx)` → `intentar_pdf` |
 | MCP `ConvertirDocAPdf` (`core/mcp/registry.py`) | `convertir_a_pdf(origen, destino)` por `asyncio.to_thread` |
 
 `OFFICE_SERVICE_BASE` (default `http://office:8090`) elige el servicio.

@@ -39,7 +39,7 @@ El proyecto LAS-FOCAS requiere generar informes y transformar plantillas heredad
   `core/services/office_client.py` (sync, `OFFICE_SERVICE_BASE`, timeout 150 s que cubre la cola,
   tope 50 MB, valida `%PDF`, errores tipados): informes SLA (`core/sla/report.py`,
   `core/sla/legacy_report.py`), SLA consumido (`core/services/sla_consumo.py`, sólo el ejecutivo),
-  Repetitividad (`modules/informes_repetitividad/service.py`), `modules/informes_sla` (bot) y la
+  Repetitividad (`modules/informes_repetitividad/service.py`), `modules/informes_sla` (sin consumidores desde P19) y la
   herramienta MCP `ConvertirDocAPdf` (`core/mcp/registry.py`, ver `docs/mcp.md`). Si la conversión
   falla, los informes entregan el DOCX y el motivo en `pdf_error` (`pdf_omitido` en SLA consumido;
   header `X-PDF-Error` en la API de Repetitividad).

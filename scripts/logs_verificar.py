@@ -38,7 +38,6 @@ ARCHIVO_POR_SERVICIO = {
     "api": "api.log",
     "web": "web.log",
     "nlp_intent": "nlp_intent.log",
-    "bot": "bot.log",
     "office": "office.log",
     "slack_baneo_worker": "slack_baneo_worker.log",
     "cromo_worker": "cromo_worker.log",
