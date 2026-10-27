@@ -43,6 +43,7 @@ def _sesion_listado(
 
     cromo_query = MagicMock()
     cromo_query.filter.return_value = cromo_query
+    cromo_query.options.return_value = cromo_query
     cromo_query.all.return_value = cromo
 
     auditoria_query = MagicMock()
@@ -137,11 +138,11 @@ def test_listar_grupos_baneados_sin_auditoria_deja_campos_en_none() -> None:
     assert grupo.fecha is None
 
 
-def test_listar_grupos_baneados_incluir_contexto_false_no_llama_get_contexto() -> None:
+def test_listar_grupos_baneados_incluir_contexto_false_no_calcula_contexto() -> None:
     raiz = Camara(id=1, nombre="Cra Uno CF", estado=CamaraEstado.BANEADA)
     session = _sesion_listado([raiz])
 
-    with patch("core.services.baneos_grupos_service.get_camara_estado_contexto") as mock_contexto:
+    with patch("core.services.baneos_grupos_service.get_camara_estado_contexto_batch") as mock_contexto:
         resultado = listar_grupos_baneados(session, incluir_contexto=False)
 
     mock_contexto.assert_not_called()
@@ -162,8 +163,13 @@ def test_listar_grupos_baneados_incluir_contexto_true_puede_liberar_usa_tiene_in
 
     contexto = _contexto(tiene_incidente_activo=False, tiene_baneo_activo=True)
 
-    with patch("core.services.baneos_grupos_service.get_camara_estado_contexto", return_value=contexto):
+    with patch(
+        "core.services.baneos_grupos_service.get_camara_estado_contexto_batch", return_value={1: contexto}
+    ) as mock_batch:
         resultado = listar_grupos_baneados(session, incluir_contexto=True)
+
+    # Un solo contexto por lote para toda la página (antes, una consulta por raíz).
+    mock_batch.assert_called_once_with(session, [1])
 
     grupo = resultado.grupos[0]
     assert grupo.tiene_baneo_activo is True
