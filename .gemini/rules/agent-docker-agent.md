@@ -126,6 +126,24 @@ EXPOSE 8000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0"]
 ```
 
+## Retirar un servicio del stack
+
+Checklist verificado en dos retiros reales (P08 `repetitividad_worker`, P19 bot de Telegram, 2026-10-26/27).
+Un servicio deja rastro en todos estos lugares; recorrerlos con `git grep` del nombre del servicio, de su
+directorio y de su secret:
+
+- `deploy/compose.yml` **y** `deploy/docker-compose.dev.yml`: servicio, volumen nombrado y secret
+  (`docker compose ... --env-file <env> config -q` en los dos).
+- `deploy/docker/<servicio>.Dockerfile`, `deploy/env*.sample`, `scripts/setup_local_secrets.sh`.
+- `Start` (exclusiones por defecto), `scripts/start_dev.sh`, `scripts/logs_verificar.py`
+  (`ARCHIVO_POR_SERVICIO`), paso de `pip-audit` en `.github/workflows/ci.yml`.
+- Skills que enumeran servicios (`logs-cleanup`, loop de imágenes de `dependency-audit`), la tabla de
+  servicios de este agente, `config/repository-map.json` (+ regenerar `docs/REPOSITORY_MAP.md`).
+- Huérfanos en cascada: una función que sólo aparece en su propio archivo **no** es huérfana sin mirar
+  ese archivo (real: `insert_conversation` la llama `get_or_create_conversation_for_web_user`).
+- Fuera del repo (volúmenes, `.secrets/`, imágenes): nunca en la misma pasada; preguntar al usuario.
+- Prod: el cambio de compose llega con el próximo deploy; no hacer `down`/`up` en prod.
+
 ## Traspasos (Handoffs)
 
 - **→ Testing Agent**: cuando necesito verificar que los contenedores pasen tests de integración
