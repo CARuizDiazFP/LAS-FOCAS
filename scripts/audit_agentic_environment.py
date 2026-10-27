@@ -222,9 +222,43 @@ def chequear_comandos_claude(raiz: Path) -> list[str]:
     return hallazgos
 
 
+# Comandos que este host prohíbe (prod y dev comparten daemon): borran rollbacks de prod,
+# focas-base o volúmenes. Ver skill docker-cleanup.
+COMANDO_PROHIBIDO = re.compile(
+    r"docker\s+(?:(?:image|system)\s+prune\b.*\s(?:-a|--all)\b|volume\s+prune\b|system\s+prune\b.*--volumes\b)"
+)
+
+
+def chequear_comandos_prohibidos(raiz: Path) -> list[str]:
+    """El frontmatter `commands` (Codex, Gemini) es lo que el agente ejecuta: no puede proponer
+    un comando prohibido. Se ignora lo que va detrás de `#` (un comentario puede decir "NUNCA -a")."""
+    hallazgos: list[str] = []
+    rutas = sorted((raiz / ".codex-skills/skills").glob("*/SKILL.md")) + sorted((raiz / ".gemini/rules").glob("*.md"))
+    for ruta in rutas:
+        lineas = ruta.read_text(encoding="utf-8").split("\n")
+        try:
+            inicio = lineas.index("---")
+            fin = lineas.index("---", inicio + 1)
+        except ValueError:
+            continue
+        en_commands = False
+        for linea in lineas[inicio + 1 : fin]:
+            if linea.strip() == "commands:":
+                en_commands = True
+                continue
+            if en_commands and linea and not linea.startswith(" "):
+                en_commands = False
+            if en_commands and linea.lstrip() and not linea.lstrip().startswith("#"):
+                comando = linea.split(" #", 1)[0].strip()
+                if COMANDO_PROHIBIDO.search(comando):
+                    hallazgos.append(f"error:forbidden_command:{ruta.relative_to(raiz)}:{comando}")
+    return hallazgos
+
+
 CHEQUEOS = (
     chequear_archivos,
     chequear_comandos_claude,
+    chequear_comandos_prohibidos,
     chequear_ignores,
     chequear_mapa,
     chequear_frontmatter_skills,

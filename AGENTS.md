@@ -169,10 +169,14 @@ LAS-FOCAS es un sistema modular para informes operativos, chatbot y panel web. E
   **por ID exacto** (`docker container rm -v <id>`, `docker network rm <id>`, `docker volume rm
   <nombre>`) tras comprobar mounts y consumidores. Nunca `docker system prune` ni
   `docker volume prune` para esto.
-- **Retención de imágenes en producción**: por servicio se conservan sólo la imagen activa
-  (`current`, `lasfocas-<servicio>:latest`) y un único `rollback` inmediato validado
-  (`lasfocas-<servicio>:rollback`). Cada despliegue rota `current -> rollback` y retira el rollback
-  desplazado por ID exacto, sin `prune`. Procedimiento en la skill `docker-cleanup`.
+- **Piso de disco para agentes** (el host de 40 GB es compartido con prod): antes de cada corrida
+  pesada, `df --output=avail -BM /`; con menos de 3 GB libres, limpiar primero los efímeros propios
+  y, si no alcanza, DETENERSE Y PREGUNTAR. Builds y suites en contenedor de a uno. Regla única en la
+  skill `disk-analysis` → "Piso de disco para agentes".
+- **Rollback de prod**: se conserva sólo el último juego (`lasfocas-<servicio>:pre-deploy-*`, o el
+  `:pre-hotfix-*` posterior), más `focas-base:latest` y la base anterior. El juego superado se borra
+  por tag exacto tras verificar el deploy y con confirmación del usuario, nunca con `prune`. Regla
+  única en la skill `docker-cleanup` → "Rollback de prod".
 - El servicio `api` tiene **dos superficies de autenticación que no se mezclan**: rutas internas con `require_api_key` (`api/app/security.py`, la usa la web) y `/api/v1/*` para otras áreas con OAuth2 `client_credentials` (`require_oauth_token(scope)` de `api/app/oauth.py`, scopes `servicios:read`/`cables:read`). Un endpoint nuevo para terceros va bajo `/api/v1` con su scope, nunca detrás de la API key. Referencia: `docs/api.md`, sección "API v1".
 
 ## Documentación Fuente

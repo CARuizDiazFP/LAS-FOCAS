@@ -63,7 +63,8 @@ Generar una tabla o lista compacta con tamaño actual, recuperable y nivel de ri
 | __pycache__ | X MB | X MB | 🔴/🟡/🟢 |
 | Fuera del repo (`~/.vscode-server`, dumps, `~/.cache`) | X GB | Y GB | 🔴/🟡/🟢 |
 | **Volúmenes** | X MB | **NO TOCAR** | ⚠️ Info |
-| **Imágenes protegidas** (rollback de prod, `focas-base`) | X GB | **NO TOCAR** | ⚠️ Info |
+| **Imágenes protegidas** (último juego de rollback, `focas-base` + base anterior) | X GB | **NO TOCAR** | ⚠️ Info |
+| Juego de rollback superado (regla 9) | X GB | Y GB, con OK | 🔴/🟡/🟢 |
 
 ### 3. Confirmación interactiva
 
@@ -75,7 +76,7 @@ Ejecutar solo lo confirmado por el usuario.
 
 ```bash
 docker image prune -f          # sólo dangling; NUNCA -a (ver regla 7)
-docker image rm <repo>:<tag>   # sólo rollbacks superados aprobados, por tag exacto
+docker image rm <repo>:<tag>   # sólo el juego de rollback superado y aprobado, por tag exacto (regla 9)
 docker container prune -f
 docker builder prune -f
 docker network prune -f
@@ -109,11 +110,13 @@ docker system df
 5. Si una acción puede afectar al entorno activo, advertirlo antes de ejecutarla.
 6. Si no hay riesgo real o no hay espacio recuperable significativo, decirlo y no forzar limpieza.
 7. Nunca `docker image prune -a` ni `docker system prune -a`: este host corre prod y dev en el mismo
-   daemon, y esos comandos borran los rollback de prod (`:rollback`, `:pre-deploy-*`,
-   `:pre-hotfix-*`) y `focas-base:latest` (base de builds). Imágenes: sólo por tag exacto (`docker-cleanup`).
+   daemon, y esos comandos borran los rollback de prod (`:pre-deploy-*`, `:pre-hotfix-*`) y `focas-base:latest` (base de builds). Imágenes: sólo por tag exacto (`docker-cleanup`).
 8. Fuera del repo: nunca borrar el servidor de VS Code en ejecución ni a mano una extensión de
    `.obsolete` (puede ser la que corre esta sesión); los dumps de prod del home se confirman con el
    usuario conservando los del último deploy (`disk-analysis` §7).
+9. Rollback de prod: se conserva sólo el último juego (`:pre-deploy-*` o el `:pre-hotfix-*` posterior)
+   más `focas-base:latest` y la base anterior; el resto se borra por tag exacto, tras verificar el
+   deploy y con confirmación. Regla única: `docker-cleanup` → "Rollback de prod".
 
 ## Referencias útiles
 
