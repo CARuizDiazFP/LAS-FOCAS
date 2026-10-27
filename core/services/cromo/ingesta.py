@@ -381,6 +381,15 @@ async def registrar_evento(
     accion: str,
     detalle: Optional[str] = None,
 ) -> None:
+    """Agrega un evento de la corrida. `SIN_CAMBIOS` no se registra (decisión 2026-10-27).
+
+    Medido en dev (P05, 2026-10-26): una corrida COMPLETA genera ≈ 89.000 eventos y el 79 % eran
+    `SIN_CAMBIOS`. Nadie los leía: el total sigue visible en `CromoIngestaCorrida.sin_cambios`, que
+    alimenta `ContadoresCorrida.contar` en memoria, y la marca "visto en esta corrida" vive en
+    `ultima_ingesta` del objeto, no en el evento.
+    """
+    if accion == "SIN_CAMBIOS":
+        return
     sesion.add(CromoIngestaEvento(corrida_id=corrida_id, n_id=n_id, clase=clase, accion=accion, detalle=detalle))
 
 

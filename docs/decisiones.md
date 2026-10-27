@@ -2940,3 +2940,22 @@ su propia ventana de mantenimiento.
   `.env` de prod lo aplica el usuario, y **sólo si todo el acceso pasa por el proxy**: en los logs de
   `lasfocas-web` hay clientes que entran directo por HTTP a `:8080`, y `WEB_INFERRED_ORIGIN` es
   `http://172.18.208.162:8080`. Con `Secure`, el acceso directo por HTTP no puede iniciar sesión.
+
+## 2026-10-27 — Eventos de ingesta Cromo: sin `SIN_CAMBIOS` y retención de 90 días
+
+- Contexto: `app.cromo_ingesta_eventos` tenía 441.487 filas (61 MB) en dev. Una corrida COMPLETA genera ≈ 89.000
+  eventos y el 79 % eran `SIN_CAMBIOS` (P05, 2026-10-26). En el acumulado de dev son 121.931 (27,6 %), porque
+  pesan las 221.041 `CREADA` de las cargas iniciales.
+- Verificado antes de decidir: nadie lee `SIN_CAMBIOS` de la tabla. Los contadores de la corrida salen de
+  `ContadoresCorrida` en memoria (`cromo_ingesta_corridas.sin_cambios` y el evento `RESUMEN`), el stream SSE nunca
+  los emitía, el recálculo de duplicados mira los contadores y la marca "visto en esta corrida" es
+  `ultima_ingesta` del objeto. El `SIN_CAMBIOS` del front (`api/botellas.ts`) es la respuesta de "Repoblar
+  Cables", no un evento.
+- Decisión (del usuario): `ingesta.registrar_evento` descarta `SIN_CAMBIOS` (punto único: lo usan la ingesta,
+  la repoblación y la normalización). Retención de 90 días con `core/services/cromo/retencion_eventos.py` +
+  `scripts/cromo_retencion_eventos.py`, a mano y sin cron mientras el scheduler siga deshabilitado.
+- Medido en dev con una corrida `SOLO_ODF` de una página (50 ODF): antes, 50 eventos `SIN_CAMBIOS`; después, 0,
+  con `sin_cambios = 50` en la corrida en los dos casos.
+- Sin índice nuevo: cada lote de borrado es un range scan sobre la PK (≈ 200 ms con 19.446 borrados) y el conteo
+  previo un seq scan de ≈ 160 ms. Se conservan los eventos de corridas `EN_CURSO` (reanudación por
+  `CABLE_INNER_OK` / `CABLE_SNAPSHOT_OK`) y todas las filas de corrida.
