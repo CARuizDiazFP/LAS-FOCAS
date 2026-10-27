@@ -9,6 +9,7 @@ import pytest
 
 from core.mcp import registry as registry_mod
 from core.mcp.registry import ToolContext, ToolInvocationError, get_default_registry
+from core.services import office_client
 
 ADMIN = ToolContext(user_id="admin", session_id=1, role="admin")
 USUARIO = ToolContext(user_id="ana", session_id=2, role="user")
@@ -33,9 +34,7 @@ def _usar_transport(monkeypatch, handler) -> list[httpx.Request]:
         return handler(request)
 
     transport = httpx.MockTransport(_registrar)
-    monkeypatch.setattr(
-        registry_mod, "_cliente_office", lambda timeout: httpx.AsyncClient(transport=transport, timeout=timeout)
-    )
+    monkeypatch.setattr(office_client, "_cliente", lambda timeout: httpx.Client(transport=transport, timeout=timeout))
     return pedidos
 
 

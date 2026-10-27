@@ -61,7 +61,6 @@ def test_generar_informe_repetitividad_devuelve_docx(tmp_path, monkeypatch):
     plantilla_path = Path("Templates/Plantilla_Informe_Repetitividad.docx").resolve()
     monkeypatch.setenv("REPORTS_DIR", str(tmp_path))
     monkeypatch.setenv("REP_TEMPLATE_PATH", str(plantilla_path))
-    monkeypatch.setenv("SOFFICE_BIN", "")
 
     from modules.informes_repetitividad import config as repet_config
     from modules.informes_repetitividad import report as report_module
@@ -69,10 +68,8 @@ def test_generar_informe_repetitividad_devuelve_docx(tmp_path, monkeypatch):
 
     repet_config.REPORTS_DIR = Path(tmp_path)
     repet_config.REP_TEMPLATE_PATH = Path(plantilla_path)
-    repet_config.SOFFICE_BIN = None
     report_module.REP_TEMPLATE_PATH = Path(plantilla_path)
     api_reports.REPORTS_DIR = Path(tmp_path)
-    api_reports.SOFFICE_BIN = None
 
     app = create_app()
     client = TestClient(app, raise_server_exceptions=False)
@@ -93,12 +90,8 @@ def test_generar_informe_repetitividad_devuelve_docx(tmp_path, monkeypatch):
 
 def test_generar_informe_repetitividad_zip_con_pdf(tmp_path, monkeypatch):
     plantilla_path = Path("Templates/Plantilla_Informe_Repetitividad.docx").resolve()
-    fake_soffice = tmp_path / "soffice"
-    fake_soffice.write_text("#!/bin/sh\nexit 0\n")
-    fake_soffice.chmod(0o755)
     monkeypatch.setenv("REPORTS_DIR", str(tmp_path))
     monkeypatch.setenv("REP_TEMPLATE_PATH", str(plantilla_path))
-    monkeypatch.setenv("SOFFICE_BIN", str(fake_soffice))
 
     from modules.informes_repetitividad import config as repet_config
     from modules.informes_repetitividad import report as report_module
@@ -106,24 +99,15 @@ def test_generar_informe_repetitividad_zip_con_pdf(tmp_path, monkeypatch):
 
     repet_config.REPORTS_DIR = Path(tmp_path)
     repet_config.REP_TEMPLATE_PATH = Path(plantilla_path)
-    repet_config.SOFFICE_BIN = str(fake_soffice)
     report_module.REP_TEMPLATE_PATH = Path(plantilla_path)
     api_reports.REPORTS_DIR = Path(tmp_path)
-    api_reports.SOFFICE_BIN = str(fake_soffice)
 
-    def fake_convert_to_pdf(docx_path: str, soffice_bin: str) -> str:
+    def fake_intentar_pdf(docx_path: Path, *, contexto: str) -> tuple[Path, None]:
         pdf_path = Path(docx_path).with_suffix(".pdf")
         pdf_path.write_bytes(b"%PDF-1.4\n%mock")
-        return str(pdf_path)
+        return pdf_path, None
 
-    monkeypatch.setattr(
-        "modules.common.libreoffice_export.convert_to_pdf",
-        fake_convert_to_pdf,
-    )
-    monkeypatch.setattr(
-        "modules.informes_repetitividad.report.convert_to_pdf",
-        fake_convert_to_pdf,
-    )
+    monkeypatch.setattr("modules.informes_repetitividad.service.intentar_pdf", fake_intentar_pdf)
 
     def fake_generate_service_maps(data, params, out_dir, with_geo):  # noqa: ANN001
         path = Path(out_dir) / "repetitividad_202407_map.png"
@@ -167,7 +151,6 @@ def test_generar_informe_repetitividad_incluye_mapa(tmp_path, monkeypatch):
     plantilla_path = Path("Templates/Plantilla_Informe_Repetitividad.docx").resolve()
     monkeypatch.setenv("REPORTS_DIR", str(tmp_path))
     monkeypatch.setenv("REP_TEMPLATE_PATH", str(plantilla_path))
-    monkeypatch.setenv("SOFFICE_BIN", "")
 
     from modules.informes_repetitividad import config as repet_config
     from modules.informes_repetitividad import report as report_module
@@ -175,10 +158,8 @@ def test_generar_informe_repetitividad_incluye_mapa(tmp_path, monkeypatch):
 
     repet_config.REPORTS_DIR = Path(tmp_path)
     repet_config.REP_TEMPLATE_PATH = Path(plantilla_path)
-    repet_config.SOFFICE_BIN = None
     report_module.REP_TEMPLATE_PATH = Path(plantilla_path)
     api_reports.REPORTS_DIR = Path(tmp_path)
-    api_reports.SOFFICE_BIN = None
 
     def fake_generate_service_maps(data, params, out_dir, with_geo):  # noqa: ANN001
         path = Path(out_dir) / "repetitividad_202407_map.png"
@@ -232,16 +213,13 @@ def test_reporte_repetitividad_error_en_procesamiento(tmp_path, monkeypatch):
     plantilla_path = Path("Templates/Plantilla_Informe_Repetitividad.docx").resolve()
     monkeypatch.setenv("REPORTS_DIR", str(tmp_path))
     monkeypatch.setenv("REP_TEMPLATE_PATH", str(plantilla_path))
-    monkeypatch.setenv("SOFFICE_BIN", "")
 
     from modules.informes_repetitividad import config as repet_config
     from api.app.routes import reports as api_reports
 
     repet_config.REPORTS_DIR = Path(tmp_path)
     repet_config.REP_TEMPLATE_PATH = Path(plantilla_path)
-    repet_config.SOFFICE_BIN = None
     api_reports.REPORTS_DIR = Path(tmp_path)
-    api_reports.SOFFICE_BIN = None
 
     def _fail_load_excel(path):  # noqa: ANN001
         raise ValueError("Faltan columnas requeridas")
@@ -258,3 +236,33 @@ def test_reporte_repetitividad_error_en_procesamiento(tmp_path, monkeypatch):
 
     assert response.status_code == 422
     assert "Faltan columnas" in response.text
+
+
+def test_generar_informe_repetitividad_pdf_fallido_avisa_en_header(tmp_path, monkeypatch):
+    plantilla_path = Path("Templates/Plantilla_Informe_Repetitividad.docx").resolve()
+    monkeypatch.setenv("REPORTS_DIR", str(tmp_path))
+
+    from modules.informes_repetitividad import config as repet_config
+    from modules.informes_repetitividad import report as report_module
+    from api.app.routes import reports as api_reports  # type: ignore[import-not-found]
+
+    repet_config.REPORTS_DIR = Path(tmp_path)
+    repet_config.REP_TEMPLATE_PATH = Path(plantilla_path)
+    report_module.REP_TEMPLATE_PATH = Path(plantilla_path)
+    api_reports.REPORTS_DIR = Path(tmp_path)
+    monkeypatch.setattr(
+        "modules.informes_repetitividad.service.intentar_pdf",
+        lambda docx_path, *, contexto: (None, "La conversión a PDF tardó demasiado"),
+    )
+
+    client = TestClient(create_app(), raise_server_exceptions=False)
+    files = {"file": ("casos.xlsx", _sample_excel(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    data = {"periodo_mes": 7, "periodo_anio": 2024, "incluir_pdf": "true"}
+
+    response = client.post("/reports/repetitividad", data=data, files=files, headers=API_HEADERS)
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].endswith('.docx"')
+    assert response.headers["x-pdf-requested"] == "true"
+    assert response.headers["x-pdf-generated"] == "false"
+    assert response.headers["x-pdf-error"] == "La conversion a PDF tardo demasiado"

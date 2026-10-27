@@ -258,7 +258,7 @@ async def _leer_excels_sla(archivos: List[UploadFile], on_error: Any) -> tuple[b
 
 async def _generar_sla_excel(
     archivos: List[UploadFile], username: str, mes_num: int, anio_num: int, pdf_enabled: bool, on_error: Any
-) -> tuple[Path, Optional[Path]] | JSONResponse:
+) -> tuple[Path, Optional[Path], Optional[str]] | JSONResponse:
     """Modo Excel: valida los dos archivos y genera el informe legacy."""
 
     logger.info("action=sla_web_report stage=start user=%s archivos=%s", username, len(archivos))
@@ -273,7 +273,9 @@ async def _generar_sla_excel(
     servicios_bytes, reclamos_bytes = leidos
 
     logger.info("action=sla_web_report stage=generate_legacy mes=%s anio=%s pdf=%s", mes_num, anio_num, pdf_enabled)
-    documento = sla_service.generate_report_from_excel_pair(
+    # Sync (DOCX + PDF vía office, ~20 s): fuera del event loop.
+    documento = await asyncio.to_thread(
+        sla_service.generate_report_from_excel_pair,
         servicios_bytes,
         reclamos_bytes,
         mes=mes_num,
@@ -281,15 +283,15 @@ async def _generar_sla_excel(
         incluir_pdf=pdf_enabled,
     )
     logger.info("action=sla_web_report stage=legacy_ok docx=%s pdf=%s", documento.docx, documento.pdf)
-    return documento.docx, documento.pdf
+    return documento.docx, documento.pdf, documento.pdf_error
 
 
-def _generar_sla_db(mes_num: int, anio_num: int, pdf_enabled: bool) -> tuple[Path, Optional[Path]]:
-    """Modo DB: calcula desde la base y genera el informe."""
+def _generar_sla_db(mes_num: int, anio_num: int, pdf_enabled: bool) -> tuple[Path, Optional[Path], Optional[str]]:
+    """Modo DB: calcula desde la base y genera el informe (sync: se llama con ``asyncio.to_thread``)."""
 
     computation = sla_service.compute_from_db(mes=mes_num, anio=anio_num)
     resultado = sla_service.generate_report_from_computation(computation, incluir_pdf=pdf_enabled)
-    return resultado.docx, resultado.pdf
+    return resultado.docx, resultado.pdf, resultado.pdf_error
 
 
 def _respuesta_sla_exitosa(
@@ -301,6 +303,7 @@ def _respuesta_sla_exitosa(
     docx: Path,
     pdf: Optional[Path],
     archivo_count: int,
+    pdf_error: Optional[str] = None,
 ) -> JSONResponse:
     report_paths = {"docx": _report_href(docx)}
     if pdf:
@@ -323,14 +326,15 @@ def _respuesta_sla_exitosa(
             "archivo_count": archivo_count,
         },
     )
-    return JSONResponse(
-        {
-            "ok": True,
-            "message": "Informe SLA generado correctamente",
-            "report_paths": report_paths,
-            "source": source,
-        }
-    )
+    respuesta: Dict[str, Any] = {
+        "ok": True,
+        "message": "Informe SLA generado correctamente",
+        "report_paths": report_paths,
+        "source": source,
+    }
+    if pdf_error:
+        respuesta["pdf_error"] = pdf_error
+    return JSONResponse(respuesta)
 
 
 @router.post("/api/reports/sla")
@@ -368,7 +372,7 @@ async def generar_informe_sla_web(
 
     try:
         if use_db:
-            salida = _generar_sla_db(mes_num, anio_num, pdf_enabled)
+            salida = await asyncio.to_thread(_generar_sla_db, mes_num, anio_num, pdf_enabled)
         else:
             salida = await _generar_sla_excel(archivos, username, mes_num, anio_num, pdf_enabled, _history_error)
     except ValueError as exc:
@@ -400,8 +404,10 @@ async def generar_informe_sla_web(
 
     if isinstance(salida, JSONResponse):
         return salida
-    docx, pdf = salida
-    return _respuesta_sla_exitosa(history_id, username, source, mes_num, anio_num, docx, pdf, archivo_count)
+    docx, pdf, pdf_error = salida
+    return _respuesta_sla_exitosa(
+        history_id, username, source, mes_num, anio_num, docx, pdf, archivo_count, pdf_error=pdf_error
+    )
 
 
 @router.post("/api/reports/sla-consumo")
@@ -524,7 +530,9 @@ async def flow_sla(
             if not excel_bytes:
                 return JSONResponse({"error": "El archivo está vacío"}, status_code=400)
 
-            resultado = sla_service.generate_report_from_excel(
+            # Sync (DOCX + PDF vía office): fuera del event loop.
+            resultado = await asyncio.to_thread(
+                sla_service.generate_report_from_excel,
                 excel_bytes,
                 mes=mes,
                 anio=anio,
@@ -534,8 +542,9 @@ async def flow_sla(
                 incluir_pdf=include_pdf,
             )
         else:
-            computation = sla_service.compute_from_db(mes=mes, anio=anio)
-            resultado = sla_service.generate_report_from_computation(
+            computation = await asyncio.to_thread(sla_service.compute_from_db, mes=mes, anio=anio)
+            resultado = await asyncio.to_thread(
+                sla_service.generate_report_from_computation,
                 computation,
                 eventos=eventos,
                 conclusion=conclusion,
@@ -578,6 +587,7 @@ async def flow_sla(
         "docx": report_links["docx"],
         "pdf": report_links.get("pdf"),
         "report_paths": report_links,
+        "pdf_error": resultado.pdf_error,
         "metrics": {
             "periodo": resumen.periodo,
             "disponibilidad_pct": resumen.disponibilidad_pct,
@@ -755,6 +765,8 @@ async def flow_repetitividad(
         payload["pdf"] = f"/reports/{result.pdf.name}"
     elif include_pdf:
         payload["pdf_generated"] = False
+        if result.pdf_error:
+            payload["pdf_error"] = result.pdf_error
     if image_maps:
         payload["map_image"] = image_maps[0]
 

@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
+from core.services import office_client
 from core.services import sla_consumo as orquestador
 from core.services.sla_consumo import InformeSlaConsumo
 from core.sla_consumo.clasificador import GRUPO_FO
@@ -160,7 +161,6 @@ def _datos():
 
 def test_orquestador_genera_xlsx_y_dos_docx_sin_pdf(monkeypatch, tmp_path):
     _preparar(monkeypatch, *_datos())
-    monkeypatch.setenv("SOFFICE_BIN", "/no/existe")
     informe = orquestador.generar_informe_sla_consumo(b"s", b"r", usuario="user", incluir_pdf=False,
                                                       reports_dir=tmp_path)
     base = informe.xlsx.stem
@@ -175,17 +175,15 @@ def test_orquestador_genera_xlsx_y_dos_docx_sin_pdf(monkeypatch, tmp_path):
 
 def test_orquestador_pdf_convierte_solo_el_ejecutivo(monkeypatch, tmp_path):
     _preparar(monkeypatch, *_datos())
-    monkeypatch.setenv("SOFFICE_BIN", "/fake/soffice")
     convertidos = []
 
-    def falso(docx, soffice):
+    def falso(docx, destino=None):
         convertidos.append(Path(docx).name)
         pdf = Path(docx).with_suffix(".pdf")
         pdf.write_bytes(b"%PDF")
-        return str(pdf)
+        return pdf
 
-    import modules.common.libreoffice_export as lo
-    monkeypatch.setattr(lo, "convert_to_pdf", falso)
+    monkeypatch.setattr(office_client, "convertir_a_pdf", falso)
     informe = orquestador.generar_informe_sla_consumo(b"s", b"r", usuario="u", incluir_pdf=True, reports_dir=tmp_path)
     assert convertidos == [informe.docx_ejecutivo.name]
     assert informe.pdf_ejecutivo.exists() and informe.pdf_exhaustivo is None
@@ -194,13 +192,12 @@ def test_orquestador_pdf_convierte_solo_el_ejecutivo(monkeypatch, tmp_path):
 
 def test_orquestador_falla_conversion_ejecutiva_no_rompe(monkeypatch, tmp_path):
     _preparar(monkeypatch, *_datos())
-    monkeypatch.setenv("SOFFICE_BIN", "/fake/soffice")
 
-    def falso(docx, soffice):
-        raise FileNotFoundError("No se generó el PDF en /app/secreto/x.pdf")
+    def falso(docx, destino=None):
+        raise office_client.OfficeRechazo("El servicio de conversión no pudo generar el PDF",
+                                          "500 /app/secreto/x.pdf FileNotFoundError")
 
-    import modules.common.libreoffice_export as lo
-    monkeypatch.setattr(lo, "convert_to_pdf", falso)
+    monkeypatch.setattr(office_client, "convertir_a_pdf", falso)
     informe = orquestador.generar_informe_sla_consumo(b"s", b"r", usuario="u", incluir_pdf=True, reports_dir=tmp_path)
     assert informe.pdf_ejecutivo is None and informe.pdf_exhaustivo is None
     assert informe.xlsx.exists() and informe.docx_exhaustivo.exists()
@@ -209,7 +206,7 @@ def test_orquestador_falla_conversion_ejecutiva_no_rompe(monkeypatch, tmp_path):
     assert "secreto" not in informe.pdf_omitido
 
 
-def test_orquestador_pdf_sin_soffice_informa_omision_y_pasa_history_id(monkeypatch, tmp_path):
+def test_orquestador_pdf_sin_office_informa_omision_y_pasa_history_id(monkeypatch, tmp_path):
     reclamos = pd.DataFrame([_r("1", "L1", 13.14, GRUPO_FO)], columns=RECLAMOS_COLS)
     servicios = pd.DataFrame([_s("L1", 99.7)], columns=SERVICIOS_COLS)
     recibido = {}
@@ -222,10 +219,14 @@ def test_orquestador_pdf_sin_soffice_informa_omision_y_pasa_history_id(monkeypat
     monkeypatch.setattr(orquestador, "parse_reclamos", lambda _b: reclamos)
     monkeypatch.setattr(orquestador, "ingerir", falso_ingerir)
     monkeypatch.setattr(orquestador, "cargar_ventana", lambda fecha, engine=None: (reclamos, servicios))
-    monkeypatch.delenv("SOFFICE_BIN", raising=False)
+
+    def inalcanzable(docx, destino=None):
+        raise office_client.OfficeInalcanzable("El servicio de conversión a PDF no está disponible", "dns")
+
+    monkeypatch.setattr(office_client, "convertir_a_pdf", inalcanzable)
     informe = orquestador.generar_informe_sla_consumo(b"s", b"r", usuario="u", incluir_pdf=True,
                                                       reports_dir=tmp_path, report_history_id=55)
-    assert informe.pdf_ejecutivo is None and "LibreOffice" in informe.pdf_omitido
+    assert informe.pdf_ejecutivo is None and "no está disponible" in informe.pdf_omitido
     assert recibido["report_history_id"] == 55
 
 

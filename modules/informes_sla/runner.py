@@ -3,7 +3,7 @@
 # Descripción: Orquestador del flujo de cálculo y generación de reportes de SLA
 
 import logging
-from typing import Dict, Optional
+from typing import Dict
 
 from . import processor, report
 from .config import BASE_REPORTS
@@ -12,7 +12,7 @@ from .schemas import Params, ResultadoSLA
 logger = logging.getLogger(__name__)
 
 
-def run(file_path: str, mes: int, anio: int, soffice_bin: Optional[str]) -> Dict[str, object]:
+def run(file_path: str, mes: int, anio: int) -> Dict[str, object]:
     """Ejecuta el flujo completo de análisis de SLA."""
     df = processor.load_excel(file_path)
     df = processor.normalize(df)
@@ -22,7 +22,7 @@ def run(file_path: str, mes: int, anio: int, soffice_bin: Optional[str]) -> Dict
 
     params = Params(periodo_mes=mes, periodo_anio=anio)
     docx_path = report.export_docx(resultado, params, str(BASE_REPORTS))
-    pdf_path = report.maybe_export_pdf(docx_path, soffice_bin)
+    pdf_path = report.maybe_export_pdf(docx_path)
 
     logger.info(
         "action=run mes=%s anio=%s docx=%s pdf=%s total=%s incumplidos=%s pct_cumplimiento=%.2f excluidos=%s",

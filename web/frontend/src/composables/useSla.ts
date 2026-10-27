@@ -19,6 +19,7 @@ interface SlaResponse {
   ok?: boolean;
   message?: string;
   report_paths?: Record<string, string>;
+  pdf_error?: string;
   error?: string;
   detail?: string;
 }
@@ -84,7 +85,13 @@ export function useSla() {
       if (!response.ok || data.ok === false) {
         throw new Error(data.error ?? data.detail ?? data.message ?? `Error ${response.status}`);
       }
-      setFlash(data.message ?? 'Informe SLA generado correctamente.', 'success');
+      const base = data.message ?? 'Informe SLA generado correctamente.';
+      // El PDF lo convierte office: si falla, el DOCX igual se entrega y se avisa el motivo.
+      if (data.pdf_error) {
+        setFlash(`${base} PDF no generado: ${data.pdf_error}.`, 'info');
+      } else {
+        setFlash(base, 'success');
+      }
       reportPaths.value = data.report_paths ?? {};
     } catch (error) {
       setFlash(`Error: ${error instanceof Error ? error.message : String(error)}`, 'error');

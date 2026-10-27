@@ -76,7 +76,6 @@ def test_generate_report_from_excel_pair(tmp_path, servicios_excel: bytes, recla
     cfg = sla_service.SLAReportConfig(
         reports_dir=tmp_path,
         uploads_dir=tmp_path,
-        soffice_bin=None,
     )
 
     resultado = sla_service.generate_report_from_excel_pair(
@@ -107,7 +106,6 @@ def test_generate_report_from_excel_pair_missing_column(tmp_path, servicios_exce
             config=sla_service.SLAReportConfig(
                 reports_dir=tmp_path,
                 uploads_dir=tmp_path,
-                soffice_bin=None,
             ),
         )
     assert "Faltan columnas en Excel de servicios" in str(excinfo.value)

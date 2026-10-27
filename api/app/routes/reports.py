@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import unicodedata
 import zipfile
 from pathlib import Path
 
@@ -30,6 +31,11 @@ from api.app.errores import error_interno
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 logger = logging.getLogger(__name__)
+
+
+def _header_pdf_error(motivo: str) -> str:
+    """Motivo de la falla del PDF en ASCII: los headers HTTP no admiten texto arbitrario."""
+    return unicodedata.normalize("NFKD", motivo).encode("ascii", "ignore").decode("ascii")
 
 
 async def _df_from_db_for_period(mes: int, anio: int):
@@ -89,6 +95,8 @@ async def generar_informe_repetitividad(
             "X-Total-Filas": str(result.total_filas),
             "X-Total-Repetitivos": str(result.total_repetitivos),
         }
+        if result.pdf_error:
+            response_headers["X-PDF-Error"] = _header_pdf_error(result.pdf_error)
         if map_images:
             response_headers["X-Map-Filenames"] = ",".join(Path(m).name if isinstance(m, Path) else Path(str(m)).name for m in map_images)
 
@@ -152,6 +160,8 @@ async def generar_informe_repetitividad(
         "X-Total-Filas": str(result.total_filas),
         "X-Total-Repetitivos": str(result.total_repetitivos),
     }
+    if result.pdf_error:
+        headers["X-PDF-Error"] = _header_pdf_error(result.pdf_error)
     if map_images:
         headers["X-Map-Filenames"] = ",".join(Path(m).name if isinstance(m, Path) else Path(str(m)).name for m in map_images)
 
@@ -255,6 +265,7 @@ async def generar_informe_sla(
     payload = {
         "docx": str(resultado.docx),
         "pdf": str(resultado.pdf) if resultado.pdf else None,
+        "pdf_error": resultado.pdf_error,
         "preview": resultado.preview,
     }
 

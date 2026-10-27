@@ -53,7 +53,7 @@ except Exception:  # pragma: no cover - entorno de pruebas sin aiogram
     class Message:  # type: ignore
         pass
 
-from modules.informes_sla.config import BASE_UPLOADS, SOFFICE_BIN
+from modules.informes_sla.config import BASE_UPLOADS
 from modules.informes_sla.runner import run
 
 router = Router() if _AI_AVAILABLE else Router()
@@ -122,8 +122,7 @@ async def on_period(msg: Message, state: FSMContext) -> None:
 
     data = await state.get_data()
     file_path = data.get("file_path")
-    soffice_bin = SOFFICE_BIN
-    resultado = run(file_path, mes, anio, soffice_bin)
+    resultado = run(file_path, mes, anio)
 
     await msg.answer_document(FSInputFile(resultado["docx"]))
     if resultado.get("pdf"):

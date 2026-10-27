@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
 from zoneinfo import ZoneInfo
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -21,7 +20,6 @@ SLA_TEMPLATE_PATH = Path(
 )
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", str(_DEFAULT_REPORTS_DIR)))
 UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", str(_PROJECT_ROOT / "tmp")))
-SOFFICE_BIN: Optional[str] = os.getenv("SOFFICE_BIN")
 
 # Configuración de zona horaria
 DEFAULT_TZ = ZoneInfo(os.getenv("SLA_TIMEZONE", "America/Argentina/Buenos_Aires"))

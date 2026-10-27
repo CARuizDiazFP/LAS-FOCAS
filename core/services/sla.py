@@ -19,7 +19,6 @@ from core.sla.config import (
     DEFAULT_TZ,
     MERGE_GAP_MINUTES,
     REPORTS_DIR,
-    SOFFICE_BIN,
     UPLOADS_DIR,
 )
 from core.services import repetitividad as repetitividad_service
@@ -33,14 +32,12 @@ class SLAReportConfig:
 
     reports_dir: Path
     uploads_dir: Path
-    soffice_bin: Optional[str]
 
     @classmethod
     def from_settings(cls) -> "SLAReportConfig":
         return cls(
             reports_dir=REPORTS_DIR,
             uploads_dir=UPLOADS_DIR,
-            soffice_bin=SOFFICE_BIN,
         )
 
 
@@ -52,6 +49,7 @@ class SLAReportResult:
     pdf: Optional[Path]
     computation: engine.SLAComputation
     preview: dict
+    pdf_error: Optional[str] = None
 
 
 def identify_excel_kind(content: bytes) -> str:
@@ -80,7 +78,6 @@ def generate_report_from_excel_pair(
         anio=anio,
         incluir_pdf=incluir_pdf,
         reports_dir=cfg.reports_dir,
-        soffice_bin=cfg.soffice_bin,
         eventos=eventos,
         conclusion=conclusion,
         propuesta=propuesta,
@@ -155,7 +152,6 @@ def generate_report_from_computation(
         propuesta=propuesta,
         incluir_pdf=incluir_pdf,
         reports_dir=cfg.reports_dir,
-        soffice_bin=cfg.soffice_bin,
     )
 
     vista = build_preview_from_computation(computation)
@@ -165,6 +161,7 @@ def generate_report_from_computation(
         pdf=documento.pdf,
         computation=computation,
         preview=vista,
+        pdf_error=documento.pdf_error,
     )
 
 

@@ -12,9 +12,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List
 
-import httpx
 from pydantic import BaseModel, ValidationError, field_validator
 
+from core.services import office_client
 from modules.informes_repetitividad.service import (
     ReportConfig,
     ReportResult,
@@ -207,18 +207,12 @@ async def _run_informe_repetitividad(args: InformeRepetitividadArgs, context: To
         "map_images": map_images,
         "with_geo": args.with_geo,
     }
+    if result.pdf_error:
+        payload["pdf_error"] = result.pdf_error
     message = (
         "Informe de Repetitividad generado. Revisá los enlaces en la sección de resultados."
     )
     return ToolResult(message=message, data=payload, metadata={"tool": "GenerarInformeRepetitividad"})
-
-
-# office_service convierte con un timeout propio de 120 s (OFFICE_CONVERT_TIMEOUT); acá un margen extra.
-OFFICE_TIMEOUT = 150.0
-
-
-def _cliente_office(timeout: float) -> httpx.AsyncClient:
-    return httpx.AsyncClient(timeout=timeout)
 
 
 def _resolver_documento(input_path: str) -> Path:
@@ -243,27 +237,17 @@ def _resolver_documento(input_path: str) -> Path:
 
 async def _run_convertir_doc(args: ConvertirDocArgs, context: ToolContext) -> ToolResult:
     origen = _resolver_documento(args.input_path)
-    base_url = os.getenv("OFFICE_SERVICE_BASE", "http://office:8090").rstrip("/")
     reports_dir = Path(os.getenv("REPORTS_DIR", "/app/data/reports"))
-    contenido = await asyncio.to_thread(origen.read_bytes)
-    try:
-        async with _cliente_office(OFFICE_TIMEOUT) as client:
-            response = await client.post(
-                f"{base_url}/convert",
-                params={"output_format": "pdf"},
-                files={"file": (origen.name, contenido, "application/octet-stream")},
-            )
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise ToolInvocationError("CONVERT_HTTP_ERROR", "Falló la conversión", detail=exc.response.text) from exc
-    except httpx.HTTPError as exc:
-        raise ToolInvocationError(
-            "CONVERT_NETWORK_ERROR", "No se pudo contactar al servicio de conversión", detail=str(exc)
-        ) from exc
-
-    reports_dir.mkdir(parents=True, exist_ok=True)
     destino = reports_dir / f"{origen.stem}.pdf"
-    await asyncio.to_thread(destino.write_bytes, response.content)
+    try:
+        await asyncio.to_thread(office_client.convertir_a_pdf, origen, destino)
+    except office_client.OfficeInalcanzable as exc:
+        raise ToolInvocationError(
+            "CONVERT_NETWORK_ERROR", "No se pudo contactar al servicio de conversión", detail=exc.detalle
+        ) from exc
+    except office_client.ErrorConversionPdf as exc:
+        raise ToolInvocationError("CONVERT_HTTP_ERROR", exc.mensaje, detail=exc.detalle) from exc
+
     payload = {"status": "ok", "input": origen.name, "pdf": _reports_href(destino, reports_dir)}
     return ToolResult(message="Documento convertido a PDF.", data=payload, metadata={"tool": "ConvertirDocAPdf"})
 

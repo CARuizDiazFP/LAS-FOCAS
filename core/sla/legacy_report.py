@@ -21,9 +21,9 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 from core.docx_utils.text_replace import replace_text_everywhere
-from core.sla.config import MESES_ES, REPORTS_DIR, SLA_TEMPLATE_PATH, SOFFICE_BIN
+from core.services.office_client import intentar_pdf
+from core.sla.config import MESES_ES, REPORTS_DIR, SLA_TEMPLATE_PATH
 from core.sla.report import DocumentoSLA
-from modules.common.libreoffice_export import convert_to_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -320,7 +320,6 @@ def generate_from_excel_pair(
     anio: int,
     incluir_pdf: bool = False,
     reports_dir: Path | None = None,
-    soffice_bin: Optional[str] = None,
     eventos: str = "",
     conclusion: str = "",
     propuesta: str = "",
@@ -334,7 +333,6 @@ def generate_from_excel_pair(
         anio=anio,
         incluir_pdf=incluir_pdf,
         reports_dir=reports_dir or REPORTS_DIR,
-        soffice_bin=soffice_bin or SOFFICE_BIN,
         eventos=eventos,
         conclusion=conclusion,
         propuesta=propuesta,
@@ -349,7 +347,6 @@ def _render_document(
     anio: int,
     incluir_pdf: bool,
     reports_dir: Path,
-    soffice_bin: Optional[str],
     eventos: str,
     conclusion: str,
     propuesta: str,
@@ -423,18 +420,11 @@ def _render_document(
     doc.save(docx_path)
 
     pdf_path: Optional[Path] = None
+    pdf_error: Optional[str] = None
     if incluir_pdf:
-        binario = soffice_bin
-        if binario:
-            try:
-                pdf_generado = convert_to_pdf(str(docx_path), binario)
-                pdf_path = Path(pdf_generado)
-            except Exception as exc:  # pragma: no cover - logging
-                logger.warning("action=sla_legacy_report stage=pdf error=%s", exc)
-        else:
-            logger.info("action=sla_legacy_report stage=pdf reason=missing_soffice")
+        pdf_path, pdf_error = intentar_pdf(docx_path, contexto="sla_legacy_report")
 
-    return DocumentoSLA(docx=docx_path, pdf=pdf_path)
+    return DocumentoSLA(docx=docx_path, pdf=pdf_path, pdf_error=pdf_error)
 
 
 def _columna_horas_reclamos(reclamos: _ExcelDataset) -> tuple[str, str]:

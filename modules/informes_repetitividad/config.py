@@ -4,7 +4,7 @@
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_TEMPLATES_DIR = _PROJECT_ROOT / "Templates"
@@ -14,7 +14,6 @@ TEMPLATES_DIR = Path(os.getenv("TEMPLATES_DIR", str(_DEFAULT_TEMPLATES_DIR)))
 REP_TEMPLATE_PATH = Path(os.getenv("REP_TEMPLATE_PATH", str(TEMPLATES_DIR / "Plantilla_Informe_Repetitividad.docx")))
 REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "/app/data/reports"))
 UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "/app/data/uploads"))
-SOFFICE_BIN: Optional[str] = os.getenv("SOFFICE_BIN")
 MAPS_ENABLED: bool = os.getenv("MAPS_ENABLED", "true").lower() == "true"
 MAPS_LIGHTWEIGHT: bool = os.getenv("MAPS_LIGHTWEIGHT", "true").lower() == "true"
 MAPS_DEFAULT_ZOOM: int = int(os.getenv("MAPS_DEFAULT_ZOOM", "5"))
