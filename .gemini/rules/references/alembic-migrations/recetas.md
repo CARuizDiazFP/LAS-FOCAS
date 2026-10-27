@@ -29,6 +29,15 @@ python scripts/check_drift_modelos.py --detalle       # clasificado; usa POSTGRE
 scripts/check_drift_desde_cero.sh                     # Postgres efímero + cadena completa
 ```
 
+Dos trampas reales (2026-10-27, P18):
+
+- **`ALEMBIC_URL=` vacía no es "sin definir"**: `db/session.py` toma la cadena vacía como URL y falla
+  con `Could not parse SQLAlchemy URL from string ''`. Para que gane `POSTGRES_*`, quitar la variable
+  (`env -u ALEMBIC_URL -u DATABASE_URL ...`), no vaciarla.
+- **`%` en SQL ad hoc con psycopg 3**: `conn.exec_driver_sql("... LIKE '%fontine%'")` falla con
+  `only '%s', '%b', '%t' are allowed as placeholders`. Usar `position('fontine' in indexname) > 0`,
+  `%%`, o `text()` con un bind (`LIKE :patron`).
+
 ## Aplicar o revertir
 
 ```bash
