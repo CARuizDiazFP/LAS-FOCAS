@@ -7,7 +7,7 @@ name: "skill-sast-analysis"
 description: "Usar cuando haya que revisar código por validación de entradas, auth, SQL, subprocess, deserialización, logging sensible o superficie de ataque"
 source: ".agentes-comunes/skills/sast-analysis/SKILL.md"
 triggers: ["sast-analysis", "habilidad", "sast", "analysis", "c-digo", "validaci-n", "entradas", "auth", "sql", "subprocess", "deserializaci-n", "logging", "sensible", "superficie", "ataque"]
-globs: ["api/**", "web/**", "core/**", "modules/**", "bot_telegram/**"]
+globs: ["api/**", "web/**", "core/**", "modules/**"]
 ---
 
 # Regla Skill: sast-analysis (carga bajo demanda)

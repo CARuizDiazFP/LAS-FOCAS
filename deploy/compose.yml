@@ -225,26 +225,6 @@ services:
     volumes:
       - ../Logs:/app/Logs
 
-  bot:
-    logging: *logging-default
-    build:
-      context: ..
-      dockerfile: deploy/docker/bot.Dockerfile
-    user: "1001:1001"
-    env_file:
-      - ../.env
-    secrets:
-      - db_password_v1
-      - telegram_bot_token_v1
-    depends_on:
-      - api
-    restart: unless-stopped
-    volumes:
-      - ../Logs:/app/Logs
-      - bot_data:/app/data
-    environment:
-      LOGS_DIR: /app/Logs
-
   office:
     logging: *logging-default
     build:
@@ -476,7 +456,6 @@ services:
 
 volumes:
   postgres_data:
-  bot_data:
   reports_data:
   uploads_data:
 
@@ -506,8 +485,6 @@ secrets:
     file: ../.secrets/db_password_v1.txt
   web_secret_key_v1:
     file: ../.secrets/web_secret_key_v1.txt
-  telegram_bot_token_v1:
-    file: ../.secrets/telegram_bot_token_v1.txt
   openai_api_key_v1:
     file: ../.secrets/openai_api_key_v1.txt
   smtp_password_v1:

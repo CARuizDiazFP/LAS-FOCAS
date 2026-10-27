@@ -65,7 +65,6 @@ Soy el agente especializado en infraestructura Docker del proyecto LAS-FOCAS.
 | `api` | 8001:8000 | FastAPI core API |
 | `web` | 8080 | Panel web con chat |
 | `nlp_intent` | expose 8100 | Clasificador de intención |
-| `bot` | - | Telegram Bot |
 | `office` | expose 8090, 2002 | LibreOffice service |
 | `pgadmin` | 5050:80 | PgAdmin (profile: pgadmin) |
 

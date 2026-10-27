@@ -1,7 +1,0 @@
-# Nombre de archivo: requirements.txt
-# Ubicación de archivo: bot_telegram/requirements.txt
-# Descripción: Dependencias específicas del bot de Telegram (las comunes están en focas-base vía common-requirements.txt)
-
-# Solo paquetes específicos de este servicio
-aiogram==3.29.0  # Primera que admite aiohttp 3.14 (3.13.1 exigía aiohttp<3.11)
-aiohttp==3.14.4  # Pin explícito: cierra los 41 CVEs de 3.10.11 (pip-audit 2026-10-26)

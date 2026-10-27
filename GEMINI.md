@@ -60,7 +60,6 @@ Las fuentes originales viven en `.agentes-comunes/skills/` (skills) y `.github/a
 ## Agentes Migrados
 
 - [agent-api-agent](.gemini/rules/agent-api-agent.md)
-- [agent-bot-agent](.gemini/rules/agent-bot-agent.md)
 - [agent-db-agent](.gemini/rules/agent-db-agent.md)
 - [agent-docker-agent](.gemini/rules/agent-docker-agent.md)
 - [agent-infra-agent](.gemini/rules/agent-infra-agent.md)

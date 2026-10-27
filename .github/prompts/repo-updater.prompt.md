@@ -53,7 +53,6 @@ Ejecutar el flujo completo de revisión, documentación, staging, commit y push,
    - documentación temática según el área impactada, por ejemplo:
      - `docs/api.md` para `api/` o `api_app/`
      - `docs/web.md` para `web/`
-     - `docs/bot.md` para `bot_telegram/`
      - `docs/db.md` para `db/`
      - `docs/chatbot.md` y `docs/mcp.md` para `core/chatbot/` o `core/mcp/`
      - `docs/informes/` para `modules/informes_*`

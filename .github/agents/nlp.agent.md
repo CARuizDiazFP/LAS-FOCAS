@@ -71,7 +71,7 @@ No hay intents por tema (SLA, infraestructura, saludo, ayuda). Para una
 | Endpoint | Respuesta | Quién lo usa |
 |---|---|---|
 | `POST /v1/intent:analyze` | `IntentionResult` | chat del panel (`web/app/routers/chat.py`) |
-| `POST /v1/intent:classify` (deprecated) | `IntentResponse` | bot Telegram (`bot_telegram/handlers/intent.py`), `web/app/main.py` |
+| `POST /v1/intent:classify` (deprecated) | `IntentResponse` | `web/app/main.py` |
 | `GET /health` | `{"status": "ok"}` | healthcheck de compose |
 
 El servicio escucha en `nlp_intent:8100` (sólo `expose`, `deploy/compose.yml`) y no accede a la DB.
@@ -107,4 +107,3 @@ LOG_RAW_TEXT=false
 ## Traspasos (Handoffs)
 
 - **→ MCP Chatbot Agent**: cuando la clasificación está lista para integrar
-- **→ Bot Agent**: para ajustar clasificación de comandos de Telegram

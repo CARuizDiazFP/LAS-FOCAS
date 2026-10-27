@@ -28,17 +28,16 @@ Este documento compila los lineamientos de seguridad aplicables al proyecto LAS-
 
 ## Controles actuales implementados
 
-- Allowlist de IDs de Telegram en el bot.
 - Login básico en panel web (plan de fortalecimiento posterior).
 - Redes internas en docker-compose (`expose` en lugar de `ports` para servicios internos).
 - Versionado estricto de dependencias (evitar `latest`).
-- Validación y escape de entradas en superficies expuestas (bot, APIs).
+- Validación y escape de entradas en superficies expuestas (panel web, APIs, bot de Slack).
 - Validación estricta de entradas/salidas con Pydantic en APIs.
 - CORS restrictivo con allowlist explícita en FastAPI.
 - Tratamiento de errores con timeouts (HTTP 15s por defecto) y reintentos con backoff.
 - Logs estructurados con metadatos (service, action, request_id, timestamps) y prudencia en datos sensibles.
 - Auditoría básica de dependencias antes de incorporarlas.
-- Servicios web/bot llaman al API de reportes mediante `REPORTS_API_BASE`; asegúrese de que apunte a la red interna (`http://api:8000`).
+- El servicio web llama al API de reportes mediante `REPORTS_API_BASE`; asegúrese de que apunte a la red interna (`http://api:8000`).
 - Publicación del servicio `web` acotada a la IP LAN `172.18.208.162:8080` en `deploy/compose.yml` para evitar exposición en 0.0.0.0.
 - El despliegue estándar no debe depender de motores LLM locales ni de `host.docker.internal`; la clasificación productiva se resuelve por proveedor externo vía API y secreto en `.env`.
 - Postgres sin publicación al host: `deploy/compose.yml` usa `expose: 5432` para que solo sea accesible por servicios internos.
@@ -115,9 +114,10 @@ bash scripts/firewall_hardening.sh
   modo no-Swarm — `docker info` reporta `Swarm.LocalNodeState: inactive` —, así que no aplica
   `docker secret create`/`external: true`; Compose monta el archivo directamente en `/run/secrets/<nombre>`
   sin necesidad de Swarm).
-- Los 10 secretos (`db_password_v1`, `api_key_v1`, `web_secret_key_v1`, `telegram_bot_token_v1`,
-  `openai_api_key_v1`, `smtp_password_v1`, `slack_bot_token_v1`, `slack_app_token_v1`,
-  `pgadmin_password_v1`, `redis_password_v1`) usan archivos **sin prefijo** en `.secrets/*.txt` (el
+- Los 13 secretos de `deploy/compose.yml` (recontados el 2026-10-27: `db_password_v1`, `api_key_v1`,
+  `web_secret_key_v1`, `openai_api_key_v1`, `smtp_password_v1`, `slack_bot_token_v1`,
+  `slack_app_token_v1`, `pgadmin_password_v1`, `redis_password_v1`, `cromo_password_v1`,
+  `api_prov_user_v1`, `api_prov_pass_v1`, `oauth_jwt_secret_v1`) usan archivos **sin prefijo** en `.secrets/*.txt` (el
   prefijo `Dev_` queda reservado exclusivamente para el stack dev, ver
   `deploy/docker-compose.dev.yml`).
 - `redis_password_v1` (agregado 2026-08-21 junto con `botellas_recalculo_worker`, ver
@@ -186,10 +186,11 @@ al usuario; se resume acá lo accionable para no perderlo de vista en la próxim
   [ALL]` + `no-new-privileges:true`.
 - **High** — Dependencias desactualizadas con CVEs alcanzables por red en los 4 servicios FastAPI:
   `starlette` (0.37.2–0.38.6 → mín. 0.40.0), `python-multipart` (0.0.9 → 0.0.31, usado en endpoints
-  de upload reales de `api`/`web`/`office_service`), y `aiohttp` (3.10.11, transitiva de `aiogram`
-  en `bot_telegram`, mitigado hoy porque el bot usa polling y no expone servidor).
+  de upload reales de `api`/`web`/`office_service`), y `aiohttp` (3.10.11, transitiva del framework
+  del bot de Telegram, mitigado porque el bot usaba polling y no exponía servidor; el bot se retiró
+  el 2026-10-27, P19, y `aiohttp` ya no se instala en ninguna imagen).
   **Resuelto en código el 2026-10-26 (P15)**: fastapi 0.136.1 + starlette 1.3.1, python-multipart
-  0.0.31, Pillow 13.0.0, orjson 3.11.6, aiogram 3.29.0 + aiohttp 3.14.4 (pip-audit en 0). Rige en
+  0.0.31, Pillow 13.0.0, orjson 3.11.6 (pip-audit en 0). Rige en
   cada entorno recién cuando se reconstruyen `focas-base` y **todas** las imágenes.
 - ~~**Medium-High** — CSRF ausente en ~12 endpoints mutantes del panel web~~ **Resuelto 2026-10-26
   (P07)**: dependencia única `requiere_csrf` (`web/app/dependencias.py`) en todos los routers de
@@ -197,11 +198,9 @@ al usuario; se resume acá lo accionable para no perderlo de vista en la próxim
   todavía). Acepta `X-CSRF-Token` o `csrf_token` en el body. `tests/test_web_csrf.py` falla ante una
   ruta mutante nueva sin la dependencia. Ver `docs/web.md` → "CSRF". Mitigación previa que sigue:
   cookie `SameSite=lax`.
-- **Medium** — Allowlist de Telegram (`bot_telegram/filters/allowlist.py`) falla **abierta** (admite
-  a cualquiera) si `TELEGRAM_ALLOWED_IDS` queda vacío/sin setear, en vez de bloquear a todos.
-- **Medium** — Path traversal vía `document.file_name` sin sanitizar en
-  `bot_telegram/flows/{repetitividad,sla}.py:97` (bug duplicado en ambos archivos) — falta el mismo
-  `Path(...).name` que ya se usa correctamente en `/api/chat/uploads`.
+- ~~**Medium** — Allowlist del bot de Telegram falla abierta con la lista de IDs vacía; path traversal
+  vía `document.file_name` en sus flujos de SLA y Repetitividad~~ **Cerrado 2026-10-27 (P19)**: el
+  bot de Telegram se retiró del repositorio (código, imagen, servicio de compose y secret).
 - **Medium** — `api` publica su puerto en `0.0.0.0` (`8001`/`8011`) sin acotar a una interfaz, a
   diferencia de `web` (que sí está deliberadamente restringido a `127.0.0.1`/IP LAN).
 - Detalle completo, hallazgos Low/informativos y falsos positivos descartados: ver el reporte

@@ -74,12 +74,12 @@
     },
     {
       "id": "bots-workers",
-      "title": "Bots, NLP y workers",
-      "summary": "Bot Telegram, notificador/app de Slack, clasificador de intención y FO Monitor.",
-      "roots": ["bot_telegram/", "modules/slack_baneo_notifier/", "nlp_intent/", "modules/fo_monitor_worker/", "core/services/fo_monitor/"],
-      "entrypoints": ["bot_telegram/app.py", "nlp_intent/app/"],
+      "title": "Slack, NLP y workers",
+      "summary": "Notificador/app de Slack, clasificador de intención y FO Monitor.",
+      "roots": ["modules/slack_baneo_notifier/", "nlp_intent/", "modules/fo_monitor_worker/", "core/services/fo_monitor/"],
+      "entrypoints": ["modules/slack_baneo_notifier/worker.py", "nlp_intent/app/"],
       "docs": ["docs/bot.md", "docs/slack_app_cables.md", "docs/nlp/", "docs/fo_monitor.md"],
-      "tests": ["tests/test_bot*.py", "tests/test_slack*.py", "tests/test_fo_monitor*.py", "nlp_intent/tests/"],
+      "tests": ["tests/test_slack*.py", "tests/test_fo_monitor*.py", "nlp_intent/tests/"],
       "commands": ["LLM_PROVIDER=heuristic pytest tests/test_slack*.py -q"],
       "exclusions": []
     },
