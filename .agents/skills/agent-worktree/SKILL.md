@@ -113,6 +113,8 @@ ln -s <checkout-de-control>/web/frontend/node_modules web/frontend/node_modules
 ### 3. Trabajar
 
 - Editar, testear y commitear normalmente en la rama propia. **Sin leases.**
+- Antes de cada corrida pesada (build, suite en contenedor, `npm ci`/`build`, dump), aplicar el
+  **piso de disco** de `disk-analysis` → "Piso de disco para agentes": 3 GB libres para arrancar.
 - Registrar actividad de tanto en tanto (también renueva los leases propios):
   ```bash
   python scripts/agent_worktree.py heartbeat --agent claude-api

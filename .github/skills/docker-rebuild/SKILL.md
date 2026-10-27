@@ -211,8 +211,8 @@ docker exec lasfocasdev-web rm -rf /tmp/wt          # siempre al terminar
   docker buildx build --load --build-context focas-base:latest=docker-image://focas-base:<tag> \
     -f api/Dockerfile -t lasfocasdev-api:<tag> .
   ```
-  **De a uno, con piso de disco** (`df --output=avail -BM /`, frenar por debajo de 2 GB), y sin otras
-  corridas pesadas en paralelo. En este host cada imagen nueva ocupa ~1,2 GB, y el build en paralelo
+  **De a uno y con el piso de disco de `disk-analysis`** ("Piso de disco para agentes": 3 GB libres
+  para arrancar), sin otras corridas pesadas en paralelo. En este host cada imagen nueva ocupa ~1,2 GB, y el build en paralelo
   con dos suites en contenedor llenó el disco en medio del cierre de otra sesión (ver `disk-analysis`).
   Al terminar el humo, `docker rmi` de **todos** los tags propios: el stack se reconstruye después
   desde `dev`.
@@ -439,18 +439,15 @@ como impacto del despliegue.
                            # (build + migraciones + up -d sin down global; pide tipear 'lasfocas')
 ```
 
-`start_dev.sh` sólo construye y levanta `postgres nlp_intent api web office slack_baneo_worker
-cromo_worker` (`SERVICES`): **`botellas_recalculo_worker` y `fo_monitor_worker` quedan con la imagen
-vieja**. Para desplegar un lote completo en dev (real 2026-10-26, ola 1 de la auditoría):
+`start_dev.sh` construye y levanta el lote completo de dev (`SERVICES`, desde 2026-10-27): `postgres
+redis nlp_intent api web office slack_baneo_worker cromo_worker botellas_recalculo_worker
+fo_monitor_worker`; `docker-socket-proxy` llega por `depends_on`. `--dry-run` muestra los servicios y
+los comandos sin ejecutar nada. Si `lasfocasdev-postgres` está arriba, el script consulta las corridas
+`EN_CURSO` de Cromo (Consideración 11): con una en curso (o si no puede consultarlo) deja afuera a
+`cromo_worker`, imprime el comando para recrearlo después, y aborta si se pidió `--down`.
 
-```bash
-./scripts/build_base.sh        # sólo reconstruye si cambió common-requirements.txt
-S="api web office nlp_intent slack_baneo_worker cromo_worker botellas_recalculo_worker fo_monitor_worker"
-docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev build $S
-docker compose -f deploy/docker-compose.dev.yml --env-file .env.dev up -d postgres redis $S
-```
-
-Antes: corridas `EN_CURSO` de Cromo (Consideración 11), drift de red y conteos de filas para comparar después.
+Antes: piso de disco (`disk-analysis` → "Piso de disco para agentes"), drift de red y conteos de filas
+para comparar después. Es el stack compartido: tomar `env:docker-compose` y avisar antes de recrearlo.
 
 ## Consideraciones
 

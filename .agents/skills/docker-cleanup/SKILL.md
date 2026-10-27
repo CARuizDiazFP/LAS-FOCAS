@@ -25,12 +25,13 @@ imagen sin contenedor, y en este host eso incluye (real, 2026-10-23, ver `docs/c
 
 | Imagen | Por qué no tiene contenedor | Qué rompe si se borra |
 |---|---|---|
-| `lasfocas-<svc>:rollback`, `:pre-deploy-YYYYMMDD`, `:pre-hotfix-YYYYMMDD` | Son el rollback de prod | Se pierde la vuelta atrás del último deploy/hotfix |
+| `lasfocas-<svc>:pre-deploy-YYYYMMDD`, `:pre-hotfix-YYYYMMDD` | Son el rollback de prod | Se pierde la vuelta atrás del último deploy/hotfix |
 | `focas-base:latest` | Es imagen base, no se ejecuta | Falla el build de `nlp_intent` y `fo_monitor_worker` (`FROM focas-base:latest`) |
 
 Regla: las imágenes **sólo se retiran por tag exacto** (`docker image rm <repo>:<tag>`), con OK del
-usuario por cada tag de rollback, y nunca la base ni el rollback vigente (el más reciente por
-servicio). `docker image prune -f` sin `-a` (sólo dangling) sigue siendo seguro.
+usuario, y nunca lo que conserva la convención de "Rollback de prod" (abajo): el último juego
+`:pre-deploy-*`, `focas-base:latest` y la base anterior. `docker image prune -f` sin `-a` (sólo
+dangling) sigue siendo seguro.
 
 ```bash
 # Inventario: imágenes sin contenedor, marcando las protegidas
@@ -134,7 +135,7 @@ docker network prune -f
 > borra los rollback de prod y `focas-base`. Retirar por tag exacto lo que el usuario aprobó.
 
 ```bash
-# Rollbacks superados (hay uno más nuevo del mismo servicio) — confirmar uno por uno
+# Rollbacks superados según "Rollback de prod" (abajo) — confirmar con el usuario
 docker image rm lasfocas-api:pre-hotfix-20261019 lasfocas-web:pre-hotfix-20261019
 
 # Verificar espacio liberado (las imágenes comparten capas: lo liberado suele ser menor
@@ -223,11 +224,14 @@ fi
 
 ## 🏷️ Recursos efímeros de sesión (agentes)
 
-Todo contenedor, red o volumen **temporal** que un agente cree para probar algo (un Postgres
-descartable, un `docker run` de diagnóstico, una red de prueba) se crea etiquetado con la sesión:
+Todo contenedor, red, volumen o imagen **temporal** que un agente cree para probar algo (un
+Postgres descartable, un `docker run` de diagnóstico, una red de prueba, una imagen `:smoke`) se crea
+etiquetado con la sesión. Estos son los recursos que se limpian primero cuando el disco queda por
+debajo del piso de `disk-analysis` ("Piso de disco para agentes").
 
 ```bash
 docker run -d --label lasfocas.lifecycle=ephemeral --label lasfocas.session=<agent-id> ...
+docker buildx build --load --label lasfocas.lifecycle=ephemeral --label lasfocas.session=<agent-id> -t <repo>:<agent-id> ...
 docker network create --label lasfocas.lifecycle=ephemeral --label lasfocas.session=<agent-id> <red>
 docker volume create --label lasfocas.lifecycle=ephemeral --label lasfocas.session=<agent-id> <vol>
 ```
@@ -239,6 +243,8 @@ Al cierre (`cierre-sesion`) se eliminan **por ID exacto**, nunca por prune ni po
 docker ps -a        --filter label=lasfocas.session=<agent-id> --format '{{.ID}} {{.Names}} {{.Status}}'
 docker network ls   --filter label=lasfocas.session=<agent-id> --format '{{.ID}} {{.Name}}'
 docker volume ls    --filter label=lasfocas.session=<agent-id> --format '{{.Name}}'
+docker images       --filter label=lasfocas.session=<agent-id> --format '{{.Repository}}:{{.Tag}} {{.ID}}'
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E ':(<agent-id>|smoke)$'   # tags propios sin etiqueta
 
 # 2. Antes de borrar: mounts del contenedor y consumidores de la red/volumen
 docker inspect -f '{{json .Mounts}}' <container-id>
@@ -249,41 +255,50 @@ docker network inspect -f '{{json .Containers}}' <network-id>
 docker container rm -v <container-id>
 docker network rm <network-id>
 docker volume rm <vol>
+docker image rm <repo>:<tag>      # por tag exacto; nunca rmi por ID si otro tag apunta a la misma imagen
 ```
 
-Un recurso sin `lasfocas.session=<agent-id>` **no es de la sesión** y no se toca, aunque parezca
+Un recurso sin `lasfocas.session=<agent-id>` (o, en imágenes, sin tag propio) **no es de la sesión** y no se toca, aunque parezca
 huérfano. Nunca etiquetar como efímero un recurso del stack (`lasfocas*`, `postgres_data`, etc.).
 
-## ♻️ Retención de imágenes en producción: `current` + 1 `rollback`
+## ♻️ Rollback de prod: se conserva sólo el último juego (regla única)
 
-En el host productivo se conservan, por servicio, sólo dos imágenes: la activa (`current`, el tag
-`lasfocas-<servicio>:latest` que usa compose) y **un único** `rollback` inmediato y validado
-(`lasfocas-<servicio>:rollback`). Rotación en cada despliegue:
+Esta es la **única** definición de la convención de rollback (decisión del usuario del 2026-10-27).
+`AGENTS.md`, `disk-analysis`, `/mantenimiento-disco`, `docs/maintenance_profiles.md` y
+`docs/despliegue_produccion.md` la citan; si cambia, se cambia acá. Motivo: el disco (40 GB
+compartidos por prod y dev); cada juego de rollback ocupa ~0,9 GB reales.
 
-```bash
-SVC=api   # repetir por servicio reconstruido
-# 1. Recordar el rollback que va a quedar desplazado (puede no existir)
-OLD_RB="$(docker image inspect -f '{{.Id}}' lasfocas-$SVC:rollback 2>/dev/null || true)"
-# 2. current -> rollback (la imagen validada que está corriendo hoy)
-docker tag lasfocas-$SVC:latest lasfocas-$SVC:rollback
-# 3. Build + up del nuevo current (ver docker-rebuild) y validar healthchecks/smoke
-# 4. Recién con el current nuevo validado, retirar el rollback desplazado por ID exacto
-NEW_RB="$(docker image inspect -f '{{.Id}}' lasfocas-$SVC:rollback)"
-if [ -n "$OLD_RB" ] && [ "$OLD_RB" != "$NEW_RB" ]; then
-  docker ps -a --filter ancestor="$OLD_RB" --format '{{.ID}} {{.Names}}'   # debe salir vacío
-  docker image rm "$OLD_RB"   # falla solo si algún contenedor todavía la usa: no forzar
-fi
-```
+**Qué se conserva**
 
-**Práctica real vigente (2026-10-23)**: los deploys y hotfix no rotan un único `:rollback`, sino que
-etiquetan con fecha (`lasfocas-<svc>:pre-deploy-YYYYMMDD`, `:pre-hotfix-YYYYMMDD`) y esos tags se
-acumulan. Tratarlos como rollback: el más reciente por servicio **no se toca**; los superados se
-retiran por tag exacto con OK del usuario. Unificar la convención (`:rollback` vs. tags con fecha)
-es una decisión pendiente, no la resuelve una limpieza.
+| Imagen | Qué es |
+|---|---|
+| `lasfocas-<svc>:latest` | La imagen que corre prod (la usa compose) |
+| El tag de rollback **más reciente por servicio**: `:pre-deploy-YYYYMMDD` o `:pre-hotfix-YYYYMMDD` | Un solo juego: lo que corría antes del último deploy (todos los servicios, misma fecha). Si después hubo un hotfix, sus `:pre-hotfix-*` reemplazan al `:pre-deploy-*` sólo en los servicios que tocó |
+| `focas-base:latest` + la base anterior | La base actual y la previa. La previa se reconoce por el label `focas.requirements.hash`, no por el nombre del tag (`req-<hash>` o `pre-<algo>`): es la base de lo que corre prod mientras prod no tenga las dependencias nuevas |
 
-Nunca `docker system prune`, `docker image prune -a` ni `docker volume prune` en prod para esta
-rotación. Si el current nuevo no valida, volver al rollback (`docker tag lasfocas-$SVC:rollback
-lasfocas-$SVC:latest` + `up -d`) **antes** de retirar nada.
+No hay tag `:rollback` rotativo: la convención vieja (`current -> :rollback`) queda retirada. Los
+deploys y hotfix reales etiquetan con fecha, y en el host no hay ningún `:rollback` (verificado
+2026-10-27).
+
+**Cuándo y cómo se borra el resto**
+
+1. Antes del deploy (o hotfix), etiquetar lo que corre:
+   `docker tag lasfocas-<svc>:latest lasfocas-<svc>:pre-deploy-$(date +%Y%m%d)` por cada servicio que
+   se va a reconstruir. Ver `docs/despliegue_produccion.md`.
+2. Recién **después de verificar el deploy** (healthy, smoke, prueba del usuario si corresponde), el juego
+   anterior queda superado: todo tag `:pre-deploy-*`/`:pre-hotfix-*` de un servicio que tenga otro más
+   nuevo. Lo mismo para las bases `focas-base` más viejas que la anterior.
+3. Se borran **por tag exacto**, listando los tags y **con confirmación del usuario en esa sesión**:
+   ```bash
+   docker images --format '{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}' | grep -E ':(pre-deploy|pre-hotfix)-' | sort
+   docker ps -a --filter ancestor=<repo>:<tag> --format '{{.Names}}'   # debe salir vacío
+   docker image rm <repo>:<tag-superado> ...                           # nunca -f
+   ```
+4. Si el deploy no valida, volver al juego vigente **antes** de borrar nada:
+   `docker tag lasfocas-<svc>:pre-deploy-<fecha> lasfocas-<svc>:latest` + `up -d --no-deps
+   --force-recreate` de esos servicios.
+
+Nunca `docker system prune`, `docker image prune -a` ni `docker volume prune` para esta rotación.
 
 ## 🛡️ Comandos Prohibidos
 
@@ -322,7 +337,7 @@ docker system df
 |------------|--------|
 | Semanal | `docker image prune -f` + `docker container prune -f` |
 | Después de deploys | `docker builder prune --filter "until=24h" -f` |
-| Mensual | Retirar rollbacks superados por tag exacto (nunca `image prune -a`) |
+| Tras un deploy verificado | Retirar el juego de rollback superado por tag exacto, con OK ("Rollback de prod") |
 | Emergencia (disco >85%) | Script de limpieza + consumidores fuera del repo (`disk-analysis` §7) |
 
 ## 🔗 Skills Relacionados

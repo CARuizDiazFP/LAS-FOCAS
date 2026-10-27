@@ -23,6 +23,41 @@ Perfiles operativos recomendados: `docs/maintenance_profiles.md`.
 | Logs del proyecto | <300MB | 300-500MB | >500MB |
 | Build cache Docker | <5GB | 5-15GB | >15GB |
 
+## 🚧 Piso de disco para agentes (regla única)
+
+Esta es la **única** definición de la regla. `AGENTS.md`, `agent-worktree`, `docker-rebuild` y
+`docker-cleanup` la citan; si cambia, se cambia acá. Decisión del usuario del 2026-10-27, tras el
+100 % del 2026-10-26 que cortó a otras sesiones (ver la nota de `Avail 0` más abajo).
+
+1. **Medir antes de cada corrida pesada**: build de imágenes, suite de tests en contenedor, `npm ci` o
+   `npm run build`, dumps/restores y copias grandes al scratchpad.
+   ```bash
+   df --output=avail -BM / | tail -1      # MB libres para el usuario (excluye la reserva de root)
+   ```
+2. **Piso para arrancar: 3 GB libres (3072 M).** Una imagen nueva ocupa ~1,2 GB y una suite en
+   contenedor llegó a 2,35 GB de capa escribible en 7 minutos. Con 3 GB, una corrida pesada termina
+   sin dejar en cero a las demás sesiones.
+3. **Por debajo del piso, limpiar primero los recursos efímeros propios ya usados** y volver a medir:
+   - contenedores, redes y volúmenes con `lasfocas.session=<agent-id>`;
+   - imágenes con tag propio (`:<agent-id>`, `:smoke`) o con esa misma etiqueta;
+   - árboles copiados al scratchpad;
+   - `dist`/`node_modules` del propio worktree que ya no se usen.
+
+   Se borran por ID o tag exacto, con el procedimiento de `docker-cleanup` → "Recursos efímeros de
+   sesión (agentes)". Al crearlos, etiquetarlos: `--label lasfocas.lifecycle=ephemeral --label
+   lasfocas.session=<agent-id>`.
+4. **Si sigue por debajo del piso: DETENERSE Y PREGUNTAR.** Nunca liberar espacio con recursos
+   ajenos o protegidos: rollbacks de prod (`:pre-deploy-*`, `:pre-hotfix-*`), `focas-base`,
+   volúmenes, build cache de otra sesión (qué rollback se conserva: `docker-cleanup` → "Rollback de
+   prod"). Tampoco con `prune -a`. El `docker builder prune -f` (sin
+   `-a`) de la nota de abajo también se pide al usuario.
+5. **De a uno**: builds y suites en contenedor nunca en paralelo con otra corrida pesada propia.
+   Antes de lanzar, mirar si otra sesión tiene una en curso (`docker ps`,
+   `python scripts/agent_worktree.py list`).
+
+Los umbrales de la tabla de arriba son otra cosa: miden el **estado del host** para un mantenimiento.
+El piso de 3 GB mide **si un agente puede arrancar una corrida**. No se unifican.
+
 ## 🔍 Comandos de Diagnóstico
 
 > Las rutas relativas (`./Logs/`, `.`) asumen que se corre desde la raíz del checkout de control
@@ -253,7 +288,7 @@ echo -e "\n═══════════════════════
 | TOTAL | Cantidad total de elementos |
 | ACTIVE | Elementos en uso activo |
 | SIZE | Tamaño total en disco |
-| RECLAIMABLE | Espacio que puede liberarse sin afectar servicios activos |
+| RECLAIMABLE | Espacio de recursos sin contenedor. En `Images` incluye los rollbacks de prod y la base anterior, que **no** se liberan: qué se conserva en `docker-cleanup` → "Rollback de prod" |
 
 ### Acciones Recomendadas por Estado
 
