@@ -4,108 +4,105 @@
   Descripción: Dashboard /admin/servicios/viewer/ServiciosSinOdf — listado con scroll infinito de Servicios Activos sin ODF resuelta, chips de categoría con conteo real y modal de asociación manual
 -->
 <template>
-  <section class="servicios-sin-odf-viewer">
-    <AdminPageHeader
-      kicker="Panel admin · Viewer"
-      title="Servicios sin ODF"
-      subtitle="Servicios Activos verificables sin ODF Cromo resuelta, con causa probable y sugerencia de ODF cuando el dato alcanza."
-    />
+  <ViewerShell
+    bloque="servicios-sin-odf-viewer"
+    :loading="loading"
+    :error="error"
+    :vacio="items.length === 0"
+    :hay-mas="hasMore"
+    texto-vacio="Ningún servicio coincide"
+    texto-cargando="Cargando más servicios..."
+    carga-inicial="caja"
+    texto-carga-inicial="Cargando servicios..."
+    @cargar-mas="cargarSiguiente"
+  >
+    <template #toolbar>
+      <AdminPageHeader
+        kicker="Panel admin · Viewer"
+        title="Servicios sin ODF"
+        subtitle="Servicios Activos verificables sin ODF Cromo resuelta, con causa probable y sugerencia de ODF cuando el dato alcanza."
+      />
 
-    <div class="servicios-sin-odf-viewer__toolbar">
-      <div class="servicios-sin-odf-viewer__toolbar-row">
-        <div class="servicios-sin-odf-viewer__search">
-          <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-          <input v-model="query" type="search" placeholder="Buscar por Nº de servicio o cliente" @input="onSearchInput" />
+      <div class="servicios-sin-odf-viewer__toolbar">
+        <div class="servicios-sin-odf-viewer__toolbar-row">
+          <div class="servicios-sin-odf-viewer__search">
+            <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+            <input v-model="query" type="search" placeholder="Buscar por Nº de servicio o cliente" @input="onSearchInput" />
+          </div>
+
+          <button class="btn primary" type="button" :disabled="loading" @click="refrescar">
+            <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
+            Actualizar
+          </button>
         </div>
 
-        <button class="btn primary" type="button" :disabled="loading" @click="refrescar">
-          <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
-          Actualizar
-        </button>
-      </div>
+        <div class="servicios-sin-odf-viewer__toolbar-row servicios-sin-odf-viewer__chips-row">
+          <span class="servicios-sin-odf-viewer__chips-label">Categoría</span>
+          <button
+            type="button"
+            :class="['servicios-sin-odf-viewer__chip', { 'is-active': filtroCategoria === '' }]"
+            @click="setCategoria('')"
+          >
+            Todas
+          </button>
+          <button
+            v-for="categoria in categorias"
+            :key="categoria"
+            type="button"
+            :class="['servicios-sin-odf-viewer__chip', { 'is-active': filtroCategoria === categoria }]"
+            @click="setCategoria(categoria)"
+          >
+            <span
+              :class="['servicios-sin-odf-viewer__chip-dot', `is-${categoriaServicioToken(categoria)}`]"
+              aria-hidden="true"
+            ></span>
+            {{ categoriaServicioLabel(categoria) }}
+            <span class="servicios-sin-odf-viewer__chip-count">{{ conteos[categoria] ?? (loading ? '…' : '—') }}</span>
+          </button>
 
-      <div class="servicios-sin-odf-viewer__toolbar-row servicios-sin-odf-viewer__chips-row">
-        <span class="servicios-sin-odf-viewer__chips-label">Categoría</span>
-        <button
-          type="button"
-          :class="['servicios-sin-odf-viewer__chip', { 'is-active': filtroCategoria === '' }]"
-          @click="setCategoria('')"
-        >
-          Todas
-        </button>
-        <button
-          v-for="categoria in categorias"
-          :key="categoria"
-          type="button"
-          :class="['servicios-sin-odf-viewer__chip', { 'is-active': filtroCategoria === categoria }]"
-          @click="setCategoria(categoria)"
-        >
-          <span
-            :class="['servicios-sin-odf-viewer__chip-dot', `is-${categoriaServicioToken(categoria)}`]"
-            aria-hidden="true"
-          ></span>
-          {{ categoriaServicioLabel(categoria) }}
-          <span class="servicios-sin-odf-viewer__chip-count">{{ conteos[categoria] ?? (loading ? '…' : '—') }}</span>
-        </button>
-
-        <span class="servicios-sin-odf-viewer__count">
-          <strong>{{ total.toLocaleString('es-AR') }}</strong> servicios sin ODF · mostrando {{ items.length }}
-        </span>
-      </div>
-    </div>
-
-    <div v-if="error" class="servicios-sin-odf-viewer__inline-error">{{ error }}</div>
-
-    <div ref="scrollEl" class="servicios-sin-odf-viewer__scroll">
-      <template v-if="items.length > 0">
-        <div class="servicios-sin-odf-viewer__grid">
-          <ServicioSinOdfCard
-            v-for="item in items"
-            :key="item.id"
-            :servicio="item"
-            @asociar="abrirModal"
-            @resolver-path="abrirModalEnCamino"
-          />
+          <span class="servicios-sin-odf-viewer__count">
+            <strong>{{ total.toLocaleString('es-AR') }}</strong> servicios sin ODF · mostrando {{ items.length }}
+          </span>
         </div>
-      </template>
-
-      <div v-else-if="!loading" class="servicios-sin-odf-viewer__state-box">
-        <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-        <h3>Ningún servicio coincide</h3>
-        <p>Probá con otro texto o quitá el filtro de categoría.</p>
       </div>
+    </template>
 
-      <div v-if="loading && items.length > 0" class="servicios-sin-odf-viewer__loading-more">
-        <i class="ph ph-circle-notch servicios-sin-odf-viewer__spin" aria-hidden="true"></i>
-        Cargando más servicios...
-      </div>
-
-      <div v-if="loading && items.length === 0" class="servicios-sin-odf-viewer__state-box">
-        <i class="ph ph-circle-notch servicios-sin-odf-viewer__spin" aria-hidden="true"></i>
-        <h3>Cargando servicios...</h3>
-      </div>
-
-      <div ref="sentinel" class="servicios-sin-odf-viewer__sentinel" aria-hidden="true"></div>
+    <div class="servicios-sin-odf-viewer__grid">
+      <ServicioSinOdfCard
+        v-for="item in items"
+        :key="item.id"
+        :servicio="item"
+        @asociar="abrirModal"
+        @resolver-path="abrirModalEnCamino"
+      />
     </div>
 
-    <ModalAsociarOdf
-      :open="modalOpen"
-      :servicio-id="modalServicioId"
-      :servicio-numero="modalServicioNumero"
-      :iniciar-en-camino="modalIniciarEnCamino"
-      @close="modalOpen = false"
-      @asociado="handleAsociado"
-      @error="handleModalError"
-    />
-  </section>
+    <template #vacio>
+      <p>Probá con otro texto o quitá el filtro de categoría.</p>
+    </template>
+
+    <template #extra>
+      <ModalAsociarOdf
+        :open="modalOpen"
+        :servicio-id="modalServicioId"
+        :servicio-numero="modalServicioNumero"
+        :iniciar-en-camino="modalIniciarEnCamino"
+        @close="modalOpen = false"
+        @asociado="handleAsociado"
+        @error="handleModalError"
+      />
+    </template>
+  </ViewerShell>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { onMounted, ref } from 'vue';
 
 import AdminPageHeader from '../components/AdminPageHeader.vue';
 import ModalAsociarOdf from '../../components/infra/ModalAsociarOdf.vue';
 import ServicioSinOdfCard from '../../components/infra/ServicioSinOdfCard.vue';
+import ViewerShell from '../../components/viewer/ViewerShell.vue';
+import { usePaginatedSearch } from '../../composables/usePaginatedSearch';
 import {
   CATEGORIAS_SERVICIO_SIN_ODF,
   categoriaServicioLabel,
@@ -114,19 +111,9 @@ import {
   type ServicioSinOdfItem,
 } from '../../api/serviciosOdf';
 
-const LIMIT = 60;
-
 const categorias = CATEGORIAS_SERVICIO_SIN_ODF;
 
 const query = ref('');
-const items = ref<ServicioSinOdfItem[]>([]);
-const total = ref(0);
-const loading = ref(false);
-const error = ref('');
-const offset = ref(0);
-const hasMore = ref(true);
-const sentinel = ref<HTMLElement | null>(null);
-const scrollEl = ref<HTMLElement | null>(null);
 const filtroCategoria = ref('');
 
 /** Conteo por categoría para los chips. Lo llena la respuesta del listado (`conteos_por_categoria`),
@@ -134,75 +121,54 @@ const filtroCategoria = ref('');
  * `…` y nunca un número inventado. */
 const conteos = ref<Record<string, number>>({});
 
+const {
+  items,
+  total,
+  loading,
+  error,
+  hasMore,
+  cargarSiguiente,
+  recargarDesdeCero,
+  recargarConDebounce,
+} = usePaginatedSearch({
+  limit: 60,
+  cargarPagina: (offset, limit) =>
+    listarServiciosSinOdf({
+      q: query.value.trim(),
+      categoria: filtroCategoria.value || undefined,
+      limit,
+      offset,
+    }),
+  claveItem: (item: ServicioSinOdfItem) => item.id,
+  // Los conteos de los chips vienen EN esta misma respuesta (calculados en la misma pasada que
+  // categoriza las filas, ver el docstring de `listar_servicios_sin_odf`) — antes eran 4
+  // requests `limit: 0` extra, uno por categoría, disparados en paralelo con el listado en cada
+  // montaje/búsqueda/refresco/asociación: 5 ejecuciones concurrentes de la query más cara de la
+  // feature (~2891 filas candidatas, 145-275 ms) para devolver 4 enteros.
+  // Son los mismos para cualquier página y para cualquier `categoria` (se calculan antes de ese
+  // filtro), así que reasignarlos en cada página es un no-op salvo si cambia `q`.
+  alRecibir: (respuesta) => {
+    conteos.value = respuesta.conteos_por_categoria;
+  },
+  mensajeError: 'No se pudo consultar los Servicios sin ODF',
+});
+
 const modalOpen = ref(false);
 const modalServicioId = ref<number | null>(null);
 const modalServicioNumero = ref('');
 const modalIniciarEnCamino = ref(false);
 
-let observer: IntersectionObserver | null = null;
-let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-function mergeItems(next: ServicioSinOdfItem[]): void {
-  const seen = new Set(items.value.map((item) => item.id));
-  for (const item of next) {
-    if (seen.has(item.id)) continue;
-    seen.add(item.id);
-    items.value.push(item);
-  }
-}
-
-async function loadNextPage(): Promise<void> {
-  if (loading.value || !hasMore.value) return;
-  loading.value = true;
-  error.value = '';
-  try {
-    const response = await listarServiciosSinOdf({
-      q: query.value.trim(),
-      categoria: filtroCategoria.value || undefined,
-      limit: LIMIT,
-      offset: offset.value,
-    });
-    total.value = response.total;
-    // Los conteos de los chips vienen EN esta misma respuesta (calculados en la misma pasada que
-    // categoriza las filas, ver el docstring de `listar_servicios_sin_odf`) — antes eran 4
-    // requests `limit: 0` extra, uno por categoría, disparados en paralelo con el listado en cada
-    // montaje/búsqueda/refresco/asociación: 5 ejecuciones concurrentes de la query más cara de la
-    // feature (~2891 filas candidatas, 145-275 ms) para devolver 4 enteros.
-    // Son los mismos para cualquier página y para cualquier `categoria` (se calculan antes de ese
-    // filtro), así que reasignarlos en cada página es un no-op salvo si cambia `q`.
-    conteos.value = response.conteos_por_categoria;
-    mergeItems(response.items);
-    offset.value += response.items.length;
-    hasMore.value = response.items.length === LIMIT && offset.value < response.total;
-  } catch (err: unknown) {
-    error.value = err instanceof Error ? err.message : 'No se pudo consultar los Servicios sin ODF';
-  } finally {
-    loading.value = false;
-  }
-}
-
-async function reloadFromZero(): Promise<void> {
-  items.value = [];
-  total.value = 0;
-  offset.value = 0;
-  hasMore.value = true;
-  await loadNextPage();
-}
-
 function onSearchInput(): void {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    void reloadFromZero();
-  }, 320);
+  recargarConDebounce();
 }
 
 function setCategoria(value: string): void {
   filtroCategoria.value = filtroCategoria.value === value ? '' : value;
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function refrescar(): void {
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function abrirModal(servicio: ServicioSinOdfItem): void {
@@ -226,41 +192,19 @@ async function handleAsociado(): Promise<void> {
   // El Servicio recién asociado deja de aparecer en el listado (tiene override) — recargar
   // desde cero para no mostrar una fila resuelta como si siguiera pendiente. Los conteos de los
   // chips se actualizan solos: vienen en la respuesta del listado.
-  await reloadFromZero();
+  await recargarDesdeCero();
 }
 
 function handleModalError(message: string): void {
   error.value = message;
 }
 
-onMounted(async () => {
-  await reloadFromZero();
-
-  observer = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        if (entry.isIntersecting) void loadNextPage();
-      }
-    },
-    { root: scrollEl.value, rootMargin: '300px 0px', threshold: 0.1 },
-  );
-  if (sentinel.value) observer.observe(sentinel.value);
-});
-
-onBeforeUnmount(() => {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  if (observer) observer.disconnect();
+onMounted(() => {
+  void recargarDesdeCero();
 });
 </script>
 
 <style scoped>
-.servicios-sin-odf-viewer {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-}
-
 .servicios-sin-odf-viewer__toolbar {
   padding: 4px 0 14px;
   display: flex;
@@ -360,21 +304,6 @@ onBeforeUnmount(() => {
 
 .servicios-sin-odf-viewer__count strong { color: var(--color-text); font-weight: 500; }
 
-.servicios-sin-odf-viewer__inline-error {
-  margin-bottom: 10px;
-  padding: 10px 14px;
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--color-state-error) 14%, transparent);
-  color: var(--color-state-error);
-  font-size: 12.5px;
-}
-
-.servicios-sin-odf-viewer__scroll {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-
 .servicios-sin-odf-viewer__grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -385,7 +314,8 @@ onBeforeUnmount(() => {
 @media (max-width: 1024px) { .servicios-sin-odf-viewer__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .servicios-sin-odf-viewer__grid { grid-template-columns: 1fr; } }
 
-.servicios-sin-odf-viewer__state-box {
+/* La caja de estado la dibuja ViewerShell; su ancho varía entre viewers, así que la regla queda acá. */
+.servicios-sin-odf-viewer :deep(.viewer-shell__state-box) {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -396,32 +326,5 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-md);
   box-shadow: 0 0 0 1px var(--color-neutral-800);
   text-align: center;
-}
-
-.servicios-sin-odf-viewer__state-box i { font-size: 26px; color: var(--color-neutral-600); margin-bottom: 4px; }
-.servicios-sin-odf-viewer__state-box h3 { font-size: 15px; font-weight: 500; margin: 0; }
-.servicios-sin-odf-viewer__state-box p {
-  font-size: 12.5px;
-  line-height: 1.5;
-  margin: 0;
-  color: color-mix(in srgb, var(--color-text) 60%, transparent);
-}
-
-.servicios-sin-odf-viewer__loading-more {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 14px 0;
-  font-size: 12px;
-  color: color-mix(in srgb, var(--color-text) 45%, transparent);
-}
-
-.servicios-sin-odf-viewer__spin { font-size: 14px; animation: spin 1s linear infinite; }
-.servicios-sin-odf-viewer__sentinel { height: 2px; }
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
 }
 </style>
