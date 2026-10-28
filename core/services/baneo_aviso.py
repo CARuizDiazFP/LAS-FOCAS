@@ -316,7 +316,7 @@ def armar_eml_baneo(
     ) or []:
         msg.attach(parte_mime_adjunto(adjunto))
 
-    ticket_seguro = re.sub(r"[^\w\-]", "_", incidente.ticket_asociado or f"INC_{incidente.id}")
+    ticket_seguro = re.sub(r"[^A-Za-z0-9_\-]", "_", incidente.ticket_asociado or f"INC_{incidente.id}")
     marca = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     return EmlBaneo(
         contenido=msg.as_bytes(),

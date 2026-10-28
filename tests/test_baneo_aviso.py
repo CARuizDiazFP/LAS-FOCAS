@@ -357,3 +357,37 @@ def test_guardar_plantilla_aviso_persiste_y_commitea():
     sesion.commit = lambda: confirmaciones.append(1)
     guardar_plantilla_aviso(sesion, 5, "Asu", None)
     assert incidente.email_subject == "Asu" and incidente.email_body is None and confirmaciones == [1]
+
+
+def test_eml_nombre_solo_ascii_con_ticket_unicode(monkeypatch):
+    _con_camaras(monkeypatch, [])
+    eml = armar_eml_baneo(_Sesion([_incidente_aviso("Ñandú日本€")], []), 5, destinatarios=[], subject="s", html_body="x")
+    assert eml.nombre_archivo.isascii() and '"' not in eml.nombre_archivo
+
+
+def test_api_download_eml_ticket_unicode_responde_200(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from api.app.main import app
+    from api.app.routes import infra
+
+    _con_camaras(monkeypatch, [])
+    sesion = _Sesion([_incidente_aviso("Ñandú日本€")], [])
+    monkeypatch.setattr(infra, "SessionLocal", lambda: _CtxSesion(sesion))
+    res = TestClient(app, raise_server_exceptions=False).post(
+        "/api/infra/notify/download-eml", data={"incident_id": 5},
+        headers={"Authorization": "Bearer test-api-key"},
+    )
+    assert res.status_code == 200
+    assert res.headers["content-disposition"].isascii() and res.headers["content-type"] == "message/rfc822"
+
+
+class _CtxSesion:
+    def __init__(self, sesion) -> None:
+        self._s = sesion
+
+    def __enter__(self):
+        return self._s
+
+    def __exit__(self, *a):
+        return False

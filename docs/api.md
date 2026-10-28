@@ -2039,9 +2039,9 @@ Alternativa sin SMTP: genera un `.eml` para abrir y enviar desde el cliente de c
   (opcionales). Si llegan `subject` o `html_body`, **se guardan** en el incidente
   (`email_subject`/`email_body`) antes de generar el archivo.
 - **Adjuntos:** el TXT del tracking de la ruta protegida (o de la primera ruta del servicio con
-  contenido), vía `EmailService.generate_ban_eml`.
+  contenido), armado con `armar_eml_baneo` (`core/services/baneo_aviso.py`), el mismo que usa el panel; el XLS adjunto trae la columna `Servicios`.
 - **Respuesta 200:** `message/rfc822` con `Content-Disposition: attachment;
-  filename="Aviso_Baneo_<ticket_asociado>.eml"`.
+  filename="notificacion_{ticket o id}_{UTC %Y%m%d_%H%M%S}.eml"` (nombre sólo ASCII) y header `X-Unsent: 1`.
 - **Errores:** `404` `{"detail": "Incidente no encontrado"}`; `500` con referencia.
 
 ---
