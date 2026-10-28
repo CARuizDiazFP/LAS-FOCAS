@@ -12,12 +12,19 @@ from __future__ import annotations
 
 import csv
 import io
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session, selectinload
 
 from db.models.infra import Camara, CamaraEstado, Empalme, IncidenteBaneo, RutaServicio, Servicio
 
 HOJA_XLSX = "Cámaras"
+AVISO_SIN_XLSX = "XLSX no disponible, exportando como CSV"
+
+
+def nombre_archivo_exportacion(ext: str) -> str:
+    """Nombre del archivo descargable: `camaras_<UTC %Y%m%d_%H%M%S>.<ext>`."""
+    return f"camaras_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.{ext}"
 
 
 def _filtrar_por_estado(query, filter_status: str | None):
@@ -115,14 +122,14 @@ def filas_exportacion(
 
 
 def a_csv(filas: list[dict]) -> bytes:
-    """CSV en UTF-8 con BOM; sin filas escribe el literal `Sin datos\\n` (barra invertida incluida)."""
+    """CSV en UTF-8 con BOM; sin filas escribe `Sin datos` con salto de línea real."""
     salida = io.StringIO()
     if filas:
         escritor = csv.DictWriter(salida, fieldnames=filas[0].keys())
         escritor.writeheader()
         escritor.writerows(filas)
     else:
-        salida.write("Sin datos\\n")
+        salida.write("Sin datos\n")
     return salida.getvalue().encode("utf-8-sig")
 
 

@@ -11,7 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from core.services.camaras_exportacion import a_csv, a_xlsx, filas_exportacion
+from core.services.camaras_exportacion import (
+    AVISO_SIN_XLSX,
+    a_csv,
+    a_xlsx,
+    filas_exportacion,
+    nombre_archivo_exportacion,
+)
 from core.services.camaras_busqueda_avanzada import SearchRequest, buscar_camaras_avanzada
 from core.services.camaras_consulta import (
     _collect_camara_rutas_info,
@@ -1167,7 +1173,6 @@ def export_cameras_web(
 
     try:
         from db.session import SessionLocal
-        from datetime import datetime, timezone
 
         with SessionLocal() as session:
             rows = filas_exportacion(session, filter_status=filter_status, servicio_id=servicio_id)
@@ -1180,8 +1185,7 @@ def export_cameras_web(
                 len(rows),
             )
 
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-
+            cabeceras = {}
             if format.lower() == "xlsx":
                 contenido_xlsx = a_xlsx(rows)
                 if contenido_xlsx is not None:
@@ -1189,16 +1193,18 @@ def export_cameras_web(
                         content=contenido_xlsx,
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={
-                            "Content-Disposition": f'attachment; filename="camaras_{timestamp}.xlsx"',
+                            "Content-Disposition": f'attachment; filename="{nombre_archivo_exportacion("xlsx")}"',
                         },
                     )
                 logger.warning("action=export_cameras warning=pandas_not_available fallback=csv")
+                cabeceras["X-Export-Warning"] = AVISO_SIN_XLSX
 
             return Response(
                 content=a_csv(rows),
                 media_type="text/csv; charset=utf-8",
                 headers={
-                    "Content-Disposition": f'attachment; filename="camaras_{timestamp}.csv"',
+                    "Content-Disposition": f'attachment; filename="{nombre_archivo_exportacion("csv")}"',
+                    **cabeceras,
                 },
             )
 

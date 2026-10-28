@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -21,6 +20,13 @@ from sqlalchemy.orm import selectinload
 
 from core.parsers.tracking_parser import parse_tracking
 from core.services.camaras_busqueda_avanzada import SearchRequest, buscar_camaras_avanzada
+from core.services.camaras_exportacion import (
+    AVISO_SIN_XLSX,
+    a_csv,
+    a_xlsx,
+    filas_exportacion,
+    nombre_archivo_exportacion,
+)
 from core.services.camaras_consulta import (
     buscar_camaras_por_terminos,
     listar_camaras,
@@ -39,7 +45,6 @@ from core.services.infra_service import (
 from core.services.email_service import EmailAttachment, get_email_service, EmailService
 from db.models.infra import (
     Camara,
-    CamaraEstado,
     Empalme,
     RutaServicio,
     RutaTipo,
@@ -1700,148 +1705,55 @@ class ExportFormat(str, Enum):
 
 
 @router.get("/api/infra/export/cameras")
-async def export_cameras(  # noqa: C901 - API interna; se conserva por decisión del usuario
+async def export_cameras(
     filter_status: Optional[str] = None,
     servicio_id: Optional[str] = None,
     format: ExportFormat = ExportFormat.CSV,
 ) -> Any:
     """Exporta listado de cámaras a CSV o XLSX.
-    
+
     Args:
         filter_status: Filtrar por estado (ALL, LIBRE, OCUPADA, BANEADA, DETECTADA)
         servicio_id: Filtrar cámaras de un servicio específico
         format: Formato de salida (csv o xlsx)
-        
+
     Returns:
-        Archivo CSV o XLSX para descarga
-        
+        Archivo CSV o XLSX para descarga; sin pandas/openpyxl el XLSX sale como CSV con `X-Export-Warning`.
+
     Example:
         >>> GET /api/infra/export/cameras?filter_status=BANEADA&format=xlsx
     """
-    import csv
-    import io
-    from fastapi.responses import StreamingResponse
 
-    def _export() -> tuple[ExportFormat, str, list, str]:
-        from db.models.infra import IncidenteBaneo
-
+    def _export() -> tuple[bytes, str, str, dict[str, str]]:
         with SessionLocal() as session:
-            query = session.query(Camara)
-
-            if filter_status and filter_status.upper() != "ALL":
-                estado_upper = filter_status.upper()
-                if estado_upper in [e.value for e in CamaraEstado]:
-                    query = query.filter(Camara.estado == CamaraEstado(estado_upper))
-
-            if servicio_id:
-                svc = session.query(Servicio).filter(Servicio.servicio_id == servicio_id).first()
-                if svc:
-                    camara_ids = set()
-                    for ruta in svc.rutas_activas:
-                        for empalme in ruta.empalmes:
-                            if empalme.camara:
-                                camara_ids.add(empalme.camara.id)
-                    if camara_ids:
-                        query = query.filter(Camara.id.in_(camara_ids))
-                    else:
-                        query = query.filter(Camara.id == -1)
-
-            camaras = query.order_by(Camara.nombre).all()
-
-            baneos_activos = session.query(IncidenteBaneo).filter(
-                IncidenteBaneo.activo == True  # noqa: E712
-            ).all()
-            ticket_por_servicio: dict[str, str] = {
-                b.servicio_protegido_id: b.ticket_asociado or f"INC-{b.id}"
-                for b in baneos_activos
-            }
-
-            rows = []
-            for cam in camaras:
-                servicios_cat6 = []
-                for empalme in cam.empalmes:
-                    for srv in empalme.servicios:
-                        if srv.servicio_id and srv.servicio_id not in servicios_cat6:
-                            servicios_cat6.append(srv.servicio_id)
-
-                ticket_baneo = ""
-                if cam.estado == CamaraEstado.BANEADA:
-                    for svc_id in servicios_cat6:
-                        if svc_id in ticket_por_servicio:
-                            ticket_baneo = ticket_por_servicio[svc_id]
-                            break
-
-                rows.append({
-                    "ID": cam.id,
-                    "Nombre": cam.nombre or "",
-                    "Fontine_ID": cam.fontine_id or "",
-                    "Dirección": cam.direccion or "",
-                    "Estado": cam.estado.value if cam.estado else "LIBRE",
-                    "Servicios_Cat6": ", ".join(servicios_cat6),
-                    "Ticket_Baneo": ticket_baneo,
-                    "Latitud": cam.latitud or "",
-                    "Longitud": cam.longitud or "",
-                    "Origen_Datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
-                })
-
-            logger.info(
-                "action=export_cameras filter_status=%s servicio=%s format=%s rows=%d",
-                filter_status, servicio_id, format.value, len(rows),
-            )
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            return format, timestamp, rows, ""
+            rows = filas_exportacion(session, filter_status=filter_status, servicio_id=servicio_id)
+        logger.info(
+            "action=export_cameras filter_status=%s servicio=%s format=%s rows=%d",
+            filter_status, servicio_id, format.value, len(rows),
+        )
+        cabeceras: dict[str, str] = {}
+        if format == ExportFormat.XLSX:
+            contenido = a_xlsx(rows)
+            if contenido is not None:
+                return (
+                    contenido,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    nombre_archivo_exportacion("xlsx"),
+                    cabeceras,
+                )
+            logger.warning("action=export_cameras warning=pandas_not_available fallback=csv")
+            cabeceras["X-Export-Warning"] = AVISO_SIN_XLSX
+        return a_csv(rows), "text/csv; charset=utf-8", nombre_archivo_exportacion("csv"), cabeceras
 
     try:
-        fmt, timestamp, rows, _ = await asyncio.to_thread(_export)
+        contenido, media_type, nombre, cabeceras = await asyncio.to_thread(_export)
     except HTTPException:
         raise
     except Exception as exc:
         return error_interno("export_cameras", exc)
 
-    if fmt == ExportFormat.CSV:
-        output = io.StringIO()
-        if rows:
-            writer = csv.DictWriter(output, fieldnames=rows[0].keys())
-            writer.writeheader()
-            writer.writerows(rows)
-        else:
-            output.write("Sin datos\n")
-        content = output.getvalue().encode("utf-8-sig")
-        return StreamingResponse(
-            io.BytesIO(content),
-            media_type="text/csv; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="camaras_{timestamp}.csv"'},
-        )
-
-    else:  # XLSX
-        try:
-            import pandas as pd
-
-            df = pd.DataFrame(rows)
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                df.to_excel(writer, sheet_name="Cámaras", index=False)
-            output.seek(0)
-            return StreamingResponse(
-                output,
-                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                headers={"Content-Disposition": f'attachment; filename="camaras_{timestamp}.xlsx"'},
-            )
-        except ImportError:
-            logger.warning("action=export_cameras warning=pandas_not_available fallback=csv")
-            output_csv = io.StringIO()
-            if rows:
-                writer = csv.DictWriter(output_csv, fieldnames=rows[0].keys())
-                writer.writeheader()
-                writer.writerows(rows)
-            else:
-                output_csv.write("Sin datos\n")
-            content = output_csv.getvalue().encode("utf-8-sig")
-            return StreamingResponse(
-                io.BytesIO(content),
-                media_type="text/csv; charset=utf-8",
-                headers={
-                    "Content-Disposition": f'attachment; filename="camaras_{timestamp}.csv"',
-                    "X-Export-Warning": "XLSX no disponible, exportando como CSV",
-                },
-            )
+    return Response(
+        content=contenido,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{nombre}"', **cabeceras},
+    )

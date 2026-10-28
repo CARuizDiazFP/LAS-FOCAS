@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import builtins
 import io
+import re
 from types import SimpleNamespace
 
 import pandas as pd
@@ -68,8 +69,13 @@ def test_csv_bom_encabezados_y_no_ascii():
     assert '"Calle ""Ñ"", 5"' in texto and "\r\n" in texto
 
 
-def test_csv_sin_filas_literal_con_barra_invertida():
-    assert ce.a_csv([]) == "﻿Sin datos\\n".encode("utf-8")
+def test_csv_sin_filas_con_salto_de_linea_real():
+    assert ce.a_csv([]) == b"\xef\xbb\xbfSin datos\n"
+
+
+def test_nombre_archivo_exportacion_usa_timestamp_utc():
+    assert re.fullmatch(r"camaras_\d{8}_\d{6}\.xlsx", ce.nombre_archivo_exportacion("xlsx"))
+    assert ce.nombre_archivo_exportacion("csv").endswith(".csv")
 
 
 def test_xlsx_se_lee_de_vuelta():
@@ -199,3 +205,48 @@ def test_filtros_de_estado_y_servicio_se_combinan(sesion_real):
     _sembrar_servicio(sesion_real, camaras, f"{PREFIJO}-SRV3")
     filas = ce.filas_exportacion(sesion_real, filter_status="LIBRE", servicio_id=f"{PREFIJO}-SRV3")
     assert [f["Nombre"] for f in filas] == [f"{PREFIJO}-C"]
+
+
+# --- Routers: sin XLSX disponible se exporta CSV con X-Export-Warning (D4) ---------------------
+
+
+def _sesion_falsa():
+    from unittest.mock import MagicMock
+
+    sesion = MagicMock()
+    sesion.__enter__.return_value = sesion
+    return MagicMock(return_value=sesion)
+
+
+def _verificar_fallback_csv(res):
+    assert res.status_code == 200, res.text
+    assert res.headers["x-export-warning"] == ce.AVISO_SIN_XLSX
+    assert res.headers["content-type"] == "text/csv; charset=utf-8"
+    assert res.headers["content-disposition"].endswith('.csv"')
+    assert res.content == b"\xef\xbb\xbfSin datos\n"
+
+
+def test_web_xlsx_no_disponible_avisa_y_devuelve_csv(con_sesion, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from web.app.main import app as app_web
+    from web.app.routers import camaras as router
+
+    con_sesion("admin")
+    monkeypatch.setattr("db.session.SessionLocal", _sesion_falsa())
+    monkeypatch.setattr(router, "filas_exportacion", lambda *a, **k: [])
+    monkeypatch.setattr(router, "a_xlsx", lambda filas: None)
+    _verificar_fallback_csv(TestClient(app_web).get("/api/infra/export/cameras", params={"format": "xlsx"}))
+
+
+def test_api_xlsx_no_disponible_avisa_y_devuelve_csv(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from api.app.main import app as app_api
+    from api.app.routes import infra as router
+
+    monkeypatch.setattr(router, "SessionLocal", _sesion_falsa())
+    monkeypatch.setattr(router, "filas_exportacion", lambda *a, **k: [])
+    monkeypatch.setattr(router, "a_xlsx", lambda filas: None)
+    cliente = TestClient(app_api, headers={"Authorization": "Bearer test-api-key"})
+    _verificar_fallback_csv(cliente.get("/api/infra/export/cameras", params={"format": "xlsx"}))
