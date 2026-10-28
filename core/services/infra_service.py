@@ -711,123 +711,6 @@ class InfraService:
             )
         return None
 
-    def execute_upgrade(
-        self,
-        old_service_db_id: int,
-        new_service_id: str,
-        new_alias: Optional[str],
-        raw_content: str,
-        filename: str,
-    ) -> Dict[str, Any]:
-        """Ejecuta un upgrade de servicio.
-        
-        El upgrade consiste en:
-        1. Cambiar el servicio_id del servicio existente al nuevo ID
-        2. Mover el ID anterior a alias_ids para mantener referencia histórica
-        3. Actualizar el alias si se proporciona
-        4. Agregar el nuevo raw_file_content a la ruta principal
-        
-        Args:
-            old_service_db_id: ID de base de datos del servicio a migrar
-            new_service_id: Nuevo ID del servicio
-            new_alias: Alias del nuevo tracking (ej: C1, C2)
-            raw_content: Contenido del nuevo archivo de tracking
-            filename: Nombre del archivo
-            
-        Returns:
-            Dict con resultado de la operación
-        """
-        try:
-            # Buscar el servicio a migrar
-            servicio = self.session.query(Servicio).filter(
-                Servicio.id == old_service_db_id
-            ).first()
-            
-            if not servicio:
-                return {
-                    "success": False,
-                    "error": f"Servicio con ID de BD {old_service_db_id} no encontrado",
-                }
-            
-            old_service_id = servicio.servicio_id
-
-            # Verificar que el nuevo ID no exista ya. Deliberadamente NO usa
-            # `_find_servicio_by_identificador` (Tarea 3, 2026-08-23): es un guard de colisión
-            # ("este servicio_id todavía debe estar libre"), semánticamente distinto de "encontrar
-            # el Servicio para reusarlo por cualquiera de sus identificadores" — usar el matching
-            # por alias acá sería MÁS restrictivo y podría bloquear un upgrade legítimo por una
-            # coincidencia incidental de alias/numero_primer_servicio en otro Servicio.
-            existing_new = self.session.query(Servicio).filter(
-                Servicio.servicio_id == new_service_id
-            ).first()
-            
-            if existing_new and existing_new.id != old_service_db_id:
-                return {
-                    "success": False,
-                    "error": f"Ya existe un servicio con ID {new_service_id}",
-                }
-            
-            # Guardar el ID anterior en alias_ids
-            current_aliases = servicio.alias_ids or []
-            if old_service_id not in current_aliases:
-                current_aliases.append(old_service_id)
-            servicio.alias_ids = current_aliases
-            
-            # Actualizar el servicio_id
-            servicio.servicio_id = new_service_id
-            
-            # Si hay un alias nuevo, agregarlo también
-            if new_alias and new_alias not in servicio.alias_ids:
-                servicio.alias_ids = servicio.alias_ids + [new_alias]
-            
-            # Actualizar la ruta principal con el nuevo contenido
-            ruta_principal = None
-            for ruta in servicio.rutas:
-                if ruta.tipo == RutaTipo.PRINCIPAL or ruta.nombre == "Principal":
-                    ruta_principal = ruta
-                    break
-            
-            if ruta_principal:
-                # Actualizar el raw_file_content y nombre del archivo
-                ruta_principal.raw_file_content = raw_content
-                ruta_principal.nombre_archivo_origen = filename
-                # Actualizar hash
-                from core.services.infra_service import compute_tracking_hash
-                ruta_principal.hash_contenido = compute_tracking_hash(raw_content)
-            
-            self.session.commit()
-            
-            logger.info(
-                "action=execute_upgrade success=true old_id=%s new_id=%s db_id=%d rutas=%d",
-                old_service_id,
-                new_service_id,
-                servicio.id,
-                len(servicio.rutas),
-            )
-            
-            return {
-                "success": True,
-                "action": "CONFIRM_UPGRADE",
-                "old_service_id": old_service_id,
-                "new_service_id": new_service_id,
-                "servicio_db_id": servicio.id,
-                "rutas_migradas": len(servicio.rutas),
-                "message": f"Servicio migrado exitosamente: {old_service_id} → {new_service_id}",
-            }
-            
-        except Exception as exc:
-            self.session.rollback()
-            logger.exception(
-                "action=execute_upgrade_error old_db_id=%d new_id=%s error=%s",
-                old_service_db_id,
-                new_service_id,
-                exc,
-            )
-            return {
-                "success": False,
-                "error": f"Error durante el upgrade: {exc!s}",
-            }
-
     # -------------------------------------------------------------------------
     # FASE 2: RESOLUCIÓN
     # -------------------------------------------------------------------------
@@ -1423,7 +1306,7 @@ class InfraService:
                 error=f"Servicio viejo '{old_service_id}' no encontrado",
             )
         
-        # Verificar que el nuevo ID no exista. Mismo criterio que `execute_upgrade`: guard de
+        # Verificar que el nuevo ID no exista. Guard de
         # colisión, no búsqueda por alias — no se reemplaza por `_find_servicio_by_identificador`.
         existing_new = self.session.query(Servicio).filter(
             Servicio.servicio_id == parsed.servicio_id

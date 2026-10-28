@@ -543,6 +543,21 @@ class TestUbicacionesSinMatchPorAccion:
         assert result.ubicaciones_sin_match == 3
         assert result.camaras_nuevas == 0
 
+    def test_confirm_upgrade_servicio_viejo_inexistente_sin_texto_de_excepcion(self, mock_session):
+        """Review Focus 4: `old_service_id` que no existe da `success=False` con mensaje propio."""
+        service = InfraService(mock_session)
+        result = service.resolve_tracking(
+            ResolveAction.CONFIRM_UPGRADE,
+            SAMPLE_TRACKING_CONTENT,
+            "FO 111995 C2.txt",
+            old_service_id="ZZ-NO-EXISTE",
+        )
+
+        assert result.success is False
+        assert result.error == "Servicio viejo 'ZZ-NO-EXISTE' no encontrado"
+        assert "Traceback" not in (result.error or "") and "Exception" not in (result.error or "")
+        mock_session.commit.assert_not_called()
+
     @patch("core.services.infra_service._resolve_camara_o_registrar_sin_match")
     def test_add_strand(self, mock_resolve, mock_session, mock_servicio):
         mock_resolve.return_value = None

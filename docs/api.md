@@ -1158,12 +1158,13 @@ Ejecuta la acción seleccionada tras el análisis.
 
   | Campo           | Tipo   | Requerido | Descripción |
   |-----------------|--------|-----------|-------------|
-  | `action`        | string | Sí        | `CREATE_NEW`, `MERGE_APPEND`, `REPLACE`, `BRANCH` |
+  | `action`        | string | Sí        | `CREATE_NEW`, `MERGE_APPEND`, `REPLACE`, `BRANCH`, `ADD_STRAND`, `CONFIRM_UPGRADE`, `SKIP` (no hace nada). Otra acción: 400 |
   | `content`       | string | Sí        | Contenido del archivo de tracking |
   | `filename`      | string | Sí        | Nombre del archivo |
   | `target_ruta_id`| int    | Condicional | Requerido para `MERGE_APPEND` y `REPLACE` |
   | `new_ruta_name` | string | Condicional | Nombre de la nueva ruta (para `BRANCH`, default: "Camino 2") |
-  | `new_ruta_tipo` | string | No        | `PRINCIPAL`, `ALTERNATIVA`, `BACKUP` (default: `ALTERNATIVA`) |
+  | `new_ruta_tipo` | string | No        | `PRINCIPAL`, `ALTERNATIVA`, `BACKUP` (default: `ALTERNATIVA`; otro valor: 400) |
+  | `old_service_id`| string | Condicional | Requerido para `CONFIRM_UPGRADE` (el panel ignora `old_service_db_id`) |
 
 - **Acciones disponibles:**
 

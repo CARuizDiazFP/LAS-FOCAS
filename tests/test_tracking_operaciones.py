@@ -140,3 +140,39 @@ def test_original_con_y_sin_nombre():
     assert ops.obtener_tracking_original(SesionDoble(ruta), 7) == ops.TrackingOriginal("tracking_ruta_7.txt", "abc")
     ruta.nombre_archivo_origen = "FO 1.txt"
     assert ops.obtener_tracking_original(SesionDoble(ruta), 7).filename == "FO 1.txt"
+
+
+# --- Resolución (Task 11) ---------------------------------------------------------------------------
+
+def test_parsear_accion_resolve():
+    from core.services.infra_service import ResolveAction
+
+    assert ops.parsear_accion_resolve("confirm_upgrade") is ResolveAction.CONFIRM_UPGRADE
+    assert ops.parsear_accion_resolve("Create_New") is ResolveAction.CREATE_NEW
+    assert ops.parsear_accion_resolve("skip") is None
+    with pytest.raises(ops.AccionResolveInvalida):
+        ops.parsear_accion_resolve("NO_EXISTE")
+
+
+def test_parsear_ruta_tipo():
+    from db.models.infra import RutaTipo
+
+    assert ops.parsear_ruta_tipo(None) is RutaTipo.ALTERNATIVA
+    assert ops.parsear_ruta_tipo("") is RutaTipo.ALTERNATIVA
+    assert ops.parsear_ruta_tipo("backup") is RutaTipo.BACKUP
+    with pytest.raises(ops.RutaTipoInvalido):
+        ops.parsear_ruta_tipo("x")
+
+
+def test_serializar_resolucion_claves_del_panel():
+    from core.services.infra_service import ResolveAction, ResolveResult
+
+    datos = ops.serializar_resolucion(
+        ResolveResult(success=False, action=ResolveAction.REPLACE, servicio_id="1", error="e", message="m")
+    )
+    assert set(datos) == {
+        "success", "action", "servicio_id", "servicio_db_id", "ruta_id", "ruta_nombre", "camaras_nuevas",
+        "camaras_existentes", "empalmes_creados", "empalmes_asociados", "ubicaciones_sin_match", "message",
+        "error",
+    }
+    assert datos["action"] == "REPLACE" and datos["success"] is False and datos["error"] == "e"

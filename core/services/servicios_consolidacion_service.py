@@ -10,7 +10,7 @@ alto (numéricamente) es siempre el ID de línea vigente — no hace falta perse
 
 `servicio_id` (el campo que ya leen el bot de Slack y la UI de cables) sólo se sobreescribe si su
 valor actual es numérico o no existía todavía — si el módulo de tracking físico
-(`core/services/infra_service.py::execute_upgrade`) ya lo dejó en un ID no numérico (ej. "O1C1"),
+(`core/services/infra_service.py::_action_confirm_upgrade`) ya lo dejó en un ID no numérico (ej. "O1C1"),
 esa fila queda fuera de la autoridad de esta consolidación; el nuevo ID conocido de todas formas se
 agrega a `alias_ids` para que el matching de Cromo lo resuelva igual.
 

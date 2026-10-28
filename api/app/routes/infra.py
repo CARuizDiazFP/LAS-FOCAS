@@ -50,13 +50,15 @@ from core.services.camaras_consulta import (
 )
 from core.services.infra_sync import sync_camaras_from_sheet
 from core.services.infra_service import (
-    ResolveAction,
-    ResolveResult,
     analyze_tracking_file,
     resolve_tracking_file,
 )
 from core.services.tracking_operaciones import (
+    ACCIONES_RESOLVE,
     MAX_TRACKING_MB,
+    RUTA_TIPOS,
+    AccionResolveInvalida,
+    RutaTipoInvalido,
     ResultadoUploadTracking,
     TrackingOriginal,
     TrackingOriginalNoDisponible,
@@ -64,13 +66,15 @@ from core.services.tracking_operaciones import (
     TrackingSinUbicaciones,
     decodificar_tracking,
     obtener_tracking_original,
+    parsear_accion_resolve,
+    parsear_ruta_tipo,
     procesar_tracking_legacy,
     serializar_analisis,
+    serializar_resolucion,
 )
 from db.models.infra import (
     Empalme,
     RutaServicio,
-    RutaTipo,
     Servicio,
 )
 from db.session import SessionLocal, get_async_db
@@ -660,70 +664,47 @@ async def resolve_tracking_endpoint(
     Returns:
         TrackingResolveResponse con el resultado de la operación
     """
-    # Validar acción
     try:
-        action = ResolveAction(body.action.upper())
-    except ValueError:
+        action = parsear_accion_resolve(body.action)
+        ruta_tipo = parsear_ruta_tipo(body.new_ruta_tipo)
+    except AccionResolveInvalida:
         raise HTTPException(
-            status_code=400,
-            detail=f"Acción inválida: {body.action}. Opciones: CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH, CONFIRM_UPGRADE, ADD_STRAND",
+            status_code=400, detail=f"Acción inválida: {body.action}. Opciones: {ACCIONES_RESOLVE}"
         )
-    
-    # Validar tipo de ruta si se especifica
-    ruta_tipo = RutaTipo.ALTERNATIVA
-    if body.new_ruta_tipo:
-        try:
-            ruta_tipo = RutaTipo(body.new_ruta_tipo.upper())
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Tipo de ruta inválido: {body.new_ruta_tipo}. Opciones: PRINCIPAL, BACKUP, ALTERNATIVA",
-            )
-    
-    _action = action
-    _body = body
-    _ruta_tipo = ruta_tipo
+    except RutaTipoInvalido:
+        raise HTTPException(
+            status_code=400, detail=f"Tipo de ruta inválido: {body.new_ruta_tipo}. Opciones: {RUTA_TIPOS}"
+        )
 
-    def _resolve() -> ResolveResult:
+    # SKIP no hace nada (mismo mensaje que el panel)
+    if action is None:
+        return TrackingResolveResponse(
+            success=True, action="SKIP", message="Operación omitida por el usuario"
+        )
+
+    def _resolve() -> dict[str, Any]:
         with SessionLocal() as session:
-            return resolve_tracking_file(
-                session,
-                _action,
-                _body.content,
-                _body.filename,
-                target_ruta_id=_body.target_ruta_id,
-                new_ruta_name=_body.new_ruta_name,
-                new_ruta_tipo=_ruta_tipo,
-                old_service_id=_body.old_service_id,
+            return serializar_resolucion(
+                resolve_tracking_file(
+                    session,
+                    action,
+                    body.content,
+                    body.filename,
+                    target_ruta_id=body.target_ruta_id,
+                    new_ruta_name=body.new_ruta_name,
+                    new_ruta_tipo=ruta_tipo,
+                    old_service_id=body.old_service_id,
+                )
             )
 
     try:
-        result = await asyncio.to_thread(_resolve)
-
-        if not result.success:
-            return TrackingResolveResponse(
-                success=False,
-                action=result.action.value,
-                servicio_id=result.servicio_id,
-                error=result.error,
-                message=result.message,
-            )
-
-        return TrackingResolveResponse(
-            success=True,
-            action=result.action.value,
-            servicio_id=result.servicio_id,
-            servicio_db_id=result.servicio_db_id,
-            ruta_id=result.ruta_id,
-            ruta_nombre=result.ruta_nombre,
-            camaras_nuevas=result.camaras_nuevas,
-            camaras_existentes=result.camaras_existentes,
-            empalmes_creados=result.empalmes_creados,
-            empalmes_asociados=result.empalmes_asociados,
-            ubicaciones_sin_match=result.ubicaciones_sin_match,
-            message=result.message,
-        )
-
+        datos = await asyncio.to_thread(_resolve)
+        if not datos["success"]:
+            # Un fallo sólo informa acción, servicio y motivo (los contadores no aplican).
+            datos = {k: datos[k] for k in ("success", "action", "servicio_id", "error", "message")}
+        else:
+            datos.pop("error")
+        return TrackingResolveResponse(**datos)
     except HTTPException:
         raise
     except Exception as exc:

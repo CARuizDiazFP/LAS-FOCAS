@@ -24,16 +24,23 @@ from ..comun import (
     leer_upload_sync,
     logger,
 )
-from core.services.infra_service import analyze_tracking_file
+from core.services.infra_service import analyze_tracking_file, resolve_tracking_file
 from core.services.tracking_operaciones import (
+    ACCIONES_RESOLVE,
     MAX_TRACKING_MB,
+    RUTA_TIPOS,
+    AccionResolveInvalida,
+    RutaTipoInvalido,
     TrackingOriginalNoDisponible,
     TrackingSinServicioId,
     TrackingSinUbicaciones,
     decodificar_tracking,
     obtener_tracking_original,
+    parsear_accion_resolve,
+    parsear_ruta_tipo,
     procesar_tracking_legacy,
     serializar_analisis,
+    serializar_resolucion,
 )
 from db.session import SessionLocal
 
@@ -2202,7 +2209,7 @@ class TrackingResolveRequestModel(BaseModel):
     new_ruta_tipo: Optional[str] = None  # PRINCIPAL, BACKUP, ALTERNATIVA
     # Campos para upgrade
     old_service_id: Optional[str] = None  # ID del servicio a migrar
-    old_service_db_id: Optional[int] = None  # DB ID del servicio a migrar
+    old_service_db_id: Optional[int] = None  # Se acepta y se ignora (el upgrade usa old_service_id)
 
 
 @router.post("/api/infra/trackings/analyze")
@@ -2246,123 +2253,53 @@ def resolve_tracking_web(
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Resuelve un tracking ejecutando la acción (Fase 2 del Portero).
-    
-    Acciones: CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH, ADD_STRAND, SKIP
+
+    Acciones: CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH, ADD_STRAND, CONFIRM_UPGRADE y SKIP.
+    `old_service_db_id` se acepta por compatibilidad y se ignora: el upgrade lo resuelve core con
+    `old_service_id`.
     """
     username, _ = usuario
-    
-    # Validar acción
-    valid_actions = ["CREATE_NEW", "MERGE_APPEND", "REPLACE", "BRANCH", "ADD_STRAND", "SKIP", "CONFIRM_UPGRADE"]
-    action_upper = body.action.upper()
-    if action_upper not in valid_actions:
+
+    try:
+        action = parsear_accion_resolve(body.action)
+        ruta_tipo = parsear_ruta_tipo(body.new_ruta_tipo)
+    except AccionResolveInvalida:
         return JSONResponse(
-            {"error": f"Acción inválida: {body.action}. Opciones: {', '.join(valid_actions)}"},
-            status_code=400
+            {"error": f"Acción inválida: {body.action}. Opciones: {ACCIONES_RESOLVE}"}, status_code=400
         )
-    
+    except RutaTipoInvalido:
+        return JSONResponse(
+            {"error": f"Tipo de ruta inválido: {body.new_ruta_tipo}. Opciones: {RUTA_TIPOS}"}, status_code=400
+        )
+
     # SKIP no hace nada
-    if action_upper == "SKIP":
+    if action is None:
         return JSONResponse({
             "success": True,
             "action": "SKIP",
             "message": "Operación omitida por el usuario",
         })
-    
-    # CONFIRM_UPGRADE: Migrar servicio antiguo al nuevo ID
-    if action_upper == "CONFIRM_UPGRADE":
-        if not body.old_service_id or not body.old_service_db_id:
-            return JSONResponse(
-                {"error": "Se requiere old_service_id y old_service_db_id para CONFIRM_UPGRADE"},
-                status_code=400
-            )
-        
-        try:
-            from core.services.infra_service import InfraService
-            from core.parsers.tracking_parser import parse_tracking
-            from db.session import SessionLocal
-            
-            with SessionLocal() as session:
-                service = InfraService(session)
-                
-                # Parsear el nuevo archivo para obtener el nuevo ID
-                parsed = parse_tracking(body.content, body.filename)
-                new_service_id = parsed.servicio_id
-                new_alias = parsed.alias_id
-                
-                # Ejecutar el upgrade
-                result = service.execute_upgrade(
-                    old_service_db_id=body.old_service_db_id,
-                    new_service_id=new_service_id,
-                    new_alias=new_alias,
-                    raw_content=body.content,
-                    filename=body.filename,
-                )
-                
-                logger.info(
-                    "action=confirm_upgrade user=%s old_id=%s new_id=%s success=%s",
-                    username,
-                    body.old_service_id,
-                    new_service_id,
-                    result.get('success', False),
-                )
-                
-                return JSONResponse(result)
-                
-        except (HTTPException, ErrorDeDominio):
-            raise
-        except Exception as exc:
-            return error_interno("confirm_upgrade", exc, user=username, old_id=body.old_service_id)
-    
+
     try:
-        from core.services.infra_service import InfraService, ResolveAction, RutaTipo
-        from db.session import SessionLocal
-        
-        # Convertir acción
-        action = ResolveAction(action_upper)
-        
-        # Convertir tipo de ruta si se especifica
-        ruta_tipo = RutaTipo.ALTERNATIVA
-        if body.new_ruta_tipo:
-            try:
-                ruta_tipo = RutaTipo(body.new_ruta_tipo.upper())
-            except ValueError:
-                pass  # Usar default
-        
         with SessionLocal() as session:
-            service = InfraService(session)
-            result = service.resolve_tracking(
-                action=action,
-                raw_content=body.content,
-                filename=body.filename,
+            result = resolve_tracking_file(
+                session,
+                action,
+                body.content,
+                body.filename,
                 target_ruta_id=body.target_ruta_id,
                 new_ruta_name=body.new_ruta_name,
                 new_ruta_tipo=ruta_tipo,
+                old_service_id=body.old_service_id,
             )
-            
             logger.info(
                 "action=resolve_tracking user=%s action=%s servicio=%s success=%s",
                 username,
-                action_upper,
+                action.value,
                 result.servicio_id,
                 result.success,
             )
-            
-            return JSONResponse({
-                "success": result.success,
-                "action": result.action.value,
-                "servicio_id": result.servicio_id,
-                "servicio_db_id": result.servicio_db_id,
-                "ruta_id": result.ruta_id,
-                "ruta_nombre": result.ruta_nombre,
-                "camaras_nuevas": result.camaras_nuevas,
-                "camaras_existentes": result.camaras_existentes,
-                "empalmes_creados": result.empalmes_creados,
-                "empalmes_asociados": result.empalmes_asociados,
-                "ubicaciones_sin_match": result.ubicaciones_sin_match,
-                "message": result.message,
-                "error": result.error,
-            })
-            
+            return JSONResponse(serializar_resolucion(result))
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:

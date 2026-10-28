@@ -989,7 +989,7 @@ dejaban botellas/cámaras baneadas para siempre al cerrarse; 74 filas reales que
 - **Bug 1 (confirmado, fixeado)**: `Servicio.alias_ids` mezcla dos dominios sin distinguirlos — IDs
   numéricos históricos de línea (los que arma `consolidar_identidad_servicio` en la ingesta SLA, ver
   entrada 2026-08-26) y alias físicos de tracking FO tipo "C2"/"O1C1" que
-  `core/services/infra_service.py::execute_upgrade`/`_action_confirm_upgrade` agregan al mismo array
+  `core/services/infra_service.py::_action_confirm_upgrade` agrega al mismo array
   al confirmar un upgrade de pelo/hilo (extraídos del nombre del archivo de tracking subido). El
   computed `historicoIds` de `ServicioDetalleView.vue` (Tarea 9 del plan de trazabilidad de IDs,
   commit `41e7e71`) concatenaba todo `alias_ids` sin filtrar. Fix: filtrar a sólo valores `/^\d+$/`

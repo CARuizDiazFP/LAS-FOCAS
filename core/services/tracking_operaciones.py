@@ -22,10 +22,12 @@ from sqlalchemy.orm import Session
 from core.parsers.tracking_parser import parse_tracking
 from core.services.infra_service import (
     AnalysisResult,
+    ResolveAction,
+    ResolveResult,
     _get_or_create_empalme,
     _resolve_camara_o_registrar_sin_match,
 )
-from db.models.infra import Camara, Empalme, RutaServicio, Servicio
+from db.models.infra import Camara, Empalme, RutaServicio, RutaTipo, Servicio
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,14 @@ class TrackingSinUbicaciones(ValueError):
 
 class TrackingOriginalNoDisponible(LookupError):
     """La ruta existe pero no tiene guardado el archivo original (`raw_file_content`)."""
+
+
+class AccionResolveInvalida(ValueError):
+    """La acción pedida no existe (ni es `SKIP`)."""
+
+
+class RutaTipoInvalido(ValueError):
+    """El tipo de ruta pedido no es PRINCIPAL/BACKUP/ALTERNATIVA."""
 
 
 @dataclass
@@ -193,6 +203,60 @@ def serializar_analisis(result: AnalysisResult) -> dict[str, Any]:
         hash_match=result.ruta_identica_id is not None,
     )
     return datos
+
+
+# --- Resolución -------------------------------------------------------------------------------------
+
+ACCIONES_RESOLVE = ", ".join([a.value for a in ResolveAction] + ["SKIP"])
+RUTA_TIPOS = ", ".join(t.value for t in RutaTipo)
+
+
+def parsear_accion_resolve(valor: str) -> ResolveAction | None:
+    """Acción de `resolve` (sin distinguir mayúsculas); `None` significa `SKIP` (no hace nada).
+
+    Raises:
+        AccionResolveInvalida: la acción no existe.
+    """
+    texto = (valor or "").upper()
+    if texto == "SKIP":
+        return None
+    try:
+        return ResolveAction(texto)
+    except ValueError:
+        raise AccionResolveInvalida(valor) from None
+
+
+def parsear_ruta_tipo(valor: str | None) -> RutaTipo:
+    """Tipo de ruta pedido; vacío cae a `ALTERNATIVA` (D11).
+
+    Raises:
+        RutaTipoInvalido: el valor no es un `RutaTipo`.
+    """
+    if not valor:
+        return RutaTipo.ALTERNATIVA
+    try:
+        return RutaTipo(valor.upper())
+    except ValueError:
+        raise RutaTipoInvalido(valor) from None
+
+
+def serializar_resolucion(result: ResolveResult) -> dict[str, Any]:
+    """Dict JSON completo de un `ResolveResult` (forma del panel; la API toma las claves que usa)."""
+    return {
+        "success": result.success,
+        "action": result.action.value,
+        "servicio_id": result.servicio_id,
+        "servicio_db_id": result.servicio_db_id,
+        "ruta_id": result.ruta_id,
+        "ruta_nombre": result.ruta_nombre,
+        "camaras_nuevas": result.camaras_nuevas,
+        "camaras_existentes": result.camaras_existentes,
+        "empalmes_creados": result.empalmes_creados,
+        "empalmes_asociados": result.empalmes_asociados,
+        "ubicaciones_sin_match": result.ubicaciones_sin_match,
+        "message": result.message,
+        "error": result.error,
+    }
 
 
 # --- Descarga del original --------------------------------------------------------------------------
