@@ -232,6 +232,7 @@ import { useRoute, useRouter } from 'vue-router';
 
 import AdminPageHeader from '../components/AdminPageHeader.vue';
 import ViewerShell from '../../components/viewer/ViewerShell.vue';
+import { useCorridaSse } from '../../composables/useCorridaSse';
 import { usePaginatedSearch } from '../../composables/usePaginatedSearch';
 import {
   CAUSAS_HUERFANO,
@@ -241,7 +242,6 @@ import {
   listarHuerfanos,
   normalizarHuerfanos,
   obtenerAuditoriaGlobal,
-  streamUrlAuditoria,
   type CorridaAuditoria,
   type HuerfanoItem,
   type ResultadoRevisionHuerfanos,
@@ -274,13 +274,7 @@ const ultimoServicio = ref<number | null>(null);
 const lanzando = ref(false);
 const auditoriaEnCurso = computed(() => auditoria.value?.estado === 'EN_CURSO');
 
-let eventSource: EventSource | null = null;
-const BACKOFF_INICIAL_MS = 2000;
-const BACKOFF_MAXIMO_MS = 30000;
-let backoffMs = BACKOFF_INICIAL_MS;
-let reintentoTimer: ReturnType<typeof setTimeout> | null = null;
-let ultimoEventoId = 0;
-let corridaStream: number | null = null;
+let corridaErrores: number | null = null;
 const erroresAuditoria = ref<string[]>([]);
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -420,86 +414,39 @@ function descartarSeleccion(): void {
 
 // ── Auditoría global: progreso por el SSE de corridas ─────────────────────
 
-function cerrarStream(): void {
-  eventSource?.close();
-  eventSource = null;
-}
+// El composable maneja el EventSource, el backoff y `?desde=`; acá sólo se aplica cada evento.
+const sse = useCorridaSse({
+  recargarEstado: cargarAuditoria,
+  onInicio: (data) => {
+    if (auditoria.value) auditoria.value.total_objetivo = data.total_objetivo as number | null;
+  },
+  onPagina: (data) => {
+    if (!auditoria.value) return;
+    auditoria.value.leidas = data.leidas as number;
+    auditoria.value.errores = data.errores as number;
+    if (data.total != null) auditoria.value.total_objetivo = data.total as number;
+    ultimoServicio.value = (data.servicio_id as number | null | undefined) ?? null;
+  },
+  onResumen: (data) => {
+    if (auditoria.value) {
+      auditoria.value.estado = data.estado as string;
+      auditoria.value.leidas = data.leidas as number;
+      auditoria.value.errores = data.errores as number;
+    }
+    void recargarDesdeCero();
+  },
+  onErrorNegocio: (detalle) => {
+    erroresAuditoria.value = [detalle, ...erroresAuditoria.value].slice(0, 10);
+  },
+});
 
-function cancelarReintento(): void {
-  if (reintentoTimer) clearTimeout(reintentoTimer);
-  reintentoTimer = null;
-}
-
-/** Id del último evento visto de esta corrida. Un evento ya visto se ignora (por si el servidor
- * repite al reconectar) y se reanuda desde ahí con `?desde=`. */
-function eventoNuevo(ev: Event): boolean {
-  const id = Number.parseInt((ev as MessageEvent).lastEventId ?? '', 10);
-  if (!Number.isFinite(id)) return true;
-  if (id <= ultimoEventoId) return false;
-  ultimoEventoId = id;
-  backoffMs = BACKOFF_INICIAL_MS;
-  return true;
-}
-
+/** Al cambiar de corrida se limpian los errores de la anterior. */
 function conectarStream(corridaId: number): void {
-  cerrarStream();
-  cancelarReintento();
-  if (corridaStream !== corridaId) {
-    corridaStream = corridaId;
-    ultimoEventoId = 0;
+  if (corridaErrores !== corridaId) {
+    corridaErrores = corridaId;
     erroresAuditoria.value = [];
   }
-  const es = new EventSource(streamUrlAuditoria(corridaId, ultimoEventoId || undefined));
-  eventSource = es;
-  es.addEventListener('inicio', (ev) => {
-    if (!eventoNuevo(ev)) return;
-    const data = JSON.parse((ev as MessageEvent).data);
-    if (auditoria.value) auditoria.value.total_objetivo = data.total_objetivo;
-  });
-  es.addEventListener('pagina', (ev) => {
-    if (!eventoNuevo(ev)) return;
-    const data = JSON.parse((ev as MessageEvent).data);
-    if (!auditoria.value) return;
-    auditoria.value.leidas = data.leidas;
-    auditoria.value.errores = data.errores;
-    if (data.total != null) auditoria.value.total_objetivo = data.total;
-    ultimoServicio.value = data.servicio_id ?? null;
-  });
-  es.addEventListener('resumen', (ev) => {
-    if (!eventoNuevo(ev)) return;
-    const data = JSON.parse((ev as MessageEvent).data);
-    if (auditoria.value) {
-      auditoria.value.estado = data.estado;
-      auditoria.value.leidas = data.leidas;
-      auditoria.value.errores = data.errores;
-    }
-    cerrarStream();
-    void recargarDesdeCero();
-  });
-  // El tipo "error" lo usan DOS cosas: el evento SSE de negocio (`event: error`, un Servicio que
-  // falló: MessageEvent con `data`) y la caída de la conexión (Event sin `data`). El de negocio se
-  // muestra y nada más; sólo la caída real cierra y reintenta, con backoff y desde el último id.
-  es.addEventListener('error', (ev) => {
-    if (ev instanceof MessageEvent && ev.data) {
-      if (!eventoNuevo(ev)) return;
-      try {
-        const data = JSON.parse(ev.data);
-        erroresAuditoria.value = [String(data.detalle ?? ev.data), ...erroresAuditoria.value].slice(0, 10);
-      } catch {
-        erroresAuditoria.value = [String(ev.data), ...erroresAuditoria.value].slice(0, 10);
-      }
-      return;
-    }
-    // Cualquier error de conexión (también CONNECTING): se cierra y se relee el estado. Si la
-    // corrida terminó sin RESUMEN (p.ej. el worker la reconcilió a FALLIDA al reiniciar), el
-    // servidor cierra el stream en cada reconexión y el navegador reintentaría para siempre;
-    // `cargarAuditoria` ve el estado terminal y no reconecta. Si sigue EN_CURSO, reanuda con
-    // `?desde=` tras el backoff.
-    cerrarStream();
-    const espera = backoffMs;
-    backoffMs = Math.min(backoffMs * 2, BACKOFF_MAXIMO_MS);
-    reintentoTimer = setTimeout(() => void cargarAuditoria(), espera);
-  });
+  sse.conectar(corridaId);
 }
 
 async function cargarAuditoria(): Promise<void> {
@@ -545,8 +492,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (debounceTimer) clearTimeout(debounceTimer);
-  cancelarReintento();
-  cerrarStream();
 });
 </script>
 
