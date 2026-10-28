@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio  # noqa: F401  (los tests parchean web_main.asyncio.to_thread)
+import inspect
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -96,13 +97,13 @@ async def _lifespan(_app: FastAPI):
     """
     await abrir_cliente_api_interna()
     for handler in _app.router.on_startup:
-        await handler() if asyncio.iscoroutinefunction(handler) else handler()
+        await handler() if inspect.iscoroutinefunction(handler) else handler()
     try:
         yield
     finally:
         try:
             for handler in _app.router.on_shutdown:
-                await handler() if asyncio.iscoroutinefunction(handler) else handler()
+                await handler() if inspect.iscoroutinefunction(handler) else handler()
         finally:
             await cerrar_cliente_api_interna()
 

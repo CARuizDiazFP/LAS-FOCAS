@@ -10,6 +10,7 @@ decisión D1-D12 cambie."""
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api.app.main import app as app_api
@@ -78,6 +79,12 @@ def test_web_search_field_invalido_422(con_sesion):
 def test_web_search_mas_de_10_filtros_422(con_sesion):
     filtros = [{"field": "address", "operator": "contains", "value": "a"}] * 11
     res = cliente_web(con_sesion).post("/api/infra/search", json={"filters": filtros, "limit": 5})
+    assert res.status_code == 422
+
+
+@pytest.mark.parametrize("limite", [0, 501])
+def test_web_search_limit_fuera_de_rango_422(con_sesion, limite):
+    res = cliente_web(con_sesion).post("/api/infra/search", json={"filters": [], "limit": limite})
     assert res.status_code == 422
 
 

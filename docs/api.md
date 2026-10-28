@@ -2072,7 +2072,7 @@ Alternativa sin SMTP: genera un `.eml` para abrir y enviar desde el cliente de c
 
 - **Body (form-data):** `incident_id` (int, requerido), `recipients`, `subject`, `html_body`
   (opcionales). Si llegan `subject` o `html_body`, **se guardan** en el incidente
-  (`email_subject`/`email_body`) antes de generar el archivo.
+  (`email_subject`/`email_body`) DESPUÉS de generar el archivo y sólo si el incidente existe.
 - **Adjuntos:** el TXT del tracking de la ruta protegida (o de la primera ruta del servicio con
   contenido), armado con `armar_eml_baneo` (`core/services/baneo_aviso.py`), el mismo que usa el panel; el XLS adjunto trae la columna `Servicios`.
 - **Respuesta 200:** `message/rfc822` con `Content-Disposition: attachment;

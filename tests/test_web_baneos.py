@@ -165,4 +165,3 @@ def test_lift_ban_web_notifica_slack(monkeypatch):
     assert llamadas and llamadas[0][0] == "lift"
     assert llamadas[0][1]["usuario_ejecutor"] == "admin"
     assert llamadas[0][1]["motivo_cierre"] == "Reparado"
-

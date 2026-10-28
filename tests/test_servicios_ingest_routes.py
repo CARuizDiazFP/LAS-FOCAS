@@ -152,7 +152,7 @@ def test_ingest_degrada_categoria_fuera_de_rango_en_vez_de_reventar(client: Test
         }
     )
 
-    with caplog.at_level(logging.WARNING, logger="api.app.routes.servicios"):
+    with caplog.at_level(logging.WARNING, logger="core.services.servicios_ingesta_service"):
         response = client.post(
             "/servicios/ingest",
             files={"file": ("servicios.xlsx", _excel_bytes(df), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},

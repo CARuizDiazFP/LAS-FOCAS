@@ -304,10 +304,7 @@ async def advanced_search_camaras(
 
 
 @router.post("/api/infra/smart-search", response_model=SearchResponse)
-async def smart_search_camaras(
-    request: SmartSearchRequest,
-    db: AsyncSession = Depends(get_async_db),
-) -> SearchResponse:
+async def smart_search_camaras(request: SmartSearchRequest) -> SearchResponse:
     """Smart Search: búsqueda libre por términos.
 
     A diferencia de la búsqueda avanzada (filtros tipados), este endpoint

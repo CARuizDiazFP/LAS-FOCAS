@@ -2168,7 +2168,7 @@ def upload_tracking_web(
 
 class TrackingResolveRequestModel(BaseModel):
     """Request para resolver un tracking."""
-    action: str  # CREATE_NEW, MERGE_APPEND, REPLACE, BRANCH, CONFIRM_UPGRADE
+    action: str  # Ver ACCIONES_RESOLVE (core/services/tracking_operaciones.py)
     content: str
     filename: str
     target_ruta_id: Optional[int] = None

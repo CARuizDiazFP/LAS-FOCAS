@@ -128,7 +128,7 @@ def _collect_camara_servicios_ids(camara: Any, rutas_info: list[dict[str, Any]] 
         for servicio in empalme.servicios:
             if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
                 servicios_ids.append(servicio.servicio_id)
-    return servicios_ids
+    return sorted(servicios_ids)
 
 
 def normalizar_terminos(terminos: list[str]) -> list[str]:
@@ -329,7 +329,7 @@ def listar_camaras(session: Session, *, q: str | None, estado: str | None, limit
         query = query.filter(
             Camara.nombre.ilike(patron) | Camara.direccion.ilike(patron) | Camara.fontine_id.ilike(patron)
         )
-    camaras = query.order_by(Camara.nombre).limit(limit).all()
+    camaras = query.order_by(Camara.nombre, Camara.id).limit(limit).all()
     if texto and not camaras:
         camaras = _camaras_de_servicio(session, texto)
     resultado = []
