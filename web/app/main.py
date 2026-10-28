@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
-from web.app.http_interno import abrir_cliente_api_interna, cerrar_cliente_api_interna
+from .http_interno import abrir_cliente_api_interna, cerrar_cliente_api_interna
 from core.config import get_secret
 from core.logging import setup_logging
 from web.admin_ws import mount_admin_websocket

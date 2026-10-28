@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import httpx
 
-from web.app.comun import INTERNAL_API_BASE_URL
+from .comun import INTERNAL_API_BASE_URL
 
 # Cliente único del proceso. Se abre en el lifespan de la app; si no hay lifespan activo (por ejemplo
 # `TestClient(app)` sin context manager) se crea de forma perezosa en el primer uso.

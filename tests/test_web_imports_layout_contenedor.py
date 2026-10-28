@@ -40,3 +40,15 @@ def test_modulos_sueltos_de_web_no_importan_web_app_sin_fallback():
         if (lineas := _imports_web_app_sin_fallback(ruta))
     }
     assert not hallazgos, f"importan web.app sin fallback a `app`: {hallazgos}"
+
+
+def test_paquete_web_app_no_se_importa_a_si_mismo_como_web_app():
+    # Dentro de web/app vale lo mismo: en la imagen el paquete se llama `app`, así que un
+    # `from web.app.x import ...` tira ModuleNotFoundError al arrancar uvicorn aunque la suite pase.
+    # Real (2026-10-28, P12): main.py y http_interno.py lo hacían y el web de dev no arrancó.
+    hallazgos = {
+        str(ruta.relative_to(WEB.parent)): lineas
+        for ruta in sorted((WEB / "app").rglob("*.py"))
+        if (lineas := _imports_web_app_sin_fallback(ruta))
+    }
+    assert not hallazgos, f"web/app importa web.app (usar import relativo): {hallazgos}"
