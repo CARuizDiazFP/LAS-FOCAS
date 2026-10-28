@@ -639,10 +639,25 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { useSession } from '../../composables/useSession';
-import { descargarEmlBaneo } from '../../api/infra';
-
-const { csrf } = useSession();
+import { ApiError } from '../../api/client';
+import {
+  analizarTracking,
+  baneosActivos,
+  crearBaneo,
+  descargarEmlBaneo,
+  descargarTrackingRuta,
+  exportarCamaras,
+  levantarBaneo,
+  limpiarEmpalmesServicio,
+  notificarBaneoEmail,
+  resolverTracking,
+  rutasDeServicio,
+  smartSearch,
+  type AnalyzeResult,
+  type BanRutaOption,
+  type IncidenteActivo,
+  type ResolverTrackingBody,
+} from '../../api/infra';
 
 // --- Toast ---
 interface Toast { id: number; type: string; title: string; message?: string }
@@ -772,23 +787,13 @@ async function searchCamaras() {
       : 'Cargando cámaras...';
   setStatus(statusMsg, 'loading');
   try {
-    const res = await fetch('/api/infra/smart-search', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf() },
-      body: JSON.stringify({
-        terms: searchTerms.value,
-        limit: PAGE_SIZE,
-        offset: offset.value,
-        incluir_no_operativas: incluirNoOperativas.value,
-        ...(activeStateFilter.value ? { estado: activeStateFilter.value } : {}),
-      }),
+    const data = await smartSearch({
+      terms: searchTerms.value,
+      limit: PAGE_SIZE,
+      offset: offset.value,
+      incluir_no_operativas: incluirNoOperativas.value,
+      ...(activeStateFilter.value ? { estado: activeStateFilter.value } : {}),
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error((err as Record<string, string>).detail ?? (err as Record<string, string>).error ?? `Error ${res.status}`);
-    }
-    const data = await res.json();
     camaras.value = data.camaras ?? [];
     total.value = data.total ?? camaras.value.length;
     const count = camaras.value.length;
@@ -838,14 +843,6 @@ interface BanFormData {
   servicio_protegido_id: string;
   motivo: string;
   usuario_ejecutor: string;
-}
-interface BanRutaOption {
-  id: number;
-  nombre: string;
-  tipo: string;
-  empalmes_count: number;
-  activa: boolean;
-  hash_contenido: string | null;
 }
 
 const banModalEl = ref<HTMLDialogElement | null>(null);
@@ -907,9 +904,7 @@ async function loadRutasForBan(servicioId: string) {
   banSelectedRutaId.value = null;
   banForm.value.servicio_protegido_id = servicioId;
   try {
-    const res = await fetch(`/api/infra/servicios/${encodeURIComponent(servicioId)}/rutas`, { credentials: 'include' });
-    const data = await res.json() as { rutas?: BanRutaOption[]; detail?: string };
-    if (!res.ok) throw new Error(data.detail ?? `Error ${res.status}`);
+    const data = await rutasDeServicio(servicioId);
     banRutas.value = data.rutas ?? [];
     if (banRutas.value.length === 0) banRutasError.value = `El servicio ${servicioId} no tiene rutas registradas.`;
   } catch (e: unknown) {
@@ -959,19 +954,10 @@ function banGoPrev() {
 // Descarga tracking de una ruta directamente (sin abrir el modal de tracking)
 async function downloadTrackingByRutaId(rutaId: number) {
   try {
-    const res = await fetch(`/api/infra/tracking/${rutaId}/download`, { credentials: 'include' });
-    if (res.status === 404) { showToast('warning', 'Sin archivo', 'El TXT original no está disponible'); return; }
-    if (!res.ok) throw new Error(`Error ${res.status}`);
-    const blob = await res.blob();
-    const cd = res.headers.get('Content-Disposition') ?? '';
-    const match = cd.match(/filename="(.+?)"/);
-    const filename = match ? match[1] : `tracking_ruta_${rutaId}.txt`;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const filename = await descargarTrackingRuta(rutaId);
     showToast('success', 'Descarga completa', filename);
   } catch (e: unknown) {
+    if (e instanceof ApiError && e.status === 404) { showToast('warning', 'Sin archivo', 'El TXT original no está disponible'); return; }
     showToast('error', 'Error de descarga', e instanceof Error ? e.message : String(e));
   }
 }
@@ -983,19 +969,6 @@ function triggerUploadTrackingForBan(_rutaId: number) {
 }
 
 // --- Baneos Activos ---
-interface IncidenteActivo {
-  id: number;
-  ticket_asociado: string | null;
-  servicio_afectado_id: string;
-  servicio_protegido_id: string;
-  ruta_protegida_id: number | null;
-  usuario_ejecutor: string | null;
-  motivo: string | null;
-  fecha_inicio: string | null;
-  activo: boolean;
-  duracion_horas: number | null;
-  camaras_count: number;
-}
 
 const activeBansModalEl = ref<HTMLDialogElement | null>(null);
 const activeBans = ref<IncidenteActivo[]>([]);
@@ -1072,10 +1045,8 @@ async function loadActiveBans() {
   activeBansLoading.value = true;
   activeBansError.value = '';
   try {
-    const res = await fetch('/api/infra/ban/active', { credentials: 'include' });
-    const data = await res.json();
-    if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
-    activeBans.value = (data as { incidentes: IncidenteActivo[] }).incidentes ?? [];
+    const data = await baneosActivos();
+    activeBans.value = data.incidentes ?? [];
   } catch (e: unknown) {
     activeBansError.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -1098,14 +1069,7 @@ async function confirmLiftBan(inc: IncidenteActivo) {
   if (!window.confirm(`¿Levantar el baneo ${ticket}?\n\nSe restaurarán las cámaras del servicio ${inc.servicio_protegido_id} y se notificará en Slack.`)) return;
   liftLoadingId.value = inc.id;
   try {
-    const res = await fetch('/api/infra/ban/lift', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf() },
-      body: JSON.stringify({ incidente_id: inc.id }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
+    await levantarBaneo({ incidente_id: inc.id });
     showToast('success', 'Baneo levantado', `Servicio ${inc.servicio_protegido_id} restaurado`);
     await loadActiveBans();
     if (hasSearched.value) await searchCamaras();
@@ -1161,7 +1125,7 @@ async function sendAviso() {
   saveAvisoDestinatarios();
   avisoSending.value = true;
   try {
-    const payload = {
+    const data = await notificarBaneoEmail({
       to: toList,
       cc: ccList.length ? ccList : undefined,
       subject: avisoForm.value.subject.trim(),
@@ -1169,16 +1133,9 @@ async function sendAviso() {
       incidente_ids: [avisoIncidente.value.id],
       include_xls: avisoForm.value.include_xls,
       include_txt: avisoForm.value.include_txt,
-    };
-    const res = await fetch('/api/infra/notify/email', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf() },
-      body: JSON.stringify(payload),
     });
-    const data = await res.json();
-    if (!res.ok || !(data as { success: boolean }).success) {
-      throw new Error((data as Record<string, string>).error ?? (data as Record<string, string>).detail ?? `Error ${res.status}`);
+    if (!data.success) {
+      throw new Error(data.error ?? data.detail ?? 'Error al enviar el aviso');
     }
     closeAvisoModal(true);
     showToast('success', 'Aviso enviado', `Notificación enviada a ${toList.length} destinatario${toList.length !== 1 ? 's' : ''}`);
@@ -1221,16 +1178,9 @@ async function submitBan() {
       motivo: banForm.value.motivo.trim() || null,
       usuario_ejecutor: banForm.value.usuario_ejecutor.trim() || null,
     };
-    const res = await fetch('/api/infra/ban/create', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf() },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
+    const data = await crearBaneo(payload);
     closeBanModal(true);
-    const baneadas = (data as Record<string, number>).camaras_baneadas ?? 0;
+    const baneadas = data.camaras_baneadas ?? 0;
     showToast('success', 'Protocolo activado', `${baneadas} cámara(s) baneadas`);
     if (hasSearched.value) await searchCamaras();
   } catch (e: unknown) {
@@ -1241,30 +1191,6 @@ async function submitBan() {
 }
 
 // --- Upload Tracking (flujo Portero 2 fases) ---
-interface RutaInfo {
-  id: number; nombre: string; tipo: string; empalmes_count: number; activa: boolean;
-}
-interface UpgradeInfo {
-  old_service_id: string; old_service_db_id: number; new_service_id: string;
-  match_reason: string; punta_a_match?: string | null; punta_b_match?: string | null;
-}
-interface StrandInfo {
-  service_id: string; service_db_id: number; ruta_id: number;
-  current_strands: number; new_strand_pelo?: string | null;
-}
-interface AnalyzeResult {
-  status: string; servicio_id?: string | null; servicio_db_id?: number | null;
-  rutas_existentes: RutaInfo[]; parsed_empalmes_count: number; message: string;
-  error?: string | null; upgrade_info?: UpgradeInfo | null; strand_info?: StrandInfo | null;
-  punta_a_sitio?: string | null; punta_b_sitio?: string | null;
-}
-// Respuesta de POST /api/infra/trackings/resolve. `ubicaciones_sin_match` es nuevo (Tarea 3 del
-// refactor "Adjuntar tracking", 2026-08-23): ubicaciones que no matchearon contra Camara/CromoBotella
-// y quedaron registradas en IngresoSinMatch para revisión manual.
-interface ResolveResponse {
-  success: boolean; message?: string; error?: string; detail?: string;
-  ubicaciones_sin_match?: number;
-}
 
 const trackingFileInputEl = ref<HTMLInputElement | null>(null);
 const trackingResolveModalEl = ref<HTMLDialogElement | null>(null);
@@ -1344,15 +1270,7 @@ async function analyzeTracking() {
     const blob = new Blob([fileContent.value], { type: 'text/plain' });
     const formData = new FormData();
     formData.append('file', blob, fileName.value);
-    const res = await fetch('/api/infra/trackings/analyze', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { Accept: 'application/json', 'X-CSRF-Token': csrf() },
-      body: formData,
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
-    analyzeResult.value = data as AnalyzeResult;
+    analyzeResult.value = await analizarTracking(formData);
     if (analyzeResult.value.rutas_existentes?.length) {
       resolveTargetRutaId.value = analyzeResult.value.rutas_existentes[0].id;
     }
@@ -1367,23 +1285,16 @@ async function analyzeTracking() {
   }
 }
 
-async function resolveTracking(action: string, extras: Record<string, unknown> = {}) {
+async function resolveTracking(action: string, extras: Partial<ResolverTrackingBody> = {}) {
   uploadResolving.value = true;
   try {
-    const body: Record<string, unknown> = {
+    const body: ResolverTrackingBody = {
       action,
       content: fileContent.value,
       filename: fileName.value,
       ...extras,
     };
-    const res = await fetch('/api/infra/trackings/resolve', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': csrf() },
-      body: JSON.stringify(body),
-    });
-    const data = (await res.json()) as ResolveResponse;
-    if (!res.ok) throw new Error(data.detail ?? `Error ${res.status}`);
+    const data = await resolverTracking(body);
     if (!data.success) {
       throw new Error(data.error ?? 'Error al resolver el tracking');
     }
@@ -1433,15 +1344,9 @@ async function submitLimpiar() {
   if (!svcId) return;
   limpiarLoading.value = true;
   try {
-    const res = await fetch(`/api/infra/servicios/${encodeURIComponent(svcId)}/empalmes`, {
-      method: 'DELETE',
-      credentials: 'include',
-      headers: { Accept: 'application/json', 'X-CSRF-Token': csrf() },
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error((data as Record<string, string>).detail ?? `Error ${res.status}`);
+    const data = await limpiarEmpalmesServicio(svcId);
     closeLimpiarModal();
-    showToast('success', 'Servicio limpiado', (data as Record<string, string>).message ?? '');
+    showToast('success', 'Servicio limpiado', data.message ?? '');
     if (hasSearched.value) await searchCamaras();
   } catch (e: unknown) {
     showToast('error', 'Error al limpiar servicio', e instanceof Error ? e.message : String(e));
@@ -1474,21 +1379,10 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
   if (!filterStatus && searchTerms.value.length === 1 && /^\d+$/.test(searchTerms.value[0].trim())) {
     params.set('servicio_id', searchTerms.value[0].trim());
   }
-  const ext = format === 'csv' ? 'csv' : 'xlsx';
   const filterLabel = filterStatus ? ` (${filterStatus})` : '';
   showToast('info', 'Preparando descarga...', `Exportando cámaras${filterLabel} en ${format.toUpperCase()}`);
   try {
-    const res = await fetch(`/api/infra/export/cameras?${params.toString()}`, { credentials: 'include' });
-    if (!res.ok) throw new Error(`Error ${res.status}`);
-    const blob = await res.blob();
-    const cd = res.headers.get('Content-Disposition') ?? '';
-    const match = cd.match(/filename="(.+?)"/);
-    const filename = match ? match[1] : `camaras_${Date.now()}.${ext}`;
-    const blobUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = blobUrl; a.download = filename;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(blobUrl);
+    const filename = await exportarCamaras(params);
     showToast('success', 'Descarga completa', filename);
   } catch (e: unknown) {
     showToast('error', 'Error al descargar', e instanceof Error ? e.message : String(e));

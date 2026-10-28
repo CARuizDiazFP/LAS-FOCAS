@@ -20,9 +20,7 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[1] / "web" / "frontend" / "src"
 
 # Archivos con `fetch(` aún sin migrar a la capa api/ (rutas relativas a web/frontend/src).
-PENDIENTES_FETCH: set[str] = {
-    "views/tabs/InfraTab.vue",
-}
+PENDIENTES_FETCH: set[str] = set()
 
 # EventSource directo aún fuera de composables/ (se migran a useCorridaSse).
 PENDIENTES_SSE: set[str] = {
