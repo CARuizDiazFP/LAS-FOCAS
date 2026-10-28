@@ -206,10 +206,10 @@ def _registrar_error_sla(history_id: str, source: str, error_code: str, message:
     )
 
 
-def _rechazo_sla(on_error: Any, status_code: int, message: str) -> JSONResponse:
-    """Registra el error en el historial y arma la respuesta JSON de rechazo."""
+async def _rechazo_sla(on_error: Any, status_code: int, message: str) -> JSONResponse:
+    """Registra el error en el historial (`on_error` es async) y arma la respuesta JSON de rechazo."""
 
-    on_error(f"HTTP_{status_code}", message)
+    await on_error(f"HTTP_{status_code}", message)
     return JSONResponse({"ok": False, "error": message}, status_code=status_code)
 
 
@@ -224,30 +224,30 @@ async def _leer_excels_sla(archivos: List[UploadFile], on_error: Any) -> tuple[b
         if not nombre.lower().endswith(".xlsx"):
             await archivo.close()
             logger.warning("action=sla_web_report stage=validation error=extension file=%s", nombre)
-            return _rechazo_sla(on_error, 415, f"{nombre} debe tener extensión .xlsx")
+            return await _rechazo_sla(on_error, 415, f"{nombre} debe tener extensión .xlsx")
         try:
             contenido = await leer_upload(archivo)
         except UploadDemasiadoGrande as exc:
             await archivo.close()
-            return _rechazo_sla(on_error, 413, exc.mensaje)
+            return await _rechazo_sla(on_error, 413, exc.mensaje)
         await archivo.close()
         if not contenido:
             logger.warning("action=sla_web_report stage=validation error=empty file=%s", nombre)
-            return _rechazo_sla(on_error, 400, f"{nombre} está vacío")
+            return await _rechazo_sla(on_error, 400, f"{nombre} está vacío")
         try:
-            tipo = sla_service.identify_excel_kind(contenido)
+            tipo = await asyncio.to_thread(sla_service.identify_excel_kind, contenido)
             logger.info("action=sla_web_report stage=identify file=%s tipo=%s", nombre, tipo)
         except ValueError as exc:
             logger.warning("action=sla_web_report stage=identify error=%s file=%s", exc, nombre)
-            return _rechazo_sla(on_error, 422, str(exc))
+            return await _rechazo_sla(on_error, 422, str(exc))
 
         if tipo == "servicios":
             if servicios_bytes is not None:
-                return _rechazo_sla(on_error, 422, "Se recibió más de un Excel de servicios")
+                return await _rechazo_sla(on_error, 422, "Se recibió más de un Excel de servicios")
             servicios_bytes = contenido
         else:
             if reclamos_bytes is not None:
-                return _rechazo_sla(on_error, 422, "Se recibió más de un Excel de reclamos")
+                return await _rechazo_sla(on_error, 422, "Se recibió más de un Excel de reclamos")
             reclamos_bytes = contenido
 
     # Invariante: el llamador exige exactamente dos archivos y un tipo repetido ya se rechazó arriba,
@@ -265,7 +265,7 @@ async def _generar_sla_excel(
     if len(archivos) != 2:
         await _cerrar_uploads_sla(archivos)
         logger.warning("action=sla_web_report stage=validation error=archivos_incorrectos count=%s", len(archivos))
-        return _rechazo_sla(on_error, 400, "Debés adjuntar dos archivos: servicios y reclamos")
+        return await _rechazo_sla(on_error, 400, "Debés adjuntar dos archivos: servicios y reclamos")
 
     leidos = await _leer_excels_sla(archivos, on_error)
     if isinstance(leidos, JSONResponse):
@@ -294,7 +294,7 @@ def _generar_sla_db(mes_num: int, anio_num: int, pdf_enabled: bool) -> tuple[Pat
     return resultado.docx, resultado.pdf, resultado.pdf_error
 
 
-def _respuesta_sla_exitosa(
+async def _respuesta_sla_exitosa(
     history_id: str,
     username: str,
     source: str,
@@ -318,7 +318,8 @@ def _respuesta_sla_exitosa(
         bool(pdf),
         archivo_count,
     )
-    REPORT_HISTORY.finish_success(
+    await asyncio.to_thread(
+        REPORT_HISTORY.finish_success,
         history_id,
         output_metadata={
             "source": source,
@@ -360,10 +361,13 @@ async def generar_informe_sla_web(
     archivos = [archivo for archivo in files if archivo and archivo.filename]
     archivo_count = len(archivos)
     source = "db" if use_db else "excel-legacy"
-    history_id = _iniciar_historial_sla(username, source, mes_num, anio_num, archivos, pdf_enabled, use_db)
+    # `REPORT_HISTORY` escribe con psycopg sync: cada llamada va al threadpool, fuera del event loop.
+    history_id = await asyncio.to_thread(
+        _iniciar_historial_sla, username, source, mes_num, anio_num, archivos, pdf_enabled, use_db
+    )
 
-    def _history_error(error_code: str, message: str) -> None:
-        _registrar_error_sla(history_id, source, error_code, message)
+    async def _history_error(error_code: str, message: str) -> None:
+        await asyncio.to_thread(_registrar_error_sla, history_id, source, error_code, message)
 
     if use_db and archivos:
         for archivo in archivos:
@@ -384,7 +388,7 @@ async def generar_informe_sla_web(
             anio_num,
             exc,
         )
-        return _rechazo_sla(_history_error, 422, str(exc))
+        return await _rechazo_sla(_history_error, 422, str(exc))
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:  # noqa: BLE001
@@ -400,12 +404,12 @@ async def generar_informe_sla_web(
             exc,
             ref,
         )
-        return _rechazo_sla(_history_error, 500, f"Error interno (ref {ref})")
+        return await _rechazo_sla(_history_error, 500, f"Error interno (ref {ref})")
 
     if isinstance(salida, JSONResponse):
         return salida
     docx, pdf, pdf_error = salida
-    return _respuesta_sla_exitosa(
+    return await _respuesta_sla_exitosa(
         history_id, username, source, mes_num, anio_num, docx, pdf, archivo_count, pdf_error=pdf_error
     )
 
@@ -422,20 +426,23 @@ async def generar_informe_sla_consumo_web(
     # period_month/year son NOT NULL en report_history: se usa el mes actual; la fecha de corte real
     # (derivada de los Excel) se registra en output_metadata.
     hoy = datetime.now()
-    history_id = REPORT_HISTORY.start(
+    history_id = await asyncio.to_thread(
+        REPORT_HISTORY.start,
         report_type="sla_consumo", username=username, source="excel", period_month=hoy.month, period_year=hoy.year,
         input_metadata={"archivos": [Path(a.filename or "").name for a in archivos], "pdf_enabled": bool(pdf_enabled)},
     )
 
-    def _error(status: int, mensaje: str) -> JSONResponse:
-        REPORT_HISTORY.finish_error(history_id, error_code=f"HTTP_{status}", error_message=mensaje,
-                                    output_metadata={"source": "excel"})
+    async def _error(status: int, mensaje: str) -> JSONResponse:
+        await asyncio.to_thread(
+            REPORT_HISTORY.finish_error, history_id, error_code=f"HTTP_{status}", error_message=mensaje,
+            output_metadata={"source": "excel"},
+        )
         return JSONResponse({"ok": False, "error": mensaje}, status_code=status)
 
     if len(archivos) != 2:
         for a_ in files:
             await a_.close()
-        return _error(400, "Debés adjuntar dos archivos: servicios y reclamos")
+        return await _error(400, "Debés adjuntar dos archivos: servicios y reclamos")
 
     contenidos: dict[str, bytes] = {}
     for archivo in archivos:
@@ -444,19 +451,19 @@ async def generar_informe_sla_consumo_web(
             contenido = await leer_upload(archivo)
         except UploadDemasiadoGrande as exc:
             await archivo.close()
-            return _error(413, exc.mensaje)
+            return await _error(413, exc.mensaje)
         await archivo.close()
         if not nombre.lower().endswith(".xlsx") or not contenido:
-            return _error(415, f"{nombre} debe ser un .xlsx no vacío")
+            return await _error(415, f"{nombre} debe ser un .xlsx no vacío")
         try:
-            tipo = sla_service.identify_excel_kind(contenido)
+            tipo = await asyncio.to_thread(sla_service.identify_excel_kind, contenido)
         except ValueError as exc:
-            return _error(422, str(exc))
+            return await _error(422, str(exc))
         if tipo in contenidos:
-            return _error(422, f"Se recibió más de un Excel de {tipo}")
+            return await _error(422, f"Se recibió más de un Excel de {tipo}")
         contenidos[tipo] = contenido
     if set(contenidos) != {"servicios", "reclamos"}:
-        return _error(400, "Adjuntá los archivos de servicios y reclamos")
+        return await _error(400, "Adjuntá los archivos de servicios y reclamos")
 
     try:
         informe = await asyncio.to_thread(
@@ -464,14 +471,14 @@ async def generar_informe_sla_consumo_web(
             usuario=username, incluir_pdf=pdf_enabled, reports_dir=REPORTS_DIR, report_history_id=history_id,
         )
     except ValueError as exc:
-        return _error(422, str(exc))
+        return await _error(422, str(exc))
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception:  # noqa: BLE001
         # `action=sla_consumo_web stage=unexpected` se conserva y gana la ref (el traceback ya va en el log).
         ref = nueva_ref()
         logger.exception("action=sla_consumo_web stage=unexpected user=%s ref=%s", username, ref)
-        return _error(500, f"Error interno (ref {ref})")
+        return await _error(500, f"Error interno (ref {ref})")
 
     report_paths = {"xlsx": _report_href(informe.xlsx), "docx_ejecutivo": _report_href(informe.docx_ejecutivo),
                     "docx_exhaustivo": _report_href(informe.docx_exhaustivo)}
@@ -488,17 +495,40 @@ async def generar_informe_sla_consumo_web(
     }
     if informe.pdf_omitido:
         salida["pdf_omitido"] = informe.pdf_omitido
-    REPORT_HISTORY.finish_success(history_id, output_metadata={"source": "excel", **salida})
+    await asyncio.to_thread(REPORT_HISTORY.finish_success, history_id, output_metadata={"source": "excel", **salida})
     return JSONResponse({"ok": True, "message": "Informe de SLA consumido generado", **salida})
 
 
 def _save_upload(file: UploadFile) -> Path:
+    """Copia el upload a `UPLOADS_DIR` (sync: se llama con ``asyncio.to_thread``)."""
     filename = Path(file.filename or "upload.bin").name  # sanea nombre
     dest = UPLOADS_DIR / filename
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
     file.file.close()
     return dest
+
+
+def _tamano_y_es_zip(path: Path) -> tuple[int, bool]:
+    """Tamaño en bytes y si es un ZIP (un .xlsx lo es). Sync: se llama con ``asyncio.to_thread``."""
+    return path.stat().st_size, zipfile.is_zipfile(path)
+
+
+def _inspeccionar_y_leer_excel(path: Path) -> bytes:
+    """Loguea las columnas crudas del Excel (diagnóstico) y devuelve su contenido. Sync: se llama con
+    ``asyncio.to_thread`` (pandas + lectura de disco)."""
+    try:
+        df_head = pd.read_excel(path, nrows=1, engine="openpyxl")
+        logger.info("action=flow_repetitividad stage=inspect columns_raw=%s", list(df_head.columns))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("action=flow_repetitividad stage=inspect error=%s", exc)
+    return path.read_bytes()
+
+
+def _reclamos_db_para_procesar(mes: int, anio: int) -> pd.DataFrame:
+    """Reclamos del período desde la base, en el formato del procesador. Sync (consulta a la base): se
+    llama con ``asyncio.to_thread``."""
+    return db_to_processor_frame(reclamos_from_db(mes, anio))
 
 
 @router.post("/api/flows/sla", dependencies=[Depends(usuario_sesion)])
@@ -630,7 +660,8 @@ async def flow_repetitividad(
     periodo_titulo = f"{mes:02d}/{anio}"
     use_db = use_db or file is None
     source = "db" if use_db else "excel"
-    history_id = REPORT_HISTORY.start(
+    history_id = await asyncio.to_thread(
+        REPORT_HISTORY.start,
         report_type="repetitividad",
         username=username,
         source=source,
@@ -645,8 +676,9 @@ async def flow_repetitividad(
         },
     )
 
-    def _history_error(error_code: str, message: str) -> None:
-        REPORT_HISTORY.finish_error(
+    async def _history_error(error_code: str, message: str) -> None:
+        await asyncio.to_thread(
+            REPORT_HISTORY.finish_error,
             history_id,
             error_code=error_code,
             error_message=message,
@@ -658,19 +690,19 @@ async def flow_repetitividad(
     try:
         if not use_db:
             if not file or not file.filename or not file.filename.lower().endswith(".xlsx"):
-                _history_error("HTTP_400", "El archivo debe ser .xlsx")
+                await _history_error("HTTP_400", "El archivo debe ser .xlsx")
                 return JSONResponse({"error": "El archivo debe ser .xlsx"}, status_code=400)
 
-            upload_path = _save_upload(file)
+            upload_path = await asyncio.to_thread(_save_upload, file)
             try:
-                size_bytes = upload_path.stat().st_size
+                size_bytes, es_zip = await asyncio.to_thread(_tamano_y_es_zip, upload_path)
                 if size_bytes > 10 * 1024 * 1024:
                     upload_path.unlink(missing_ok=True)
-                    _history_error("HTTP_413", "Archivo demasiado grande (límite 10MB)")
+                    await _history_error("HTTP_413", "Archivo demasiado grande (límite 10MB)")
                     return JSONResponse({"error": "Archivo demasiado grande (límite 10MB)"}, status_code=413)
-                if not zipfile.is_zipfile(upload_path):
+                if not es_zip:
                     upload_path.unlink(missing_ok=True)
-                    _history_error("HTTP_400", "El archivo subido no es un Excel .xlsx válido")
+                    await _history_error("HTTP_400", "El archivo subido no es un Excel .xlsx válido")
                     return JSONResponse({"error": "El archivo subido no es un Excel .xlsx válido"}, status_code=400)
                 logger.info(
                     "action=flow_repetitividad stage=start source=excel periodo=%s include_pdf=%s with_geo=%s size_bytes=%s",
@@ -679,16 +711,7 @@ async def flow_repetitividad(
                     with_geo,
                     size_bytes,
                 )
-                try:
-                    df_head = pd.read_excel(upload_path, nrows=1, engine="openpyxl")
-                    logger.info(
-                        "action=flow_repetitividad stage=inspect columns_raw=%s",
-                        list(df_head.columns),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("action=flow_repetitividad stage=inspect error=%s", exc)
-
-                excel_bytes = upload_path.read_bytes()
+                excel_bytes = await asyncio.to_thread(_inspeccionar_y_leer_excel, upload_path)
                 result: ReportResult = await asyncio.to_thread(
                     generar_informe_desde_excel,
                     excel_bytes,
@@ -700,10 +723,9 @@ async def flow_repetitividad(
             finally:
                 upload_path.unlink(missing_ok=True)
         else:
-            df_db = reclamos_from_db(mes, anio)
-            df_proc = db_to_processor_frame(df_db)
+            df_proc = await asyncio.to_thread(_reclamos_db_para_procesar, mes, anio)
             if df_proc.empty:
-                _history_error("HTTP_404", "No hay reclamos registrados para el período")
+                await _history_error("HTTP_404", "No hay reclamos registrados para el período")
                 return JSONResponse({"error": "No hay reclamos registrados para el período"}, status_code=404)
             logger.info(
                 "action=flow_repetitividad stage=start source=db periodo=%s include_pdf=%s with_geo=%s filas=%s",
@@ -725,7 +747,7 @@ async def flow_repetitividad(
         logger.warning(
             "action=flow_repetitividad stage=validation error=%s periodo=%s", exc, periodo_titulo
         )
-        _history_error("HTTP_422", str(exc))
+        await _history_error("HTTP_422", str(exc))
         raise DatoInvalido(str(exc)) from exc
     except (HTTPException, ErrorDeDominio):
         raise
@@ -740,7 +762,7 @@ async def flow_repetitividad(
             ref,
         )
         mensaje = f"Error interno (ref {ref})"
-        _history_error("HTTP_500", mensaje)
+        await _history_error("HTTP_500", mensaje)
         return JSONResponse({"error": mensaje}, status_code=500)
 
     # Los PNG viven en subcarpetas (maps_YYYYMM/): la URL debe incluirlas.
@@ -774,7 +796,8 @@ async def flow_repetitividad(
     outputs = {key: payload[key] for key in ("docx", "pdf", "map_image") if payload.get(key)}
     if image_maps:
         outputs["map_images"] = image_maps
-    REPORT_HISTORY.finish_success(
+    await asyncio.to_thread(
+        REPORT_HISTORY.finish_success,
         history_id,
         output_metadata={
             "source": payload["source"],
@@ -866,7 +889,8 @@ async def tool_alarmas_ciena(
         )
         
         # Detectar formato y parsear
-        df, formato = parsear_alarmas_ciena(content)
+        # Parseo y Excel con pandas (CPU, hasta 10 MB): fuera del event loop.
+        df, formato = await asyncio.to_thread(parsear_alarmas_ciena, content)
         
         logger.info(
             "action=alarmas_ciena_parsed user=%s formato=%s rows=%d cols=%d",
@@ -877,7 +901,7 @@ async def tool_alarmas_ciena(
         )
         
         # Generar Excel
-        excel_content = dataframe_to_excel(df)
+        excel_content = await asyncio.to_thread(dataframe_to_excel, df)
         
         elapsed = time.time() - start_time
         logger.info(

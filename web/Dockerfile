@@ -35,6 +35,10 @@ COPY db /app/db
 COPY --from=web-build /frontend/dist /app/frontend/dist
 
 RUN chown -R focas:focas /app
+# /app/data es del uid con el que corre el servicio (`user: "1001:1001"` en deploy/compose.yml y
+# deploy/docker-compose.dev.yml; `focas` es 1000): si no existe en la imagen, Docker la crea como root
+# al montar los volúmenes reports/uploads/fo_monitor y web no puede escribir intent_metrics.json.
+RUN mkdir -p /app/data && chown 1001:1001 /app/data
 USER focas
 
 EXPOSE 8080

@@ -740,7 +740,7 @@ Los Vite assets (`dist/assets/`) se sirven en `/assets`. El `DIST_DIR` en `main.
 
 El endpoint `/api/chat/message` persiste mensajes en `app.conversations` / `app.messages`. El payload incluye `conversation_id` y `history` (≤6 mensajes) cuando el usuario está autenticado.
 
-Métricas: `INTENT_COUNTER` en memoria expuesto en `/api/chat/metrics` (`routers/chat.py`). Se persiste a JSON atómicamente en `METRICS_PERSIST_PATH`, que si no se define vale `data/intent_metrics.json` bajo la raíz del servicio (`DATA_DIR` de `comun.py`).
+Métricas: `INTENT_COUNTER` en memoria expuesto en `/api/chat/metrics` (`routers/chat.py`). Se persiste a JSON atómicamente en `METRICS_PERSIST_PATH`, que si no se define vale `data/intent_metrics.json` bajo la raíz del servicio (`DATA_DIR` de `comun.py`). La escritura corre en el threadpool. En el contenedor, `/app/data` tiene que ser del uid del servicio (1001, `user:` de compose; `focas` es 1000): lo crea `web/Dockerfile` desde P17 (2026-10-27). Antes Docker la creaba como root al montar los volúmenes y la persistencia fallaba siempre (`action=metrics_persist error=Permission denied`). El archivo vive en la capa del contenedor: sobrevive a un restart, no a recrearlo.
 
 ## Compose
 
