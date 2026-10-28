@@ -102,3 +102,21 @@ def test_web_upload_tracking_6mb_413(con_sesion):
     )
     assert res.status_code == 413
     assert_forma(res.json(), {"error": str})
+
+
+def test_web_ban_create_ticket_65_caracteres_422(con_sesion):
+    """D2: el panel aplica el mismo límite de la API (antes: 200 success:false 'Error inesperado')."""
+    res = cliente_web(con_sesion).post(
+        "/api/infra/ban/create",
+        json={"ticket_asociado": "T" * 65, "servicio_afectado_id": "1", "servicio_protegido_id": "2"},
+    )
+    assert res.status_code == 422
+
+
+def test_api_ban_create_ticket_65_caracteres_422():
+    res = cliente_api().post(
+        "/api/infra/ban/create",
+        json={"ticket_asociado": "T" * 65, "servicio_afectado_id": "1", "servicio_protegido_id": "2"},
+    )
+    assert res.status_code == 422
+    assert_forma(res.json(), {"detail": list})

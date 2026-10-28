@@ -19,6 +19,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from core.parsers.tracking_parser import parse_tracking
+from core.services.baneo_operaciones import (
+    LARGO_MOTIVO,
+    LARGO_SERVICIO,
+    LARGO_TICKET,
+    LARGO_USUARIO,
+    crear_baneo_y_notificar,
+    levantar_baneo_y_notificar,
+    listar_incidentes_activos,
+)
 from core.services.camaras_busqueda_avanzada import SearchRequest, buscar_camaras_avanzada
 from core.services.camaras_exportacion import (
     AVISO_SIN_XLSX,
@@ -1102,12 +1111,12 @@ async def delete_servicio_empalmes(
 class BanCreateRequest(BaseModel):
     """Request para crear un baneo de cámaras."""
     
-    ticket_asociado: Optional[str] = Field(None, max_length=64, description="ID del ticket de soporte")
-    servicio_afectado_id: str = Field(..., max_length=64, description="ID del servicio que sufrió el corte")
-    servicio_protegido_id: str = Field(..., max_length=64, description="ID del servicio a proteger (banear)")
+    ticket_asociado: Optional[str] = Field(None, max_length=LARGO_TICKET, description="ID del ticket de soporte")
+    servicio_afectado_id: str = Field(..., max_length=LARGO_SERVICIO, description="ID del servicio que sufrió el corte")
+    servicio_protegido_id: str = Field(..., max_length=LARGO_SERVICIO, description="ID del servicio a proteger (banear)")
     ruta_protegida_id: Optional[int] = Field(None, description="ID de ruta específica (opcional)")
-    usuario_ejecutor: Optional[str] = Field(None, max_length=128, description="Usuario que ejecuta el baneo")
-    motivo: Optional[str] = Field(None, max_length=512, description="Motivo del baneo")
+    usuario_ejecutor: Optional[str] = Field(None, max_length=LARGO_USUARIO, description="Usuario que ejecuta el baneo")
+    motivo: Optional[str] = Field(None, max_length=LARGO_MOTIVO, description="Motivo del baneo")
 
     model_config = {
         "json_schema_extra": {
@@ -1126,8 +1135,8 @@ class BanLiftRequest(BaseModel):
     """Request para levantar un baneo."""
     
     incidente_id: int = Field(..., description="ID del incidente de baneo a cerrar")
-    usuario_ejecutor: Optional[str] = Field(None, max_length=128, description="Usuario que levanta el baneo")
-    motivo_cierre: Optional[str] = Field(None, max_length=512, description="Motivo del cierre")
+    usuario_ejecutor: Optional[str] = Field(None, max_length=LARGO_USUARIO, description="Usuario que levanta el baneo")
+    motivo_cierre: Optional[str] = Field(None, max_length=LARGO_MOTIVO, description="Motivo del cierre")
 
     model_config = {
         "json_schema_extra": {
@@ -1166,36 +1175,17 @@ async def create_ban(request: BanCreateRequest) -> Dict[str, Any]:
         ...     "motivo": "Protección de ruta backup"
         ... }
     """
-    from core.services.protection_service import create_ban as do_create_ban
-
     def _do_ban() -> Dict[str, Any]:
         with SessionLocal() as session:
-            result = do_create_ban(
+            return crear_baneo_y_notificar(
                 session,
                 ticket_asociado=request.ticket_asociado,
                 servicio_afectado_id=request.servicio_afectado_id,
                 servicio_protegido_id=request.servicio_protegido_id,
                 ruta_protegida_id=request.ruta_protegida_id,
-                usuario_ejecutor=request.usuario_ejecutor,
                 motivo=request.motivo,
-            )
-            if result.success:
-                session.commit()
-                try:
-                    from core.config import get_settings
-                    from modules.slack_baneo_notifier.eventos import notificar_evento_baneo
-                    datos_evento = result.to_dict()
-                    datos_evento["servicio_afectado_id"] = request.servicio_afectado_id
-                    datos_evento["servicio_protegido_id"] = request.servicio_protegido_id
-                    datos_evento["ticket_asociado"] = request.ticket_asociado
-                    datos_evento["usuario_ejecutor"] = request.usuario_ejecutor
-                    datos_evento["motivo"] = request.motivo
-                    notificar_evento_baneo(session, "create", datos_evento, get_settings().slack.bot_token)
-                except Exception as slack_exc:
-                    logger.warning("Error enviando aviso Slack de baneo creado: %s", slack_exc)
-            else:
-                session.rollback()
-            return result.to_dict()
+                usuario_ejecutor=request.usuario_ejecutor,
+            ).to_dict()
 
     try:
         return await asyncio.to_thread(_do_ban)
@@ -1224,30 +1214,14 @@ async def lift_ban(request: BanLiftRequest) -> Dict[str, Any]:
         >>> POST /api/infra/ban/lift
         >>> {"incidente_id": 1, "motivo_cierre": "Corte reparado"}
     """
-    from core.services.protection_service import lift_ban as do_lift_ban
-
     def _do_lift() -> Dict[str, Any]:
         with SessionLocal() as session:
-            result = do_lift_ban(
+            return levantar_baneo_y_notificar(
                 session,
                 request.incidente_id,
                 usuario_ejecutor=request.usuario_ejecutor,
                 motivo_cierre=request.motivo_cierre,
-            )
-            if result.success:
-                session.commit()
-                try:
-                    from core.config import get_settings
-                    from modules.slack_baneo_notifier.eventos import notificar_evento_baneo
-                    datos_evento = result.to_dict()
-                    datos_evento["usuario_ejecutor"] = request.usuario_ejecutor
-                    datos_evento["motivo_cierre"] = request.motivo_cierre
-                    notificar_evento_baneo(session, "lift", datos_evento, get_settings().slack.bot_token)
-                except Exception as slack_exc:
-                    logger.warning("Error enviando aviso Slack de baneo levantado: %s", slack_exc)
-            else:
-                session.rollback()
-            return result.to_dict()
+            ).to_dict()
 
     try:
         return await asyncio.to_thread(_do_lift)
@@ -1264,35 +1238,9 @@ async def get_active_bans() -> Dict[str, Any]:
     Returns:
         Dict con lista de incidentes activos y conteo
     """
-    from core.services.protection_service import get_incidentes_activos, ProtectionService
-
     def _get_bans() -> Dict[str, Any]:
         with SessionLocal() as session:
-            incidentes = get_incidentes_activos(session)
-            protection_svc = ProtectionService(session)
-
-            incidentes_data = []
-            for inc in incidentes:
-                camaras = protection_svc.get_camaras_for_servicio(
-                    inc.servicio_protegido_id, inc.ruta_protegida_id
-                )
-                camaras_count = len(camaras)
-
-                incidentes_data.append({
-                    "id": inc.id,
-                    "ticket_asociado": inc.ticket_asociado,
-                    "servicio_afectado_id": inc.servicio_afectado_id,
-                    "servicio_protegido_id": inc.servicio_protegido_id,
-                    "ruta_protegida_id": inc.ruta_protegida_id,
-                    "usuario_ejecutor": inc.usuario_ejecutor,
-                    "motivo": inc.motivo,
-                    "fecha_inicio": inc.fecha_inicio.isoformat() if inc.fecha_inicio else None,
-                    "activo": inc.activo,
-                    "duracion_horas": inc.duracion_horas,
-                    "camaras_count": camaras_count,
-                })
-
-            return {"status": "ok", "total": len(incidentes_data), "incidentes": incidentes_data}
+            return listar_incidentes_activos(session)
 
     try:
         return await asyncio.to_thread(_get_bans)

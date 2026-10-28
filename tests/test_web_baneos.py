@@ -79,10 +79,8 @@ def _login_admin(client: TestClient, monkeypatch) -> None:
 
 
 def test_create_ban_web_notifica_slack(monkeypatch):
-    from core.services import protection_service
-    from core import config as core_config
+    from core.services import baneo_operaciones
     from db import session as db_session
-    from modules.slack_baneo_notifier import eventos
 
     client = TestClient(app)
     _login_admin(client, monkeypatch)
@@ -92,7 +90,7 @@ def test_create_ban_web_notifica_slack(monkeypatch):
 
     monkeypatch.setattr(db_session, "SessionLocal", lambda: fake_session)
     monkeypatch.setattr(
-        protection_service,
+        baneo_operaciones,
         "create_ban",
         lambda *args, **kwargs: SimpleNamespace(
             success=True,
@@ -100,9 +98,9 @@ def test_create_ban_web_notifica_slack(monkeypatch):
             to_dict=lambda: {"success": True, "incidente_id": 77, "camaras_baneadas": 3},
         ),
     )
-    monkeypatch.setattr(core_config, "get_settings", lambda: SimpleNamespace(slack=SimpleNamespace(bot_token="token")))
+    monkeypatch.setattr(baneo_operaciones, "get_settings", lambda: SimpleNamespace(slack=SimpleNamespace(bot_token="token")))
     monkeypatch.setattr(
-        eventos,
+        baneo_operaciones,
         "notificar_evento_baneo",
         lambda session, tipo, datos, token: llamadas.append((tipo, datos, token)),
     )
@@ -127,10 +125,8 @@ def test_create_ban_web_notifica_slack(monkeypatch):
 
 
 def test_lift_ban_web_notifica_slack(monkeypatch):
-    from core.services import protection_service
-    from core import config as core_config
+    from core.services import baneo_operaciones
     from db import session as db_session
-    from modules.slack_baneo_notifier import eventos
 
     client = TestClient(app)
     _login_admin(client, monkeypatch)
@@ -140,7 +136,7 @@ def test_lift_ban_web_notifica_slack(monkeypatch):
 
     monkeypatch.setattr(db_session, "SessionLocal", lambda: fake_session)
     monkeypatch.setattr(
-        protection_service,
+        baneo_operaciones,
         "lift_ban",
         lambda *args, **kwargs: SimpleNamespace(
             success=True,
@@ -148,9 +144,9 @@ def test_lift_ban_web_notifica_slack(monkeypatch):
             to_dict=lambda: {"success": True, "incidente_id": 77, "camaras_restauradas": 4},
         ),
     )
-    monkeypatch.setattr(core_config, "get_settings", lambda: SimpleNamespace(slack=SimpleNamespace(bot_token="token")))
+    monkeypatch.setattr(baneo_operaciones, "get_settings", lambda: SimpleNamespace(slack=SimpleNamespace(bot_token="token")))
     monkeypatch.setattr(
-        eventos,
+        baneo_operaciones,
         "notificar_evento_baneo",
         lambda session, tipo, datos, token: llamadas.append((tipo, datos, token)),
     )
@@ -169,3 +165,4 @@ def test_lift_ban_web_notifica_slack(monkeypatch):
     assert llamadas and llamadas[0][0] == "lift"
     assert llamadas[0][1]["usuario_ejecutor"] == "admin"
     assert llamadas[0][1]["motivo_cierre"] == "Reparado"
+

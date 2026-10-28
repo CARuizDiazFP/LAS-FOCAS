@@ -11,6 +11,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from core.services.baneo_operaciones import (
+    LARGO_MOTIVO,
+    LARGO_SERVICIO,
+    LARGO_TICKET,
+    crear_baneo_y_notificar,
+    levantar_baneo_y_notificar,
+    listar_incidentes_activos,
+)
 from core.services.camaras_exportacion import (
     AVISO_SIN_XLSX,
     a_csv,
@@ -449,11 +457,17 @@ def get_camara_registros_web(
 
 class BanCreateRequestModel(BaseModel):
     """Request para crear un baneo."""
-    ticket_asociado: Optional[str] = None
-    servicio_afectado_id: str
-    servicio_protegido_id: str
+    ticket_asociado: Optional[str] = Field(None, max_length=LARGO_TICKET)
+    servicio_afectado_id: str = Field(..., max_length=LARGO_SERVICIO)
+    servicio_protegido_id: str = Field(..., max_length=LARGO_SERVICIO)
     ruta_protegida_id: Optional[int] = None
-    motivo: Optional[str] = None
+    motivo: Optional[str] = Field(None, max_length=LARGO_MOTIVO)
+
+
+class BanLiftRequestModel(BaseModel):
+    """Request para levantar un baneo."""
+    incidente_id: int
+    motivo_cierre: Optional[str] = Field(None, max_length=LARGO_MOTIVO)
 
 
 @router.post("/api/infra/ban/create")
@@ -462,39 +476,21 @@ def create_ban_web(
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Crea un incidente de baneo y marca las cámaras como BANEADAS."""
-    
     username, _ = usuario
-    
     try:
-        from core.services.protection_service import create_ban as do_create_ban
         from db.session import SessionLocal
-        
+
         with SessionLocal() as session:
-            result = do_create_ban(
+            result = crear_baneo_y_notificar(
                 session,
                 ticket_asociado=ban_request.ticket_asociado,
                 servicio_afectado_id=ban_request.servicio_afectado_id,
                 servicio_protegido_id=ban_request.servicio_protegido_id,
                 ruta_protegida_id=ban_request.ruta_protegida_id,
-                usuario_ejecutor=username,
                 motivo=ban_request.motivo,
+                usuario_ejecutor=username,
             )
-            
             if result.success:
-                session.commit()
-                try:
-                    from core.config import get_settings
-                    from modules.slack_baneo_notifier.eventos import notificar_evento_baneo
-
-                    datos_evento = result.to_dict()
-                    datos_evento["servicio_afectado_id"] = ban_request.servicio_afectado_id
-                    datos_evento["servicio_protegido_id"] = ban_request.servicio_protegido_id
-                    datos_evento["ticket_asociado"] = ban_request.ticket_asociado
-                    datos_evento["usuario_ejecutor"] = username
-                    datos_evento["motivo"] = ban_request.motivo
-                    notificar_evento_baneo(session, "create", datos_evento, get_settings().slack.bot_token)
-                except Exception as slack_exc:
-                    logger.warning("Error enviando aviso Slack de baneo creado desde web: %s", slack_exc)
                 logger.info(
                     "action=create_ban user=%s ticket=%s servicio_afectado=%s servicio_protegido=%s camaras=%d",
                     username,
@@ -504,15 +500,8 @@ def create_ban_web(
                     result.camaras_baneadas,
                 )
             else:
-                session.rollback()
-                logger.warning(
-                    "action=create_ban_failed user=%s error=%s",
-                    username,
-                    result.message,
-                )
-            
+                logger.warning("action=create_ban_failed user=%s error=%s", username, result.message)
             return JSONResponse(result.to_dict())
-            
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
@@ -522,69 +511,18 @@ def create_ban_web(
 @router.get("/api/infra/ban/active")
 def get_active_bans_web(usuario: UsuarioSesion = Depends(usuario_sesion)) -> JSONResponse:
     """Obtiene todos los incidentes de baneo activos con conteo de cámaras."""
-    
     username, _ = usuario
-    
     try:
-        from core.services.protection_service import get_incidentes_activos, ProtectionService
-        from db.models.infra import Camara, CamaraEstado
         from db.session import SessionLocal
-        
+
         with SessionLocal() as session:
-            incidentes = get_incidentes_activos(session)
-            protection_svc = ProtectionService(session)
-            total_camaras_baneadas = session.query(Camara.id).filter(Camara.estado == CamaraEstado.BANEADA).count()
-            
-            incidentes_data = []
-            for inc in incidentes:
-                duracion = None
-                if inc.fecha_inicio:
-                    from datetime import datetime, timezone
-                    ahora = datetime.now(timezone.utc)
-                    duracion = (ahora - inc.fecha_inicio).total_seconds() / 3600
-                
-                # Contar cámaras afectadas para cada incidente
-                camaras = protection_svc.get_camaras_for_servicio(
-                    inc.servicio_protegido_id,
-                    inc.ruta_protegida_id
-                )
-                camaras_count = len(camaras)
-                camaras_baneadas_count = sum(1 for camara in camaras if camara.estado == CamaraEstado.BANEADA)
-                
-                incidentes_data.append({
-                    "id": inc.id,
-                    "ticket_asociado": inc.ticket_asociado,
-                    "servicio_afectado_id": inc.servicio_afectado_id,
-                    "servicio_protegido_id": inc.servicio_protegido_id,
-                    "ruta_protegida_id": inc.ruta_protegida_id,
-                    "usuario_ejecutor": inc.usuario_ejecutor,
-                    "motivo": inc.motivo,
-                    "fecha_inicio": inc.fecha_inicio.isoformat() if inc.fecha_inicio else None,
-                    "activo": inc.activo,
-                    "duracion_horas": round(duracion, 1) if duracion else None,
-                    "camaras_count": camaras_count,
-                    "camaras_baneadas_count": camaras_baneadas_count,
-                })
-            
-            logger.info("action=get_active_bans user=%s count=%d", username, len(incidentes_data))
-            
-            return JSONResponse({
-                "status": "ok",
-                "incidentes": incidentes_data,
-                "total": len(incidentes_data),
-                "total_camaras_baneadas": total_camaras_baneadas,
-            })
-            
+            cuerpo = listar_incidentes_activos(session)
+        logger.info("action=get_active_bans user=%s count=%d", username, cuerpo["total"])
+        return JSONResponse(cuerpo)
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
         return error_interno("get_active_bans", exc, user=username)
-
-
-class BanLiftRequestModel(BaseModel):
-    """Request para levantar un baneo."""
-    incidente_id: int
-    motivo_cierre: Optional[str] = None
 
 
 @router.post("/api/infra/ban/lift")
@@ -593,33 +531,18 @@ def lift_ban_web(
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Levanta un baneo y restaura el estado de las cámaras."""
-    
     username, _ = usuario
-    
     try:
-        from core.services.protection_service import lift_ban as do_lift_ban
         from db.session import SessionLocal
-        
+
         with SessionLocal() as session:
-            result = do_lift_ban(
+            result = levantar_baneo_y_notificar(
                 session,
                 lift_request.incidente_id,
                 usuario_ejecutor=username,
                 motivo_cierre=lift_request.motivo_cierre,
             )
-            
             if result.success:
-                session.commit()
-                try:
-                    from core.config import get_settings
-                    from modules.slack_baneo_notifier.eventos import notificar_evento_baneo
-
-                    datos_evento = result.to_dict()
-                    datos_evento["usuario_ejecutor"] = username
-                    datos_evento["motivo_cierre"] = lift_request.motivo_cierre
-                    notificar_evento_baneo(session, "lift", datos_evento, get_settings().slack.bot_token)
-                except Exception as slack_exc:
-                    logger.warning("Error enviando aviso Slack de baneo levantado desde web: %s", slack_exc)
                 logger.info(
                     "action=lift_ban user=%s incidente_id=%d camaras_restauradas=%d",
                     username,
@@ -627,16 +550,13 @@ def lift_ban_web(
                     result.camaras_restauradas,
                 )
             else:
-                session.rollback()
                 logger.warning(
                     "action=lift_ban_failed user=%s incidente_id=%d error=%s",
                     username,
                     lift_request.incidente_id,
                     result.message,
                 )
-            
             return JSONResponse(result.to_dict())
-            
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:

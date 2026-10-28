@@ -53,7 +53,6 @@ INCIDENTE_WEB: dict = {
     "fecha_inicio": (str, NONE), "activo": bool, "duracion_horas": (float, int, NONE), "camaras_count": int,
     "camaras_baneadas_count": int,
 }
-INCIDENTE_API: dict = {k: v for k, v in INCIDENTE_WEB.items() if k != "camaras_baneadas_count"}
 RUTAS_SERVICIO: dict = {
     "status": str, "servicio_id": str, "servicio_db_id": int, "cliente": (str, NONE), "rutas": list,
     "total_rutas": int,
@@ -257,9 +256,9 @@ def test_api_ban_active_forma(api):
     res = api.get("/api/infra/ban/active")
     assert res.status_code == 200
     cuerpo = res.json()
-    assert_forma(cuerpo, {"status": str, "total": int, "incidentes": list})
+    assert_forma(cuerpo, {"status": str, "incidentes": list, "total": int, "total_camaras_baneadas": int})
     if cuerpo["incidentes"]:
-        assert_forma(cuerpo["incidentes"][0], INCIDENTE_API)
+        assert_forma(cuerpo["incidentes"][0], INCIDENTE_WEB)
 
 
 @pytest.mark.parametrize("cliente", ["web", "api"])
