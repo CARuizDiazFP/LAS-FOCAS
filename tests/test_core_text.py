@@ -74,3 +74,33 @@ def test_shim_no_define_funciones():
         and getattr(obj, "__module__", None) == "modules.slack_baneo_notifier.camara_search"
     ]
     assert propios == []
+
+
+@pytest.mark.parametrize(
+    "shim_mod, core_mod",
+    [
+        ("modules.slack_baneo_notifier.correccion_ingreso", "core.services.ingreso_correccion_comandos"),
+        ("modules.slack_baneo_notifier.slack_user_resolver", "core.services.slack_usuarios"),
+    ],
+)
+def test_shims_slack_identidad_y_sin_definiciones_propias(shim_mod, core_mod):
+    import importlib
+    import inspect
+
+    shim = importlib.import_module(shim_mod)
+    nuevo = importlib.import_module(core_mod)
+    assert shim.__all__ == nuevo.__all__
+    for nombre in nuevo.__all__:
+        assert getattr(shim, nombre) is getattr(nuevo, nombre)
+    propios = [
+        n
+        for n, obj in vars(shim).items()
+        if (inspect.isfunction(obj) or inspect.isclass(obj)) and getattr(obj, "__module__", None) == shim_mod
+    ]
+    assert propios == []
+
+
+def test_logger_slack_usuarios_conserva_nombre():
+    from core.services import slack_usuarios
+
+    assert slack_usuarios.logger.name == "slack_baneo_worker.slack_user_resolver"

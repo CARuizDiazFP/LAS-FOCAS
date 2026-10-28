@@ -58,7 +58,7 @@ def registrar_movimiento_ingreso(
 ) -> Ingreso:
     """Persiste un movimiento de Ingreso o Egreso REAL de un técnico a `camara` (Cámara o Botella ya
     resuelta) y comita la transacción antes de retornar. `tecnico_nombre` ya debe venir resuelto por
-    el caller (ver `modules/slack_baneo_notifier/slack_user_resolver.py::resolver_nombre_tecnico`) —
+    el caller (ver `core/services/slack_usuarios.py::resolver_nombre_tecnico`) —
     este servicio no conoce Slack, sólo persiste. `slack_user_id` (el ID crudo de Slack del mismo
     evento, opcional) sólo se usa para ENCONTRAR una fila abierta al cerrar un Egreso (ver abajo) —
     nunca se escribe en `tecnico_id` de una fila nueva, sólo `tecnico_nombre` (el nombre resuelto).

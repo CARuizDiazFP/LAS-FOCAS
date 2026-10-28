@@ -58,7 +58,7 @@ from core.text.normalizacion import (
     normalizar_candidato,
     preparar_nombre_busqueda,
 )
-from modules.slack_baneo_notifier.slack_user_resolver import resolver_nombre_tecnico
+from core.services.slack_usuarios import resolver_nombre_tecnico
 
 logger = logging.getLogger(__name__)
 
