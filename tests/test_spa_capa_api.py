@@ -22,11 +22,8 @@ SRC = Path(__file__).resolve().parents[1] / "web" / "frontend" / "src"
 # Archivos con `fetch(` aún sin migrar a la capa api/ (rutas relativas a web/frontend/src).
 PENDIENTES_FETCH: set[str] = set()
 
-# EventSource directo aún fuera de composables/ (se migran a useCorridaSse).
-PENDIENTES_SSE: set[str] = {
-    "admin/views/AdminHuerfanosViewer.vue",
-    "admin/views/AdminIngestaCromo.vue",
-}
+# EventSource directo aún fuera de composables/ (ya migrados a useCorridaSse: vacío).
+PENDIENTES_SSE: set[str] = set()
 
 CSRF_A_MANO = re.compile(r"csrf_token|X-CSRF-Token|\bcsrf\(\)")
 FETCH = re.compile(r"\bfetch\(")

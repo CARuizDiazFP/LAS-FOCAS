@@ -189,7 +189,3 @@ export async function obtenerHistoricoCromo(limit = 10, offset = 0): Promise<Cro
 export async function obtenerDetalleCromo(corridaId: number): Promise<CromoDetalle> {
   return requestJson(`/api/admin/ingesta/cromo/corridas/${corridaId}`);
 }
-
-export function streamUrlIngestaCromo(corridaId: number): string {
-  return `/api/admin/ingesta/cromo/corridas/${corridaId}/stream`;
-}
