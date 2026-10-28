@@ -14,7 +14,7 @@
     <div ref="scrollEl" class="viewer-shell__scroll">
       <slot v-if="!vacio" />
 
-      <div v-else-if="!loading" class="viewer-shell__state-box">
+      <div v-else-if="!loading" class="viewer-shell__state-box" :style="estiloCaja">
         <i :class="['ph', iconoVacio]" aria-hidden="true"></i>
         <h3>{{ textoVacio }}</h3>
         <slot name="vacio" />
@@ -25,9 +25,9 @@
         {{ textoCargando }}
       </div>
 
-      <div v-if="loading && vacio && cargaInicial === 'caja'" class="viewer-shell__state-box">
+      <div v-if="loading && vacio && cargaInicial === 'caja'" class="viewer-shell__state-box" :style="estiloCaja">
         <i class="ph ph-circle-notch viewer-shell__spin" aria-hidden="true"></i>
-        <h3>{{ textoCargaInicial }}</h3>
+        <h3 v-if="textoCargaInicial">{{ textoCargaInicial }}</h3>
       </div>
 
       <slot name="pie" />
@@ -40,7 +40,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 const props = withDefaults(
   defineProps<{
@@ -62,15 +62,21 @@ const props = withDefaults(
     /** Qué se ve mientras carga sin items: nada, la caja de estado con `textoCargaInicial` o la
      * misma fila de "cargando más". */
     cargaInicial?: 'nada' | 'caja' | 'fila';
+    /** Título de la caja de carga inicial; si falta, la caja muestra sólo el spinner. */
     textoCargaInicial?: string;
+    /** `max-width` de la caja de estado (p. ej. `260px`); si falta, sin tope. */
+    anchoEstado?: string;
   }>(),
   {
     scrollInfinito: true,
     iconoVacio: 'ph-magnifying-glass',
     cargaInicial: 'nada',
     textoCargaInicial: '',
+    anchoEstado: undefined,
   },
 );
+
+const estiloCaja = computed(() => (props.anchoEstado ? { maxWidth: props.anchoEstado } : undefined));
 
 const emit = defineEmits<{
   'cargar-mas': [];
@@ -153,6 +159,17 @@ defineExpose({ scrollEl });
   overflow: auto;
 }
 
+.viewer-shell__state-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 34px auto;
+  padding: 34px 22px;
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px var(--color-neutral-800);
+  text-align: center;
+}
 .viewer-shell__state-box i { font-size: 26px; color: var(--color-neutral-600); margin-bottom: 4px; }
 .viewer-shell__state-box h3 { font-size: 15px; font-weight: 500; margin: 0; }
 .viewer-shell__state-box :slotted(p) {

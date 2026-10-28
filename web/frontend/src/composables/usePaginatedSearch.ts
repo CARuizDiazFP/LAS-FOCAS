@@ -92,6 +92,11 @@ export function usePaginatedSearch<T, R extends PaginaViewer<T>>(
   // durante una carga: la búsqueda nueva no salía y la respuesta vieja se mezclaba en la lista vacía).
   async function recargarDesdeCero(): Promise<void> {
     generacion += 1;
+    // Un debounce pendiente duplicaría esta recarga (tipear y tocar un chip en menos de 320 ms).
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
     o.alReiniciar?.();
     items.value = [];
     total.value = 0;

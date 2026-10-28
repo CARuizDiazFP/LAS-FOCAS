@@ -13,6 +13,7 @@
     texto-vacio="Ningún servicio coincide"
     texto-cargando="Cargando más servicios..."
     carga-inicial="caja"
+    ancho-estado="260px"
     texto-carga-inicial="Cargando servicios..."
     @cargar-mas="cargarSiguiente"
   >
@@ -313,18 +314,4 @@ onMounted(() => {
 @media (max-width: 1280px) { .servicios-sin-odf-viewer__grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 1024px) { .servicios-sin-odf-viewer__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .servicios-sin-odf-viewer__grid { grid-template-columns: 1fr; } }
-
-/* La caja de estado la dibuja ViewerShell; su ancho varía entre viewers, así que la regla queda acá. */
-.servicios-sin-odf-viewer :deep(.viewer-shell__state-box) {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  max-width: 260px;
-  margin: 34px auto;
-  padding: 34px 22px;
-  border-radius: var(--radius-md);
-  box-shadow: 0 0 0 1px var(--color-neutral-800);
-  text-align: center;
-}
 </style>
