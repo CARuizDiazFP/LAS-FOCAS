@@ -679,6 +679,9 @@ docker exec lasfocasdev-web rm -rf /tmp/rama /tmp/e2e.py /tmp/<salida>   # siemp
 
 - En el script, `assert modulo.__file__.startswith("/tmp/rama/")`: sin eso se prueba el código viejo
   de la imagen sin darse cuenta.
+- Nunca `-w /app`: `python -c` (y un script ubicado en `/app`) ponen el directorio actual en
+  `sys.path` ANTES que `PYTHONPATH`, así que `/app/core` tapa a `/tmp/rama/core`. Real (P11,
+  2026-10-28): con `-w /app` cargaba el `core/config.py` de la imagen; con `-w /tmp` el de la rama.
 - `docker exec` sin `-i` no pasa el heredoc por stdin (sale sin output): copiar el script con `docker cp`.
 - Escribir las salidas en `/tmp/<salida>`, no en `REPORTS_DIR` (volumen compartido). Si el flujo
   ingesta en la DB, simular sólo esa función (asignarla en el módulo) y dejar real la lectura.

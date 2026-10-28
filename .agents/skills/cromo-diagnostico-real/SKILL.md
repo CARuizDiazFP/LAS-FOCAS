@@ -211,6 +211,12 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    peor que no resolver: registra el ingreso donde no es y puede disparar avisos de baneo. Sumar los
    casos reales de `ingresos_sin_match` (dev y prod tienen el inventario casi idéntico: medir en dev).
    Método y cifras: `docs/relevamiento_ingresos_sin_match_2026-09-28.md`.
+   **Además**, si el cambio mueve o reorganiza ese código sin querer cambiar su salida (refactor), el
+   criterio es igualdad exacta, no "≤ dev": `tests/test_normalizacion_golden.py` sobre el corpus real
+   commiteado (no se regenera `golden.json` para hacerlo pasar) y
+   `scripts/golden_normalizacion.py cascada --salida <scratchpad>/antes|despues.json` (7 571 búsquedas
+   reales de focas_dev, read-only, ~10 min) con los dos dicts idénticos. Real (P11, 2026-10-28): así se
+   movieron `camara_search.py` → `core/` con 0 diferencias.
 
 11. **`tp[]` es una lista y casi nunca tiene un solo elemento que importe: nunca `tp[0]` a ciegas.**
    Real (2026-09-29, `track 42351` daba 1 `.txt` con 2 hilos): una posición de patchera (clase 136)
