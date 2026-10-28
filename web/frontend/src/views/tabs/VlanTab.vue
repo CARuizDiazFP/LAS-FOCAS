@@ -64,9 +64,8 @@
 
 <script setup lang="ts">
 import { ref } from 'vue';
-import { useSession } from '../../composables/useSession';
+import { compararVlans } from '../../api/herramientas';
 
-const { csrf } = useSession();
 const textA = ref('');
 const textB = ref('');
 const loading = ref(false);
@@ -103,14 +102,7 @@ async function compare() {
   setStatus('Comparando configuraciones...', 'info');
   loading.value = true;
   try {
-    const res = await fetch('/api/tools/compare-vlans', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ text_a: textA.value, text_b: textB.value, csrf_token: csrf() }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error ?? 'Error comparando VLANs');
+    const data = await compararVlans(textA.value, textB.value);
     const sorted = (arr: number[]) => [...arr].sort((a, b) => a - b);
     onlyA.value = sorted(data.only_a ?? []);
     onlyB.value = sorted(data.only_b ?? []);

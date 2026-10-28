@@ -222,14 +222,13 @@ import {
 import {
   type InfraRutaItem,
   type InfraServicioIngreso,
-  type ReportHistoryItem,
   getBaneosServicio,
   getIngresosServicio,
   getOdfsCromoServicio,
   getRutasServicio,
   getTrackingRuta,
-  getUltimoReporte,
 } from '../api/servicioSecciones';
+import { getUltimoReporte, type ReportHistoryItem } from '../api/informes';
 import ServicioSeccionCard from '../components/servicios/detalle/ServicioSeccionCard.vue';
 import ServiceTimeline from '../components/servicios/ServiceTimeline.vue';
 import { useCromoPath } from '../composables/useCromoPath';

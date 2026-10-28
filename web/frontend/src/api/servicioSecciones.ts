@@ -301,23 +301,6 @@ export async function anularIngreso(
   });
 }
 
-// ── Reportes ──────────────────────────────────────────────────────────────
-
-export interface ReportHistoryItem {
-  id: number;
-  status: string;
-  started_at: string | null;
-  report_type: string;
-}
-
-export interface ReportsHistoryResponse {
-  items?: ReportHistoryItem[];
-}
-
-export async function getUltimoReporte(tipo: 'sla' | 'repetitividad'): Promise<ReportsHistoryResponse> {
-  return requestJson<ReportsHistoryResponse>(`/api/reports/history?type=${tipo}&limit=1`);
-}
-
 // ── Baneos ────────────────────────────────────────────────────────────────
 
 /**

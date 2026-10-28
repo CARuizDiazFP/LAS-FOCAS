@@ -94,9 +94,8 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { useSession } from '../../composables/useSession';
+import { generarRepetitividad } from '../../api/informes';
 
-const { csrf } = useSession();
 const mes = ref(new Date().getMonth() + 1);
 const anio = ref(new Date().getFullYear());
 const includePdf = ref(true);
@@ -144,16 +143,14 @@ async function generate() {
   data.append('include_pdf', includePdf.value ? 'true' : 'false');
   data.append('with_geo', withGeo.value ? 'true' : 'false');
   data.append('use_db', useDb.value ? 'true' : 'false');
-  data.append('csrf_token', csrf());
   try {
-    const res = await fetch('/api/flows/repetitividad', { method: 'POST', body: data, credentials: 'include' });
-    const j = await res.json();
-    if (!res.ok) throw new Error(j.error ?? 'Error');
+    const j = await generarRepetitividad(data);
     const newLinks: typeof links.value = [];
     if (j.docx) newLinks.push({ label: 'DOCX', href: j.docx });
     if (j.pdf) newLinks.push({ label: 'PDF', href: j.pdf });
-    (j.map_images ?? []).forEach((url: string, idx: number) => {
-      newLinks.push({ label: (j.map_images.length > 1 ? `Mapa PNG ${idx + 1}` : 'Mapa PNG'), href: url });
+    const mapImages = j.map_images ?? [];
+    mapImages.forEach((url: string, idx: number) => {
+      newLinks.push({ label: (mapImages.length > 1 ? `Mapa PNG ${idx + 1}` : 'Mapa PNG'), href: url });
     });
     links.value = newLinks;
     resultText.value = newLinks.length ? 'Listo.' : 'Generado sin archivos de salida.';
