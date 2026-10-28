@@ -4,9 +4,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
+import threading
+import time
 
+import httpx
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +18,7 @@ from sqlalchemy import text
 
 import api.app.routes.servicios as servicios_routes
 import core.services.clientes_categoria_hooks as clientes_hooks
+import core.services.servicios_ingesta_service as servicios_ingesta
 from api.app.main import app
 from db.session import SessionLocal, async_engine
 from tests.soporte_postgres_real import requiere_postgres_real
@@ -765,7 +770,7 @@ def test_ingest_no_pisa_una_excepcion_fijada_mientras_corria(
     categoría provisional de la planilla."""
     numero = "9999414"
     _insertar_servicio(numero, nombre=None, categoria=None)
-    original = servicios_routes.es_verificable_por_tipo_y_estado
+    original = servicios_ingesta.es_verificable_por_tipo_y_estado
 
     def admin_fija_en_el_medio(*args, **kwargs):
         with SessionLocal() as session:
@@ -779,7 +784,7 @@ def test_ingest_no_pisa_una_excepcion_fijada_mientras_corria(
             session.commit()
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(servicios_routes, "es_verificable_por_tipo_y_estado", admin_fija_en_el_medio)
+    monkeypatch.setattr(servicios_ingesta, "es_verificable_por_tipo_y_estado", admin_fija_en_el_medio)
     df = pd.DataFrame({"Número Primer Servicio": [numero], "Nivel Cliente": ["4"], "Estado Servicio": ["Activo"]})
     assert _subir(client, df).status_code == 200
     assert _categorias(numero) == (1, 4, True)
@@ -894,3 +899,51 @@ def test_ingest_real_la_categoria_lista_del_cliente_gana_y_la_excepcion_se_conse
     assert tuple(fila) == (4, "SLA")
     assert tuple(lista) == (3, "LISTA")
     assert response.json()["clientes_sync"]["clientes_creados"] == 1
+
+
+def test_ingesta_no_bloquea_el_loop(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """B11: la lectura de la planilla (openpyxl, simulada lenta con time.sleep) y el resto de la
+    ingesta corren en otro thread; el event loop de la API sigue latiendo durante el POST."""
+    hilos: list[int] = []
+    leer_excel_original = pd.read_excel
+
+    def _lectura_lenta(*args, **kwargs):
+        hilos.append(threading.get_ident())
+        time.sleep(0.3)
+        return leer_excel_original(*args, **kwargs)
+
+    monkeypatch.setattr(pd, "read_excel", _lectura_lenta)
+    df = pd.DataFrame({"Número Primer Servicio": ["900001"], "Estado Servicio": ["Activo"]})
+    contenido = _excel_bytes(df)
+
+    async def _medir() -> tuple[int, list[float], httpx.Response]:
+        # Corre DENTRO del loop del TestClient (`portal.call`): es el mismo loop que atiende la app y
+        # el mismo al que están atadas las conexiones del pool async (ver el fixture `client`).
+        latidos: list[float] = []
+        terminado = asyncio.Event()
+
+        async def _latido() -> None:
+            while not terminado.is_set():
+                latidos.append(time.monotonic())
+                await asyncio.sleep(0.02)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t", headers=API_HEADERS
+        ) as cliente:
+            # El latido arranca ANTES del POST: un bloqueo del loop se vería como un hueco entre latidos.
+            tarea = asyncio.create_task(_latido())
+            await asyncio.sleep(0.05)
+            respuesta = await cliente.post(
+                "/servicios/ingest", files={"file": ("servicios.xlsx", contenido, _XLSX)}
+            )
+            terminado.set()
+            await tarea
+        return threading.get_ident(), latidos, respuesta
+
+    hilo_del_loop, latidos, respuesta = client.portal.call(_medir)
+
+    assert respuesta.status_code == 200, respuesta.text
+    assert respuesta.json()["inserted"] == 1
+    assert hilos and hilos[0] != hilo_del_loop
+    assert len(latidos) >= 8
+    assert max(b - a for a, b in zip(latidos, latidos[1:])) < 0.15

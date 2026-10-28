@@ -4,7 +4,7 @@
 
 import pandas as pd
 
-from api.app.routes.servicios import _chunked, _normalize_value
+from core.services.servicios_ingesta_service import _chunked, _normalize_value
 
 
 def test_chunked_particiona_en_bloques() -> None:
