@@ -10,13 +10,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app.main import app
-from api.app.routes.infra import (
+from core.services.camaras_busqueda_avanzada import (
     FilterField,
     FilterOperator,
     SearchFilter,
     SearchRequest,
-    _apply_text_filter,
-    _camara_matches_filter,
+    camara_coincide_filtro,
+    filtro_texto_coincide,
 )
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
 
@@ -30,48 +30,48 @@ API_HEADERS = {"Authorization": "Bearer test-api-key"}
 
 
 class TestApplyTextFilter:
-    """Tests para la función _apply_text_filter."""
+    """Tests para la función filtro_texto_coincide."""
 
     def test_eq_exact_match(self) -> None:
-        assert _apply_text_filter("test", FilterOperator.EQ, "TEST") is True
-        assert _apply_text_filter("test", FilterOperator.EQ, "Test") is True
-        assert _apply_text_filter("test", FilterOperator.EQ, "test") is True
+        assert filtro_texto_coincide("test", FilterOperator.EQ, "TEST") is True
+        assert filtro_texto_coincide("test", FilterOperator.EQ, "Test") is True
+        assert filtro_texto_coincide("test", FilterOperator.EQ, "test") is True
 
     def test_eq_no_match(self) -> None:
-        assert _apply_text_filter("test", FilterOperator.EQ, "testing") is False
-        assert _apply_text_filter("test", FilterOperator.EQ, "other") is False
+        assert filtro_texto_coincide("test", FilterOperator.EQ, "testing") is False
+        assert filtro_texto_coincide("test", FilterOperator.EQ, "other") is False
 
     def test_contains_match(self) -> None:
-        assert _apply_text_filter("riv", FilterOperator.CONTAINS, "Av. Rivadavia 1500") is True
-        assert _apply_text_filter("RIVADAVIA", FilterOperator.CONTAINS, "av. rivadavia 1500") is True
+        assert filtro_texto_coincide("riv", FilterOperator.CONTAINS, "Av. Rivadavia 1500") is True
+        assert filtro_texto_coincide("RIVADAVIA", FilterOperator.CONTAINS, "av. rivadavia 1500") is True
 
     def test_contains_no_match(self) -> None:
-        assert _apply_text_filter("florida", FilterOperator.CONTAINS, "Av. Rivadavia 1500") is False
+        assert filtro_texto_coincide("florida", FilterOperator.CONTAINS, "Av. Rivadavia 1500") is False
 
     def test_starts_with_match(self) -> None:
-        assert _apply_text_filter("av.", FilterOperator.STARTS_WITH, "Av. Corrientes 1234") is True
-        assert _apply_text_filter("AV", FilterOperator.STARTS_WITH, "av. corrientes") is True
+        assert filtro_texto_coincide("av.", FilterOperator.STARTS_WITH, "Av. Corrientes 1234") is True
+        assert filtro_texto_coincide("AV", FilterOperator.STARTS_WITH, "av. corrientes") is True
 
     def test_starts_with_no_match(self) -> None:
-        assert _apply_text_filter("calle", FilterOperator.STARTS_WITH, "Av. Corrientes") is False
+        assert filtro_texto_coincide("calle", FilterOperator.STARTS_WITH, "Av. Corrientes") is False
 
     def test_ends_with_match(self) -> None:
-        assert _apply_text_filter("1234", FilterOperator.ENDS_WITH, "Av. Corrientes 1234") is True
+        assert filtro_texto_coincide("1234", FilterOperator.ENDS_WITH, "Av. Corrientes 1234") is True
 
     def test_ends_with_no_match(self) -> None:
-        assert _apply_text_filter("5678", FilterOperator.ENDS_WITH, "Av. Corrientes 1234") is False
+        assert filtro_texto_coincide("5678", FilterOperator.ENDS_WITH, "Av. Corrientes 1234") is False
 
     def test_in_operator_with_list(self) -> None:
-        assert _apply_text_filter(["libre", "ocupada"], FilterOperator.IN, "LIBRE") is True
-        assert _apply_text_filter(["libre", "ocupada"], FilterOperator.IN, "BANEADA") is False
+        assert filtro_texto_coincide(["libre", "ocupada"], FilterOperator.IN, "LIBRE") is True
+        assert filtro_texto_coincide(["libre", "ocupada"], FilterOperator.IN, "BANEADA") is False
 
     def test_none_value_returns_false(self) -> None:
-        assert _apply_text_filter("test", FilterOperator.EQ, None) is False
-        assert _apply_text_filter("test", FilterOperator.CONTAINS, None) is False
+        assert filtro_texto_coincide("test", FilterOperator.EQ, None) is False
+        assert filtro_texto_coincide("test", FilterOperator.CONTAINS, None) is False
 
 
 class TestCamaraMatchesFilter:
-    """Tests para la función _camara_matches_filter."""
+    """Tests para la función camara_coincide_filtro."""
 
     @pytest.fixture
     def mock_camara(self) -> MagicMock:
@@ -85,49 +85,49 @@ class TestCamaraMatchesFilter:
 
     def test_address_filter_matches_nombre(self, mock_camara: MagicMock) -> None:
         flt = SearchFilter(field=FilterField.ADDRESS, operator=FilterOperator.CONTAINS, value="rivadavia")
-        assert _camara_matches_filter(mock_camara, flt, [], []) is True
+        assert camara_coincide_filtro(mock_camara, flt, [], []) is True
 
     def test_address_filter_matches_direccion(self, mock_camara: MagicMock) -> None:
         flt = SearchFilter(field=FilterField.ADDRESS, operator=FilterOperator.CONTAINS, value="caballito")
-        assert _camara_matches_filter(mock_camara, flt, [], []) is True
+        assert camara_coincide_filtro(mock_camara, flt, [], []) is True
 
     def test_address_filter_no_match(self, mock_camara: MagicMock) -> None:
         flt = SearchFilter(field=FilterField.ADDRESS, operator=FilterOperator.CONTAINS, value="florida")
-        assert _camara_matches_filter(mock_camara, flt, [], []) is False
+        assert camara_coincide_filtro(mock_camara, flt, [], []) is False
 
     def test_status_filter_eq(self, mock_camara: MagicMock) -> None:
         flt = SearchFilter(field=FilterField.STATUS, operator=FilterOperator.EQ, value="OCUPADA")
-        assert _camara_matches_filter(mock_camara, flt, [], []) is True
+        assert camara_coincide_filtro(mock_camara, flt, [], []) is True
 
         flt_libre = SearchFilter(field=FilterField.STATUS, operator=FilterOperator.EQ, value="LIBRE")
-        assert _camara_matches_filter(mock_camara, flt_libre, [], []) is False
+        assert camara_coincide_filtro(mock_camara, flt_libre, [], []) is False
 
     def test_status_filter_in(self, mock_camara: MagicMock) -> None:
         flt = SearchFilter(field=FilterField.STATUS, operator=FilterOperator.IN, value=["OCUPADA", "BANEADA"])
-        assert _camara_matches_filter(mock_camara, flt, [], []) is True
+        assert camara_coincide_filtro(mock_camara, flt, [], []) is True
 
         flt_no_match = SearchFilter(field=FilterField.STATUS, operator=FilterOperator.IN, value=["LIBRE", "DETECTADA"])
-        assert _camara_matches_filter(mock_camara, flt_no_match, [], []) is False
+        assert camara_coincide_filtro(mock_camara, flt_no_match, [], []) is False
 
     def test_service_filter_matches(self, mock_camara: MagicMock) -> None:
         flt = SearchFilter(field=FilterField.SERVICE_ID, operator=FilterOperator.EQ, value="111995")
-        assert _camara_matches_filter(mock_camara, flt, ["111995", "112001"], []) is True
+        assert camara_coincide_filtro(mock_camara, flt, ["111995", "112001"], []) is True
 
     def test_service_filter_contains(self, mock_camara: MagicMock) -> None:
         flt = SearchFilter(field=FilterField.SERVICE_ID, operator=FilterOperator.CONTAINS, value="1119")
-        assert _camara_matches_filter(mock_camara, flt, ["111995", "112001"], []) is True
+        assert camara_coincide_filtro(mock_camara, flt, ["111995", "112001"], []) is True
 
     def test_service_filter_no_match(self, mock_camara: MagicMock) -> None:
         flt = SearchFilter(field=FilterField.SERVICE_ID, operator=FilterOperator.EQ, value="999999")
-        assert _camara_matches_filter(mock_camara, flt, ["111995", "112001"], []) is False
+        assert camara_coincide_filtro(mock_camara, flt, ["111995", "112001"], []) is False
 
     def test_cable_filter_matches(self, mock_camara: MagicMock) -> None:
         flt = SearchFilter(field=FilterField.CABLE, operator=FilterOperator.CONTAINS, value="cable-1")
-        assert _camara_matches_filter(mock_camara, flt, [], ["CABLE-1-NORTE", "CABLE-2-SUR"]) is True
+        assert camara_coincide_filtro(mock_camara, flt, [], ["CABLE-1-NORTE", "CABLE-2-SUR"]) is True
 
     def test_origen_filter_matches(self, mock_camara: MagicMock) -> None:
         flt = SearchFilter(field=FilterField.ORIGEN, operator=FilterOperator.EQ, value="TRACKING")
-        assert _camara_matches_filter(mock_camara, flt, [], []) is True
+        assert camara_coincide_filtro(mock_camara, flt, [], []) is True
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -147,16 +147,6 @@ def test_api_search_sin_filtros_forma(api):
     _primero(cuerpo["camaras"], CAMARA_BASE)
 
 
-def test_web_search_field_invalido_200_vacio(web):
-    res = web.post("/api/infra/search", json={"filters": [{"field": "x", "operator": "eq", "value": "a"}], "limit": 5})
-    assert res.status_code == 200
-    cuerpo = res.json()
-    assert_forma(cuerpo, {
-        "status": str, "total": int, "limit": int, "offset": int, "filters_applied": int, "camaras": list,
-    })
-    assert cuerpo["total"] == 0 and cuerpo["camaras"] == []
-
-
 def test_web_smart_search_forma(web):
     res = web.post("/api/infra/smart-search", json={"terms": [], "limit": 5})
     assert res.status_code == 200

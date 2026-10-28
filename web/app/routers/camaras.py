@@ -12,11 +12,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from core.services.camaras_exportacion import a_csv, a_xlsx, filas_exportacion
+from core.services.camaras_busqueda_avanzada import SearchRequest, buscar_camaras_avanzada
 from core.services.camaras_consulta import (
     _collect_camara_rutas_info,
     _collect_camara_servicios_ids,
     buscar_camaras_por_terminos,
     listar_camaras,
+    serializar_camara_basica,
 )
 from core.services.camaras_consulta import serializar_camara_panel as _serialize_camara_response
 from core.utils.tz import TZ_ARG
@@ -1206,23 +1208,9 @@ def export_cameras_web(
         return error_interno("export_cameras", exc, user=username)
 
 
-class SearchFilterModel(BaseModel):
-    """Filtro individual para búsqueda avanzada."""
-    field: str
-    operator: str = "contains"
-    value: str | list[str]
-
-
-class SearchRequestModel(BaseModel):
-    """Request para búsqueda avanzada de cámaras."""
-    filters: list[SearchFilterModel] = []
-    limit: int = 100
-    offset: int = 0
-
-
 @router.post("/api/infra/search")
-def advanced_search_camaras_web(  # noqa: C901 - variante conservada a propósito
-    body: SearchRequestModel,
+def advanced_search_camaras_web(
+    body: SearchRequest,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Búsqueda avanzada de cámaras con filtros combinables (AND).
@@ -1234,160 +1222,28 @@ def advanced_search_camaras_web(  # noqa: C901 - variante conservada a propósit
     username, _ = usuario
 
     try:
-        from db.models.infra import Camara
         from db.session import SessionLocal
 
-        limit = min(body.limit, 500)
-        offset = max(body.offset, 0)
-
         with SessionLocal() as session:
-            all_camaras = session.query(Camara).order_by(Camara.nombre).all()
+            resultado = buscar_camaras_avanzada(session, body.filters, limit=body.limit, offset=body.offset)
+            camaras = [serializar_camara_basica(e) for e in resultado.camaras]
 
-            def apply_text_filter(value: str, operator: str, db_value: str | None) -> bool:
-                if db_value is None:
-                    return False
-                db_lower = db_value.lower()
-                val_lower = value.lower() if isinstance(value, str) else value
+        logger.info(
+            "action=advanced_search user=%s filters=%d total=%d returned=%d",
+            username,
+            len(body.filters),
+            resultado.total,
+            len(camaras),
+        )
 
-                if operator == "eq":
-                    return db_lower == val_lower
-                elif operator == "contains":
-                    return val_lower in db_lower
-                elif operator == "starts_with":
-                    return db_lower.startswith(val_lower)
-                elif operator == "ends_with":
-                    return db_lower.endswith(val_lower)
-                elif operator == "in":
-                    if isinstance(value, list):
-                        return db_lower in [v.lower() for v in value]
-                    return db_lower == val_lower
-                return False
-
-            def get_camara_servicios(camara: Camara) -> list[str]:
-                servicios_ids = []
-                for empalme in camara.empalmes:
-                    for servicio in empalme.servicios:
-                        if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
-                            servicios_ids.append(servicio.servicio_id)
-                return servicios_ids
-
-            def get_camara_cables(camara: Camara) -> list[str]:
-                cables_nombres = []
-                for cable in camara.cables:
-                    if cable.nombre and cable.nombre not in cables_nombres:
-                        cables_nombres.append(cable.nombre)
-                return cables_nombres
-
-            def camara_matches_filter(camara, flt, servicios_ids, cables_nombres) -> bool:
-                value = flt.value if isinstance(flt.value, str) else (flt.value[0] if flt.value else "")
-
-                if flt.field == "service_id":
-                    for svc_id in servicios_ids:
-                        if apply_text_filter(value, flt.operator, svc_id):
-                            return True
-                    return False
-
-                elif flt.field == "address":
-                    return (
-                        apply_text_filter(value, flt.operator, camara.nombre) or
-                        apply_text_filter(value, flt.operator, camara.direccion)
-                    )
-
-                elif flt.field == "status":
-                    estado_actual = camara.estado.value if camara.estado else "LIBRE"
-                    if flt.operator == "in" and isinstance(flt.value, list):
-                        return estado_actual.upper() in [v.upper() for v in flt.value]
-                    return estado_actual.upper() == value.upper()
-
-                elif flt.field == "cable":
-                    for cable_nombre in cables_nombres:
-                        if apply_text_filter(value, flt.operator, cable_nombre):
-                            return True
-                    return False
-
-                elif flt.field == "origen":
-                    origen_actual = camara.origen_datos.value if camara.origen_datos else "MANUAL"
-                    if flt.operator == "in" and isinstance(flt.value, list):
-                        return origen_actual.upper() in [v.upper() for v in flt.value]
-                    return origen_actual.upper() == value.upper()
-
-                return False
-
-            # Si no hay filtros, devolver todas
-            if not body.filters:
-                total = len(all_camaras)
-                paginated = all_camaras[offset:offset + limit]
-                camaras_response = []
-                for cam in paginated:
-                    servicios_ids = get_camara_servicios(cam)
-                    camaras_response.append({
-                        "id": cam.id,
-                        "nombre": cam.nombre or "",
-                        "fontine_id": cam.fontine_id,
-                        "direccion": cam.direccion,
-                        "estado": cam.estado.value if cam.estado else "LIBRE",
-                        "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
-                        "latitud": cam.latitud,
-                        "longitud": cam.longitud,
-                        "servicios": servicios_ids,
-                    })
-
-                return JSONResponse({
-                    "status": "ok",
-                    "total": total,
-                    "limit": limit,
-                    "offset": offset,
-                    "filters_applied": 0,
-                    "camaras": camaras_response,
-                })
-
-            # Aplicar filtros con lógica AND
-            matching_camaras = []
-            for camara in all_camaras:
-                servicios_ids = get_camara_servicios(camara)
-                cables_nombres = get_camara_cables(camara)
-
-                matches_all = True
-                for flt in body.filters:
-                    if not camara_matches_filter(camara, flt, servicios_ids, cables_nombres):
-                        matches_all = False
-                        break
-
-                if matches_all:
-                    matching_camaras.append((camara, servicios_ids))
-
-            total = len(matching_camaras)
-            paginated = matching_camaras[offset:offset + limit]
-            camaras_response = []
-            for cam, svc_ids in paginated:
-                camaras_response.append({
-                    "id": cam.id,
-                    "nombre": cam.nombre or "",
-                    "fontine_id": cam.fontine_id,
-                    "direccion": cam.direccion,
-                    "estado": cam.estado.value if cam.estado else "LIBRE",
-                    "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
-                    "latitud": cam.latitud,
-                    "longitud": cam.longitud,
-                    "servicios": svc_ids,
-                })
-
-            logger.info(
-                "action=advanced_search user=%s filters=%d total=%d returned=%d",
-                username,
-                len(body.filters),
-                total,
-                len(camaras_response),
-            )
-
-            return JSONResponse({
-                "status": "ok",
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-                "filters_applied": len(body.filters),
-                "camaras": camaras_response,
-            })
+        return JSONResponse({
+            "status": "ok",
+            "total": resultado.total,
+            "limit": body.limit,
+            "offset": body.offset,
+            "filters_applied": len(body.filters),
+            "camaras": camaras,
+        })
 
     except (HTTPException, ErrorDeDominio):
         raise

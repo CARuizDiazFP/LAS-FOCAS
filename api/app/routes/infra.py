@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from core.parsers.tracking_parser import parse_tracking
+from core.services.camaras_busqueda_avanzada import SearchRequest, buscar_camaras_avanzada
 from core.services.camaras_consulta import (
     buscar_camaras_por_terminos,
     listar_camaras,
@@ -85,59 +86,6 @@ class TrackingUploadResponse(BaseModel):
 # ──────────────────────────────────────────────────────────────────────────────
 # Búsqueda avanzada - Modelos y tipos
 # ──────────────────────────────────────────────────────────────────────────────
-
-
-class FilterField(str, Enum):
-    """Campos disponibles para filtrar en búsqueda avanzada."""
-
-    SERVICE_ID = "service_id"  # Busca cámaras asociadas a un servicio
-    ADDRESS = "address"  # Busca por nombre/dirección de cámara
-    STATUS = "status"  # Busca por estado (LIBRE, OCUPADA, BANEADA, DETECTADA)
-    CABLE = "cable"  # Busca cámaras asociadas a un cable
-    ORIGEN = "origen"  # Busca por origen de datos (MANUAL, TRACKING, SHEET)
-
-
-class FilterOperator(str, Enum):
-    """Operadores de comparación para filtros."""
-
-    EQ = "eq"  # Igual exacto
-    CONTAINS = "contains"  # Contiene (case-insensitive)
-    STARTS_WITH = "starts_with"  # Empieza con
-    ENDS_WITH = "ends_with"  # Termina con
-    IN = "in"  # Valor en lista
-
-
-class SearchFilter(BaseModel):
-    """Filtro individual para búsqueda avanzada."""
-
-    field: FilterField
-    operator: FilterOperator = FilterOperator.CONTAINS
-    value: str | list[str]
-
-    model_config = {"json_schema_extra": {"examples": [{"field": "address", "operator": "contains", "value": "rivadavia"}]}}
-
-
-class SearchRequest(BaseModel):
-    """Request para búsqueda avanzada de cámaras con filtros AND."""
-
-    filters: list[SearchFilter] = Field(default_factory=list, min_length=0, max_length=10)
-    limit: int = Field(default=100, ge=1, le=500)
-    offset: int = Field(default=0, ge=0)
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "filters": [
-                        {"field": "service_id", "operator": "eq", "value": "SVC-12345"},
-                        {"field": "address", "operator": "contains", "value": "rivadavia"},
-                    ],
-                    "limit": 50,
-                    "offset": 0,
-                }
-            ]
-        }
-    }
 
 
 class SearchResponse(BaseModel):
@@ -242,136 +190,9 @@ async def search_camaras(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _apply_text_filter(value: str, operator: FilterOperator, db_value: Optional[str]) -> bool:
-    """Aplica un filtro de texto a un valor de la base de datos.
-
-    Args:
-        value: Valor del filtro (lo que busca el usuario).
-        operator: Tipo de operación (eq, contains, starts_with, ends_with, in).
-        db_value: Valor almacenado en la base de datos.
-
-    Returns:
-        True si el valor coincide con el filtro.
-    """
-    if db_value is None:
-        return False
-
-    db_lower = db_value.lower()
-    val_lower = value.lower() if isinstance(value, str) else value
-
-    if operator == FilterOperator.EQ:
-        return db_lower == val_lower
-    elif operator == FilterOperator.CONTAINS:
-        return val_lower in db_lower
-    elif operator == FilterOperator.STARTS_WITH:
-        return db_lower.startswith(val_lower)
-    elif operator == FilterOperator.ENDS_WITH:
-        return db_lower.endswith(val_lower)
-    elif operator == FilterOperator.IN:
-        if isinstance(value, list):
-            return db_lower in [v.lower() for v in value]
-        return db_lower == val_lower
-    return False
-
-
-def _camara_matches_filter(
-    camara: Camara,
-    flt: SearchFilter,
-    servicios_ids: list[str],
-    cables_nombres: list[str],
-) -> bool:
-    """Evalúa si una cámara coincide con un filtro específico.
-
-    Args:
-        camara: Objeto Camara de la base de datos.
-        flt: Filtro a aplicar.
-        servicios_ids: Lista de IDs de servicios asociados a la cámara.
-        cables_nombres: Lista de nombres de cables asociados a la cámara.
-
-    Returns:
-        True si la cámara coincide con el filtro.
-    """
-    if flt.field == FilterField.SERVICE_ID:
-        # Buscar en servicios asociados
-        value = flt.value if isinstance(flt.value, str) else flt.value[0] if flt.value else ""
-        for svc_id in servicios_ids:
-            if _apply_text_filter(value, flt.operator, svc_id):
-                return True
-        return False
-
-    elif flt.field == FilterField.ADDRESS:
-        # Buscar en nombre y dirección
-        value = flt.value if isinstance(flt.value, str) else flt.value[0] if flt.value else ""
-        return (
-            _apply_text_filter(value, flt.operator, camara.nombre) or
-            _apply_text_filter(value, flt.operator, camara.direccion)
-        )
-
-    elif flt.field == FilterField.STATUS:
-        # Comparar estado
-        estado_actual = camara.estado.value if camara.estado else "LIBRE"
-        value = flt.value if isinstance(flt.value, str) else flt.value[0] if flt.value else ""
-        if flt.operator == FilterOperator.IN and isinstance(flt.value, list):
-            return estado_actual.upper() in [v.upper() for v in flt.value]
-        return estado_actual.upper() == value.upper()
-
-    elif flt.field == FilterField.CABLE:
-        # Buscar en cables asociados
-        value = flt.value if isinstance(flt.value, str) else flt.value[0] if flt.value else ""
-        for cable_nombre in cables_nombres:
-            if _apply_text_filter(value, flt.operator, cable_nombre):
-                return True
-        return False
-
-    elif flt.field == FilterField.ORIGEN:
-        # Comparar origen de datos
-        origen_actual = camara.origen_datos.value if camara.origen_datos else "MANUAL"
-        value = flt.value if isinstance(flt.value, str) else flt.value[0] if flt.value else ""
-        if flt.operator == FilterOperator.IN and isinstance(flt.value, list):
-            return origen_actual.upper() in [v.upper() for v in flt.value]
-        return origen_actual.upper() == value.upper()
-
-    return False
-
-
-def _get_camara_servicios(camara: Camara) -> list[str]:
-    """Obtiene los IDs de servicios asociados a una cámara."""
-    servicios_ids = []
-    for empalme in camara.empalmes:
-        for servicio in empalme.servicios:
-            if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
-                servicios_ids.append(servicio.servicio_id)
-    return servicios_ids
-
-
-def _get_camara_cables(camara: Camara) -> list[str]:
-    """Obtiene los nombres de cables asociados a una cámara."""
-    cables_nombres = []
-    for cable in camara.cables:
-        if cable.nombre and cable.nombre not in cables_nombres:
-            cables_nombres.append(cable.nombre)
-    return cables_nombres
-
-
-def _build_camara_response(camara: Camara, servicios_ids: list[str]) -> CamaraResponse:
-    """Construye el objeto de respuesta para una cámara."""
-    return CamaraResponse(
-        id=camara.id,
-        nombre=camara.nombre or "",
-        fontine_id=camara.fontine_id,
-        direccion=camara.direccion,
-        estado=camara.estado.value if camara.estado else "LIBRE",
-        origen_datos=camara.origen_datos.value if camara.origen_datos else "MANUAL",
-        latitud=camara.latitud,
-        longitud=camara.longitud,
-        servicios=servicios_ids,
-    )
-
-
 @router.post("/api/infra/search", response_model=SearchResponse)
 async def advanced_search_camaras(
     request: SearchRequest,
-    db: AsyncSession = Depends(get_async_db),
 ) -> SearchResponse:
     """Búsqueda avanzada de cámaras con filtros combinables (AND).
 
@@ -413,84 +234,20 @@ async def advanced_search_camaras(
         ...     {"field": "status", "operator": "in", "value": ["LIBRE", "DETECTADA"]}
         ... ]}
     """
+    def _run() -> tuple[int, list[dict[str, Any]]]:
+        # Sesión síncrona propia del thread; se serializa antes de cerrarla (relaciones ya cargadas).
+        with SessionLocal() as session:
+            resultado = buscar_camaras_avanzada(session, request.filters, limit=request.limit, offset=request.offset)
+            return resultado.total, [serializar_camara_basica(e) for e in resultado.camaras]
+
     try:
-        stmt = (
-            select(Camara)
-            .options(
-                selectinload(Camara.empalmes).selectinload(Empalme.servicios),
-                selectinload(Camara.cables_origen),
-                selectinload(Camara.cables_destino),
-            )
-            .order_by(Camara.nombre)
-        )
-
-        # Pre-filtro por estado si solo hay filtro de estado (optimización)
-        status_filters = [f for f in request.filters if f.field == FilterField.STATUS]
-        if len(status_filters) == 1 and len(request.filters) == 1:
-            flt = status_filters[0]
-            if flt.operator == FilterOperator.EQ:
-                value = flt.value if isinstance(flt.value, str) else flt.value[0]
-                if value.upper() in [e.value for e in CamaraEstado]:
-                    stmt = stmt.where(Camara.estado == CamaraEstado(value.upper()))
-            elif flt.operator == FilterOperator.IN and isinstance(flt.value, list):
-                estados = [CamaraEstado(v.upper()) for v in flt.value if v.upper() in [e.value for e in CamaraEstado]]
-                if estados:
-                    stmt = stmt.where(Camara.estado.in_(estados))
-
-        all_camaras = (await db.execute(stmt)).scalars().all()
-
-        # Si no hay filtros, devolver todas las cámaras (con paginación)
-        if not request.filters:
-            total = len(all_camaras)
-            paginated = all_camaras[request.offset : request.offset + request.limit]
-            camaras_response = [
-                _build_camara_response(cam, _get_camara_servicios(cam))
-                for cam in paginated
-            ]
-
-            logger.info(
-                "action=advanced_search filters=0 total=%d returned=%d",
-                total,
-                len(camaras_response),
-            )
-
-            return SearchResponse(
-                total=total,
-                limit=request.limit,
-                offset=request.offset,
-                filters_applied=0,
-                camaras=camaras_response,
-            )
-
-        # Aplicar filtros con lógica AND
-        matching_camaras = []
-        for camara in all_camaras:
-            servicios_ids = _get_camara_servicios(camara)
-            cables_nombres = _get_camara_cables(camara)
-
-            # Verificar que cumpla TODOS los filtros
-            matches_all = True
-            for flt in request.filters:
-                if not _camara_matches_filter(camara, flt, servicios_ids, cables_nombres):
-                    matches_all = False
-                    break
-
-            if matches_all:
-                matching_camaras.append((camara, servicios_ids))
-
-        # Aplicar paginación
-        total = len(matching_camaras)
-        paginated = matching_camaras[request.offset : request.offset + request.limit]
-        camaras_response = [
-            _build_camara_response(cam, svc_ids)
-            for cam, svc_ids in paginated
-        ]
+        total, camaras = await asyncio.to_thread(_run)
 
         logger.info(
             "action=advanced_search filters=%d total=%d returned=%d offset=%d",
             len(request.filters),
             total,
-            len(camaras_response),
+            len(camaras),
             request.offset,
         )
 
@@ -499,7 +256,7 @@ async def advanced_search_camaras(
             limit=request.limit,
             offset=request.offset,
             filters_applied=len(request.filters),
-            camaras=camaras_response,
+            camaras=[CamaraResponse(**c) for c in camaras],
         )
 
     except HTTPException:

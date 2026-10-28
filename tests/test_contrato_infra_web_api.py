@@ -66,6 +66,21 @@ def test_api_export_format_invalido_422():
     assert_forma(res.json(), {"detail": list})
 
 
+# --- Panel: validaciones de search (D2: los mismos modelos y límites que la API) -------------------
+
+def test_web_search_field_invalido_422(con_sesion):
+    res = cliente_web(con_sesion).post(
+        "/api/infra/search", json={"filters": [{"field": "x", "operator": "eq", "value": "a"}], "limit": 5}
+    )
+    assert res.status_code == 422
+
+
+def test_web_search_mas_de_10_filtros_422(con_sesion):
+    filtros = [{"field": "address", "operator": "contains", "value": "a"}] * 11
+    res = cliente_web(con_sesion).post("/api/infra/search", json={"filters": filtros, "limit": 5})
+    assert res.status_code == 422
+
+
 # --- Panel: validaciones de smart-search (D2: los mismos límites que la API) ----------------------
 
 def test_web_smart_search_limit_cero_422(con_sesion):
