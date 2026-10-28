@@ -45,7 +45,7 @@ Cámara).
 > `app.camaras`/`camara_padre_id`. Son dos homónimos de dos dominios separados — no confundir al leer
 > código o datos de ambos módulos. Ver `docs/modulo_ingesta_cromo.md`.
 
-**Detección de agrupación**: `modules/slack_baneo_notifier/camara_search.py::RE_BOT_SUFIJO`
+**Detección de agrupación**: `core/text/normalizacion.py::RE_BOT_SUFIJO` (re-exportado por el shim `camara_search.py`)
 (`\bbot\.?\s*[1-9](?!\d)`, case-insensitive) detecta el sufijo "Bot N"; usa una clase de un solo dígito
 a propósito para no confundir un nombre de calle como "Bot 30 de Septiembre..." con un índice de
 botella. `core/services/camara_hierarchy_service.py::extraer_base()` remueve sólo el token "Bot N" del
@@ -136,7 +136,7 @@ amplio `tiene_baneo_activo`. Ver `docs/api.md` (`GET /api/admin/baneos/grupos`) 
 completo y el porqué.
 
 `GET /api/infra/camaras/{id}/registros` expone además `botella_label` por cada `Ingreso` — resuelve
-"Botella 1" (convención ya usada por `camara_search.detectar_multi_bot`: la Cámara raíz misma, sin fila
+"Botella 1" (convención ya usada por `core.text.normalizacion.detectar_multi_bot`: la Cámara raíz misma, sin fila
 propia en `CromoBotella`) cuando no se especificó botella, el nombre de la `CromoBotella` cuando sí hay
 `cromo_botella_id`, o el nombre de la Botella legado (self-FK) cuando la fila de `Ingreso.camara_id`
 apunta directo a una Botella sin `CromoBotella` asociada.
@@ -395,7 +395,7 @@ devolver `camara_id`/`camara_nombre` además de `huerfana`).
 **Bug real reportado desde el dashboard `/infra`**: varias Cámaras padre de Cromo mostraban nombres
 rotos con un punto residual al inicio (ej. `". Cra Marcos Sastre y Colectora Este"`,
 `". Poste Est . Bs. As. C.F"`). **Causa raíz**: `RE_BOT_SUFIJO`
-(`modules/slack_baneo_notifier/camara_search.py`) y `RE_BOTELLA_PREFIJO`
+(`core/text/normalizacion.py`) y `RE_BOTELLA_PREFIJO`
 (`core/services/cromo/camara_padre_service.py`) consumían un punto ANTES del dígito de "Bot N"
 ("Bot. 2") pero ninguno consumía un punto DESPUÉS del dígito — cuando el nombre real de Cromo traía
 el punto ahí (ej. `"Bot 2. Cra Marcos Sastre y Colectora Este"`), el match terminaba en el dígito y el
@@ -514,7 +514,7 @@ operativos para mantenimiento, pensado para crecer con más módulos) → tarjet
 - **Criterio de detección — "normalización extendida"** (decisión explícita del usuario, sin
   similitud difusa): `camara_hierarchy_service.normalizar_para_agrupar_extendido()` compone
   `normalizar_para_agrupar()` (sin modificarla) con `expandir_abreviaturas_y_sinonimos()` (pública, en
-  `modules/slack_baneo_notifier/camara_search.py` — reusa `_ABREVIATURAS`/`_SINONIMOS`, las mismas
+  `core/text/normalizacion.py` (antes `camara_search.py`, hoy shim) — reusa `_ABREVIATURAS`/`_SINONIMOS`, las mismas
   tablas que ya usa `buscar_camara` para texto libre de técnicos, sin duplicarlas). Resuelve el caso
   documentado: "Cámara 14 de Julio 240" y "Cra 14 de Julio 240 CF" colapsan a la misma clave
   (`"cra 14 de julio 240"`) por la abreviatura `cf→""` y el sinónimo `camara→cra`. Excluye sufijo

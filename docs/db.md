@@ -1388,7 +1388,7 @@ trigger `trg_<tabla>_inmutable` (`BEFORE UPDATE OR DELETE ... FOR EACH ROW`) que
 
 | Extensión | Motivo |
 |-----------|---------|
-| `unaccent` | Normalización de acentos en búsquedas ILIKE de cámaras (`camara_search._buscar_ilike`, `_buscar_tokens`). Se instala via migración `20260427_01`. |
+| `unaccent` | Normalización de acentos en búsquedas ILIKE de cámaras (`camara_busqueda_nombre._buscar_ilike`, `_buscar_tokens`). Se instala via migración `20260427_01`. |
 
 Se agrega además en `db/init.sql` con `CREATE EXTENSION IF NOT EXISTS unaccent;` para que nuevos entornos no requieran correr la migración manualmente.
 
@@ -1588,7 +1588,7 @@ generarla (2026-10-26): 72 migraciones en una sola cadena lineal, raíz `2025100
 | `alias_nombre` | String(255), index  | Nombre alternativo de la cámara. |
 | `created_at`   | DateTime(tz)        | Fecha de creación del alias. |
 
-**Uso:** el listener de ingresos y `camara_search.py` utilizan esta tabla para empatar
+**Uso:** el listener de ingresos y `core/services/camara_busqueda_nombre.py` utilizan esta tabla para empatar
 cámaras escritas con nomenclatura alternativa. Un administrador puede registrar aliases
 desde el panel `/admin/Servicios/Baneos` → pestaña Revisión → sección *Cámaras Pendientes de Revisión* mediante dos flujos:
 - **Convertir en Alias** — vincula el nombre del técnico como alias de una cámara ya existente.

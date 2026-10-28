@@ -119,7 +119,7 @@ El `workflow_id` aparece en el log del worker (campo `workflow_id` del evento Sl
 
 Además de responder en el hilo, cuando el mensaje matchea una `Camara`/`CromoBotella` real el listener persiste el movimiento en `app.ingresos` — antes de esta fecha esa tabla nunca tuvo un camino de escritura real (ver `docs/infra.md`).
 
-El Workflow de Slack ya envía dos campos que hasta esta fecha no se parseaban, extraídos en `modules/slack_baneo_notifier/camara_search.py`:
+El Workflow de Slack ya envía dos campos que hasta esta fecha no se parseaban, extraídos en `core/text/mensaje_ingreso.py` (antes `camara_search.py`, que queda como shim de re-export):
 
 | Función | Campo del Workflow | Devuelve |
 |---|---|---|
@@ -136,7 +136,7 @@ Este registro **nunca bloquea ni condiciona la respuesta de Slack**: se ejecuta 
 **Actualización 2026-09-04 (Tarea de fix baneo/Slack):**
 
 - **Nombre real del técnico**: antes de persistir, el listener resuelve `slack_user_id` al nombre
-  visible del técnico vía `modules/slack_baneo_notifier/slack_user_resolver.py::resolver_nombre_tecnico`
+  visible del técnico vía `core/services/slack_usuarios.py::resolver_nombre_tecnico` (el módulo viejo `slack_user_resolver.py` queda como shim de re-export)
   (llama `client.users_info` — el mismo `WebClient` que Bolt ya inyecta en el handler, sin token
   nuevo). Requiere el scope `users:read` en la Slack App (verificar en el panel de Slack). Si la
   llamada falla (scope faltante, usuario borrado, timeout), cae al ID crudo — el registro nunca se
@@ -169,8 +169,8 @@ Forzar egreso <CAMARA> DD-MM-AAAA HH:MM
 Forzar egreso #<ingreso_id>
 ```
 
-El parser vive en `modules/slack_baneo_notifier/correccion_ingreso.py` (puro, sin DB ni Slack) y la
-resolución real en `core/services/ingreso_correccion_service.py`.
+El parser vive en `core/services/ingreso_correccion_comandos.py` (puro, sin DB ni Slack) y la
+resolución real en `core/services/ingreso_correccion_service.py` (`correccion_ingreso.py` queda como shim de re-export).
 
 - **Scope nuevo requerido: `channels:history` (o `groups:history`)** en el panel de la Slack App —
   no verificable desde código, mismo criterio que `app_mentions:read` y `users:read`. Lo usa el
@@ -293,9 +293,9 @@ El nivel 1 siempre tiene precedencia sobre el nivel 2: si una cámara está `BAN
       No → ✅ Podés proceder
 ```
 
-### Normalización de nombres de cámara (`camara_search.py`)
+### Normalización de nombres de cámara (`core/text/normalizacion.py`)
 
-La búsqueda en DB usa `modules/slack_baneo_notifier/camara_search.py`.  
+La normalización vive en `core/text/normalizacion.py` y la cascada de búsqueda en DB en `core/services/camara_busqueda_nombre.py` (P11); `modules/slack_baneo_notifier/camara_search.py` queda como shim de re-export.  
 El preprocesamiento aplica en orden:
 
 1. **Limpieza de puntuación** (`_limpiar_puntuacion`) — elimina comas, punto y coma, puntos no entre dígitos, y guiones con espacios (` - ` → ` `).
@@ -443,7 +443,7 @@ puede responder con el Fontaine ID)."
 - **Prefijo con el `n_id` de Cromo de la Botella** ("Empalme 10245762: Cra 25 de Mayo 302", o
   "6635973: …" sin la palabra "Empalme"; 7 u 8 dígitos, sólo al principio y seguido de `:`/`-`, o
   "Empalme N" solo): se resuelve por `n_id` antes que la cascada (`camara_por_prefijo_empalme`,
-  `modules/slack_baneo_notifier/camara_search.py`). Vale sólo si la Botella es vigente, tiene Cámara y
+  `core/services/camara_busqueda_nombre.py`). Vale sólo si la Botella es vigente, tiene Cámara y
   el resto del texto la corrobora (`resto_corrobora_botella`: los números de 2+ dígitos del resto
   están en el nombre y el parecido `SequenceMatcher` es ≥ 0,8). Si no, se quita el prefijo y la
   búsqueda por nombre sigue sin exigir ese número.

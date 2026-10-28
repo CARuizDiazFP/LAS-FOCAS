@@ -1,4 +1,4 @@
-<!-- repository-map: {"source_commit": "4f0c76f2d222", "generated_at_utc": "2026-10-27T11:55:59Z", "manifest_sha256": "30252b996a88c5bfbb65f4b3badcb8e3cbf8b1bbaa78fd01e26f3a7fbc3e5a80"} -->
+<!-- repository-map: {"source_commit": "ebfd977f675a", "generated_at_utc": "2026-10-28T11:20:31Z", "manifest_sha256": "fc86f80022b52feeada3e0566544708dfc6a1c23d53d5232f332e0037367fd42"} -->
 # Nombre de archivo: REPOSITORY_MAP.md
 # Ubicación de archivo: docs/REPOSITORY_MAP.md
 # Descripción: Mapa canónico del repositorio por dominio (generado; no editar a mano)
@@ -69,7 +69,7 @@ Backend web (puerto dev 8090, sesión/CSRF/WebSocket) y SPA Vue 3 + Vite.
 
 Notificador/app de Slack, clasificador de intención y FO Monitor.
 
-- Raíces: `modules/slack_baneo_notifier/`, `nlp_intent/`, `modules/fo_monitor_worker/`, `core/services/fo_monitor/`
+- Raíces: `modules/slack_baneo_notifier/`, `nlp_intent/`, `modules/fo_monitor_worker/`, `core/services/fo_monitor/`, `core/text/`
 - Entradas: `modules/slack_baneo_notifier/worker.py`, `nlp_intent/app/`
 - Docs: `docs/bot.md`, `docs/slack_app_cables.md`, `docs/nlp/`, `docs/fo_monitor.md`
 - Tests: `tests/test_slack*.py`, `tests/test_fo_monitor*.py`, `nlp_intent/tests/`
