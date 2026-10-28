@@ -6,14 +6,14 @@ import os
 from pathlib import Path
 from typing import Dict, List
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_TEMPLATES_DIR = _PROJECT_ROOT / "Templates"
+from core.config import MESES_ES as _MESES_ES
+from core.config import reports_dir, templates_dir, uploads_dir
 
-# Paths configurables mediante variables de entorno
-TEMPLATES_DIR = Path(os.getenv("TEMPLATES_DIR", str(_DEFAULT_TEMPLATES_DIR)))
+# Paths configurables mediante variables de entorno (default único en core/config)
+TEMPLATES_DIR = templates_dir()
 REP_TEMPLATE_PATH = Path(os.getenv("REP_TEMPLATE_PATH", str(TEMPLATES_DIR / "Plantilla_Informe_Repetitividad.docx")))
-REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "/app/data/reports"))
-UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "/app/data/uploads"))
+REPORTS_DIR = reports_dir()
+UPLOADS_DIR = uploads_dir()
 MAPS_ENABLED: bool = os.getenv("MAPS_ENABLED", "true").lower() == "true"
 MAPS_LIGHTWEIGHT: bool = os.getenv("MAPS_LIGHTWEIGHT", "true").lower() == "true"
 MAPS_DEFAULT_ZOOM: int = int(os.getenv("MAPS_DEFAULT_ZOOM", "5"))
@@ -126,17 +126,4 @@ GEO_OPTIONAL_COLUMNS: List[str] = [
 ]
 
 # Lista de meses en español para formatear encabezados
-MESES_ES: List[str] = [
-    "enero",
-    "febrero",
-    "marzo",
-    "abril",
-    "mayo",
-    "junio",
-    "julio",
-    "agosto",
-    "septiembre",
-    "octubre",
-    "noviembre",
-    "diciembre",
-]
+MESES_ES: List[str] = list(_MESES_ES)
