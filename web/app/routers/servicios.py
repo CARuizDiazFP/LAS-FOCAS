@@ -99,6 +99,97 @@ def get_servicio_rutas_web(
         return error_interno("get_servicio_rutas", exc, user=username, servicio_id=servicio_id)
 
 
+def _ruta_odfs_info(ruta: Any, servicio_id: str, tracking_ids: set[str]) -> dict[str, Any]:
+    """Info de una ruta para el detalle de ODFs; agrega a `tracking_ids` los ids de tracking de sus empalmes.
+
+    `empalmes` sale con las entries parseadas en crudo: `_serializar_empalmes_odfs` las reemplaza."""
+    from core.parsers.tracking_parser import parse_tracking
+
+    ruta_tipo = ruta.tipo.value if ruta.tipo else "PRINCIPAL"
+
+    if not ruta.raw_file_content:
+        return {
+            "ruta_id": ruta.id,
+            "ruta_nombre": ruta.nombre,
+            "ruta_tipo": ruta_tipo,
+            "activa": bool(ruta.activa),
+            "sin_tracking": True,
+            "terminal_a": None,
+            "terminal_b": None,
+            "transitos_count": 0,
+            "empalmes_count": 0,
+            "empalmes": [],
+        }
+
+    parsed = parse_tracking(ruta.raw_file_content, ruta.nombre_archivo_origen or "")
+    empalmes_parseados = parsed.get_empalmes()
+
+    for entry in empalmes_parseados:
+        if entry.empalme_id:
+            tracking_ids.add(f"{servicio_id}_{entry.empalme_id}")
+
+    return {
+        "ruta_id": ruta.id,
+        "ruta_nombre": ruta.nombre,
+        "ruta_tipo": ruta_tipo,
+        "activa": bool(ruta.activa),
+        "sin_tracking": False,
+        "terminal_a": (
+            {"odf_id": parsed.terminal_a[0], "conector": parsed.terminal_a[1]} if parsed.terminal_a else None
+        ),
+        "terminal_b": (
+            {"odf_id": parsed.terminal_b[0], "conector": parsed.terminal_b[1]} if parsed.terminal_b else None
+        ),
+        "transitos_count": parsed.transitos_count,
+        "empalmes_count": parsed.empalmes_count,
+        # Placeholder temporal con las entries parseadas en crudo — se
+        # reemplaza por su forma serializable, una vez resuelto el
+        # enriquecimiento de cámara en batch (evita re-parsear el archivo).
+        "empalmes": empalmes_parseados,
+    }
+
+
+def _serializar_empalmes_odfs(
+    rutas_info: list[dict[str, Any]], empalmes_db_por_tracking_id: dict[str, Any], servicio_id: str
+) -> tuple[set[str], set[str]]:
+    """Serializa en el lugar los `empalmes` de cada ruta con tracking; devuelve (ODFs, empalmes) distintos."""
+    # Bug real (2026-08-31, ticket duplicidad Buscador/ODFs): `transitos_count`/
+    # `empalmes_count` son por-ruta, así que sumarlos entre rutas sobrecuenta cuando dos
+    # rutas del mismo servicio (ej. "Principal" y "Principal - Pelo 2", dos pelos del MISMO
+    # cable físico) atraviesan el mismo empalme — el usuario lo detectó en pantalla: "4
+    # ODF(s)" cuando en realidad eran 2 ODFs físicas repetidas en ambas rutas. `empalme_id`
+    # es la identidad estable de un empalme para este servicio (mismo criterio que
+    # `tracking_id = f"{servicio_id}_{entry.empalme_id}"` de `_ruta_odfs_info`), así que
+    # los totales cuentan `empalme_id` DISTINTOS entre todas las rutas, no ocurrencias.
+    odfs_distintas: set[str] = set()
+    empalmes_distintos: set[str] = set()
+    for ruta_info in rutas_info:
+        if ruta_info["sin_tracking"]:
+            continue
+
+        empalmes_serializados = []
+        for entry in ruta_info["empalmes"]:
+            if entry.empalme_id:
+                empalmes_distintos.add(entry.empalme_id)
+                if entry.es_transito:
+                    odfs_distintas.add(entry.empalme_id)
+            tracking_id = f"{servicio_id}_{entry.empalme_id}" if entry.empalme_id else None
+            empalme_db = empalmes_db_por_tracking_id.get(tracking_id) if tracking_id else None
+            camara = empalme_db.camara if empalme_db else None
+            empalmes_serializados.append(
+                {
+                    "empalme_id": entry.empalme_id,
+                    "descripcion": entry.empalme_descripcion,
+                    "es_transito": entry.es_transito,
+                    "camara_id": camara.id if camara else None,
+                    "camara_nombre": camara.nombre if camara else None,
+                    "camara_estado": camara.estado.value if camara and camara.estado else None,
+                }
+            )
+        ruta_info["empalmes"] = empalmes_serializados
+    return odfs_distintas, empalmes_distintos
+
+
 @router.get("/api/infra/servicios/{servicio_id}/odfs")
 def get_servicio_odfs(
     servicio_id: str,
@@ -125,7 +216,6 @@ def get_servicio_odfs(
     username, _ = usuario
 
     try:
-        from core.parsers.tracking_parser import parse_tracking
         from db.models.infra import Empalme
         from db.session import SessionLocal
         from sqlalchemy.orm import joinedload
@@ -139,61 +229,9 @@ def get_servicio_odfs(
                     status_code=404,
                 )
 
-            rutas_info: list[dict[str, Any]] = []
             tracking_ids: set[str] = set()
 
-            for ruta in servicio.rutas:
-                ruta_tipo = ruta.tipo.value if ruta.tipo else "PRINCIPAL"
-
-                if not ruta.raw_file_content:
-                    rutas_info.append(
-                        {
-                            "ruta_id": ruta.id,
-                            "ruta_nombre": ruta.nombre,
-                            "ruta_tipo": ruta_tipo,
-                            "activa": bool(ruta.activa),
-                            "sin_tracking": True,
-                            "terminal_a": None,
-                            "terminal_b": None,
-                            "transitos_count": 0,
-                            "empalmes_count": 0,
-                            "empalmes": [],
-                        }
-                    )
-                    continue
-
-                parsed = parse_tracking(ruta.raw_file_content, ruta.nombre_archivo_origen or "")
-                empalmes_parseados = parsed.get_empalmes()
-
-                for entry in empalmes_parseados:
-                    if entry.empalme_id:
-                        tracking_ids.add(f"{servicio.servicio_id}_{entry.empalme_id}")
-
-                rutas_info.append(
-                    {
-                        "ruta_id": ruta.id,
-                        "ruta_nombre": ruta.nombre,
-                        "ruta_tipo": ruta_tipo,
-                        "activa": bool(ruta.activa),
-                        "sin_tracking": False,
-                        "terminal_a": (
-                            {"odf_id": parsed.terminal_a[0], "conector": parsed.terminal_a[1]}
-                            if parsed.terminal_a
-                            else None
-                        ),
-                        "terminal_b": (
-                            {"odf_id": parsed.terminal_b[0], "conector": parsed.terminal_b[1]}
-                            if parsed.terminal_b
-                            else None
-                        ),
-                        "transitos_count": parsed.transitos_count,
-                        "empalmes_count": parsed.empalmes_count,
-                        # Placeholder temporal con las entries parseadas en crudo — se
-                        # reemplaza por su forma serializable abajo, una vez resuelto el
-                        # enriquecimiento de cámara en batch (evita re-parsear el archivo).
-                        "empalmes": empalmes_parseados,
-                    }
-                )
+            rutas_info = [_ruta_odfs_info(ruta, servicio.servicio_id, tracking_ids) for ruta in servicio.rutas]
 
             # Enriquecimiento de cámara en UNA sola query batched (no N+1): se junta acá
             # el universo completo de tracking_empalme_id candidatos de todas las rutas.
@@ -207,43 +245,9 @@ def get_servicio_odfs(
                 )
                 empalmes_db_por_tracking_id = {e.tracking_empalme_id: e for e in empalmes_db}
 
-            # Bug real (2026-08-31, ticket duplicidad Buscador/ODFs): `transitos_count`/
-            # `empalmes_count` son por-ruta, así que sumarlos entre rutas sobrecuenta cuando dos
-            # rutas del mismo servicio (ej. "Principal" y "Principal - Pelo 2", dos pelos del MISMO
-            # cable físico) atraviesan el mismo empalme — el usuario lo detectó en pantalla: "4
-            # ODF(s)" cuando en realidad eran 2 ODFs físicas repetidas en ambas rutas. `empalme_id`
-            # es la identidad estable de un empalme para este servicio (mismo criterio que
-            # `tracking_id = f"{servicio.servicio_id}_{entry.empalme_id}"` de más arriba), así que
-            # los totales ahora cuentan `empalme_id` DISTINTOS entre todas las rutas, no ocurrencias.
-            odfs_distintas: set[str] = set()
-            empalmes_distintos: set[str] = set()
-            for ruta_info in rutas_info:
-                if ruta_info["sin_tracking"]:
-                    continue
-
-                empalmes_serializados = []
-                for entry in ruta_info["empalmes"]:
-                    if entry.empalme_id:
-                        empalmes_distintos.add(entry.empalme_id)
-                        if entry.es_transito:
-                            odfs_distintas.add(entry.empalme_id)
-                    tracking_id = (
-                        f"{servicio.servicio_id}_{entry.empalme_id}" if entry.empalme_id else None
-                    )
-                    empalme_db = empalmes_db_por_tracking_id.get(tracking_id) if tracking_id else None
-                    camara = empalme_db.camara if empalme_db else None
-                    empalmes_serializados.append(
-                        {
-                            "empalme_id": entry.empalme_id,
-                            "descripcion": entry.empalme_descripcion,
-                            "es_transito": entry.es_transito,
-                            "camara_id": camara.id if camara else None,
-                            "camara_nombre": camara.nombre if camara else None,
-                            "camara_estado": camara.estado.value if camara and camara.estado else None,
-                        }
-                    )
-                ruta_info["empalmes"] = empalmes_serializados
-
+            odfs_distintas, empalmes_distintos = _serializar_empalmes_odfs(
+                rutas_info, empalmes_db_por_tracking_id, servicio.servicio_id
+            )
             total_odfs = len(odfs_distintas)
             total_empalmes = len(empalmes_distintos)
 
