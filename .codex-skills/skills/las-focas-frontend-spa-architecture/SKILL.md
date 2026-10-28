@@ -206,11 +206,14 @@ la ruta en el router **y** el ítem en `AppShell.vue`.
 
 - **Todo HTTP va en `src/api/` (o `src/admin/api/`)**, un módulo por dominio, y lo vigila
   `tests/test_spa_capa_api.py`: falla ante `fetch(`, CSRF armado a mano (`csrf_token`, `X-CSRF-Token`,
-  `csrf()`), `XMLHttpRequest` fuera de `api/` o `new EventSource` fuera de `composables/`. Los componentes
-  y composables sólo llaman funciones tipadas de `api/`.
+  `csrf()`), `XMLHttpRequest` fuera de `api/`, `new EventSource` fuera de `composables/` y `fetch(` en
+  cualquier archivo que no sea `api/client.ts`. `test_cliente_http_solo_desde_capa_api` además impide que
+  fuera de `api/` se importen `request`, `requestJson` o `requestDownload` de `client` (sí se permiten
+  `ApiError`, `saveBlob`, `setCsrfToken`/`clearCsrfToken` y tipos). Los componentes y composables sólo
+  llaman funciones tipadas de `api/`: el invariante se cumple en todo el SPA, sin excepciones.
 - **El CSRF lo pone `request()`** (`api/client.ts`) en todo método ≠ GET. No mandar `csrf_token` en el
   body ni leerlo de `useSession()`. Errores: `ApiError` (mensaje de `error`, `detail`, `message`, o `Error N`).
-- **Descargas**: `requestDownload` (devuelve blob + nombre); nunca `fetch` + `blob()` a mano.
+- **Descargas**: `requestDownload` descarga, guarda el archivo con `saveBlob` y devuelve el nombre usado (el del header `Content-Disposition` o el de respaldo); nunca `fetch` + `blob()` a mano.
 - **Viewers paginados**: `composables/usePaginatedSearch.ts` + `components/viewer/ViewerShell.vue`.
   Props clave del shell: `anchoEstado` (`max-width` de la caja de estado), `errorInline` (`false` si el
   viewer pinta su propia caja de error), `scrollInfinito` (`false` si usa botón "Cargar más").
