@@ -81,3 +81,53 @@ def test_chat_history_and_metrics(monkeypatch):
     m2 = client.get("/api/chat/metrics").json()["intent_counts"]
     # Suma total debe aumentar
     assert sum(m2.values()) > sum(metrics.values())
+
+
+def test_persist_metrics_escribe_la_copia_de_forma_atomica(monkeypatch, tmp_path):
+    """`_persist_metrics` corre en el threadpool con una copia de los contadores; no deja el `.tmp`."""
+    from web.app.routers import chat as web_chat
+
+    destino = tmp_path / "intent_metrics.json"
+    monkeypatch.setattr(web_chat, "METRICS_PERSIST_PATH", str(destino))
+
+    web_chat._persist_metrics({"Otros": 3})
+
+    assert destino.read_text() == '{"Otros": 3}'
+    assert not destino.with_suffix(".tmp").exists()
+
+
+def test_persist_metrics_sin_permiso_solo_loguea(monkeypatch, tmp_path, caplog):
+    """El bug de `/app/data` (root, proceso 1001): un error de escritura nunca rompe el chat."""
+    from web.app.routers import chat as web_chat
+
+    monkeypatch.setattr(web_chat, "METRICS_PERSIST_PATH", str(tmp_path / "no-existe" / "m.json"))
+
+    web_chat._persist_metrics({"Otros": 1})
+
+    assert "action=metrics_persist error=" in caplog.text
+
+
+def _subir_adjunto(monkeypatch, tmp_path, contenido: bytes, limite: int):
+    from web.app import comun
+    from web.app.routers import chat as web_chat
+
+    monkeypatch.setattr(comun, "_require_auth", lambda request: ("tester", "user"))
+    monkeypatch.setattr(web_chat, "UPLOADS_DIR", tmp_path)
+    monkeypatch.setattr(web_chat, "MAX_CHAT_UPLOAD_BYTES", limite)
+    return client.post("/api/chat/uploads", files={"file": ("datos.csv", contenido, "text/csv")})
+
+
+def test_upload_del_chat_escribe_el_adjunto(monkeypatch, tmp_path):
+    contenido = b"a,b\n" * 300_000  # > 1 chunk de 512 KiB
+    r = _subir_adjunto(monkeypatch, tmp_path, contenido, limite=10 * 1024 * 1024)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["size"] == len(contenido)
+    assert (tmp_path / r.json()["path"]).read_bytes() == contenido
+
+
+def test_upload_del_chat_excedido_no_crea_archivo(monkeypatch, tmp_path):
+    r = _subir_adjunto(monkeypatch, tmp_path, b"x" * 2048, limite=1024)
+
+    assert r.status_code == 413
+    assert list(tmp_path.iterdir()) == []

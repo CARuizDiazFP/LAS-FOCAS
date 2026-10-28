@@ -18,9 +18,11 @@ agregan otros criterios de detección, sin romper el contrato de `GrupoDuplicado
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
+from typing import Any
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from core.services.camara_hierarchy_service import (
@@ -28,7 +30,8 @@ from core.services.camara_hierarchy_service import (
     extraer_base,
     normalizar_para_agrupar_extendido,
 )
-from db.models.infra import Camara, CamaraEstado
+from db.models.cromo import CromoBotella
+from db.models.infra import Cable, Camara, CamaraEstado
 
 
 @dataclass(slots=True)
@@ -47,6 +50,16 @@ class GrupoDuplicados:
     miembros: list[CamaraDuplicadaItem]
     estados_en_conflicto: bool
     estado_mas_restrictivo: str
+
+
+def _conteos_por_camara(session: Session, columna: Any, ids: list[int]) -> Counter[int]:
+    """Filas por id de cámara (`columna` es la FK hacia `app.camaras.id`), en una sola consulta."""
+
+    if not ids:
+        return Counter()
+    return Counter(dict(session.execute(
+        select(columna, func.count()).where(columna.in_(ids)).group_by(columna)
+    ).all()))
 
 
 def detectar_grupos_duplicados(session: Session) -> list[GrupoDuplicados]:
@@ -68,10 +81,18 @@ def detectar_grupos_duplicados(session: Session) -> list[GrupoDuplicados]:
             continue
         grupos[normalizar_para_agrupar_extendido(camara.nombre)].append(camara)
 
+    grupos = {clave: miembros for clave, miembros in grupos.items() if len(miembros) >= 2}
+    # Conteos por lote sólo para los miembros de grupos: recorrer `c.botellas`/`c.cromo_botellas`/
+    # `c.cables` disparaba 4 lazy loads por miembro (~790 consultas en dev) y traía las filas enteras
+    # de `cromo_botellas`, con su JSONB, sólo para contarlas.
+    ids = [c.id for miembros in grupos.values() for c in miembros]
+    botellas = _conteos_por_camara(session, Camara.camara_padre_id, ids)
+    botellas += _conteos_por_camara(session, CromoBotella.camara_id, ids)
+    cables = _conteos_por_camara(session, Cable.origen_camara_id, ids)
+    cables += _conteos_por_camara(session, Cable.destino_camara_id, ids)
+
     resultado: list[GrupoDuplicados] = []
     for clave, miembros in grupos.items():
-        if len(miembros) < 2:
-            continue
         estados = [c.estado for c in miembros]
         resultado.append(
             GrupoDuplicados(
@@ -82,8 +103,8 @@ def detectar_grupos_duplicados(session: Session) -> list[GrupoDuplicados]:
                         id=c.id,
                         nombre=c.nombre or "",
                         estado=(c.estado.value if c.estado else CamaraEstado.LIBRE.value),
-                        botellas_count=len(c.botellas) + len(c.cromo_botellas),
-                        cables_count=len(c.cables),
+                        botellas_count=botellas[c.id],
+                        cables_count=cables[c.id],
                     )
                     for c in miembros
                 ],

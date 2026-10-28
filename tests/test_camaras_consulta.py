@@ -33,32 +33,45 @@ def test_normalizar_lista_vacia():
     assert cc.normalizar_terminos([]) == []
 
 
-# --- termino_coincide ---------------------------------------------------------------------------
+# --- condicion_termino (SQL) -------------------------------------------------------------------
 
-def test_coincide_por_cada_campo():
-    cam = _camara()
-    assert cc.termino_coincide("central", cam, [], [])
-    assert cc.termino_coincide("RIVADAVIA", cam, [], [])
-    assert cc.termino_coincide("fon-77", cam, [], [])
-    assert cc.termino_coincide("svc-9", cam, ["SVC-99"], [])
-    assert cc.termino_coincide("troncal", cam, [], ["Troncal Norte"])
-    assert cc.termino_coincide("libre", cam, [], [])
-    assert cc.termino_coincide("tracking", cam, [], [])
+def _sql(termino: str) -> str:
+    from sqlalchemy.dialects import postgresql
+
+    return str(cc.condicion_termino(termino).compile(
+        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+    ))
 
 
-def test_no_coincide_si_no_esta_en_ningun_campo():
-    assert not cc.termino_coincide("zzz", _camara(), ["A1"], ["C1"])
+def test_condicion_busca_en_cada_campo():
+    sql = _sql("central")
+    for columna in ("camaras.nombre", "camaras.direccion", "camaras.fontine_id", "servicios.servicio_id", "cables.nombre"):
+        assert f"{columna} ILIKE" in sql, columna
+    assert "ruta_empalme_association" in sql and "servicio_empalme_association" in sql
 
 
-def test_estado_y_origen_por_defecto_si_son_none():
-    cam = _camara(estado=None, origen_datos=None)
-    assert cc.termino_coincide("libre", cam, [], [])
-    assert cc.termino_coincide("manual", cam, [], [])
+def test_condicion_servicios_de_botellas_y_legacy_solo_sin_rutas():
+    sql = _sql("svc")
+    # raíz del grupo: la propia cámara o la padre de la Botella
+    assert "coalesce(camaras_1.camara_padre_id, camaras_1.id)" in sql
+    assert "NOT IN" in sql
 
 
-def test_campos_none_no_rompen():
-    cam = _camara(nombre=None, direccion=None, fontine_id=None)
-    assert not cc.termino_coincide("x", cam, [], [])
+def test_condicion_escapa_metacaracteres_de_like():
+    assert "'%%' || '/%%/_' || '%%' ESCAPE '/'" in _sql("%_")
+
+
+def test_condicion_estado_y_origen_por_valor_del_enum():
+    assert "camaras.estado IN ('LIBRE')" in _sql("libre")
+    assert "camaras.estado IN ('OPERATIVA'" not in _sql("operativa")
+    assert "camaras.estado IN ('NO_OPERATIVA')" in _sql("operativa")
+    assert "camaras.origen_datos IN ('MANUAL')" in _sql("MANUAL")
+    assert "camaras.origen_datos IN ('INFERIDO', 'INFERIDO_CROMO')" in _sql("inferido")
+
+
+def test_condicion_sin_estado_ni_origen_si_el_termino_no_aparece():
+    sql = _sql("zzz")
+    assert "camaras.estado IN" not in sql and "camaras.origen_datos IN" not in sql
 
 
 # --- filtro de estado / no operativas ---------------------------------------------------------
@@ -69,8 +82,10 @@ class _QueryFalsa:
         self._camaras = camaras
 
     def filter(self, *criterios):
+        from sqlalchemy.dialects import postgresql
+
         for c in criterios:
-            self.filtros.append(str(c.compile(compile_kwargs={"literal_binds": True})))
+            self.filtros.append(str(c.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})))
         return self
 
     def options(self, *_):
@@ -148,30 +163,19 @@ def test_limit_y_offset_se_acotan():
     assert (r.limit, r.offset) == (500, 0)
 
 
-def test_terminos_filtran_en_python_y_paginan_despues():
-    camaras = [
-        _camara(nombre=f"Cam {i}", empalmes=[], cables=[], botellas=[]) for i in range(5)
-    ]
-    camaras[1].nombre = "Otra"
-    r = _buscar(_SesionFalsa(camaras), ["  cam "], limit=2, offset=1)
-    assert r.total == 4
-    assert [e.camara.nombre for e in r.camaras] == ["Cam 2", "Cam 3"]
-    assert r.terminos_aplicados == 1
+def test_terminos_agregan_una_condicion_sql_por_termino():
+    s = _SesionFalsa()
+    r = _buscar(s, ["  cam ", "norte"])
+    assert sum("camaras.nombre ILIKE" in f for f in s.filtros) == 2
+    assert r.terminos_aplicados == 2
 
 
 def test_terminos_en_blanco_cuentan_cero_y_no_filtran():
     camaras = [_camara(empalmes=[], cables=[], botellas=[])]
-    r = _buscar(_SesionFalsa(camaras), ["   "])
+    s = _SesionFalsa(camaras)
+    r = _buscar(s, ["   "])
     assert r.total == 1 and r.terminos_aplicados == 0
-
-
-def test_terminos_son_and():
-    camaras = [
-        _camara(nombre="Norte", direccion="Calle 1", empalmes=[], cables=[], botellas=[]),
-        _camara(nombre="Norte", direccion="Calle 2", empalmes=[], cables=[], botellas=[]),
-    ]
-    r = _buscar(_SesionFalsa(camaras), ["norte", "CALLE 2"])
-    assert r.total == 1
+    assert not any("ILIKE" in f for f in s.filtros)
 
 
 # --- reuso de lo calculado (conteo de llamadas) -----------------------------------------------
@@ -205,33 +209,14 @@ def _camara_con_servicio(nombre, servicio_id, ruta_id):
     )
 
 
-def test_con_terminos_helpers_se_llaman_una_vez_por_camara(monkeypatch):
-    camaras = [_camara_con_servicio(f"C{i}", f"SVC-{i}", i) for i in range(4)]
-    llamadas = _con_contadores(monkeypatch)
-    r = _buscar(_SesionFalsa(camaras), ["c"], limit=2, offset=1)
-    assert llamadas == {"rutas": 4, "servicios": 4}
-    assert [e.camara.nombre for e in r.camaras] == ["C1", "C2"]
-    assert r.camaras[0].servicios_ids == ["SVC-1"]
-    assert r.camaras[0].rutas_info[0]["ruta_id"] == 1
-
-
-def test_sin_terminos_helpers_solo_para_la_pagina(monkeypatch):
+def test_helpers_solo_para_la_pagina(monkeypatch):
     camaras = [_camara_con_servicio(f"C{i}", f"SVC-{i}", i) for i in range(3)]
     llamadas = _con_contadores(monkeypatch)
-    r = _buscar(_SesionFalsa(camaras))
+    r = _buscar(_SesionFalsa(camaras), ["c"])
     assert llamadas == {"rutas": 3, "servicios": 3}
     assert len(r.camaras) == 3
-
-
-def test_match_por_servicio_y_and_con_empalme_real():
-    camaras = [
-        _camara_con_servicio("Norte", "SVC-10", 1),
-        _camara_con_servicio("Sur", "SVC-10", 2),
-        _camara_con_servicio("Norte", "SVC-20", 3),
-    ]
-    r = _buscar(_SesionFalsa(camaras), ["svc-10", "norte"])
-    assert [e.rutas_info[0]["ruta_id"] for e in r.camaras] == [1]
-    assert r.camaras[0].servicios_ids == ["SVC-10"]
+    assert r.camaras[0].servicios_ids == ["SVC-0"]
+    assert r.camaras[0].rutas_info[0]["ruta_id"] == 0
 
 
 def test_rutas_info_usa_sitio_descripcion_de_las_puntas():

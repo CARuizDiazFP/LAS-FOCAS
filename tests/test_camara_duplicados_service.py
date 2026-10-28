@@ -12,7 +12,6 @@ from core.services.camara_duplicados_service import (
     detectar_grupos_duplicados,
     sugerir_principal,
 )
-from db.models.cromo import CromoBotella
 from db.models.infra import Camara, CamaraEstado
 
 
@@ -84,18 +83,50 @@ def test_detectar_grupos_duplicados_sin_conflicto_de_estado() -> None:
     assert grupos[0].estado_mas_restrictivo == "LIBRE"
 
 
+def _conteos_por_tabla(session: MagicMock, por_tabla: dict[str, list[tuple[int, int]]]) -> None:
+    """`session.execute(select(fk, count) ... group_by(fk))` devuelve las filas de la tabla+columna pedida."""
+
+    def _ejecutar(sentencia):
+        columna = sentencia.selected_columns[0]
+        resultado = MagicMock()
+        resultado.all.return_value = por_tabla.get(f"{columna.table.name}.{columna.name}", [])
+        return resultado
+
+    session.execute.side_effect = _ejecutar
+
+
 def test_detectar_grupos_duplicados_cuenta_botellas_cromo_de_camara_inferida() -> None:
     """~9.770/10.212 Cámaras raíz son INFERIDO_CROMO y nunca tienen Botellas legado propias —
     botellas_count debía incluir también cromo_botellas."""
     a = Camara(id=1, nombre="Cámara 14 de Julio 240", estado=CamaraEstado.LIBRE)
-    a.cromo_botellas = [CromoBotella(n_id=1), CromoBotella(n_id=2)]
     b = Camara(id=2, nombre="Cra 14 de Julio 240 CF", estado=CamaraEstado.LIBRE)
     session = _sesion_con_camaras([a, b])
+    _conteos_por_tabla(session, {"cromo_botellas.camara_id": [(1, 2)]})
 
     grupos = detectar_grupos_duplicados(session)
 
     item_a = next(m for m in grupos[0].miembros if m.id == 1)
     assert item_a.botellas_count == 2
+
+
+def test_detectar_grupos_duplicados_suma_legado_cromo_y_cables_por_lote() -> None:
+    """Los conteos salen de consultas agregadas (no de recorrer relaciones por miembro): Botellas legado
+    + Cromo, y cables como origen + destino."""
+    a = Camara(id=1, nombre="Cámara 14 de Julio 240", estado=CamaraEstado.LIBRE)
+    b = Camara(id=2, nombre="Cra 14 de Julio 240 CF", estado=CamaraEstado.LIBRE)
+    session = _sesion_con_camaras([a, b])
+    _conteos_por_tabla(session, {
+        "camaras.camara_padre_id": [(1, 1)],
+        "cromo_botellas.camara_id": [(1, 2), (2, 4)],
+        "cables.origen_camara_id": [(2, 1)],
+        "cables.destino_camara_id": [(2, 2)],
+    })
+
+    grupos = detectar_grupos_duplicados(session)
+
+    conteos = {m.id: (m.botellas_count, m.cables_count) for m in grupos[0].miembros}
+    assert conteos == {1: (3, 0), 2: (4, 3)}
+    assert session.execute.call_count == 4
 
 
 def _grupo(miembros: list[CamaraDuplicadaItem]) -> GrupoDuplicados:

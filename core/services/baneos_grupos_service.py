@@ -45,9 +45,13 @@ from dataclasses import dataclass, field
 import logging
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
-from core.services.camara_estado_service import get_camara_estado_contexto, override_camara_estado_manual
+from core.services.camara_estado_service import (
+    get_camara_estado_contexto,
+    get_camara_estado_contexto_batch,
+    override_camara_estado_manual,
+)
 from db.models.cromo import CromoBotella
 from db.models.infra import Camara, CamaraEstado, CamaraEstadoAuditoria
 
@@ -167,9 +171,9 @@ def listar_grupos_baneados(
     """Lista Cámaras raíz baneadas (`camara_padre_id IS NULL`, `estado=BANEADA`) con sus Botellas
     hijas (legado + Cromo), paginadas por nombre.
 
-    Sin N+1: como máximo 4 queries de listado (raíces, botellas legado, botellas Cromo, auditoría)
-    sin importar cuántos grupos haya en la página, más una query de contexto por raíz sólo si
-    `incluir_contexto=True` (`get_camara_estado_contexto` no tiene, hoy, una variante batch).
+    Sin N+1: 4 queries de listado (raíces, botellas legado, botellas Cromo, auditoría) sin importar
+    cuántos grupos haya en la página, más las del contexto por lote (`get_camara_estado_contexto_batch`,
+    tampoco crecen con la página) sólo si `incluir_contexto=True`.
 
     `limit=None` no pagina — trae TODAS las raíces que matcheen el filtro (lo usa el reporte Excel
     completo de la Tarea 8, que no puede perder grupos por paginación). Con `limit=None` se ignora
@@ -181,7 +185,8 @@ def listar_grupos_baneados(
     )
     q_norm = q.strip() if q else ""
     if q_norm:
-        query = query.filter(Camara.nombre.ilike(f"%{q_norm}%"))
+        # `autoescape`: `%` y `_` del texto buscado son literales, no comodines de LIKE.
+        query = query.filter(Camara.nombre.icontains(q_norm, autoescape=True))
 
     total = query.count()
 
@@ -200,7 +205,13 @@ def listar_grupos_baneados(
         legado_por_raiz[botella.camara_padre_id].append(botella)
 
     cromo_por_raiz: dict[int, list[CromoBotella]] = defaultdict(list)
-    for cromo_botella in session.query(CromoBotella).filter(CromoBotella.camara_id.in_(ids_raices)).all():
+    # `load_only`: la fila de `cromo_botellas` trae el payload JSONB de Cromo, que acá no se usa.
+    cromo_query = (
+        session.query(CromoBotella)
+        .filter(CromoBotella.camara_id.in_(ids_raices))
+        .options(load_only(CromoBotella.n_id, CromoBotella.camara_id, CromoBotella.nombre, CromoBotella.estado))
+    )
+    for cromo_botella in cromo_query.all():
         cromo_por_raiz[cromo_botella.camara_id].append(cromo_botella)
 
     auditoria_por_raiz: dict[int, CamaraEstadoAuditoria] = {}
@@ -217,6 +228,8 @@ def listar_grupos_baneados(
         # Ya viene ordenada por created_at desc — la primera fila vista para cada camara_id es la
         # más reciente, las siguientes (si hay más de una) se ignoran.
         auditoria_por_raiz.setdefault(auditoria.camara_id, auditoria)
+
+    contextos = get_camara_estado_contexto_batch(session, ids_raices) if incluir_contexto else {}
 
     grupos: list[GrupoBaneado] = []
     for raiz in raices:
@@ -243,7 +256,7 @@ def listar_grupos_baneados(
         puede_liberar = True
 
         if incluir_contexto:
-            contexto = get_camara_estado_contexto(session, raiz.id)
+            contexto = contextos.get(raiz.id)
             if contexto is not None:
                 tiene_baneo_activo = contexto.tiene_baneo_activo
                 tiene_incidente_activo = contexto.tiene_incidente_activo

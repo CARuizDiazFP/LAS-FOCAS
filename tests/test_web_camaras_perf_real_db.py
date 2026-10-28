@@ -52,3 +52,36 @@ def test_smart_search_sin_terminos_no_crece_con_el_limit(con_sesion):
     muchas, cuerpo_muchas = _queries("POST", "/api/infra/smart-search", {"terms": [], "limit": 200})
     assert len(cuerpo_pocas["camaras"]) == 20 and len(cuerpo_muchas["camaras"]) == 200
     assert pocas == muchas
+
+
+def test_smart_search_con_terminos_no_crece_con_el_limit(con_sesion):
+    """Con términos el filtro corre en SQL: antes se cargaba el grafo de todas las raíces (~6 s en dev)."""
+    con_sesion("user")
+    pocas, cuerpo_pocas = _queries("POST", "/api/infra/smart-search", {"terms": ["a"], "limit": 20})
+    muchas, cuerpo_muchas = _queries("POST", "/api/infra/smart-search", {"terms": ["a"], "limit": 200})
+    assert len(cuerpo_pocas["camaras"]) == 20 and len(cuerpo_muchas["camaras"]) == 200
+    assert cuerpo_pocas["total"] == cuerpo_muchas["total"]
+    assert pocas == muchas
+
+
+def test_smart_search_encuentra_la_raiz_por_un_servicio_de_su_botella(con_sesion):
+    from sqlalchemy import text
+
+    from db.session import SessionLocal
+
+    with SessionLocal() as sesion:
+        fila = sesion.execute(text(
+            "SELECT b.camara_padre_id, s.servicio_id FROM app.camaras b "
+            "JOIN app.camaras r ON r.id = b.camara_padre_id AND r.estado <> 'NO_OPERATIVA' "
+            "JOIN app.empalmes e ON e.camara_id = b.id "
+            "JOIN app.ruta_empalme_association a ON a.empalme_id = e.id "
+            "JOIN app.rutas_servicio rs ON rs.id = a.ruta_id "
+            "JOIN app.servicios s ON s.id = rs.servicio_id "
+            "ORDER BY b.id LIMIT 1"
+        )).first()
+    if fila is None:
+        pytest.skip("la base no tiene Botellas con rutas")
+    raiz_id, servicio_id = fila
+    con_sesion("user")
+    _, cuerpo = _queries("POST", "/api/infra/smart-search", {"terms": [servicio_id.lower()], "limit": 500})
+    assert raiz_id in {c["id"] for c in cuerpo["camaras"]}

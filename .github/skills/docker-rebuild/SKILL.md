@@ -197,6 +197,11 @@ docker exec lasfocasdev-web rm -rf /tmp/wt          # siempre al terminar
   son 0600 de ese uid. Las imágenes, en cambio, traen `USER focas` (1000). Sin `--user`, el efímero no
   lee el secret y `web` muere al arrancar por el fail-closed de la clave de sesión (`RuntimeError:
   web_secret_key_v1 ausente`). Real 2026-10-26, P15: parecía un bug de la imagen y era la receta.
+- **Un directorio escribible creado en el Dockerfile va con `chown 1001:1001`, no `focas`.** El mismo
+  desfase de uid aplica a la imagen: `chown -R focas:focas /app` deja `/app/data` de 1000 y el proceso
+  (1001) recibe `Permission denied` (las métricas de intención del chat no se guardaban). Real
+  2026-10-27, P17: la hipótesis del prompt era "dárselo a `focas`" y seguía fallando; se verificó con
+  imagen efímera y `--user 1001:1001` (`touch /app/data/x`) antes de commitear.
 - **Probar una `focas-base` nueva sin pisar `focas-base:latest`**, cuando cambian dependencias: los
   Dockerfiles hijos dicen `FROM focas-base:latest`, y BuildKit permite redirigir ese `FROM` a un tag
   propio. Real 2026-10-26, P15: 9 servicios reconstruidos con las versiones nuevas, sin tocar

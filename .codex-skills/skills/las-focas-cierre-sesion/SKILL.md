@@ -194,7 +194,10 @@ reservado para cuando se declare explícitamente.
 
     **`ready` ya corre el gate de calidad local** (lint de los `.py` cambiados + tests focales,
     ver `agent-worktree` §4) e `integrate` rechaza un HEAD que no lo pasó. Copiar al cierre el
-    `resumen` del gate que devuelve `ready`. Si fue necesario `ready --sin-gate --motivo "..."`,
+    `resumen` del gate que devuelve `ready`. `integrate` exige que el HEAD sea **el mismo SHA** que
+    pasó el gate, así que el commit del cierre lo invalida: commitear primero skills y código, correr
+    `ready`, escribir y commitear el cierre con ese `resumen` (citando el SHA) y volver a correr `ready`
+    una vez antes de `integrate` (reales: P18 y P17, 2026-10-27/28). Si fue necesario `ready --sin-gate --motivo "..."`,
     el cierre lo declara como riesgo con el motivo; nunca usarlo para esquivar un test que falla
     por el propio cambio.
 
