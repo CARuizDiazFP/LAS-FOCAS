@@ -107,6 +107,26 @@ Todo el router exige sesión; las rutas de admin agregan `usuario_admin`. Tres (
 baneos vía `POST`, health del worker e ingesta de Cámaras) conservan su chequeo de rol propio para
 responder 403 `{"error": "Solo admin"}`.
 
+**Lógica compartida con la API (P12, 2026-10-28).** Las rutas de Cámaras, baneos, aviso, exportación,
+búsqueda, tracking, rutas y empalmes del panel y de `api/app/routes/infra.py` son adaptadores finos sobre
+`core/services/` (el panel las llama directo desde rutas `def`; la API, con `asyncio.to_thread`). Cada app
+conserva su auth y su formato de error. Dónde vive cada pieza:
+
+| Módulo de `core/services/` | Contenido |
+|---|---|
+| `camaras_consulta.py` | listado, serialización del panel (`serializar_camara_panel`) y básica, smart-search en SQL |
+| `camaras_busqueda_avanzada.py` | `POST /api/infra/search` (filtros AND validados) |
+| `camaras_exportacion.py` | CSV/XLSX de `GET /api/infra/export/cameras` |
+| `baneo_operaciones.py` | baneos activos, crear/levantar baneo con aviso a Slack |
+| `baneo_aviso.py` | mail de aviso, `.eml` (`armar_eml_baneo`), adjuntos TXT/XLS |
+| `tracking_operaciones.py` | upload, análisis y resolución de tracking (incluye `CONFIRM_UPGRADE`), rutas de un servicio y limpieza de empalmes |
+| `servicios_ingesta_service.py` | ingesta de servicios SLA (`POST /servicios/ingest` de la API) |
+
+**Cliente HTTP interno compartido.** `web/app/http_interno.py` mantiene un único `httpx.AsyncClient`
+creado y cerrado en el lifespan de `main.py`; lo usan los proxies a la API interna
+(`/api/servicios/*`, ingesta de Cámaras, `/clientes*`) con timeout por pedido, en lugar de abrir un
+cliente por request. `GET /api/infra/camaras` del panel **no** es un proxy: consulta `core/services/camaras_consulta.py`.
+
 ### Shell y navegación modular
 
 - El SPA ahora usa un **App Shell compartido** en `web/frontend/src/components/app-shell/AppShell.vue` para panel y admin.

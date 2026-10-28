@@ -388,7 +388,7 @@ comportamiento nativo de `<label>` — corregido con `@click.stop` en el botón.
 **Navegación cruzada Botella → Cámara padre**: `BotellaDetalleUnificadaView.vue` sigue siendo un shim
 de redirección puro (nunca se renderiza visible, ver "Submódulo Botellas" más abajo) — el link
 "Cámara padre" se agregó en los destinos reales a los que redirige, no en el shim: `CamaraDetailView.vue`
-(Botella legado, `camara_padre_id`/`camara_padre_nombre` agregados a `_serialize_camara_response`) y
+(Botella legado, `camara_padre_id`/`camara_padre_nombre` agregados a `_serialize_camara_response`, hoy `serializar_camara_panel` en `core/services/camaras_consulta.py`) y
 `VerificadorCromoView.vue` (Botella Cromo con `camara_id` resuelto, vía el mismo
 `GET /api/infra/cromo-botellas/{n_id}/estado-asociacion` ya usado por el shim, extendido para
 devolver `camara_id`/`camara_nombre` además de `huerfana`).
@@ -1462,6 +1462,18 @@ Este indicador:
 │                                  [Cerrar]   │
 └─────────────────────────────────────────────┘
 ```
+
+## Dónde vive la lógica (P12, 2026-10-28)
+
+Los handlers de cámaras, búsqueda, exportación, baneos, aviso por email, tracking, rutas de servicio y
+limpieza de empalmes ya no están duplicados entre el panel y la API: ambos son adaptadores de
+`core/services/` (`camaras_consulta.py`, `camaras_busqueda_avanzada.py`, `camaras_exportacion.py`,
+`baneo_operaciones.py`, `baneo_aviso.py`, `tracking_operaciones.py`; la ingesta de servicios, en
+`servicios_ingesta_service.py`). `core/services/infra_service.py::execute_upgrade` y
+`email_service.generate_ban_eml` se retiraron: `CONFIRM_UPGRADE` usa `resolve_tracking_file` con
+`old_service_id` y el `.eml` lo arma `armar_eml_baneo`. Matriz de divergencias, bugs y decisiones:
+`docs/superpowers/specs/2026-10-27-p12-matriz-divergencias-web-api.md`. Las referencias a esos handlers
+en secciones fechadas más arriba son históricas.
 
 ## API Endpoints
 

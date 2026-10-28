@@ -293,6 +293,37 @@ Dispara manualmente la sincronización de cámaras desde Google Sheets hacia la 
 - **Notas:** los estados se normalizan a `LIBRE|OCUPADA|BANEADA`; las coordenadas aceptan `.` o `,` como separador decimal. Las filas sin `Fontine_ID` se omiten del conteo `processed` y se registran como `skipped` en logs.
 - **Referencias:** ver pasos operativos en `docs/Guia_de_Uso.md` (sección "Sincronización de cámaras").
 
+### Comportamiento común de `/api/infra/*` (P12, 2026-10-28)
+
+Desde P12 el panel (`web/app/routers/camaras.py`, `servicios.py`) y la API (`api/app/routes/infra.py`,
+`servicios.py`) son adaptadores finos sobre `core/services/` (la API llama a core con
+`asyncio.to_thread`). Paths, parámetros y forma de respuesta no cambiaron; cada app conserva su auth
+(sesión+CSRF vs API key) y su formato de error (`{"error"}` vs `{"detail"}`). Lo que sí cambió en la API
+(matriz y decisiones en `docs/superpowers/specs/2026-10-27-p12-matriz-divergencias-web-api.md`):
+
+- **D1** `servicios` de cada cámara salen de las rutas del modelo vigente (ordenados, sin duplicados), no de
+  `servicio_empalme_association`; aplica a `GET /camaras`, `search` y `smart-search`.
+- **D2** validación de la API en las dos apps: `limit` 1..500, enums de campo/operador, máx. 10 filtros,
+  máx. 20 términos, `max_length` en los campos de baneo. **B4** `search` con `status`/`eq` y `value: []` ya no da 500.
+- **D3** `smart-search`: cada app conserva su universo (la API incluye Botellas y NO_OPERATIVA; el panel sólo raíces).
+- **D4/B5** `export/cameras`: header `X-Export-Warning` si se degrada a CSV en las dos apps; el CSV vacío lleva
+  un salto de línea real (`Sin datos`).
+- **D5** `ban/active` devuelve la forma superset del panel (agrega `camaras_baneadas_count` y
+  `total_camaras_baneadas`; `duracion_horas` redondeada a 1 decimal).
+- **D6/B3** `notify/email`: SMTP sin configurar o incidentes inexistentes dan 200 `success:false`; un TXT por
+  incidente; el envío SMTP corre fuera del event loop. `notify/email/config` ante error responde 200 `configured:false`.
+- **D7-D9/B6/B8** `notify/download-eml`: un único armador (`armar_eml_baneo`, `core/services/baneo_aviso.py`):
+  plantilla por defecto del panel, valida destinatarios, TXT priorizando `ruta_protegida_id`, XLS con la unión
+  de columnas, nombre de archivo saneado y `X-Unsent: 1`; los adjuntos salen con su `Content-Type` correcto.
+  El `From` por defecto es `notificaciones@lasfocas.local` en las dos apps si no hay `SMTP_FROM_*`.
+- **B10** `upload_tracking`/`analyze`: tope de 5 MB (413) también en la API.
+- **D10/D11/B1/B2** `trackings/resolve`: `CONFIRM_UPGRADE` idéntico en las dos apps (el panel ya no exige
+  `old_service_db_id`; `execute_upgrade` se retiró); `new_ruta_tipo` inválido da 400 en las dos; `SKIP` aceptado.
+- **D12** `GET /servicios/{id}/rutas`: busca por `servicio_id`, `numero_primer_servicio` o `numero_linea`, con orden determinista.
+- `DELETE /servicios/{id}/empalmes` del panel agrega `empalmes_rutas_eliminados` (como la API).
+- **B11** `POST /servicios/ingest` ya no bloquea el event loop: la lectura/parseo y el DML corren en un thread
+  (`core/services/servicios_ingesta_service.py`, logger `core.services.servicios_ingesta_service`).
+
 ### GET `/api/infra/camaras`
 
 Busca cámaras en la base de datos con filtrado por texto y/o estado.
@@ -1174,6 +1205,9 @@ Ejecuta la acción seleccionada tras el análisis.
   | `REPLACE`     | Reemplaza empalmes de una ruta existente | `target_ruta_id` |
   | `MERGE_APPEND`| Agrega empalmes sin eliminar existentes | `target_ruta_id` |
   | `BRANCH`      | Crea nueva ruta bajo el mismo servicio | `new_ruta_name`, `new_ruta_tipo` |
+  | `ADD_STRAND`  | Agrega un camino (pelo) adicional a la ruta existente | `target_ruta_id` |
+  | `CONFIRM_UPGRADE` | Confirma el cambio de servicio detectado en el análisis: `resolve_tracking_file` con `old_service_id` reprocesa empalmes, cámaras, tránsitos y terminales (misma lógica en el panel y la API desde P12, D10) | `old_service_id` |
+  | `SKIP`        | No hace nada (200); lo aceptan el panel y la API | Ninguno |
 
 - **Respuesta 200 (éxito):**
 
