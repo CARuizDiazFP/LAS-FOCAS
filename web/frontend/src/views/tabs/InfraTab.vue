@@ -52,25 +52,11 @@
     />
 
     <!-- Modal: Limpiar servicio -->
-    <dialog ref="limpiarModalEl" class="infra-generic-modal" @click.self="closeLimpiarModal()" @cancel.prevent="closeLimpiarModal()">
-      <div class="modal-inner">
-        <div class="modal-header-row">
-          <h3 class="modal-title">🗑 Limpiar Servicio</h3>
-          <button class="close-btn" @click="closeLimpiarModal()">×</button>
-        </div>
-        <p class="modal-desc danger-text">⚠️ Operación destructiva e irreversible. Se eliminarán todas las asociaciones de empalmes y rutas del servicio.</p>
-        <label class="form-label">ID del servicio <span class="req">*</span></label>
-        <input v-model="limpiarServicioId" type="text" placeholder="Ej: 52547" />
-        <div class="modal-actions">
-          <button
-            class="btn danger"
-            :disabled="limpiarLoading || !limpiarServicioId.trim()"
-            @click="submitLimpiar"
-          >{{ limpiarLoading ? 'Limpiando...' : 'Limpiar servicio' }}</button>
-          <button class="btn subtle" @click="closeLimpiarModal()">Cancelar</button>
-        </div>
-      </div>
-    </dialog>
+    <LimpiarServicioModal
+      ref="limpiarServicioModal"
+      :notificar="notificar"
+      @servicio-limpiado="refrescarSiBuscado"
+    />
 
     <!-- Main content -->
     <div class="infra-panel">
@@ -236,16 +222,14 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
-import {
-  exportarCamaras,
-  limpiarEmpalmesServicio,
-} from '../../api/infra';
+import { exportarCamaras } from '../../api/infra';
 import type { Notificar } from '../../composables/infra/tipos';
 import { useInfraBusqueda } from '../../composables/infra/useInfraBusqueda';
 import { useTrackingAnalisis } from '../../composables/infra/useTrackingAnalisis';
 import BaneoWizardModal from '../../components/infra/infratab/BaneoWizardModal.vue';
 import TrackingResolveModal from '../../components/infra/infratab/TrackingResolveModal.vue';
 import BaneosActivosModal from '../../components/infra/infratab/BaneosActivosModal.vue';
+import LimpiarServicioModal from '../../components/infra/infratab/LimpiarServicioModal.vue';
 
 // --- Toast ---
 interface Toast { id: number; type: string; title: string; message?: string }
@@ -329,33 +313,9 @@ const {
 } = useTrackingAnalisis(notificar, (contenido, nombre) => trackingResolveModal.value?.abrir(contenido, nombre));
 
 // --- Limpiar servicio ---
-const limpiarModalEl = ref<HTMLDialogElement | null>(null);
-const limpiarServicioId = ref('');
-const limpiarLoading = ref(false);
-
+const limpiarServicioModal = ref<InstanceType<typeof LimpiarServicioModal> | null>(null);
 function openLimpiarModal() {
-  limpiarServicioId.value = '';
-  limpiarModalEl.value?.showModal();
-}
-
-function closeLimpiarModal() {
-  limpiarModalEl.value?.close();
-}
-
-async function submitLimpiar() {
-  const svcId = limpiarServicioId.value.trim();
-  if (!svcId) return;
-  limpiarLoading.value = true;
-  try {
-    const data = await limpiarEmpalmesServicio(svcId);
-    closeLimpiarModal();
-    showToast('success', 'Servicio limpiado', data.message ?? '');
-    await refrescarSiBuscado();
-  } catch (e: unknown) {
-    showToast('error', 'Error al limpiar servicio', e instanceof Error ? e.message : String(e));
-  } finally {
-    limpiarLoading.value = false;
-  }
+  limpiarServicioModal.value?.abrir();
 }
 
 // --- Descargar: dropdown de exportación ---
@@ -504,7 +464,6 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .camera-state-empty { font-size: .82rem; color: var(--muted); margin: 8px 0; }
 .camera-state-select { width: 100%; margin: 8px 0 14px; }
 .camera-state-actions { display: flex; gap: 8px; margin-top: 14px; }
-.close-btn { background: none; border: none; cursor: pointer; color: var(--muted); font-size: 1.3rem; margin-left: auto; }
 /* Tracking modal */
 .tracking-detail-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .tracking-detail-title { margin: 0; font-size: 1rem; flex: 1; }
@@ -569,8 +528,6 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 }
 .dropdown-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 .dropdown-divider { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
-.btn.warning { background: transparent; color: var(--color-state-warn); border: 1px solid color-mix(in srgb, var(--color-state-warn) 50%, transparent); }
-.btn.warning:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-warn) 12%, transparent); }
 
 /* Leyenda de estados — fusionada como chips de filtro */
 .infra-legend-item {
@@ -591,27 +548,6 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .infra-legend-dot.no_operativa { background: var(--color-state-idle); }
 .infra-legend-count { font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--color-text) 42%, transparent); }
 
-/* Modal genérico compartido */
-.infra-generic-modal {
-  position: fixed; inset: 0; margin: auto;
-  border: 1px solid var(--border); border-radius: 10px; background: var(--color-surface);
-  color: var(--text); padding: 0; max-width: 520px; width: 95vw; max-height: 90vh; overflow-y: auto;
-}
-.infra-generic-modal::backdrop { background: rgba(0,0,0,.6); }
-.modal-inner { padding: 24px; display: flex; flex-direction: column; gap: 6px; }
-.modal-header-row { display: flex; align-items: center; margin-bottom: 10px; }
-.modal-title { margin: 0; font-size: 1rem; flex: 1; }
-.modal-desc { margin: 0 0 6px; font-size: .83rem; color: var(--muted); }
-.danger-text { color: var(--color-state-warn); }
-.req { color: var(--color-state-error); }
-.modal-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
-
-/* ─── Wizard ban ─── */
-.ban-wizard-modal { max-width: 600px; }
-.btn.small { padding: 4px 10px; font-size: .78rem; }
-
-/* Modal de resolución de tracking */
-.tracking-resolve-modal { max-width: 580px; }
 /* ─── Baneos Activos ─── */
 .active-bans-btn { position: relative; }
 .active-bans-badge {
@@ -620,7 +556,4 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
   background: var(--color-state-error); color: var(--color-neutral-100); font-size: .72rem; font-weight: 700;
   display: inline-flex; align-items: center; justify-content: center; line-height: 1;
 }
-.active-bans-modal { max-width: 640px; }
-/* Sub-modal Dar Aviso */
-.aviso-modal { max-width: 560px; }
 </style>
