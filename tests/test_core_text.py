@@ -55,3 +55,22 @@ def test_quitar_formato_slack_reexportada():
 def test_normalizar_sin_unidecode(monkeypatch):
     monkeypatch.setitem(sys.modules, "unidecode", None)
     assert normalizacion.normalizar("Cámara  X") == "cámara x"
+
+
+def test_errores_son_la_misma_clase():
+    from core.services import camara_busqueda_nombre
+
+    assert camara_search.AmbiguousSearchError is camara_busqueda_nombre.AmbiguousSearchError
+    assert camara_search.NumeroNoCoincideError is camara_busqueda_nombre.NumeroNoCoincideError
+
+
+def test_shim_no_define_funciones():
+    import inspect
+
+    propios = [
+        nombre
+        for nombre, obj in vars(camara_search).items()
+        if (inspect.isfunction(obj) or inspect.isclass(obj))
+        and getattr(obj, "__module__", None) == "modules.slack_baneo_notifier.camara_search"
+    ]
+    assert propios == []

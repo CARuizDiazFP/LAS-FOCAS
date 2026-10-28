@@ -88,7 +88,7 @@ def extraer_base(nombre: Optional[str]) -> Optional[str]:
 
 def normalizar_para_agrupar(nombre: Optional[str]) -> str:
     """Normaliza un nombre de cámara para comparar/agrupar — reusa la misma limpieza de puntuación +
-    normalización (unaccent + lowercase + colapso de espacios) que ya usa `camara_search.buscar_camara`,
+    normalización (unaccent + lowercase + colapso de espacios) que ya usa `camara_busqueda_nombre.buscar_camara`,
     sin la expansión de abreviaturas ni los sinónimos (esos son específicos de la búsqueda difusa de
     texto libre de técnicos, no aplican a comparar dos nombres ya estructurados de la DB)."""
     return normalizar(limpiar_puntuacion(nombre or ""))
@@ -127,7 +127,7 @@ def normalizar_para_agrupar_extendido(nombre: Optional[str]) -> str:
 
 # Caché del resolver: con ~10k raíces, normalizar todos los nombres en cada llamada costaba ~500 ms
 # de CPU (medido en dev, 2026-10-26). La normalización es una función pura del texto (tablas fijas de
-# `camara_search`), así que un nombre ya visto no se vuelve a procesar mientras viva el proceso.
+# `camara_busqueda_nombre`), así que un nombre ya visto no se vuelve a procesar mientras viva el proceso.
 _normalizar_extendido_cacheado = lru_cache(maxsize=32768)(normalizar_para_agrupar_extendido)
 
 

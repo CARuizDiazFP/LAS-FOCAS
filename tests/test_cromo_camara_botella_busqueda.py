@@ -223,11 +223,11 @@ class TestAmbiguousSearchErrorCapDirecto(unittest.TestCase):
         cams = [MagicMock(id=i, nombre=f"Cra Test Zona {i}") for i in range(1, 8)]
         with (
             patch(
-                "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+                "core.services.camara_busqueda_nombre._buscar_ilike_lista",
                 return_value=cams,
             ),
             patch(
-                "modules.slack_baneo_notifier.camara_search._buscar_tokens_lista",
+                "core.services.camara_busqueda_nombre._buscar_tokens_lista",
                 return_value=cams,
             ),
             self.assertRaises(AmbiguousSearchError) as ctx,

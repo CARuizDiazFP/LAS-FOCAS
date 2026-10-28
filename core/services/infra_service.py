@@ -286,7 +286,7 @@ def _resolve_camara_o_registrar_sin_match(
     # ya usaba esta función para `camara_hierarchy_service`/`IncidenteBaneo`.
     from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo
     from core.services.nodos_catalogo import corresponde_a_nodo
-    from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+    from core.services.camara_busqueda_nombre import AmbiguousSearchError
 
     try:
         resultado = buscar_camara_o_botella_cromo(nombre, session)

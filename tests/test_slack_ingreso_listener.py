@@ -280,7 +280,7 @@ class TestBuscarCamara(unittest.TestCase):
         cam.nombre = nombre
         return cam
 
-    @patch("modules.slack_baneo_notifier.camara_search.func")
+    @patch("core.services.camara_busqueda_nombre.func")
     def test_encontrada_por_ilike(self, mock_func: MagicMock) -> None:
         from modules.slack_baneo_notifier.camara_search import buscar_camara
 
@@ -298,15 +298,15 @@ class TestBuscarCamara(unittest.TestCase):
         self.assertIsNotNone(camara)
         self.assertEqual(camara.nombre, "Cam Avenida Libertador 1234")
 
-    @patch("modules.slack_baneo_notifier.camara_search.func")
+    @patch("core.services.camara_busqueda_nombre.func")
     def test_no_encontrada_retorna_none(self, mock_func: MagicMock) -> None:
         from modules.slack_baneo_notifier.camara_search import buscar_camara
 
         session = MagicMock()
 
         with (
-            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista", return_value=[]),
-            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista", return_value=[]),
+            patch("core.services.camara_busqueda_nombre._buscar_ilike_lista", return_value=[]),
+            patch("core.services.camara_busqueda_nombre._buscar_tokens_lista", return_value=[]),
         ):
             camara, nombre_norm = buscar_camara("XYZ Inexistente 9999", session)
 
@@ -362,10 +362,10 @@ class TestBuscarCamara(unittest.TestCase):
 
         with (
             patch(
-                "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+                "core.services.camara_busqueda_nombre._buscar_ilike_lista",
                 side_effect=ilike_lista_side_effect,
             ),
-            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista", return_value=[]),
+            patch("core.services.camara_busqueda_nombre._buscar_tokens_lista", return_value=[]),
         ):
             camara, nombre_norm = buscar_camara(
                 "Cra Curupayti 2951 CF - CURUPAYTI 2964 - Capital Federal - Capital Federal",
@@ -399,10 +399,10 @@ class TestBuscarCamara(unittest.TestCase):
 
         with (
             patch(
-                "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+                "core.services.camara_busqueda_nombre._buscar_ilike_lista",
                 side_effect=ilike_lista_side_effect,
             ),
-            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista", return_value=[]),
+            patch("core.services.camara_busqueda_nombre._buscar_tokens_lista", return_value=[]),
         ):
             camara, nombre_norm = buscar_camara(nombre_extraido, session=MagicMock())
 
@@ -427,10 +427,10 @@ class TestBuscarCamara(unittest.TestCase):
 
         with (
             patch(
-                "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+                "core.services.camara_busqueda_nombre._buscar_ilike_lista",
                 side_effect=ilike_lista_side_effect,
             ),
-            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista", return_value=[]),
+            patch("core.services.camara_busqueda_nombre._buscar_tokens_lista", return_value=[]),
         ):
             camara, nombre_norm = buscar_camara("Poste Lavalle - Campana", session=MagicMock())
 
@@ -460,8 +460,8 @@ class TestBuscarCamara(unittest.TestCase):
             return [camara_mock]
 
         with (
-            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista", side_effect=ilike_lista_side_effect),
-            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista", return_value=[]),
+            patch("core.services.camara_busqueda_nombre._buscar_ilike_lista", side_effect=ilike_lista_side_effect),
+            patch("core.services.camara_busqueda_nombre._buscar_tokens_lista", return_value=[]),
         ):
             camara, nombre_norm = buscar_camara("Cam Clle Principal 100", session=MagicMock())
 
@@ -1335,9 +1335,9 @@ class TestFiltroAmbiguedad(unittest.TestCase):
         cam3 = self._make_camara(3, "Cra Vicente Lopez Este 300")
 
         with (
-            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            patch("core.services.camara_busqueda_nombre._buscar_ilike_lista",
                   return_value=[cam1, cam2, cam3]),
-            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista",
+            patch("core.services.camara_busqueda_nombre._buscar_tokens_lista",
                   return_value=[cam1, cam2, cam3]),
             self.assertRaises(AmbiguousSearchError) as ctx,
         ):
@@ -1355,9 +1355,9 @@ class TestFiltroAmbiguedad(unittest.TestCase):
         cams = [self._make_camara(i, f"Cra Test Zona {i}") for i in range(1, 8)]
 
         with (
-            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            patch("core.services.camara_busqueda_nombre._buscar_ilike_lista",
                   return_value=cams),
-            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista",
+            patch("core.services.camara_busqueda_nombre._buscar_tokens_lista",
                   return_value=cams),
             self.assertRaises(AmbiguousSearchError) as ctx,
         ):
@@ -1372,9 +1372,9 @@ class TestFiltroAmbiguedad(unittest.TestCase):
         cam = self._make_camara(1, "Cra Mitre 440 CF")
 
         with (
-            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            patch("core.services.camara_busqueda_nombre._buscar_ilike_lista",
                   return_value=[cam]),
-            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista",
+            patch("core.services.camara_busqueda_nombre._buscar_tokens_lista",
                   return_value=[]),
         ):
             resultado, _ = buscar_camara("Cra Mitre 440", session=MagicMock())
@@ -1389,9 +1389,9 @@ class TestFiltroAmbiguedad(unittest.TestCase):
         # "Bot 2" → tokens_sig = ["bot"] (1 token), pero numeros_requeridos = {"2"}
         # → la pre-heurística NO debe dispararse
         with (
-            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            patch("core.services.camara_busqueda_nombre._buscar_ilike_lista",
                   return_value=[]),
-            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista",
+            patch("core.services.camara_busqueda_nombre._buscar_tokens_lista",
                   return_value=[]),
         ):
             resultado, _ = buscar_camara("Bot 2", session=MagicMock())
@@ -1674,7 +1674,7 @@ class TestLimpiezaYSinonimos(unittest.TestCase):
         camara_mock.id = 5
         camara_mock.nombre = "Bot 2 Cra Poste 202"
 
-        with patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista", return_value=[camara_mock]):
+        with patch("core.services.camara_busqueda_nombre._buscar_ilike_lista", return_value=[camara_mock]):
             camara, _ = buscar_camara("Botella 2 Cra Poste 202", session=MagicMock())
 
         self.assertIsNotNone(camara)
@@ -1744,7 +1744,7 @@ class TestFiltrosNumeroBot(unittest.TestCase):
 
         # La query retorna ambas candidatas; la 399 debe ser descartada
         with patch(
-            "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            "core.services.camara_busqueda_nombre._buscar_ilike_lista",
             return_value=[cam_399, cam_440],
         ):
             camara, _ = buscar_camara("Cámara, Bartolomé Mitre 440. CF", session=MagicMock())
@@ -1759,7 +1759,7 @@ class TestFiltrosNumeroBot(unittest.TestCase):
         cam_399 = self._make_camara(1, "Cra Bartolome Mitre 399")
 
         with patch(
-            "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            "core.services.camara_busqueda_nombre._buscar_ilike_lista",
             return_value=[cam_399],
         ):
             camara, _ = buscar_camara("Cra Bartolome Mitre", session=MagicMock())
@@ -1774,7 +1774,7 @@ class TestFiltrosNumeroBot(unittest.TestCase):
         cam_bot2 = self._make_camara(3, "Bot 2 Cra Bartolome Mitre 440")
 
         with patch(
-            "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            "core.services.camara_busqueda_nombre._buscar_ilike_lista",
             return_value=[cam_bot2],
         ):
             # Input sin "bot" ni "botella"
@@ -1789,7 +1789,7 @@ class TestFiltrosNumeroBot(unittest.TestCase):
         cam_bot2 = self._make_camara(3, "Bot 2 Cra Bartolome Mitre 440")
 
         with patch(
-            "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            "core.services.camara_busqueda_nombre._buscar_ilike_lista",
             return_value=[cam_bot2],
         ):
             camara, _ = buscar_camara("Botella 2 Cra Bartolome Mitre 440", session=MagicMock())
@@ -1804,7 +1804,7 @@ class TestFiltrosNumeroBot(unittest.TestCase):
         cam_bot1 = self._make_camara(4, "Bot Cra Bartolome Mitre 440")
 
         with patch(
-            "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+            "core.services.camara_busqueda_nombre._buscar_ilike_lista",
             return_value=[cam_bot1],
         ):
             # Input sin "bot"/"botella" pero el candidato es el Bot principal
@@ -1826,8 +1826,8 @@ class TestFiltrosNumeroBot(unittest.TestCase):
             return []  # Siempre vacío; nos interesa cuántas veces se llama
 
         with (
-            patch("modules.slack_baneo_notifier.camara_search._buscar_ilike_lista", side_effect=ilike_lista_side_effect),
-            patch("modules.slack_baneo_notifier.camara_search._buscar_tokens_lista", return_value=[]),
+            patch("core.services.camara_busqueda_nombre._buscar_ilike_lista", side_effect=ilike_lista_side_effect),
+            patch("core.services.camara_busqueda_nombre._buscar_tokens_lista", return_value=[]),
         ):
             camara, _ = buscar_camara("Cra Mitre 440", session=MagicMock())
 

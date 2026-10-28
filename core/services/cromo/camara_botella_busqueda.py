@@ -30,15 +30,15 @@ from typing import TYPE_CHECKING, Literal
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
-from modules.slack_baneo_notifier.camara_search import (
+from core.services.camara_busqueda_nombre import (
     AmbiguousSearchError,
     NumeroNoCoincideError,
-    _filtrar_bots_secundarios,
-    _filtrar_numero_de_botella,
-    _filtrar_por_numeros,
     botella_cromo_por_n_id,
     buscar_camara,
     camara_por_prefijo_empalme,
+    filtrar_bots_secundarios,
+    filtrar_numero_de_botella,
+    filtrar_por_numeros,
     recorte_pierde_la_botella,
     resto_corrobora_botella,
     tiene_gemela_critica,
@@ -112,9 +112,9 @@ def _buscar_botella_tokens_lista(tokens: list[str], session: Session) -> list["C
     return session.query(CromoBotella).filter(and_(*condiciones)).all()
 
 
-# Mismo patrón que el `tiene_bot` inline de `buscar_camara()` (camara_search.py): se evalúa sobre
+# Mismo patrón que el `tiene_bot` inline de `buscar_camara()` (core/services/camara_busqueda_nombre.py): se evalúa sobre
 # el nombre_raw ORIGINAL, antes de normalizar/sinonimizar (donde "botella" ya habría mutado a
-# "bot"). No se exporta desde camara_search.py porque ahí tampoco es una constante nombrada — es
+# "bot"). No se exporta desde camara_busqueda_nombre.py porque ahí tampoco es una constante nombrada — es
 # una expresión inline dentro de buscar_camara() — así que este regex se duplica deliberadamente
 # aquí como la contraparte mínima, igual que ya se recalculan `numeros_requeridos` de forma
 # independiente en este módulo en vez de recibirlos por parámetro.
@@ -144,13 +144,13 @@ def _cascada_botella_intento(
     """Cascada equivalente a los Intentos 1-2 de `buscar_camara()`, pero contra
     `CromoBotella.nombre`: ILIKE con el nombre normalizado completo, y si no reduce a 1 candidato,
     AND-ILIKE por tokens significativos (≥3 chars). En ambos pasos se filtra por números requeridos
-    con `_filtrar_por_numeros` y por bots secundarios con `_filtrar_bots_secundarios` (reusados, no
+    con `filtrar_por_numeros` y por bots secundarios con `filtrar_bots_secundarios` (reusados, no
     reimplementados) — si el input no menciona "bot"/"botella" explícitamente, se excluyen
     candidatas tipo "Bot 2 Cra Mitre 440" para evitar que "Cra Mitre 440" empareje una botella
     secundaria cuando el técnico se refiere a la cámara principal.
 
     Guardia de input degenerado (mismo criterio que la heurística pre-búsqueda de `buscar_camara()`,
-    ver camara_search.py:330-332): si hay menos de 2 tokens significativos (≥3 chars) y ningún
+    ver core/services/camara_busqueda_nombre.py, `_buscar_camara_intento`): si hay menos de 2 tokens significativos (≥3 chars) y ningún
     número, se retorna `[]` sin consultar la DB — evita un table scan `ILIKE '%%'` que matchearía
     cada fila de `cromo_botellas`. Alcanzable en la práctica desde el camino de `buscar_camara()`
     ambiguo por input insuficiente (`AmbiguousSearchError(cantidad=0)`): ese camino re-ejecuta esta
@@ -172,9 +172,9 @@ def _cascada_botella_intento(
         return []
 
     def _filtrada(candidatos: list["CromoBotella"]) -> list["CromoBotella"]:
-        candidatos = _filtrar_por_numeros(candidatos, numeros_requeridos)
-        candidatos = _filtrar_bots_secundarios(candidatos, tiene_bot)
-        return _filtrar_numero_de_botella(candidatos, nombre_raw)
+        candidatos = filtrar_por_numeros(candidatos, numeros_requeridos)
+        candidatos = filtrar_bots_secundarios(candidatos, tiene_bot)
+        return filtrar_numero_de_botella(candidatos, nombre_raw)
 
     desempatar = desempatar and extendida
     mejor_ambiguo: list["CromoBotella"] = []

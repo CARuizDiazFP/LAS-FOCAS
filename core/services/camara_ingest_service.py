@@ -138,7 +138,7 @@ def _procesar_ingesta_camaras_en_sesion(
     # CromoClient/httpx vía su `__init__.py`) en cada arranque que sólo necesita este servicio —
     # mismo criterio que `infra_service.py::_resolve_camara_o_registrar_sin_match`.
     from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_cromo
-    from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+    from core.services.camara_busqueda_nombre import AmbiguousSearchError
 
     for alias in aliases:
         try:
