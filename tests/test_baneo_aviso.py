@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import email
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -55,7 +56,9 @@ def _ruta(id_: int, contenido: str | None, nombre: str | None = None):
 
 def _incidente(id_: int, servicio: str, ruta_id: int | None = None):
     return SimpleNamespace(
-        id=id_, servicio_protegido_id=servicio, ruta_protegida_id=ruta_id, ticket_asociado=None
+        id=id_, servicio_protegido_id=servicio, ruta_protegida_id=ruta_id, ticket_asociado=None,
+        servicio_afectado_id="AFEC", motivo="corte de prueba",
+        fecha_inicio=datetime(2026, 1, 6, 0, 30, tzinfo=timezone.utc),
     )
 
 
@@ -106,7 +109,7 @@ def test_adjuntos_xls_con_columnas_union(monkeypatch):
     camara = SimpleNamespace(
         id=7, nombre="C7", fontine_id="F7", direccion="Calle 1", estado=SimpleNamespace(value="BANEADA"),
         latitud=-34.5, longitud=-58.4,
-        empalmes=[SimpleNamespace(servicios=[SimpleNamespace(servicio_id="S1"), SimpleNamespace(servicio_id="S1")])],
+        empalmes=[SimpleNamespace(rutas=[], servicios=[SimpleNamespace(servicio_id="S1"), SimpleNamespace(servicio_id="S1")])],
     )
 
     class _Proteccion:
@@ -126,7 +129,11 @@ def test_adjuntos_xls_con_columnas_union(monkeypatch):
 
     hoja = pd.read_excel(io.BytesIO(xls.content), sheet_name="Baneos_Activos")
     assert list(hoja.columns) == COLUMNAS_XLS_BANEO
-    assert hoja.iloc[0]["Ticket"] == "INC-5" and hoja.iloc[0]["Servicios"] == "S1"
+    fila = hoja.iloc[0]
+    assert fila["Ticket"] == "INC-5" and fila["Servicios"] == "S1"
+    assert fila["Incidente ID"] == 5 and fila["Servicio Protegido"] == "S1" and fila["ID"] == 7
+    assert fila["Fecha Inicio"] == "05/01/2026 21:30" and fila["Motivo"] == "corte de prueba"
+    assert fila["Servicio Afectado"] == "AFEC"
 
 
 def test_send_email_un_solo_content_type_por_adjunto(monkeypatch):
@@ -260,7 +267,7 @@ def _camara_con_servicios():
     return SimpleNamespace(
         id=7, nombre="C7", fontine_id="F7", direccion="Calle 1", estado=SimpleNamespace(value="BANEADA"),
         latitud=-34.5, longitud=-58.4,
-        empalmes=[SimpleNamespace(servicios=[SimpleNamespace(servicio_id="S1")])],
+        empalmes=[SimpleNamespace(rutas=[], servicios=[SimpleNamespace(servicio_id="S1")])],
     )
 
 

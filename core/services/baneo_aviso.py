@@ -25,6 +25,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from core.config import get_settings
+from core.services.camaras_consulta import _collect_camara_rutas_info, _collect_camara_servicios_ids
 from core.services.email_service import EmailAttachment, get_email_service, parte_mime_adjunto
 from core.services.protection_service import ProtectionService
 from core.utils.tz import TZ_ARG
@@ -32,9 +33,12 @@ from db.models.infra import IncidenteBaneo, Servicio
 
 logger = logging.getLogger(__name__)
 
-# D8: unión de las columnas que armaban el panel (Fontine_ID, Ticket) y el .eml de la API (Servicios, Lat/Long).
+# D8 + Ruling 12: unión de las columnas del XLS viejo de notify/email (Incidente ID, Ticket, Servicio
+# Afectado/Protegido, cámara, Estado, Fecha Inicio, Motivo) y de las dos del .eml (Fontine_ID, Dirección,
+# Servicios, Latitud, Longitud). Una fila por cámara e incidente.
 COLUMNAS_XLS_BANEO = [
-    "ID", "Nombre", "Fontine_ID", "Dirección", "Estado", "Ticket", "Servicios", "Latitud", "Longitud",
+    "Incidente ID", "Ticket", "Servicio Afectado", "Servicio Protegido", "ID", "Nombre", "Fontine_ID",
+    "Dirección", "Estado", "Servicios", "Latitud", "Longitud", "Fecha Inicio", "Motivo",
 ]
 HOJA_XLS_BANEO = "Baneos_Activos"
 MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -98,14 +102,8 @@ class EmailNotifyResultado:
 
 
 def _servicios_de_camara(camara: Any) -> str:
-    """IDs de los servicios que pasan por la cámara (vía empalmes), sin repetir y separados por coma."""
-    ids: list[str] = []
-    for empalme in getattr(camara, "empalmes", None) or []:
-        for servicio in getattr(empalme, "servicios", None) or []:
-            sid = getattr(servicio, "servicio_id", None)
-            if sid and sid not in ids:
-                ids.append(sid)
-    return ", ".join(ids)
+    """IDs de los servicios de la cámara (rutas con fallback legacy, D1), separados por coma."""
+    return ", ".join(_collect_camara_servicios_ids(camara, _collect_camara_rutas_info(camara)))
 
 
 def _filas_xls(session: Session, incidentes: list[Any]) -> list[dict[str, Any]]:
@@ -114,20 +112,27 @@ def _filas_xls(session: Session, incidentes: list[Any]) -> list[dict[str, Any]]:
     filas: list[dict[str, Any]] = []
     for incidente in incidentes:
         ticket = incidente.ticket_asociado or f"INC-{incidente.id}"
+        inicio = getattr(incidente, "fecha_inicio", None)
+        fecha_inicio = inicio.astimezone(TZ_ARG).strftime("%d/%m/%Y %H:%M") if inicio else ""
         camaras = protection.get_camaras_for_servicio(
             incidente.servicio_protegido_id, incidente.ruta_protegida_id
         )
         for camara in camaras:
             filas.append({
+                "Incidente ID": incidente.id,
+                "Ticket": ticket,
+                "Servicio Afectado": getattr(incidente, "servicio_afectado_id", None) or "",
+                "Servicio Protegido": incidente.servicio_protegido_id or "",
                 "ID": camara.id,
                 "Nombre": camara.nombre or "",
                 "Fontine_ID": camara.fontine_id or "",
                 "Dirección": camara.direccion or "",
                 "Estado": camara.estado.value if camara.estado else "-",
-                "Ticket": ticket,
                 "Servicios": _servicios_de_camara(camara),
                 "Latitud": getattr(camara, "latitud", None),
                 "Longitud": getattr(camara, "longitud", None),
+                "Fecha Inicio": fecha_inicio,
+                "Motivo": getattr(incidente, "motivo", None) or "",
             })
     return filas
 
