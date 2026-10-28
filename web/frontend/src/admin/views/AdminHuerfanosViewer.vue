@@ -4,218 +4,226 @@
   Descripción: Dashboard /admin/servicios/viewer/Huerfanos — pelos de caminos residuales con causa sugerida y evidencia, normalizar/descartar en lote y auditoría global con progreso por SSE
 -->
 <template>
-  <section class="huerfanos-viewer">
-    <AdminPageHeader
-      kicker="Panel admin · Viewer"
-      title="Huérfanos"
-      subtitle="Pelos con la etiqueta del Servicio en caminos que no son tramos suyos. Se revisan acá; sólo 'cable en desuso' se puede normalizar por ahora."
-    />
+  <ViewerShell
+    bloque="huerfanos-viewer"
+    :loading="loading"
+    :error="error"
+    :vacio="items.length === 0"
+    :hay-mas="hasMore"
+    texto-vacio="Sin huérfanos"
+    texto-cargando="Cargando..."
+    icono-vacio="ph-check-circle"
+    carga-inicial="fila"
+    ancho-estado="320px"
+    :scroll-infinito="false"
+  >
+    <template #toolbar>
+      <AdminPageHeader
+        kicker="Panel admin · Viewer"
+        title="Huérfanos"
+        subtitle="Pelos con la etiqueta del Servicio en caminos que no son tramos suyos. Se revisan acá; sólo 'cable en desuso' se puede normalizar por ahora."
+      />
 
-    <div class="huerfanos-viewer__toolbar">
-      <div class="huerfanos-viewer__toolbar-row">
-        <label class="huerfanos-viewer__servicio">
-          <span>Servicio (ID interno)</span>
-          <input
-            v-model="servicioTexto"
-            type="search"
-            inputmode="numeric"
-            placeholder="Todos"
-            @input="onServicioInput"
-          />
-        </label>
+      <div class="huerfanos-viewer__toolbar">
+        <div class="huerfanos-viewer__toolbar-row">
+          <label class="huerfanos-viewer__servicio">
+            <span>Servicio (ID interno)</span>
+            <input
+              v-model="servicioTexto"
+              type="search"
+              inputmode="numeric"
+              placeholder="Todos"
+              @input="onServicioInput"
+            />
+          </label>
 
-        <div class="huerfanos-viewer__chips">
-          <span class="huerfanos-viewer__chips-label">Estado</span>
-          <button
-            v-for="opcion in estadosFiltro"
-            :key="opcion.valor"
-            type="button"
-            :class="['huerfanos-viewer__chip', { 'is-active': filtroEstado === opcion.valor }]"
-            @click="setEstado(opcion.valor)"
-          >
-            {{ opcion.label }}
+          <div class="huerfanos-viewer__chips">
+            <span class="huerfanos-viewer__chips-label">Estado</span>
+            <button
+              v-for="opcion in estadosFiltro"
+              :key="opcion.valor"
+              type="button"
+              :class="['huerfanos-viewer__chip', { 'is-active': filtroEstado === opcion.valor }]"
+              @click="setEstado(opcion.valor)"
+            >
+              {{ opcion.label }}
+            </button>
+          </div>
+
+          <button class="btn primary" type="button" :disabled="loading" @click="refrescar">
+            <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
+            Actualizar
           </button>
         </div>
 
-        <button class="btn primary" type="button" :disabled="loading" @click="refrescar">
-          <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
-          Actualizar
-        </button>
+        <div class="huerfanos-viewer__toolbar-row">
+          <span class="huerfanos-viewer__chips-label">Causa</span>
+          <button
+            type="button"
+            :class="['huerfanos-viewer__chip', { 'is-active': filtroCausa === '' }]"
+            @click="setCausa('')"
+          >
+            Todas
+          </button>
+          <button
+            v-for="causa in causas"
+            :key="causa"
+            type="button"
+            :class="['huerfanos-viewer__chip', { 'is-active': filtroCausa === causa }]"
+            @click="setCausa(causa)"
+          >
+            {{ causaHuerfanoLabel(causa) }}
+            <span class="huerfanos-viewer__chip-count">{{ conteos[causa] ?? (loading ? '…' : '—') }}</span>
+          </button>
+          <span class="huerfanos-viewer__count">
+            <strong>{{ total.toLocaleString('es-AR') }}</strong> huérfanos · mostrando {{ items.length }}
+          </span>
+        </div>
+
+        <div class="huerfanos-viewer__toolbar-row huerfanos-viewer__acciones">
+          <button
+            class="btn primary"
+            type="button"
+            :disabled="accionando || seleccionNormalizable.length === 0"
+            :title="'Sólo filas pendientes, no protegidas y con causa cable en desuso'"
+            @click="normalizarSeleccion"
+          >
+            <i class="ph ph-scissors" aria-hidden="true"></i>
+            Normalizar ({{ seleccionNormalizable.length }})
+          </button>
+          <button
+            class="btn"
+            type="button"
+            :disabled="accionando || seleccionPendiente.length === 0"
+            @click="descartarSeleccion"
+          >
+            <i class="ph ph-x-circle" aria-hidden="true"></i>
+            Descartar ({{ seleccionPendiente.length }})
+          </button>
+
+          <span class="huerfanos-viewer__separador" aria-hidden="true"></span>
+
+          <button
+            class="btn"
+            type="button"
+            :disabled="auditoriaEnCurso || lanzando"
+            @click="lanzarAuditoria"
+          >
+            <i class="ph ph-magnifying-glass-plus" aria-hidden="true"></i>
+            Auditoría global
+          </button>
+          <span v-if="auditoria" class="huerfanos-viewer__auditoria">
+            Corrida #{{ auditoria.id }} · {{ auditoria.estado }} ·
+            {{ auditoria.leidas }}/{{ auditoria.total_objetivo ?? '?' }} servicios ·
+            {{ auditoria.errores }} errores
+            <template v-if="ultimoServicio"> · último: servicio {{ ultimoServicio }}</template>
+          </span>
+          <ul v-if="erroresAuditoria.length" class="huerfanos-viewer__errores-auditoria">
+            <li v-for="(e, i) in erroresAuditoria" :key="i">{{ e }}</li>
+          </ul>
+        </div>
       </div>
+    </template>
 
-      <div class="huerfanos-viewer__toolbar-row">
-        <span class="huerfanos-viewer__chips-label">Causa</span>
-        <button
-          type="button"
-          :class="['huerfanos-viewer__chip', { 'is-active': filtroCausa === '' }]"
-          @click="setCausa('')"
-        >
-          Todas
-        </button>
-        <button
-          v-for="causa in causas"
-          :key="causa"
-          type="button"
-          :class="['huerfanos-viewer__chip', { 'is-active': filtroCausa === causa }]"
-          @click="setCausa(causa)"
-        >
-          {{ causaHuerfanoLabel(causa) }}
-          <span class="huerfanos-viewer__chip-count">{{ conteos[causa] ?? (loading ? '…' : '—') }}</span>
-        </button>
-        <span class="huerfanos-viewer__count">
-          <strong>{{ total.toLocaleString('es-AR') }}</strong> huérfanos · mostrando {{ items.length }}
-        </span>
-      </div>
-
-      <div class="huerfanos-viewer__toolbar-row huerfanos-viewer__acciones">
-        <button
-          class="btn primary"
-          type="button"
-          :disabled="accionando || seleccionNormalizable.length === 0"
-          :title="'Sólo filas pendientes, no protegidas y con causa cable en desuso'"
-          @click="normalizarSeleccion"
-        >
-          <i class="ph ph-scissors" aria-hidden="true"></i>
-          Normalizar ({{ seleccionNormalizable.length }})
-        </button>
-        <button
-          class="btn"
-          type="button"
-          :disabled="accionando || seleccionPendiente.length === 0"
-          @click="descartarSeleccion"
-        >
-          <i class="ph ph-x-circle" aria-hidden="true"></i>
-          Descartar ({{ seleccionPendiente.length }})
-        </button>
-
-        <span class="huerfanos-viewer__separador" aria-hidden="true"></span>
-
-        <button
-          class="btn"
-          type="button"
-          :disabled="auditoriaEnCurso || lanzando"
-          @click="lanzarAuditoria"
-        >
-          <i class="ph ph-magnifying-glass-plus" aria-hidden="true"></i>
-          Auditoría global
-        </button>
-        <span v-if="auditoria" class="huerfanos-viewer__auditoria">
-          Corrida #{{ auditoria.id }} · {{ auditoria.estado }} ·
-          {{ auditoria.leidas }}/{{ auditoria.total_objetivo ?? '?' }} servicios ·
-          {{ auditoria.errores }} errores
-          <template v-if="ultimoServicio"> · último: servicio {{ ultimoServicio }}</template>
-        </span>
-        <ul v-if="erroresAuditoria.length" class="huerfanos-viewer__errores-auditoria">
-          <li v-for="(e, i) in erroresAuditoria" :key="i">{{ e }}</li>
+    <template #avisos>
+      <div v-if="mensaje" class="huerfanos-viewer__inline-ok">{{ mensaje }}</div>
+      <div v-if="rechazados.length" class="huerfanos-viewer__rechazados" role="status">
+        <strong>{{ rechazados.length }} fila(s) no se aplicaron:</strong>
+        <ul>
+          <li v-for="r in rechazados" :key="r.id">Fila {{ r.id }}: {{ r.motivo }}</li>
         </ul>
+        <button type="button" class="btn subtle" @click="rechazados = []">Cerrar</button>
       </div>
-    </div>
+    </template>
 
-    <div v-if="error" class="huerfanos-viewer__inline-error">{{ error }}</div>
-    <div v-if="mensaje" class="huerfanos-viewer__inline-ok">{{ mensaje }}</div>
-    <div v-if="rechazados.length" class="huerfanos-viewer__rechazados" role="status">
-      <strong>{{ rechazados.length }} fila(s) no se aplicaron:</strong>
-      <ul>
-        <li v-for="r in rechazados" :key="r.id">Fila {{ r.id }}: {{ r.motivo }}</li>
-      </ul>
-      <button type="button" class="btn subtle" @click="rechazados = []">Cerrar</button>
-    </div>
-
-    <div class="huerfanos-viewer__scroll">
-      <table v-if="items.length > 0" class="huerfanos-viewer__tabla">
-        <thead>
-          <tr>
-            <th class="huerfanos-viewer__check">
-              <input
-                type="checkbox"
-                :checked="todosSeleccionados"
-                aria-label="Seleccionar todos los pendientes"
-                @change="toggleTodos"
-              />
-            </th>
-            <th>Servicio</th>
-            <th>Pelo</th>
-            <th>Cable</th>
-            <th>Causa</th>
-            <th>Evidencia</th>
-            <th>Estado</th>
-            <th>Acción</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="item in items" :key="item.id">
-            <td class="huerfanos-viewer__check">
-              <input
-                type="checkbox"
-                :disabled="item.estado !== 'PENDIENTE'"
-                :checked="seleccion.has(item.id)"
-                :aria-label="`Seleccionar pelo ${item.pelo_n_id}`"
-                @change="toggle(item.id)"
-              />
-            </td>
-            <td>
-              <button type="button" class="huerfanos-viewer__link" @click="filtrarServicio(item.servicio_id)">
-                {{ item.servicio_numero }}
+    <table class="huerfanos-viewer__tabla">
+      <thead>
+        <tr>
+          <th class="huerfanos-viewer__check">
+            <input
+              type="checkbox"
+              :checked="todosSeleccionados"
+              aria-label="Seleccionar todos los pendientes"
+              @change="toggleTodos"
+            />
+          </th>
+          <th>Servicio</th>
+          <th>Pelo</th>
+          <th>Cable</th>
+          <th>Causa</th>
+          <th>Evidencia</th>
+          <th>Estado</th>
+          <th>Acción</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="item in items" :key="item.id">
+          <td class="huerfanos-viewer__check">
+            <input
+              type="checkbox"
+              :disabled="item.estado !== 'PENDIENTE'"
+              :checked="seleccion.has(item.id)"
+              :aria-label="`Seleccionar pelo ${item.pelo_n_id}`"
+              @change="toggle(item.id)"
+            />
+          </td>
+          <td>
+            <button type="button" class="huerfanos-viewer__link" @click="filtrarServicio(item.servicio_id)">
+              {{ item.servicio_numero }}
+            </button>
+            <span class="huerfanos-viewer__sub">ID {{ item.servicio_id }}</span>
+          </td>
+          <td>
+            {{ item.pelo_n_id }}
+            <span class="huerfanos-viewer__sub">
+              {{ [item.numero_pelo ? `#${item.numero_pelo}` : null, item.color].filter(Boolean).join(' · ') }}
+            </span>
+          </td>
+          <td>{{ item.cable_nombre ?? '—' }}</td>
+          <td>
+            <span :class="['huerfanos-viewer__causa', `is-${tokenCausa(item.causa)}`]">
+              {{ causaHuerfanoLabel(item.causa) }}
+            </span>
+            <span v-if="item.protegido" class="huerfanos-viewer__protegido" :title="item.evidencia.motivo_proteccion ?? ''">
+              <i class="ph ph-shield-check" aria-hidden="true"></i> Protegido
+            </span>
+          </td>
+          <td class="huerfanos-viewer__evidencia">{{ evidenciaCompacta(item) }}</td>
+          <td>
+            <span :class="['huerfanos-viewer__estado', `is-${item.estado.toLowerCase()}`]">{{ item.estado }}</span>
+            <span v-if="item.revisado_por" class="huerfanos-viewer__sub">{{ item.revisado_por }}</span>
+          </td>
+          <td class="huerfanos-viewer__acciones-fila">
+            <template v-if="item.estado === 'PENDIENTE'">
+              <button
+                v-if="item.normalizable"
+                type="button"
+                class="btn subtle"
+                :disabled="accionando"
+                @click="normalizar([item.id])"
+              >
+                Normalizar
               </button>
-              <span class="huerfanos-viewer__sub">ID {{ item.servicio_id }}</span>
-            </td>
-            <td>
-              {{ item.pelo_n_id }}
-              <span class="huerfanos-viewer__sub">
-                {{ [item.numero_pelo ? `#${item.numero_pelo}` : null, item.color].filter(Boolean).join(' · ') }}
-              </span>
-            </td>
-            <td>{{ item.cable_nombre ?? '—' }}</td>
-            <td>
-              <span :class="['huerfanos-viewer__causa', `is-${tokenCausa(item.causa)}`]">
-                {{ causaHuerfanoLabel(item.causa) }}
-              </span>
-              <span v-if="item.protegido" class="huerfanos-viewer__protegido" :title="item.evidencia.motivo_proteccion ?? ''">
-                <i class="ph ph-shield-check" aria-hidden="true"></i> Protegido
-              </span>
-            </td>
-            <td class="huerfanos-viewer__evidencia">{{ evidenciaCompacta(item) }}</td>
-            <td>
-              <span :class="['huerfanos-viewer__estado', `is-${item.estado.toLowerCase()}`]">{{ item.estado }}</span>
-              <span v-if="item.revisado_por" class="huerfanos-viewer__sub">{{ item.revisado_por }}</span>
-            </td>
-            <td class="huerfanos-viewer__acciones-fila">
-              <template v-if="item.estado === 'PENDIENTE'">
-                <button
-                  v-if="item.normalizable"
-                  type="button"
-                  class="btn subtle"
-                  :disabled="accionando"
-                  @click="normalizar([item.id])"
-                >
-                  Normalizar
-                </button>
-                <button type="button" class="btn subtle" :disabled="accionando" @click="descartar([item.id])">
-                  Descartar
-                </button>
-              </template>
-              <span v-else class="huerfanos-viewer__sub">—</span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+              <button type="button" class="btn subtle" :disabled="accionando" @click="descartar([item.id])">
+                Descartar
+              </button>
+            </template>
+            <span v-else class="huerfanos-viewer__sub">—</span>
+          </td>
+        </tr>
+      </tbody>
+    </table>
 
-      <div v-else-if="!loading" class="huerfanos-viewer__state-box">
-        <i class="ph ph-check-circle" aria-hidden="true"></i>
-        <h3>Sin huérfanos</h3>
-        <p>Nada coincide con los filtros. Los huérfanos se registran al resolver los caminos de un Servicio o con la auditoría global.</p>
-      </div>
+    <template #vacio>
+      <p>Nada coincide con los filtros. Los huérfanos se registran al resolver los caminos de un Servicio o con la auditoría global.</p>
+    </template>
 
-      <div v-if="loading" class="huerfanos-viewer__loading-more">
-        <i class="ph ph-circle-notch huerfanos-viewer__spin" aria-hidden="true"></i>
-        Cargando...
+    <template #pie>
+      <div v-if="hasMore && !loading && items.length > 0" class="huerfanos-viewer__mas">
+        <button type="button" class="btn" @click="cargarSiguiente">Cargar más</button>
       </div>
-
-      <div v-if="hasMore && !loading" class="huerfanos-viewer__mas">
-        <button type="button" class="btn" @click="loadNextPage">Cargar más</button>
-      </div>
-    </div>
-  </section>
+    </template>
+  </ViewerShell>
 </template>
 
 <script setup lang="ts">
@@ -223,6 +231,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import AdminPageHeader from '../components/AdminPageHeader.vue';
+import ViewerShell from '../../components/viewer/ViewerShell.vue';
+import { usePaginatedSearch } from '../../composables/usePaginatedSearch';
 import {
   CAUSAS_HUERFANO,
   causaHuerfanoLabel,
@@ -250,15 +260,9 @@ const estadosFiltro = [
   { valor: '', label: 'Todos' },
 ];
 
-const items = ref<HuerfanoItem[]>([]);
-const total = ref(0);
 const conteos = ref<Record<string, number>>({});
-const loading = ref(false);
-const error = ref('');
 const mensaje = ref('');
 const rechazados = ref<{ id: number; motivo: string }[]>([]);
-const offset = ref(0);
-const hasMore = ref(false);
 const filtroCausa = ref('');
 const filtroEstado = ref('PENDIENTE');
 const servicioTexto = ref(typeof route.query.servicio === 'string' ? route.query.servicio : '');
@@ -314,45 +318,32 @@ function evidenciaCompacta(item: HuerfanoItem): string {
   return partes.join(' · ') || '—';
 }
 
-async function loadNextPage(): Promise<void> {
-  if (loading.value) return;
-  loading.value = true;
-  error.value = '';
-  try {
-    const response = await listarHuerfanos({
+const { items, total, loading, error, hasMore, cargarSiguiente, recargarDesdeCero } = usePaginatedSearch({
+  limit: LIMIT,
+  cargarPagina: (offset, limit) =>
+    listarHuerfanos({
       servicio_id: servicioId.value,
       causa: filtroCausa.value || undefined,
       estado: filtroEstado.value || undefined,
-      limit: LIMIT,
-      offset: offset.value,
-    });
-    total.value = response.total;
-    conteos.value = response.conteos_por_causa;
-    const vistos = new Set(items.value.map((i) => i.id));
-    items.value.push(...response.items.filter((i) => !vistos.has(i.id)));
-    offset.value += response.items.length;
-    hasMore.value = response.items.length === LIMIT && offset.value < response.total;
-  } catch (err: unknown) {
-    error.value = err instanceof Error ? err.message : 'No se pudo consultar los huérfanos';
-  } finally {
-    loading.value = false;
-  }
-}
+      limit,
+      offset,
+    }),
+  claveItem: (item: HuerfanoItem) => item.id,
+  alRecibir: (respuesta) => {
+    conteos.value = respuesta.conteos_por_causa;
+  },
+  alReiniciar: () => {
+    seleccion.value = new Set();
+  },
+  mensajeError: 'No se pudo consultar los huérfanos',
+});
 
-async function reloadFromZero(): Promise<void> {
-  items.value = [];
-  total.value = 0;
-  offset.value = 0;
-  hasMore.value = false;
-  seleccion.value = new Set();
-  await loadNextPage();
-}
-
+// El debounce propio sigue acá: además de recargar actualiza la URL (`router.replace`).
 function onServicioInput(): void {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     void router.replace({ query: { ...route.query, servicio: servicioId.value ? String(servicioId.value) : undefined } });
-    void reloadFromZero();
+    void recargarDesdeCero();
   }, 320);
 }
 
@@ -363,16 +354,16 @@ function filtrarServicio(id: number): void {
 
 function setCausa(valor: string): void {
   filtroCausa.value = filtroCausa.value === valor ? '' : valor;
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function setEstado(valor: string): void {
   filtroEstado.value = valor;
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function refrescar(): void {
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function toggle(id: number): void {
@@ -400,7 +391,7 @@ async function aplicar(
     const resultado = await accion(ids);
     mensaje.value = `${resultado.aplicados.length} fila(s) ${verbo}.`;
     rechazados.value = resultado.rechazados;
-    await reloadFromZero();
+    await recargarDesdeCero();
   } catch (err: unknown) {
     error.value = err instanceof Error ? err.message : `No se pudo completar: ${verbo}`;
   } finally {
@@ -483,7 +474,7 @@ function conectarStream(corridaId: number): void {
       auditoria.value.errores = data.errores;
     }
     cerrarStream();
-    void reloadFromZero();
+    void recargarDesdeCero();
   });
   // El tipo "error" lo usan DOS cosas: el evento SSE de negocio (`event: error`, un Servicio que
   // falló: MessageEvent con `data`) y la caída de la conexión (Event sin `data`). El de negocio se
@@ -549,7 +540,7 @@ async function lanzarAuditoria(): Promise<void> {
 }
 
 onMounted(async () => {
-  await Promise.all([reloadFromZero(), cargarAuditoria()]);
+  await Promise.all([recargarDesdeCero(), cargarAuditoria()]);
 });
 
 onBeforeUnmount(() => {
@@ -560,13 +551,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.huerfanos-viewer {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-}
-
 .huerfanos-viewer__toolbar {
   padding: 4px 0 14px;
   display: flex;
@@ -673,20 +657,11 @@ onBeforeUnmount(() => {
   color: color-mix(in srgb, var(--color-text) 60%, transparent);
 }
 
-.huerfanos-viewer__inline-error,
 .huerfanos-viewer__inline-ok {
   margin-bottom: 10px;
   padding: 10px 14px;
   border-radius: var(--radius-md);
   font-size: 12.5px;
-}
-
-.huerfanos-viewer__inline-error {
-  background: color-mix(in srgb, var(--color-state-error) 14%, transparent);
-  color: var(--color-state-error);
-}
-
-.huerfanos-viewer__inline-ok {
   background: color-mix(in srgb, var(--color-state-ok) 14%, transparent);
   color: var(--color-state-ok);
 }
@@ -701,12 +676,6 @@ onBeforeUnmount(() => {
 }
 
 .huerfanos-viewer__rechazados ul { margin: 6px 0 8px; padding-left: 18px; }
-
-.huerfanos-viewer__scroll {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
 
 .huerfanos-viewer__tabla {
   width: 100%;
@@ -793,29 +762,6 @@ onBeforeUnmount(() => {
   gap: 6px;
 }
 
-.huerfanos-viewer__state-box {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  max-width: 320px;
-  margin: 34px auto;
-  padding: 34px 22px;
-  border-radius: var(--radius-md);
-  box-shadow: 0 0 0 1px var(--color-neutral-800);
-  text-align: center;
-}
-
-.huerfanos-viewer__state-box i { font-size: 26px; color: var(--color-neutral-600); margin-bottom: 4px; }
-.huerfanos-viewer__state-box h3 { font-size: 15px; font-weight: 500; margin: 0; }
-.huerfanos-viewer__state-box p {
-  font-size: 12.5px;
-  line-height: 1.5;
-  margin: 0;
-  color: color-mix(in srgb, var(--color-text) 60%, transparent);
-}
-
-.huerfanos-viewer__loading-more,
 .huerfanos-viewer__mas {
   display: flex;
   align-items: center;
@@ -824,12 +770,5 @@ onBeforeUnmount(() => {
   padding: 14px 0;
   font-size: 12px;
   color: color-mix(in srgb, var(--color-text) 45%, transparent);
-}
-
-.huerfanos-viewer__spin { font-size: 14px; animation: spin 1s linear infinite; }
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
 }
 </style>
