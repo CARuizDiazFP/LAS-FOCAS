@@ -97,6 +97,7 @@ def test_adjuntos_none_sin_incidentes():
     assert adjuntos_aviso_baneo(sesion, [], include_xls=True, include_txt=True) is None
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning:openpyxl")
 def test_adjuntos_xls_con_columnas_union(monkeypatch):
     camara = SimpleNamespace(
         id=7, nombre="C7", fontine_id="F7", direccion="Calle 1", estado=SimpleNamespace(value="BANEADA"),
@@ -198,14 +199,20 @@ def test_enviar_aviso_cuenta_destinatarios(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_api_notify_email_no_bloquea_el_loop(monkeypatch):
-    """B3: el SMTP (simulado con time.sleep) corre en un thread; el loop sigue latiendo."""
+    """B3: el SMTP (simulado con time.sleep) corre en otro thread; el loop sigue latiendo durante el POST."""
+    import threading
+
     from api.app.main import app
     from api.app.routes import infra
 
-    servicio = SimpleNamespace(
-        is_configured=lambda: True,
-        send_email=lambda **k: (time.sleep(0.3), EmailResult(True, "ok"))[1],
-    )
+    hilos: list[int] = []
+
+    def _send_email(**_k):
+        hilos.append(threading.get_ident())
+        time.sleep(0.3)
+        return EmailResult(True, "ok")
+
+    servicio = SimpleNamespace(is_configured=lambda: True, send_email=_send_email)
     monkeypatch.setattr(baneo_aviso, "get_email_service", lambda: servicio)
     monkeypatch.setattr(baneo_aviso, "adjuntos_aviso_baneo", lambda *_a, **_k: [])
 
@@ -215,23 +222,28 @@ async def test_api_notify_email_no_bloquea_el_loop(monkeypatch):
 
     monkeypatch.setattr(infra, "SessionLocal", lambda: _SesionFalsa())
     latidos: list[float] = []
+    terminado = asyncio.Event()
 
     async def _latido() -> None:
-        for _ in range(6):
+        while not terminado.is_set():
             latidos.append(time.monotonic())
-            await asyncio.sleep(0.04)
+            await asyncio.sleep(0.02)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://t",
         headers={"Authorization": "Bearer test-api-key"},
     ) as cliente:
-        envio = asyncio.create_task(cliente.post(
+        # El latido arranca ANTES del POST: un bloqueo del loop se vería como un hueco entre latidos.
+        tarea = asyncio.create_task(_latido())
+        await asyncio.sleep(0.05)
+        res = await cliente.post(
             "/api/infra/notify/email",
             json={"to": ["a@b.com"], "subject": "s", "body": "b", "incidente_ids": [1]},
-        ))
-        await asyncio.sleep(0.02)
-        await _latido()
-        res = await envio
+        )
+        terminado.set()
+        await tarea
 
     assert res.status_code == 200 and res.json()["success"] is True
-    assert max(b - a for a, b in zip(latidos, latidos[1:])) < 0.2
+    assert hilos and hilos[0] != threading.get_ident()
+    assert len(latidos) >= 8
+    assert max(b - a for a, b in zip(latidos, latidos[1:])) < 0.15
