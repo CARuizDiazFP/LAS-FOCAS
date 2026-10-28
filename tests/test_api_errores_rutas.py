@@ -12,26 +12,21 @@ from fastapi.testclient import TestClient
 
 from api.app.main import app
 from api.app.routes import infra
-from db.session import get_async_db
 
 API_HEADERS = {"Authorization": "Bearer test-api-key"}
 REF = re.compile(r"^Error interno \(ref ([0-9a-f]{8})\)$")
 SECRETO = "password=secreto host=db"
 
 
-def test_infra_500_con_ref_sin_texto_interno_y_log_con_ref(caplog):
+def test_infra_500_con_ref_sin_texto_interno_y_log_con_ref(monkeypatch, caplog):
     """GET /api/infra/camaras: la excepción de la DB no sale en la respuesta; el log lleva la ref."""
     caplog.set_level(logging.INFO, logger="api")
 
-    async def _db_rota():
+    def _sesion_rota():
         raise RuntimeError(SECRETO)
-        yield  # pragma: no cover
 
-    app.dependency_overrides[get_async_db] = _db_rota
-    try:
-        res = TestClient(app, raise_server_exceptions=False).get("/api/infra/camaras", headers=API_HEADERS)
-    finally:
-        app.dependency_overrides.pop(get_async_db, None)
+    monkeypatch.setattr(infra, "SessionLocal", _sesion_rota)
+    res = TestClient(app, raise_server_exceptions=False).get("/api/infra/camaras", headers=API_HEADERS)
 
     assert res.status_code == 500
     assert SECRETO not in res.text

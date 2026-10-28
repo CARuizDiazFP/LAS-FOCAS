@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from core.parsers.tracking_parser import parse_tracking
+from core.services.camaras_consulta import listar_camaras, serializar_camara_basica
 from core.services.infra_sync import sync_camaras_from_sheet
 from core.services.infra_service import (
     AnalysisResult,
@@ -193,7 +194,6 @@ async def search_camaras(
     q: Optional[str] = None,
     estado: Optional[str] = None,
     limit: int = 100,
-    db: AsyncSession = Depends(get_async_db),
 ) -> CamarasListResponse:
     """Busca cámaras por query (nombre, servicio, dirección) y/o estado.
 
@@ -206,108 +206,25 @@ async def search_camaras(
         Lista de cámaras que coinciden con los criterios.
     """
 
-    limit = min(limit, 500)
+    def _run() -> list[dict[str, Any]]:
+        # Sesión síncrona propia del thread; se serializa antes de cerrarla (relaciones ya cargadas).
+        with SessionLocal() as session:
+            return [serializar_camara_basica(e) for e in listar_camaras(session, q=q, estado=estado, limit=limit)]
 
     try:
-        stmt = (
-            select(Camara)
-            .options(
-                selectinload(Camara.empalmes).selectinload(Empalme.servicios),
-                selectinload(Camara.cables_origen),
-                selectinload(Camara.cables_destino),
-            )
-        )
-
-        # Filtro por estado
-        if estado:
-            estado_upper = estado.upper()
-            if estado_upper in [e.value for e in CamaraEstado]:
-                stmt = stmt.where(Camara.estado == CamaraEstado(estado_upper))
-
-        # Filtro por texto (búsqueda amplia)
-        if q and q.strip():
-            search_term = f"%{q.strip()}%"
-            stmt = stmt.where(
-                (Camara.nombre.ilike(search_term)) |
-                (Camara.direccion.ilike(search_term)) |
-                (Camara.fontine_id.ilike(search_term))
-            )
-
-        stmt = stmt.order_by(Camara.nombre).limit(limit)
-        camaras_db = (await db.execute(stmt)).scalars().all()
-
-        # Construir respuesta con servicios asociados
-        camaras_response = []
-        for cam in camaras_db:
-            # Obtener IDs de servicios que pasan por esta cámara
-            servicios_ids = []
-            for empalme in cam.empalmes:
-                for servicio in empalme.servicios:
-                    if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
-                        servicios_ids.append(servicio.servicio_id)
-
-            camaras_response.append(CamaraResponse(
-                id=cam.id,
-                nombre=cam.nombre or "",
-                fontine_id=cam.fontine_id,
-                direccion=cam.direccion,
-                estado=cam.estado.value if cam.estado else "LIBRE",
-                origen_datos=cam.origen_datos.value if cam.origen_datos else "MANUAL",
-                latitud=cam.latitud,
-                longitud=cam.longitud,
-                servicios=servicios_ids,
-            ))
-
-        # Si se buscó por ID de servicio y no se encontró en cámaras, buscar servicios
-        if q and q.strip() and not camaras_response:
-            # Intentar buscar por servicio_id
-            svc_stmt = (
-                select(Servicio)
-                .where(Servicio.servicio_id.ilike(f"%{q.strip()}%"))
-                .options(
-                    selectinload(Servicio.empalmes)
-                    .selectinload(Empalme.camara)
-                    .selectinload(Camara.empalmes)
-                    .selectinload(Empalme.servicios)
-                )
-            )
-            servicio = (await db.execute(svc_stmt)).scalars().first()
-
-            if servicio:
-                # Obtener cámaras de ese servicio a través de empalmes
-                for empalme in servicio.empalmes:
-                    if empalme.camara and empalme.camara.id not in [c.id for c in camaras_response]:
-                        cam = empalme.camara
-                        servicios_ids = [servicio.servicio_id]
-                        # Añadir otros servicios de la misma cámara
-                        for emp in cam.empalmes:
-                            for svc in emp.servicios:
-                                if svc.servicio_id and svc.servicio_id not in servicios_ids:
-                                    servicios_ids.append(svc.servicio_id)
-
-                        camaras_response.append(CamaraResponse(
-                            id=cam.id,
-                            nombre=cam.nombre or "",
-                            fontine_id=cam.fontine_id,
-                            direccion=cam.direccion,
-                            estado=cam.estado.value if cam.estado else "LIBRE",
-                            origen_datos=cam.origen_datos.value if cam.origen_datos else "MANUAL",
-                            latitud=cam.latitud,
-                            longitud=cam.longitud,
-                            servicios=servicios_ids,
-                        ))
+        camaras = await asyncio.to_thread(_run)
 
         logger.info(
             "action=search_camaras query=%s estado=%s results=%d",
             q,
             estado,
-            len(camaras_response),
+            len(camaras),
         )
 
         return CamarasListResponse(
             status="ok",
-            total=len(camaras_response),
-            camaras=camaras_response,
+            total=len(camaras),
+            camaras=[CamaraResponse(**c) for c in camaras],
         )
 
     except HTTPException:

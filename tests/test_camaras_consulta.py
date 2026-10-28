@@ -261,3 +261,75 @@ def test_relaciones_de_infra_ordenadas_por_id():
 def test_carga_por_lote_incluye_rutas_de_empalmes_y_botellas():
     rutas = [o for o in cc._CARGA_POR_LOTE if "Empalme.rutas" in str(o.path)]
     assert len(rutas) == 4
+
+
+# --- listar_camaras / serializar_camara_basica (P12, Task 3) -----------------------------------
+
+class _SesionListado:
+    """Doble de Session: `query(...)` devuelve una cadena que ignora filtros y entrega `camaras`."""
+
+    def __init__(self, camaras):
+        self._camaras = camaras
+        self.filtros = []
+
+    def query(self, *_a, **_k):
+        sesion = self
+
+        class _Q:
+            def options(self, *_o):
+                return self
+
+            def filter(self, *c):
+                sesion.filtros.extend(c)
+                return self
+
+            def order_by(self, *_o):
+                return self
+
+            def limit(self, n):
+                sesion.limite = n
+                return self
+
+            def all(self):
+                return list(sesion._camaras)
+
+        return _Q()
+
+
+def _ruta(rid, servicio_id):
+    return SimpleNamespace(
+        id=rid, nombre=f"R{rid}", tipo=SimpleNamespace(value="PRINCIPAL"),
+        servicio=SimpleNamespace(servicio_id=servicio_id, alias_ids=None), empalmes=[],
+        punta_a=None, punta_b=None,
+    )
+
+
+def test_listar_camaras_servicios_ordenados():
+    emp = SimpleNamespace(rutas=[_ruta(1, "B"), _ruta(2, "A")], servicios=[])
+    cam = _camara(id=1, empalmes=[emp], botellas=[])
+    sesion = _SesionListado([cam])
+    res = cc.listar_camaras(sesion, q=None, estado=None, limit=10)
+    assert [e.servicios_ids for e in res] == [["A", "B"]]
+    assert len(res[0].rutas_info) == 2
+
+
+def test_listar_camaras_sin_rutas_usa_legacy():
+    emp = SimpleNamespace(rutas=[], servicios=[SimpleNamespace(servicio_id="X")])
+    cam = _camara(id=1, empalmes=[emp], botellas=[])
+    res = cc.listar_camaras(_SesionListado([cam]), q=None, estado=None, limit=10)
+    assert res[0].rutas_info == [] and res[0].servicios_ids == ["X"]
+
+
+def test_listar_camaras_tope_de_limite():
+    sesion = _SesionListado([])
+    cc.listar_camaras(sesion, q=None, estado=None, limit=99999)
+    assert sesion.limite == cc.LIMITE_MAXIMO
+
+
+def test_serializar_camara_basica_claves():
+    cam = _camara(id=3, latitud=1.5, longitud=2.5)
+    d = cc.serializar_camara_basica(cc.CamaraEncontrada(cam, [], ["S1"]))
+    assert list(d) == [
+        "id", "nombre", "fontine_id", "direccion", "estado", "origen_datos", "latitud", "longitud", "servicios",
+    ]
+    assert d["servicios"] == ["S1"] and d["estado"] == "LIBRE" and d["origen_datos"] == "TRACKING"

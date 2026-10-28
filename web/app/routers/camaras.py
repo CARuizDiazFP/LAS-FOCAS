@@ -16,7 +16,9 @@ from core.services.camaras_consulta import (
     _collect_camara_rutas_info,
     _collect_camara_servicios_ids,
     buscar_camaras_por_terminos,
+    listar_camaras,
 )
+from core.services.camaras_consulta import serializar_camara_panel as _serialize_camara_response
 from core.utils.tz import TZ_ARG
 
 from ..comun import (
@@ -61,68 +63,6 @@ class CamaraEstadoUpdateRequest(BaseModel):
 
     estado: str
     motivo: str = Field(min_length=5, max_length=500)
-
-
-def _serialize_camara_response(
-    *,
-    camara: Any,
-    rutas_info: list[dict[str, Any]],
-    servicios_ids: list[str],
-    contexto: Any | None,
-    editable: bool,
-) -> dict[str, Any]:
-    ticket_baneo = None
-    tiene_baneo_activo = False
-    tiene_ingreso_activo = False
-    inconsistente = False
-    estado_sugerido = None
-    incidentes_activos: list[dict[str, Any]] = []
-
-    if contexto is not None:
-        ticket_baneo = contexto.ticket_baneo
-        tiene_baneo_activo = contexto.tiene_baneo_activo
-        tiene_ingreso_activo = contexto.tiene_ingreso_activo
-        inconsistente = contexto.inconsistente
-        estado_sugerido = contexto.estado_sugerido.value
-        incidentes_activos = [incidente.to_dict() for incidente in contexto.incidentes_activos]
-
-    # Navegación cruzada Botella→Cámara padre (2026-08-13): sólo tiene datos si `camara_padre_id`
-    # está seteado (es una Botella legado) — el acceso a `.camara_padre` es lazy-load, pero acá
-    # nunca dispara N+1 real: los listados batch (smart-search/search) sólo traen cámaras raíz
-    # (`camara_padre_id IS NULL`), así que este branch sólo se ejecuta en fetches de una Botella
-    # puntual (GET /api/infra/camaras/{id} con un id de Botella).
-    camara_padre_id = getattr(camara, "camara_padre_id", None)
-    camara_padre_nombre = None
-    if camara_padre_id:
-        camara_padre = getattr(camara, "camara_padre", None)
-        camara_padre_nombre = camara_padre.nombre if camara_padre is not None else None
-
-    return {
-        "id": camara.id,
-        "nombre": camara.nombre or "",
-        "fontine_id": camara.fontine_id,
-        "direccion": camara.direccion,
-        "estado": camara.estado.value if camara.estado else "LIBRE",
-        "origen_datos": camara.origen_datos.value if camara.origen_datos else "MANUAL",
-        "latitud": camara.latitud,
-        "longitud": camara.longitud,
-        "servicios": servicios_ids,
-        "rutas": rutas_info,
-        "tiene_baneo_activo": tiene_baneo_activo,
-        "tiene_ingreso_activo": tiene_ingreso_activo,
-        "inconsistente": inconsistente,
-        "estado_sugerido": estado_sugerido,
-        "ticket_baneo": ticket_baneo,
-        "editable": editable,
-        "incidentes_activos": incidentes_activos,
-        # Etapa Cámara/Botella: `es_botella`/`botellas_count` sólo tienen sentido si `camara` trae
-        # cargada la columna/relación nueva — con getattr por si algún caller viejo pasa un objeto
-        # sin esos atributos (tests con SimpleNamespace, por ejemplo).
-        "es_botella": bool(camara_padre_id),
-        "camara_padre_id": camara_padre_id,
-        "camara_padre_nombre": camara_padre_nombre,
-        "botellas_count": len(getattr(camara, "botellas", None) or []),
-    }
 
 
 def _serialize_cromo_botella_hija(cromo_botella: Any) -> dict[str, Any]:
@@ -181,90 +121,27 @@ def search_camaras_web(
     limit: int = 100,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
-    """Busca cámaras por query y/o estado (proxy al API interno)."""
+    """Busca cámaras por query y/o estado (misma consulta que la API: `listar_camaras`)."""
 
     username, role = usuario
-    limit = min(limit, 500)
 
     try:
-        from sqlalchemy.orm import selectinload
-
         from core.services.camara_estado_service import get_camara_estado_contexto_batch
-        from db.models.infra import Camara, CamaraEstado, Empalme, RutaServicio, Servicio
         from db.session import SessionLocal
 
         with SessionLocal() as session:
-            # Lo que recorre la serialización, por lote: antes cada fila disparaba lazy loads de
-            # empalmes/rutas/servicio más las queries propias del contexto (~2000 sentencias con 500).
-            query = session.query(Camara).options(
-                selectinload(Camara.empalmes).selectinload(Empalme.rutas).selectinload(RutaServicio.servicio),
-                selectinload(Camara.botellas),
-                selectinload(Camara.camara_padre),
-            )
-
-            # Filtro por estado
-            if estado:
-                estado_upper = estado.upper()
-                if estado_upper in [e.value for e in CamaraEstado]:
-                    query = query.filter(Camara.estado == CamaraEstado(estado_upper))
-
-            # Filtro por texto
-            if q and q.strip():
-                search_term = f"%{q.strip()}%"
-                query = query.filter(
-                    (Camara.nombre.ilike(search_term)) |
-                    (Camara.direccion.ilike(search_term)) |
-                    (Camara.fontine_id.ilike(search_term))
+            encontradas = listar_camaras(session, q=q, estado=estado, limit=limit)
+            contextos = get_camara_estado_contexto_batch(session, [e.camara.id for e in encontradas])
+            camaras_response = [
+                _serialize_camara_response(
+                    camara=e.camara,
+                    rutas_info=e.rutas_info,
+                    servicios_ids=e.servicios_ids,
+                    contexto=contextos.get(e.camara.id),
+                    editable=role == "admin",
                 )
-
-            camaras_db = query.order_by(Camara.nombre).limit(limit).all()
-
-            # Buscar por servicio_id si no se encontraron cámaras: las cámaras de las rutas del servicio
-            if q and q.strip() and not camaras_db:
-                servicio = session.query(Servicio).filter(
-                    Servicio.servicio_id.ilike(f"%{q.strip()}%")
-                ).first()
-
-                if servicio:
-                    seen_cam_ids = set()
-                    for ruta in servicio.rutas:
-                        for empalme in ruta.empalmes:
-                            if empalme.camara and empalme.camara.id not in seen_cam_ids:
-                                seen_cam_ids.add(empalme.camara.id)
-                                camaras_db.append(empalme.camara)
-
-            contextos = get_camara_estado_contexto_batch(session, [cam.id for cam in camaras_db])
-
-            # Construir respuesta con servicios y rutas
-            camaras_response = []
-            for cam in camaras_db:
-                # Obtener rutas asociadas a esta cámara a través de empalmes
-                rutas_info = []
-                seen_rutas = set()
-
-                for empalme in cam.empalmes:
-                    for ruta in empalme.rutas:
-                        if ruta.id not in seen_rutas:
-                            seen_rutas.add(ruta.id)
-                            rutas_info.append({
-                                "ruta_id": ruta.id,
-                                "servicio_id": ruta.servicio.servicio_id,
-                                "ruta_nombre": ruta.nombre,
-                                "ruta_tipo": ruta.tipo.value,
-                            })
-
-                # Para retrocompatibilidad, mantener lista simple de servicios
-                servicios_ids = list(set(r["servicio_id"] for r in rutas_info))
-
-                camaras_response.append(
-                    _serialize_camara_response(
-                        camara=cam,
-                        rutas_info=rutas_info,
-                        servicios_ids=servicios_ids,
-                        contexto=contextos.get(cam.id),
-                        editable=role == "admin",
-                    )
-                )
+                for e in encontradas
+            ]
 
             logger.info(
                 "action=search_camaras user=%s query=%s estado=%s results=%d",

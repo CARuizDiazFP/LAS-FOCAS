@@ -1,6 +1,6 @@
 # Nombre de archivo: camaras_consulta.py
 # Ubicación de archivo: core/services/camaras_consulta.py
-# Descripción: Consulta de Cámaras: smart search por términos (query, filtros, matching y paginación)
+# Descripción: Consulta de Cámaras: listado simple, smart search por términos y serialización común web/API
 
 """Smart search de Cámaras movida desde `web/app/routers/camaras.py`.
 
@@ -251,3 +251,135 @@ def buscar_camaras_por_terminos(
     pagina = query.order_by(Camara.nombre, Camara.id).offset(offset).limit(limit).all()
     encontradas = [CamaraEncontrada(c, *_rutas_y_servicios(c)) for c in pagina]
     return ResultadoSmartSearch(total, limit, offset, estado_filter, len(terminos_limpios), encontradas)
+
+
+def _camaras_de_servicio(session: Session, texto: str) -> list[Camara]:
+    """Cámaras de las rutas del primer servicio cuyo `servicio_id` contiene `texto` (orden por
+    `servicio_id`, sin repetir, en el orden en que aparecen en las rutas), con la carga por lote."""
+
+    servicio = (
+        session.query(Servicio)
+        .filter(Servicio.servicio_id.ilike(f"%{texto}%"))
+        .options(selectinload(Servicio.rutas).selectinload(RutaServicio.empalmes))
+        .order_by(Servicio.servicio_id)
+        .first()
+    )
+    if servicio is None:
+        return []
+    ids: list[int] = []
+    for ruta in servicio.rutas:
+        for empalme in ruta.empalmes:
+            if empalme.camara_id is not None and empalme.camara_id not in ids:
+                ids.append(empalme.camara_id)
+    if not ids:
+        return []
+    por_id = {c.id: c for c in session.query(Camara).filter(Camara.id.in_(ids)).options(*_CARGA_POR_LOTE).all()}
+    return [por_id[i] for i in ids if i in por_id]
+
+
+def listar_camaras(session: Session, *, q: str | None, estado: str | None, limit: int) -> list[CamaraEncontrada]:
+    """Listado de `GET /api/infra/camaras` (panel y API): sin filtrar Botellas ni NO_OPERATIVA, por nombre.
+
+    `q` busca (subcadena, insensible a mayúsculas) en nombre, dirección y `fontine_id`; si no hay ninguna
+    cámara, cae al primer servicio cuyo `servicio_id` contiene `q` y devuelve las cámaras de sus rutas.
+    `estado` se ignora si no es un valor del enum."""
+
+    limit = min(limit, LIMITE_MAXIMO)
+    query = session.query(Camara).options(*_CARGA_POR_LOTE)
+    if estado and estado.upper() in [e.value for e in _CamaraEstado]:
+        query = query.filter(Camara.estado == _CamaraEstado(estado.upper()))
+    texto = q.strip() if q else ""
+    if texto:
+        patron = f"%{texto}%"
+        query = query.filter(
+            Camara.nombre.ilike(patron) | Camara.direccion.ilike(patron) | Camara.fontine_id.ilike(patron)
+        )
+    camaras = query.order_by(Camara.nombre).limit(limit).all()
+    if texto and not camaras:
+        camaras = _camaras_de_servicio(session, texto)
+    resultado = []
+    for camara in camaras:
+        rutas_info = _collect_camara_rutas_info(camara)
+        resultado.append(CamaraEncontrada(camara, rutas_info, _collect_camara_servicios_ids(camara, rutas_info)))
+    return resultado
+
+
+def serializar_camara_basica(encontrada: CamaraEncontrada) -> dict[str, Any]:
+    """Las 9 claves de `CamaraResponse` (API)."""
+
+    cam = encontrada.camara
+    return {
+        "id": cam.id,
+        "nombre": cam.nombre or "",
+        "fontine_id": cam.fontine_id,
+        "direccion": cam.direccion,
+        "estado": cam.estado.value if cam.estado else "LIBRE",
+        "origen_datos": cam.origen_datos.value if cam.origen_datos else "MANUAL",
+        "latitud": cam.latitud,
+        "longitud": cam.longitud,
+        "servicios": encontrada.servicios_ids,
+    }
+
+
+def serializar_camara_panel(
+    *,
+    camara: Any,
+    rutas_info: list[dict[str, Any]],
+    servicios_ids: list[str],
+    contexto: Any | None,
+    editable: bool,
+) -> dict[str, Any]:
+    """Cámara del panel (21 claves): las básicas más rutas, contexto de estado y datos Cámara/Botella."""
+
+    ticket_baneo = None
+    tiene_baneo_activo = False
+    tiene_ingreso_activo = False
+    inconsistente = False
+    estado_sugerido = None
+    incidentes_activos: list[dict[str, Any]] = []
+
+    if contexto is not None:
+        ticket_baneo = contexto.ticket_baneo
+        tiene_baneo_activo = contexto.tiene_baneo_activo
+        tiene_ingreso_activo = contexto.tiene_ingreso_activo
+        inconsistente = contexto.inconsistente
+        estado_sugerido = contexto.estado_sugerido.value
+        incidentes_activos = [incidente.to_dict() for incidente in contexto.incidentes_activos]
+
+    # Navegación cruzada Botella→Cámara padre (2026-08-13): sólo tiene datos si `camara_padre_id`
+    # está seteado (es una Botella legado) — el acceso a `.camara_padre` es lazy-load, pero acá
+    # nunca dispara N+1 real: los listados batch (smart-search/search) sólo traen cámaras raíz
+    # (`camara_padre_id IS NULL`), así que este branch sólo se ejecuta en fetches de una Botella
+    # puntual (GET /api/infra/camaras/{id} con un id de Botella).
+    camara_padre_id = getattr(camara, "camara_padre_id", None)
+    camara_padre_nombre = None
+    if camara_padre_id:
+        camara_padre = getattr(camara, "camara_padre", None)
+        camara_padre_nombre = camara_padre.nombre if camara_padre is not None else None
+
+    return {
+        "id": camara.id,
+        "nombre": camara.nombre or "",
+        "fontine_id": camara.fontine_id,
+        "direccion": camara.direccion,
+        "estado": camara.estado.value if camara.estado else "LIBRE",
+        "origen_datos": camara.origen_datos.value if camara.origen_datos else "MANUAL",
+        "latitud": camara.latitud,
+        "longitud": camara.longitud,
+        "servicios": servicios_ids,
+        "rutas": rutas_info,
+        "tiene_baneo_activo": tiene_baneo_activo,
+        "tiene_ingreso_activo": tiene_ingreso_activo,
+        "inconsistente": inconsistente,
+        "estado_sugerido": estado_sugerido,
+        "ticket_baneo": ticket_baneo,
+        "editable": editable,
+        "incidentes_activos": incidentes_activos,
+        # Etapa Cámara/Botella: `es_botella`/`botellas_count` sólo tienen sentido si `camara` trae
+        # cargada la columna/relación nueva — con getattr por si algún caller viejo pasa un objeto
+        # sin esos atributos (tests con SimpleNamespace, por ejemplo).
+        "es_botella": bool(camara_padre_id),
+        "camara_padre_id": camara_padre_id,
+        "camara_padre_nombre": camara_padre_nombre,
+        "botellas_count": len(getattr(camara, "botellas", None) or []),
+    }
