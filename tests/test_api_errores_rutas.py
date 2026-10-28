@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from api.app.main import app
 from api.app.routes import infra
+from core.services import baneo_aviso
 
 API_HEADERS = {"Authorization": "Bearer test-api-key"}
 REF = re.compile(r"^Error interno \(ref ([0-9a-f]{8})\)$")
@@ -40,7 +41,7 @@ def test_notify_email_conserva_200_success_false_con_ref(monkeypatch, caplog):
     def _sesion_rota():
         raise RuntimeError(SECRETO)
 
-    monkeypatch.setattr(infra, "get_email_service", lambda: SimpleNamespace(is_configured=lambda: True))
+    monkeypatch.setattr(baneo_aviso, "get_email_service", lambda: SimpleNamespace(is_configured=lambda: True))
     monkeypatch.setattr(infra, "SessionLocal", _sesion_rota)
     res = TestClient(app).post(
         "/api/infra/notify/email",

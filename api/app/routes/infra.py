@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import asdict
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from core.utils.tz import TZ_ARG
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Response
 from fastapi.responses import StreamingResponse
@@ -28,6 +28,7 @@ from core.services.baneo_operaciones import (
     levantar_baneo_y_notificar,
     listar_incidentes_activos,
 )
+from core.services.baneo_aviso import EmailNotifyResultado, enviar_aviso_baneo, estado_config_email
 from core.services.camaras_busqueda_avanzada import SearchRequest, buscar_camaras_avanzada
 from core.services.camaras_exportacion import (
     AVISO_SIN_XLSX,
@@ -51,7 +52,7 @@ from core.services.infra_service import (
     analyze_tracking_file,
     resolve_tracking_file,
 )
-from core.services.email_service import EmailAttachment, get_email_service, EmailService
+from core.services.email_service import EmailService
 from db.models.infra import (
     Camara,
     Empalme,
@@ -1348,119 +1349,23 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
     Returns:
         EmailNotifyResponse con el resultado del envío
     """
-    import io
-
-    from db.models.infra import IncidenteBaneo
-    from core.services.protection_service import ProtectionService
-
-    email_service = get_email_service()
-
-    if not email_service.is_configured():
-        return EmailNotifyResponse(
-            success=False,
-            message="Servicio de email no configurado",
-            error="SMTP no está configurado en el servidor",
-        )
-
-    def _build_attachments() -> Optional[List[EmailAttachment]]:
-        """Construye los adjuntos en un thread bloqueante."""
-        attachments: List[EmailAttachment] = []
-
+    def _enviar() -> EmailNotifyResultado:
+        """Adjuntos y SMTP en un thread: ni la DB ni el envío (hasta 15 s) bloquean el event loop (B3)."""
         with SessionLocal() as session:
-            protection_svc = ProtectionService(session)
-            incidentes = (
-                session.query(IncidenteBaneo)
-                .filter(IncidenteBaneo.id.in_(request.incidente_ids))
-                .all()
+            return enviar_aviso_baneo(
+                session,
+                to=request.to,
+                cc=request.cc,
+                subject=request.subject,
+                body=request.body,
+                incidente_ids=request.incidente_ids,
+                include_xls=request.include_xls,
+                include_txt=request.include_txt,
             )
-
-            if not incidentes:
-                return None  # Señal de "no encontrado"
-
-            if request.include_xls:
-                try:
-                    import pandas as pd
-
-                    rows = []
-                    for incidente in incidentes:
-                        camaras = protection_svc.get_camaras_for_servicio(
-                            incidente.servicio_protegido_id, incidente.ruta_protegida_id
-                        )
-                        for camara in camaras:
-                            rows.append({
-                                "Incidente ID": incidente.id,
-                                "Ticket": incidente.ticket_asociado or "-",
-                                "Servicio Afectado": incidente.servicio_afectado_id,
-                                "Servicio Protegido": incidente.servicio_protegido_id,
-                                "Cámara ID": camara.id,
-                                "Cámara Nombre": camara.nombre,
-                                "Estado": camara.estado.value if camara.estado else "-",
-                                "Fecha Inicio": (
-                                    incidente.fecha_inicio.astimezone(TZ_ARG).strftime("%d/%m/%Y %H:%M")
-                                    if incidente.fecha_inicio else "-"
-                                ),
-                                "Motivo": incidente.motivo or "-",
-                            })
-
-                    if rows:
-                        df = pd.DataFrame(rows)
-                        output = io.BytesIO()
-                        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                            df.to_excel(writer, sheet_name="Baneos_Activos", index=False)
-                        output.seek(0)
-                        attachments.append(EmailAttachment(
-                            filename="baneos_activos.xlsx",
-                            content=output.getvalue(),
-                            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        ))
-
-                except ImportError:
-                    logger.warning("action=notify_email warning=pandas_not_available skipping_xls=true")
-
-            if request.include_txt:
-                for incidente in incidentes:
-                    servicio = (
-                        session.query(Servicio)
-                        .filter(Servicio.servicio_id == incidente.servicio_protegido_id)
-                        .first()
-                    )
-                    if servicio and servicio.rutas:
-                        for ruta in servicio.rutas:
-                            if ruta.raw_file_content:
-                                filename_txt = ruta.nombre_archivo_origen or f"tracking_{servicio.servicio_id}.txt"
-                                attachments.append(EmailAttachment(
-                                    filename=filename_txt,
-                                    content=ruta.raw_file_content.encode("utf-8"),
-                                    mime_type="text/plain; charset=utf-8",
-                                ))
-                                break
-
-        return attachments
 
     try:
-        attachments = await asyncio.to_thread(_build_attachments)
-
-        if attachments is None:
-            return EmailNotifyResponse(
-                success=False,
-                message="No se encontraron incidentes con los IDs especificados",
-                error="incidente_ids vacíos o inválidos",
-            )
-
-        result = email_service.send_email(
-            to=request.to,
-            cc=request.cc,
-            subject=request.subject,
-            body=request.body,
-            attachments=attachments if attachments else None,
-        )
-
-        return EmailNotifyResponse(
-            success=result.success,
-            message=result.message,
-            error=result.error,
-            recipients_count=len(request.to) + len(request.cc or []),
-        )
+        resultado = await asyncio.to_thread(_enviar)
+        return EmailNotifyResponse(**asdict(resultado))
 
     except Exception as exc:
         # Se conserva el 200 con success=False que consume la SPA (InfraTab); sólo cambia
@@ -1529,16 +1434,15 @@ async def get_email_config_status() -> Dict[str, Any]:
     """Verifica si el servicio de email está configurado.
 
     Returns:
-        Estado de configuración del servicio de email
+        Estado de configuración del servicio de email; ante un error interno 200 con
+        `configured: false` y la ref del log (misma forma que el panel).
     """
-    email_service = get_email_service()
-    settings = email_service.settings
-
-    return {
-        "configured": email_service.is_configured(),
-        "from_email": settings.from_email if email_service.is_configured() else None,
-        "from_name": settings.from_name if email_service.is_configured() else None,
-    }
+    try:
+        return estado_config_email()
+    except Exception as exc:
+        ref = nueva_ref()
+        logger.exception("action=get_email_config_error error=%s ref=%s", exc, ref)
+        return {"configured": False, "error": f"Error interno (ref {ref})"}
 
 
 @router.post("/api/infra/notify/download-eml")

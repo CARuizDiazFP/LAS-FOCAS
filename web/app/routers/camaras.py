@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -11,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from core.services.baneo_aviso import enviar_aviso_baneo, estado_config_email
 from core.services.baneo_operaciones import (
     LARGO_MOTIVO,
     LARGO_SERVICIO,
@@ -674,130 +676,30 @@ def send_email_notification_web(
     """Envía un correo electrónico con información de baneos."""
     
     username, _ = usuario
-    
+
     try:
-        from core.services.email_service import EmailAttachment, get_email_service
-        from db.models.infra import IncidenteBaneo
         from db.session import SessionLocal
-        from core.services.protection_service import ProtectionService
-        import io
-        
-        email_service = get_email_service()
-        
-        if not email_service.is_configured():
-            return JSONResponse({
-                "success": False,
-                "message": "Servicio de email no configurado",
-                "error": "SMTP no está configurado en el servidor",
-            }, status_code=500)
-        
-        attachments: list = []
-        
+
         with SessionLocal() as session:
-            protection_svc = ProtectionService(session)
-            # Obtener incidentes
-            incidentes = []
-            if email_request.incidente_ids:
-                incidentes = (
-                    session.query(IncidenteBaneo)
-                    .filter(IncidenteBaneo.id.in_(email_request.incidente_ids))
-                    .all()
-                )
-            
-            # Generar XLS si se solicita
-            if email_request.include_xls and incidentes:
-                try:
-                    import pandas as pd
-                    
-                    rows = []
-                    for incidente in incidentes:
-                        # Se corrige el acceso a camaras_afectadas usando ProtectionService
-                        camaras = protection_svc.get_camaras_for_servicio(incidente.servicio_protegido_id, incidente.ruta_protegida_id)
-                        for camara in camaras:
-                            rows.append({
-                                "Incidente ID": incidente.id,
-                                "Ticket": incidente.ticket_asociado or "-",
-                                "Servicio Afectado": incidente.servicio_afectado_id,
-                                "Servicio Protegido": incidente.servicio_protegido_id,
-                                "Cámara ID": camara.id,
-                                "Cámara Nombre": camara.nombre,
-                                "Estado": camara.estado.value if camara.estado else "-",
-                                "Fecha Inicio": (
-                                    incidente.fecha_inicio.astimezone(TZ_ARG).strftime("%d/%m/%Y %H:%M")
-                                    if incidente.fecha_inicio else "-"
-                                ),
-                                "Motivo": incidente.motivo or "-",
-                            })
-                    
-                    if rows:
-                        df = pd.DataFrame(rows)
-                        output = io.BytesIO()
-                        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                            df.to_excel(writer, sheet_name="Baneos_Activos", index=False)
-                        output.seek(0)
-                        
-                        attachments.append(
-                            EmailAttachment(
-                                filename="baneos_activos.xlsx",
-                                content=output.getvalue(),
-                                mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            )
-                        )
-                
-                except ImportError:
-                    logger.warning("action=notify_email warning=pandas_not_available skipping_xls=true")
-            
-            # Obtener TXT original si se solicita
-            if email_request.include_txt and incidentes:
-                from db.models.infra import Servicio
-                
-                for incidente in incidentes:
-                    servicio = (
-                        session.query(Servicio)
-                        .filter(Servicio.servicio_id == incidente.servicio_protegido_id)
-                        .first()
-                    )
-                    if servicio and servicio.rutas:
-                        for ruta in servicio.rutas:
-                            if ruta.raw_file_content:
-                                filename = (
-                                    ruta.nombre_archivo_origen
-                                    or f"tracking_{servicio.servicio_id}.txt"
-                                )
-                                attachments.append(
-                                    EmailAttachment(
-                                        filename=filename,
-                                        content=ruta.raw_file_content.encode("utf-8"),
-                                        mime_type="text/plain; charset=utf-8",
-                                    )
-                                )
-                                break
-                        break
-        
-        # Enviar correo
-        result = email_service.send_email(
-            to=email_request.to,
-            cc=email_request.cc,
-            subject=email_request.subject,
-            body=email_request.body,
-            attachments=attachments if attachments else None,
-        )
-        
+            resultado = enviar_aviso_baneo(
+                session,
+                to=email_request.to,
+                cc=email_request.cc,
+                subject=email_request.subject,
+                body=email_request.body,
+                incidente_ids=email_request.incidente_ids,
+                include_xls=email_request.include_xls,
+                include_txt=email_request.include_txt,
+            )
+
         logger.info(
-            "action=send_email user=%s to=%s success=%s attachments=%d",
+            "action=send_email user=%s to=%s success=%s",
             username,
             email_request.to,
-            result.success,
-            len(attachments),
+            resultado.success,
         )
-        
-        return JSONResponse({
-            "success": result.success,
-            "message": result.message,
-            "error": result.error,
-            "recipients_count": len(email_request.to) + len(email_request.cc or []),
-        })
-        
+        return JSONResponse(asdict(resultado))
+
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
@@ -809,19 +711,10 @@ def send_email_notification_web(
 @router.get("/api/infra/notify/email/config")
 async def get_email_config_web() -> JSONResponse:
     """Obtiene el estado de configuración del email."""
-    
+
     try:
-        from core.services.email_service import get_email_service
-        
-        email_service = get_email_service()
-        settings = email_service.settings
-        
-        return JSONResponse({
-            "configured": email_service.is_configured(),
-            "from_email": settings.from_email if email_service.is_configured() else None,
-            "from_name": settings.from_name if email_service.is_configured() else None,
-        })
-        
+        return JSONResponse(estado_config_email())
+
     except Exception as exc:
         # Responde 200 (no 500) como siempre: sólo deja de exponer el texto de la excepción.
         ref = nueva_ref()

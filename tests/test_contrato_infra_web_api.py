@@ -120,3 +120,52 @@ def test_api_ban_create_ticket_65_caracteres_422():
     )
     assert res.status_code == 422
     assert_forma(res.json(), {"detail": list})
+
+
+# --- Aviso de baneo por email (Task 8: D6, config en las dos apps) ---------------------------------
+
+CLAVES_AVISO = {"success": bool, "message": str, "error": (str, type(None)), "recipients_count": int}
+
+
+def _sin_smtp(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from core.services import baneo_aviso
+
+    monkeypatch.setattr(baneo_aviso, "get_email_service", lambda: SimpleNamespace(is_configured=lambda: False))
+
+
+def test_web_notify_email_smtp_sin_configurar_200_success_false(con_sesion, monkeypatch):
+    """D6: el panel deja de responder 500 con SMTP sin configurar (igual que la API)."""
+    _sin_smtp(monkeypatch)
+    res = cliente_web(con_sesion).post(
+        "/api/infra/notify/email", json={"to": ["a@b.com"], "subject": "s", "body": "b"}
+    )
+    assert res.status_code == 200
+    assert_forma(res.json(), CLAVES_AVISO)
+    assert res.json()["success"] is False
+
+
+def test_api_notify_email_smtp_sin_configurar_200_success_false(monkeypatch):
+    _sin_smtp(monkeypatch)
+    res = cliente_api().post(
+        "/api/infra/notify/email",
+        json={"to": ["a@b.com"], "subject": "s", "body": "b", "incidente_ids": [1]},
+    )
+    assert res.status_code == 200
+    assert_forma(res.json(), CLAVES_AVISO)
+    assert res.json()["success"] is False
+
+
+def test_api_email_config_error_200_configured_false(monkeypatch):
+    """Config de la API ante un error interno: 200 `configured:false` con ref (antes 500)."""
+    from core.services import baneo_aviso
+
+    def _roto():
+        raise RuntimeError("secreto")
+
+    monkeypatch.setattr(baneo_aviso, "get_email_service", _roto)
+    res = cliente_api().get("/api/infra/notify/email/config")
+    assert res.status_code == 200
+    assert_forma(res.json(), {"configured": bool, "error": str})
+    assert res.json()["configured"] is False and "secreto" not in res.text

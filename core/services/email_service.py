@@ -9,7 +9,9 @@ import logging
 import secrets
 import smtplib
 from dataclasses import dataclass
+from email import encoders
 from email.mime.application import MIMEApplication
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
@@ -38,6 +40,30 @@ class EmailResult:
     success: bool
     message: str
     error: Optional[str] = None
+
+
+def parte_mime_adjunto(adjunto: EmailAttachment) -> MIMEBase:
+    """Arma la parte MIME de un adjunto con UN solo `Content-Type` (B6).
+
+    Antes se creaba `MIMEApplication(datos)` y se le agregaba `Content-Type` con `add_header`, lo que
+    dejaba dos cabeceras y los clientes tomaban `application/octet-stream`. Acá el tipo sale del
+    constructor: `MIMEText` para `text/*`, `MIMEApplication` para `application/*` y `MIMEBase` con
+    base64 para el resto.
+    """
+    tipo = adjunto.mime_type.split(";", 1)[0].strip().lower()
+    principal, _, subtipo = tipo.partition("/")
+    if not principal or not subtipo:
+        principal, subtipo = "application", "octet-stream"
+    if principal == "text":
+        parte: MIMEBase = MIMEText(adjunto.content.decode("utf-8", errors="replace"), subtipo, "utf-8")
+    elif principal == "application":
+        parte = MIMEApplication(adjunto.content, _subtype=subtipo)
+    else:
+        parte = MIMEBase(principal, subtipo)
+        parte.set_payload(adjunto.content)
+        encoders.encode_base64(parte)
+    parte.add_header("Content-Disposition", "attachment", filename=adjunto.filename)
+    return parte
 
 
 class EmailService:
@@ -111,14 +137,7 @@ class EmailService:
             # Agregar adjuntos
             if attachments:
                 for attachment in attachments:
-                    part = MIMEApplication(attachment.content)
-                    part.add_header(
-                        "Content-Disposition",
-                        "attachment",
-                        filename=attachment.filename,
-                    )
-                    part.add_header("Content-Type", attachment.mime_type)
-                    msg.attach(part)
+                    msg.attach(parte_mime_adjunto(attachment))
 
             # Enviar
             all_recipients = to + (cc or [])

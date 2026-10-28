@@ -154,13 +154,13 @@ def test_create_ban_500_conserva_success_false(con_sesion, monkeypatch):
 
 
 def test_send_email_500_conserva_success_y_message(con_sesion, monkeypatch):
-    from core.services import email_service
+    from core.services import baneo_aviso
 
     def _roto():
         raise RuntimeError(SECRETO)
 
     con_sesion("user")
-    monkeypatch.setattr(email_service, "get_email_service", _roto)
+    monkeypatch.setattr(baneo_aviso, "get_email_service", _roto)
 
     res = _cliente().post("/api/infra/notify/email", json={"to": ["a@b.c"], "subject": "s", "body": "b"})
 
@@ -174,13 +174,13 @@ def test_send_email_500_conserva_success_y_message(con_sesion, monkeypatch):
 
 
 def test_config_email_sigue_en_200_pero_sin_texto_interno(con_sesion, monkeypatch, caplog):
-    from core.services import email_service
+    from core.services import baneo_aviso
 
     def _roto():
         raise RuntimeError(SECRETO)
 
     con_sesion("user")
-    monkeypatch.setattr(email_service, "get_email_service", _roto)
+    monkeypatch.setattr(baneo_aviso, "get_email_service", _roto)
     caplog.set_level(logging.INFO, logger="web")
 
     res = _cliente().get("/api/infra/notify/email/config")
