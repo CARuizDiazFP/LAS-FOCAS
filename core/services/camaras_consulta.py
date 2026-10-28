@@ -52,6 +52,10 @@ _CARGA_POR_LOTE = (
     selectinload(Camara.botellas).selectinload(Camara.empalmes).selectinload(Empalme.rutas),
 )
 
+# Sólo el listado simple (que devuelve Botellas) la necesita: el panel serializa `camara_padre_nombre`.
+# No va en `_CARGA_POR_LOTE`: la smart search sólo trae cámaras raíz.
+_CARGA_CAMARA_PADRE = (selectinload(Camara.camara_padre),)
+
 
 @dataclass(frozen=True)
 class CamaraEncontrada:
@@ -273,7 +277,7 @@ def _camaras_de_servicio(session: Session, texto: str) -> list[Camara]:
                 ids.append(empalme.camara_id)
     if not ids:
         return []
-    por_id = {c.id: c for c in session.query(Camara).filter(Camara.id.in_(ids)).options(*_CARGA_POR_LOTE).all()}
+    por_id = {c.id: c for c in session.query(Camara).filter(Camara.id.in_(ids)).options(*_CARGA_POR_LOTE, *_CARGA_CAMARA_PADRE).all()}
     return [por_id[i] for i in ids if i in por_id]
 
 
@@ -285,7 +289,7 @@ def listar_camaras(session: Session, *, q: str | None, estado: str | None, limit
     `estado` se ignora si no es un valor del enum."""
 
     limit = min(limit, LIMITE_MAXIMO)
-    query = session.query(Camara).options(*_CARGA_POR_LOTE)
+    query = session.query(Camara).options(*_CARGA_POR_LOTE, *_CARGA_CAMARA_PADRE)
     if estado and estado.upper() in [e.value for e in _CamaraEstado]:
         query = query.filter(Camara.estado == _CamaraEstado(estado.upper()))
     texto = q.strip() if q else ""
@@ -347,10 +351,9 @@ def serializar_camara_panel(
         incidentes_activos = [incidente.to_dict() for incidente in contexto.incidentes_activos]
 
     # Navegación cruzada Botella→Cámara padre (2026-08-13): sólo tiene datos si `camara_padre_id`
-    # está seteado (es una Botella legado) — el acceso a `.camara_padre` es lazy-load, pero acá
-    # nunca dispara N+1 real: los listados batch (smart-search/search) sólo traen cámaras raíz
-    # (`camara_padre_id IS NULL`), así que este branch sólo se ejecuta en fetches de una Botella
-    # puntual (GET /api/infra/camaras/{id} con un id de Botella).
+    # está seteado (es una Botella legado). `listar_camaras` (que sí devuelve Botellas) precarga
+    # `camara_padre` por lote (`_CARGA_CAMARA_PADRE`); el resto de los llamadores serializa una
+    # Botella puntual (GET /api/infra/camaras/{id}), donde el lazy-load es una sola query.
     camara_padre_id = getattr(camara, "camara_padre_id", None)
     camara_padre_nombre = None
     if camara_padre_id:

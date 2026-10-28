@@ -333,3 +333,21 @@ def test_serializar_camara_basica_claves():
         "id", "nombre", "fontine_id", "direccion", "estado", "origen_datos", "latitud", "longitud", "servicios",
     ]
     assert d["servicios"] == ["S1"] and d["estado"] == "LIBRE" and d["origen_datos"] == "TRACKING"
+
+
+def test_listar_camaras_precarga_camara_padre(monkeypatch):
+    """Las Botellas que devuelve el listado serializan `camara_padre_nombre`: sin precarga, N+1."""
+    sesion = _SesionListado([])
+    opciones = []
+    consulta = sesion.query
+
+    def _query(*a, **k):
+        q = consulta(*a, **k)
+        original = q.options
+        q.options = lambda *o: (opciones.extend(o), original(*o))[1]
+        return q
+
+    sesion.query = _query
+    cc.listar_camaras(sesion, q=None, estado=None, limit=5)
+    assert any("Camara.camara_padre" in str(o.path) for o in opciones)
+    assert not any("Camara.camara_padre" in str(o.path) for o in cc._CARGA_POR_LOTE)
