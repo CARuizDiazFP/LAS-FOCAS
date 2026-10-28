@@ -78,11 +78,10 @@
 
 <script setup lang="ts">
 import { ref, nextTick } from 'vue';
-import { enviarMensajeChat, subirAdjuntoChat } from '../../api/chat';
+import { enviarMensajeChat, subirAdjuntoChat, type AdjuntoChat } from '../../api/chat';
 import { useSession } from '../../composables/useSession';
 
 interface ChatMessage { role: string; text: string }
-interface Attachment { name: string; path: string; size: number }
 
 const { state } = useSession();
 const username = ref('');
@@ -94,7 +93,7 @@ const statusText = ref('');
 const statusMode = ref('');
 const sending = ref(false);
 const isDragging = ref(false);
-const attachments = ref<Attachment[]>([]);
+const attachments = ref<AdjuntoChat[]>([]);
 const logEl = ref<HTMLDivElement | null>(null);
 const fileInputEl = ref<HTMLInputElement | null>(null);
 

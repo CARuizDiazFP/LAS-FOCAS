@@ -153,7 +153,6 @@ export const CROMO_MODOS_INGESTA_INFO: readonly CromoModoInfo[] = [
   },
 ];
 
-export const CROMO_MODOS_INGESTA = CROMO_MODOS_INGESTA_INFO.map((m) => m.valor);
 export type CromoModoIngesta = (typeof CROMO_MODOS_INGESTA_INFO)[number]['valor'];
 
 export async function iniciarIngestaCromo(opciones: {

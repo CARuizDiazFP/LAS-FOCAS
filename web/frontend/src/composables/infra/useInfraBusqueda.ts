@@ -192,7 +192,6 @@ export function useInfraBusqueda(notificar: Notificar) {
     estadoDotClass,
     camaraMeta,
     camaraIdLabel,
-    searchCamaras,
     runSearch,
     nextPage,
     prevPage,

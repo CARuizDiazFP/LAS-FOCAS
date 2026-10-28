@@ -22,7 +22,7 @@ interface BanFormData {
 
 /**
  * @param notificar toast de InfraTab.
- * @param alCrear se invoca (y se espera) tras crear el baneo con éxito.
+ * @param alCrear se invoca tras crear el baneo con éxito; `await` sólo cubre callbacks que devuelvan promesa: `emit` no devuelve la del listener del padre.
  */
 export function useBaneoWizard(notificar: Notificar, alCrear: () => void | Promise<void>) {
   const banModalEl = ref<HTMLDialogElement | null>(null);

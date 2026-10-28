@@ -20,7 +20,7 @@ function formatFecha(iso: string | null): string {
 
 /**
  * @param notificar toast de InfraTab.
- * @param alLevantar se invoca (y se espera) tras levantar un baneo y recargar la lista.
+ * @param alLevantar se invoca tras levantar un baneo y recargar la lista; `await` sólo cubre callbacks que devuelvan promesa: `emit` no devuelve la del listener del padre.
  */
 export function useBaneosActivos(notificar: Notificar, alLevantar: () => void | Promise<void>) {
   const activeBansModalEl = ref<HTMLDialogElement | null>(null);

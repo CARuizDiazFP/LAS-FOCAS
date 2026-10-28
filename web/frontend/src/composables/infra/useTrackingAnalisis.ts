@@ -85,7 +85,7 @@ export function useTrackingAnalisis(notificar: Notificar, alLeer: (contenido: st
 
 /**
  * Análisis y resolución del tracking leído (modal de resolución).
- * @param alResolver se invoca (y se espera) tras resolver el tracking con éxito.
+ * @param alResolver se invoca tras resolver el tracking con éxito; `await` sólo cubre callbacks que devuelvan promesa: `emit` no devuelve la del listener del padre.
  */
 export function useResolucionTracking(notificar: Notificar, alResolver: () => void | Promise<void>) {
   const trackingResolveModalEl = ref<HTMLDialogElement | null>(null);
