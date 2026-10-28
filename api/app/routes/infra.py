@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional
 
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Response
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,7 +27,14 @@ from core.services.baneo_operaciones import (
     levantar_baneo_y_notificar,
     listar_incidentes_activos,
 )
-from core.services.baneo_aviso import EmailNotifyResultado, enviar_aviso_baneo, estado_config_email
+from core.services.baneo_aviso import (
+    EmailNotifyResultado,
+    armar_eml_baneo,
+    enviar_aviso_baneo,
+    estado_config_email,
+    guardar_plantilla_aviso,
+    parsear_destinatarios,
+)
 from core.services.camaras_busqueda_avanzada import SearchRequest, buscar_camaras_avanzada
 from core.services.camaras_exportacion import (
     AVISO_SIN_XLSX,
@@ -52,7 +58,6 @@ from core.services.infra_service import (
     analyze_tracking_file,
     resolve_tracking_file,
 )
-from core.services.email_service import EmailService
 from db.models.infra import (
     Camara,
     Empalme,
@@ -1453,95 +1458,33 @@ async def download_ban_eml(
     html_body: Optional[str] = Form(None),
 ):
     """Genera y descarga un archivo .eml con el aviso de baneo y adjuntos."""
-    from core.services.protection_service import ProtectionService
-    from db.models.infra import Servicio, RutaServicio
 
-    _incident_id = incident_id
-    _recipients = recipients
-    _subject = subject
-    _html_body = html_body
-
-    def _prepare():
+    def _armar():
         with SessionLocal() as session:
-            protection_svc = ProtectionService(session)
-            incidente = protection_svc.get_incidente_by_id(_incident_id)
-
-            if not incidente:
-                return None, None, None, None, None
-
-            # 1.b Guardar ediciones de asunto/cuerpo si llegan en el formulario
-            datos_actualizados = False
-            if _subject is not None:
-                incidente.email_subject = _subject
-                datos_actualizados = True
-            if _html_body is not None:
-                incidente.email_body = _html_body
-                datos_actualizados = True
-
-            if datos_actualizados:
-                session.commit()
-                session.refresh(incidente)
-
-            # 2. Recuperar las cámaras afectadas
-            camaras = protection_svc.get_camaras_for_servicio(
-                servicio_id=incidente.servicio_protegido_id,
-                ruta_id=incidente.ruta_protegida_id,
+            eml = armar_eml_baneo(
+                session,
+                incident_id,
+                destinatarios=parsear_destinatarios(recipients),
+                subject=subject,
+                html_body=html_body,
             )
-
-            # 2.b Buscar tracking original
-            tracking_content = None
-            tracking_filename = None
-            servicio = (
-                session.query(Servicio)
-                .filter(Servicio.servicio_id == incidente.servicio_protegido_id)
-                .first()
-            )
-            if servicio and servicio.rutas:
-                ruta_candidates = []
-                if incidente.ruta_protegida_id:
-                    ruta_sel = session.query(RutaServicio).filter(
-                        RutaServicio.id == incidente.ruta_protegida_id
-                    ).first()
-                    if ruta_sel:
-                        ruta_candidates.append(ruta_sel)
-                ruta_candidates.extend([r for r in servicio.rutas if r not in ruta_candidates])
-
-                for ruta in ruta_candidates:
-                    if ruta.raw_file_content:
-                        tracking_content = ruta.raw_file_content.encode("utf-8", errors="ignore")
-                        tracking_filename = ruta.nombre_archivo_origen or f"tracking_{ruta.id}.txt"
-                        break
-
-            return incidente, camaras, tracking_content, tracking_filename, None
+            # Guarda las ediciones de asunto/cuerpo que llegan en el formulario
+            if eml is not None and (subject is not None or html_body is not None):
+                guardar_plantilla_aviso(session, incident_id, subject, html_body)
+            return eml
 
     try:
-        incidente, camaras, tracking_content, tracking_filename, _ = await asyncio.to_thread(_prepare)
-    except Exception as exc:
-        return error_interno("download_eml_datos", exc)
-
-    if incidente is None:
-        raise HTTPException(status_code=404, detail="Incidente no encontrado")
-
-    # 3. Generar el EML (CPU-bound but short, OK in thread)
-    email_svc = EmailService()
-    try:
-        eml_stream = email_svc.generate_ban_eml(
-            incidente=incidente,
-            camaras_afectadas=camaras,
-            html_body=_html_body,
-            subject=_subject,
-            recipients=_recipients,
-            tracking_content=tracking_content,
-            tracking_filename=tracking_filename,
-        )
+        eml = await asyncio.to_thread(_armar)
     except Exception as exc:
         return error_interno("download_eml_generar", exc)
 
-    filename = f"Aviso_Baneo_{incidente.ticket_asociado}.eml"
-    return StreamingResponse(
-        eml_stream,
+    if eml is None:
+        raise HTTPException(status_code=404, detail="Incidente no encontrado")
+
+    return Response(
+        content=eml.contenido,
         media_type="message/rfc822",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{eml.nombre_archivo}"'},
     )
 
 

@@ -15,7 +15,11 @@ import pytest
 from core.services import baneo_aviso
 from core.services.baneo_aviso import (
     COLUMNAS_XLS_BANEO,
+    PLANTILLA_AVISO_BANEO,
     adjuntos_aviso_baneo,
+    armar_eml_baneo,
+    guardar_plantilla_aviso,
+    parsear_destinatarios,
     enviar_aviso_baneo,
 )
 from core.services.email_service import EmailAttachment, EmailResult, EmailService
@@ -247,3 +251,109 @@ async def test_api_notify_email_no_bloquea_el_loop(monkeypatch):
     assert hilos and hilos[0] != threading.get_ident()
     assert len(latidos) >= 8
     assert max(b - a for a, b in zip(latidos, latidos[1:])) < 0.15
+
+
+# --- .eml del aviso (Task 9: D7, D8, D9, B6, B7) ---
+
+
+def _camara_con_servicios():
+    return SimpleNamespace(
+        id=7, nombre="C7", fontine_id="F7", direccion="Calle 1", estado=SimpleNamespace(value="BANEADA"),
+        latitud=-34.5, longitud=-58.4,
+        empalmes=[SimpleNamespace(servicios=[SimpleNamespace(servicio_id="S1")])],
+    )
+
+
+def _con_camaras(monkeypatch, camaras):
+    class _Proteccion:
+        def __init__(self, _sesion) -> None: ...
+
+        def get_camaras_for_servicio(self, *_a):
+            return camaras
+
+    monkeypatch.setattr(baneo_aviso, "ProtectionService", _Proteccion)
+
+
+def _incidente_aviso(ticket, id_=5, **extra):
+    datos = dict(
+        id=id_, servicio_protegido_id="S1", ruta_protegida_id=None, ticket_asociado=ticket,
+        servicio_afectado_id="SA", motivo="Obra", fecha_inicio=None,
+    )
+    datos.update(extra)
+    return SimpleNamespace(**datos)
+
+
+def test_parsear_destinatarios():
+    assert parsear_destinatarios("a@x.com; b@y.com  c@z.com,sin_arroba") == ["a@x.com", "b@y.com", "c@z.com"]
+    assert parsear_destinatarios(None) == [] and parsear_destinatarios("  ") == []
+
+
+def test_eml_incidente_inexistente_devuelve_none():
+    assert armar_eml_baneo(_Sesion([], []), 1, destinatarios=[], subject=None, html_body=None) is None
+
+
+def test_eml_ticket_none_usa_el_id_en_nombre_y_asunto(monkeypatch):
+    _con_camaras(monkeypatch, [])
+    eml = armar_eml_baneo(_Sesion([_incidente_aviso(None, 42)], []), 42, destinatarios=["a@b.c"], subject=None, html_body=None)
+    assert eml.nombre_archivo.startswith("notificacion_INC_42_") and eml.nombre_archivo.endswith(".eml")
+    assert eml.subject == "AVISO DE BANEO - Ticket 42"
+
+
+def test_eml_nombre_sanea_ticket(monkeypatch):
+    _con_camaras(monkeypatch, [])
+    eml = armar_eml_baneo(_Sesion([_incidente_aviso('A"B/C')], []), 5, destinatarios=[], subject="x", html_body="x")
+    assert eml.nombre_archivo.startswith("notificacion_A_B_C_")
+    assert '"' not in eml.nombre_archivo and "/" not in eml.nombre_archivo
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning:openpyxl")
+def test_eml_headers_un_content_type_y_xls_con_servicios(monkeypatch):
+    import io
+
+    import pandas as pd
+
+    _con_camaras(monkeypatch, [_camara_con_servicios()])
+    sesion = _Sesion([_incidente_aviso("T-1")], [_servicio("S1", [_ruta(1, "a b c", "t.txt")])])
+    eml = armar_eml_baneo(sesion, 5, destinatarios=["a@b.c", "d@e.f"], subject="Asunto", html_body=None)
+    msg = email.message_from_bytes(eml.contenido)
+    assert msg["X-Unsent"] == "1" and msg["X-Mailer"] and msg["Date"]
+    assert msg["To"] == "a@b.c, d@e.f" and msg["Subject"] == "Asunto"
+    partes = [p for p in msg.walk() if not p.is_multipart()]
+    assert len(partes) == 3  # cuerpo + XLS + TXT
+    for parte in partes:
+        assert len(parte.get_all("Content-Type")) == 1
+    xls = next(p for p in partes if p.get_filename() == "baneos_activos.xlsx")
+    hoja = pd.read_excel(io.BytesIO(xls.get_payload(decode=True)), sheet_name="Baneos_Activos")
+    assert hoja.iloc[0]["Servicios"] == "S1"
+
+
+def test_eml_sin_adjuntos_si_se_desactivan(monkeypatch):
+    _con_camaras(monkeypatch, [_camara_con_servicios()])
+    sesion = _Sesion([_incidente_aviso("T")], [_servicio("S1", [_ruta(1, "x")])])
+    eml = armar_eml_baneo(sesion, 5, destinatarios=[], subject=None, html_body="hola", include_xls=False, include_txt=False)
+    msg = email.message_from_bytes(eml.contenido)
+    assert len([p for p in msg.walk() if not p.is_multipart()]) == 1 and msg["To"] is None
+
+
+def test_eml_escapa_variables_html(monkeypatch):
+    _con_camaras(monkeypatch, [])
+    sesion = _Sesion([_incidente_aviso("<script>alert(1)</script>", motivo="a<b>")], [])
+    eml = armar_eml_baneo(sesion, 5, destinatarios=[], subject="s", html_body=None)
+    assert "<script>alert(1)" not in eml.html_body
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in eml.html_body and "a&lt;b&gt;" in eml.html_body
+    assert "{{" not in eml.html_body
+    custom = armar_eml_baneo(sesion, 5, destinatarios=[], subject="s", html_body="<p>{{ticket}}</p>")
+    assert custom.html_body == "<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>"
+
+
+def test_plantilla_por_defecto_es_la_del_panel():
+    assert "{{ticket}}" in PLANTILLA_AVISO_BANEO and "Notificación de Protocolo de Protección" in PLANTILLA_AVISO_BANEO
+
+
+def test_guardar_plantilla_aviso_persiste_y_commitea():
+    incidente = SimpleNamespace(id=5, email_subject=None, email_body=None)
+    confirmaciones = []
+    sesion = _Sesion([incidente], [])
+    sesion.commit = lambda: confirmaciones.append(1)
+    guardar_plantilla_aviso(sesion, 5, "Asu", None)
+    assert incidente.email_subject == "Asu" and incidente.email_body is None and confirmaciones == [1]

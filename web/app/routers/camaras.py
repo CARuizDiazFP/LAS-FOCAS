@@ -12,7 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from core.services.baneo_aviso import enviar_aviso_baneo, estado_config_email
+from core.services.baneo_aviso import (
+    armar_eml_baneo,
+    enviar_aviso_baneo,
+    estado_config_email,
+    parsear_destinatarios,
+)
 from core.services.baneo_operaciones import (
     LARGO_MOTIVO,
     LARGO_SERVICIO,
@@ -37,7 +42,6 @@ from core.services.camaras_consulta import (
     serializar_camara_basica,
 )
 from core.services.camaras_consulta import serializar_camara_panel as _serialize_camara_response
-from core.utils.tz import TZ_ARG
 
 from ..comun import (
     _incluye_anulados,
@@ -736,233 +740,51 @@ class EmlDownloadRequestModel(BaseModel):
     include_txt: bool = True
 
 
-DEFAULT_EMAIL_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <style>
-        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-        .header { background: #2563eb; color: white; padding: 20px; border-radius: 8px 8px 0 0; }
-        .content { padding: 20px; background: #f8fafc; border: 1px solid #e2e8f0; }
-        .footer { padding: 15px; background: #f1f5f9; border-radius: 0 0 8px 8px; font-size: 12px; color: #64748b; }
-        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
-        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #e2e8f0; }
-        th { background: #f1f5f9; font-weight: 600; }
-        .badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; }
-        .badge-warning { background: #fef3c7; color: #92400e; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h2>🔒 Notificación de Protocolo de Protección</h2>
-    </div>
-    <div class="content">
-        <p>Se ha activado el Protocolo de Protección en la red de fibra óptica.</p>
-        <table>
-            <tr><th>Ticket</th><td>{{ticket}}</td></tr>
-            <tr><th>Servicio Afectado</th><td>{{servicio_afectado}}</td></tr>
-            <tr><th>Servicio Protegido</th><td>{{servicio_protegido}}</td></tr>
-            <tr><th>Cámaras Baneadas</th><td>{{total_camaras}}</td></tr>
-            <tr><th>Fecha</th><td>{{fecha}}</td></tr>
-            <tr><th>Motivo</th><td>{{motivo}}</td></tr>
-        </table>
-        <p>Se adjunta el detalle de las cámaras afectadas.</p>
-    </div>
-    <div class="footer">
-        <p>Este mensaje fue generado automáticamente por LAS-FOCAS - Metrotel</p>
-    </div>
-</body>
-</html>
-"""
-
-
 @router.post("/api/infra/notify/download-eml")
 def generate_eml_file(
     eml_request: EmlDownloadRequestModel,
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> Response:
     """Genera un archivo .eml descargable con el correo de notificación.
-    
-    Este endpoint es una alternativa cuando no se puede usar SMTP directamente
-    (ej: Office 365 sin App Password). El usuario puede abrir el .eml con su
-    cliente de correo y enviarlo manualmente.
-    
-    Args:
-        eml_request: Datos del correo a generar
-        
-    Returns:
-        Archivo .eml para descarga
+
+    Alternativa cuando no se puede usar SMTP directamente (ej: Office 365 sin App Password):
+    el usuario abre el .eml con su cliente de correo y lo envía a mano. El armado vive en
+    `core.services.baneo_aviso.armar_eml_baneo`, compartido con la API.
     """
-    from email.mime.application import MIMEApplication
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    from email.utils import formataddr, formatdate
-    from datetime import datetime, timezone  # noqa: F811
-    import io  # noqa: F811
-    import re  # noqa: F811
-    
     username, _ = usuario
-    
+
     try:
-        from db.models.infra import Servicio
+        destinatarios = parsear_destinatarios(eml_request.recipients)
+        if not destinatarios:
+            return JSONResponse({"error": "No se especificaron destinatarios válidos"}, status_code=400)
+
         from db.session import SessionLocal
-        from core.config import get_settings
-        from core.services.protection_service import ProtectionService
-        
-        settings = get_settings()
-        
-        # Parsear destinatarios (soporta coma, punto y coma, espacios)
-        recipients_raw = re.split(r'[,;\s]+', eml_request.recipients.strip())
-        recipients = [r.strip() for r in recipients_raw if r.strip() and '@' in r]
-        
-        if not recipients:
-            return JSONResponse(
-                {"error": "No se especificaron destinatarios válidos"},
-                status_code=400
-            )
-        
+
         with SessionLocal() as session:
-            # Obtener datos del incidente
-            protection_svc = ProtectionService(session)
-            incidente = protection_svc.get_incidente_by_id(eml_request.incident_id)
-            
-            if not incidente:
-                return JSONResponse(
-                    {"error": f"Incidente {eml_request.incident_id} no encontrado"},
-                    status_code=404
-                )
-            
-            # Obtener cámaras afectadas
-            camaras_afectadas = protection_svc.get_camaras_for_servicio(
-                incidente.servicio_protegido_id,
-                incidente.ruta_protegida_id
-            )
-            
-            # Preparar variables para el template
-            template_vars = {
-                "ticket": incidente.ticket_asociado or f"INC-{incidente.id}",
-                "servicio_afectado": incidente.servicio_afectado_id or "-",
-                "servicio_protegido": incidente.servicio_protegido_id or "-",
-                "total_camaras": len(camaras_afectadas),
-                "fecha": incidente.fecha_inicio.astimezone(TZ_ARG).strftime("%d/%m/%Y %H:%M") if incidente.fecha_inicio else "-",
-                "motivo": incidente.motivo or "Sin especificar",
-            }
-            
-            # Determinar el cuerpo HTML
-            html_body = eml_request.html_body.strip()
-            
-            if not html_body:
-                # Usar template por defecto
-                html_body = DEFAULT_EMAIL_TEMPLATE
-            
-            # Reemplazar variables residuales {{variable}}
-            for key, value in template_vars.items():
-                html_body = html_body.replace(f"{{{{{key}}}}}", str(value))
-            
-            # Crear mensaje MIME
-            msg = MIMEMultipart("mixed")
-            msg["From"] = formataddr((
-                settings.smtp.from_name or "LAS-FOCAS",
-                settings.smtp.from_email or "notificaciones@lasfocas.local"
-            ))
-            msg["To"] = ", ".join(recipients)
-            msg["Subject"] = eml_request.subject
-            msg["Date"] = formatdate(localtime=True)
-            msg["X-Mailer"] = "LAS-FOCAS Notification System"
-            
-            # Cuerpo HTML
-            html_part = MIMEText(html_body, "html", "utf-8")
-            msg.attach(html_part)
-            
-            attachments_info = []
-            
-            # Adjuntar Excel con cámaras baneadas
-            if eml_request.include_xls:
-                try:
-                    import pandas as pd
-                    
-                    rows = []
-                    for camara in camaras_afectadas:
-                        rows.append({
-                            "ID": camara.id,
-                            "Nombre": camara.nombre or "",
-                            "Fontine_ID": camara.fontine_id or "",
-                            "Dirección": camara.direccion or "",
-                            "Estado": camara.estado.value if camara.estado else "-",
-                            "Ticket": incidente.ticket_asociado or f"INC-{incidente.id}",
-                        })
-                    
-                    if rows:
-                        df = pd.DataFrame(rows)
-                        xls_buffer = io.BytesIO()
-                        with pd.ExcelWriter(xls_buffer, engine="openpyxl") as writer:
-                            df.to_excel(writer, sheet_name="Camaras_Baneadas", index=False)
-                        xls_buffer.seek(0)
-                        
-                        xls_part = MIMEApplication(xls_buffer.getvalue())
-                        xls_filename = f"camaras_baneadas_{incidente.ticket_asociado or incidente.id}.xlsx"
-                        xls_part.add_header(
-                            "Content-Disposition",
-                            "attachment",
-                            filename=xls_filename
-                        )
-                        msg.attach(xls_part)
-                        attachments_info.append(xls_filename)
-                        
-                except ImportError:
-                    logger.warning("action=generate_eml warning=pandas_not_available skipping_xls=true")
-            
-            # Adjuntar TXT original de tracking
-            if eml_request.include_txt:
-                servicio = session.query(Servicio).filter(
-                    Servicio.servicio_id == incidente.servicio_protegido_id
-                ).first()
-                
-                if servicio and servicio.rutas:
-                    for ruta in servicio.rutas:
-                        if ruta.raw_file_content:
-                            txt_filename = (
-                                ruta.nombre_archivo_origen
-                                or f"tracking_{servicio.servicio_id}.txt"
-                            )
-                            txt_part = MIMEApplication(
-                                ruta.raw_file_content.encode("utf-8"),
-                                Name=txt_filename
-                            )
-                            txt_part.add_header(
-                                "Content-Disposition",
-                                "attachment",
-                                filename=txt_filename
-                            )
-                            msg.attach(txt_part)
-                            attachments_info.append(txt_filename)
-                            break  # Solo un TXT
-            
-            # Generar contenido del .eml
-            eml_content = msg.as_bytes()
-            
-            # Nombre del archivo .eml
-            ticket_safe = re.sub(r'[^\w\-]', '_', incidente.ticket_asociado or f"INC_{incidente.id}")
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            eml_filename = f"notificacion_{ticket_safe}_{timestamp}.eml"
-            
-            logger.info(
-                "action=generate_eml user=%s incident_id=%d recipients=%d attachments=%s",
-                username,
+            eml = armar_eml_baneo(
+                session,
                 eml_request.incident_id,
-                len(recipients),
-                attachments_info,
+                destinatarios=destinatarios,
+                subject=eml_request.subject,
+                html_body=eml_request.html_body,
+                include_xls=eml_request.include_xls,
+                include_txt=eml_request.include_txt,
             )
-            
-            return Response(
-                content=eml_content,
-                media_type="message/rfc822",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{eml_filename}"',
-                }
+        if eml is None:
+            return JSONResponse(
+                {"error": f"Incidente {eml_request.incident_id} no encontrado"}, status_code=404
             )
-            
+
+        logger.info(
+            "action=generate_eml user=%s incident_id=%d recipients=%d",
+            username, eml_request.incident_id, len(destinatarios),
+        )
+        return Response(
+            content=eml.contenido,
+            media_type="message/rfc822",
+            headers={"Content-Disposition": f'attachment; filename="{eml.nombre_archivo}"'},
+        )
+
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
