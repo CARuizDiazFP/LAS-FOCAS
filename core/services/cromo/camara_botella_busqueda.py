@@ -10,7 +10,7 @@ búsqueda las ignora por completo.
 
 Pensado para ser consumido por dos flujos que hoy NO se tocan en esta tarea (quedan para tareas
 futuras del mismo plan): el listener de Slack de ingreso de técnicos
-(`modules/slack_baneo_notifier/listener.py`) y el flujo "adjuntar tracking" del portal Infra
+(`slack_baneo_notifier/listener.py`) y el flujo "adjuntar tracking" del portal Infra
 (`core/services/infra_service.py`).
 
 Riesgo conocido, sin acción en esta tarea: la cascada ILIKE/tokens de este módulo hace table scan
@@ -526,7 +526,7 @@ def _buscar_extendida(
         # real de ambigüedad de Camara. exc.cantidad sí lo es (ver buscar_camara():
         # `raise AmbiguousSearchError(nombre_raw, len(_ambiguos), nombres_candidatos)`, cantidad se
         # pasa sin recortar). cantidad nunca debe reportar menos de lo que Camara sola ya encontró
-        # — ese número llega tal cual a un mensaje de Slack (modules/slack_baneo_notifier/listener.py).
+        # — ese número llega tal cual a un mensaje de Slack (slack_baneo_notifier/listener.py).
         cantidad = max(exc.cantidad, len(fusionados))
         raise AmbiguousSearchError(nombre_raw, cantidad, fusionados) from exc
 

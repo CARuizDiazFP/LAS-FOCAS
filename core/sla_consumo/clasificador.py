@@ -27,6 +27,7 @@ class Cierre:
     cuenta_sla: bool
 
 
+# No usa core.text.normalizacion.normalizar: difiere en 490 de 48515 entradas del corpus (NFD no translitera "º"→"o", "°"→"deg"), medido 2026-10-28 (P11).
 def _normalizar(texto: str) -> str:
     sin_acentos = "".join(
         c for c in unicodedata.normalize("NFD", texto) if unicodedata.category(c) != "Mn"

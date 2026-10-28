@@ -334,7 +334,7 @@ async def ingerir_contexto_prov(session: AsyncSession, servicio: Servicio, conte
     # camino de ÉXITO de `app.servicios_sync_prov` — por acá pasan los tres consumidores de PROV
     # (endpoint on-demand, backfill masivo y, desde la Task 9, el comando de Slack). Ya NO es el
     # único escritor de la tabla (corrección de la revisión de calidad, Important 3): desde la
-    # Task 9, `modules/slack_baneo_notifier/refresco_prov.py::_persistir_intento_fallido` es un
+    # Task 9, `slack_baneo_notifier/refresco_prov.py::_persistir_intento_fallido` es un
     # segundo embudo para el camino de FALLO (Postgres/PROV caído, 4xx, timeout), que actualiza
     # sólo `ultimo_intento`/`ultimo_error` sin pasar por acá. Llegar hasta ACÁ sigue significando
     # que `contexto_raw` ya fue validado como éxito por `ProvClient` (nunca se invoca esta función

@@ -74,6 +74,7 @@ def _texto(valor: object) -> str | None:
     return None if valor is pd.NA else _texto_parser(valor)
 
 
+# No usa core.text.normalizacion.normalizar: con unidecode da 0 diferencias (corpus y casos frontera), pero sin unidecode su rama NFD difiere en 490 de 48515 y normalizar no quita acentos; medido 2026-10-28 (P11).
 def _clean_key(s: str) -> str:
     # Normalizar encabezados: Unidecode si está disponible, si no usar unicodedata
     s = str(s)

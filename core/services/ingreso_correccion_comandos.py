@@ -14,7 +14,7 @@
 Este módulo es deliberadamente puro: parsea texto y arma strings de respuesta, sin tocar DB ni
 Slack. La resolución real (buscar la cámara, resolver el hilo, decidir qué `Ingreso` cerrar) vive en
 `core/services/ingreso_correccion_service.py` (Task 5) y el wiring del listener en
-`modules/slack_baneo_notifier/listener.py` (Task 6) — ambos consumen las funciones de acá.
+`slack_baneo_notifier/listener.py` (Task 6) — ambos consumen las funciones de acá.
 
 Dos casos especiales de la gramática de "Forzar egreso" que NO están en la lista de arriba pero se
 derivan de ella:
@@ -94,7 +94,7 @@ RazonMomentoInvalido = Literal["formato", "futuro", "fuera_de_rango"]
 class MomentoInvalidoError(Exception):
     """Se lanza cuando el sufijo `DD-MM-AAAA HH:MM` matchea la forma sintáctica del regex pero el
     valor no es un momento válido para forzar un movimiento — mismo patrón que
-    `camara_search.AmbiguousSearchError` (una condición esperada del dominio, no un bug).
+    `camara_busqueda_nombre.AmbiguousSearchError` (una condición esperada del dominio, no un bug).
 
     Atributos:
         razon: ``"formato"`` (fecha/hora no calendáricamente válida, ej. día 32 o "25:00"),

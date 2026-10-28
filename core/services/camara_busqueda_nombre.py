@@ -9,7 +9,7 @@ números, etc.  La estrategia en cascada garantiza que se intenten varios
 niveles de coincidencia antes de rendirse.
 
 La capa pura de texto (normalización, abreviaturas, sinónimos) vive en `core/text/normalizacion.py`;
-este módulo sólo contiene la cascada que consulta la DB. `modules/slack_baneo_notifier/camara_search.py`
+este módulo sólo contiene la cascada que consulta la DB. `slack_baneo_notifier/camara_search.py`
 es un shim que re-exporta estos nombres para los callers históricos.
 
 `filtrar_bots_secundarios` sólo toca `.nombre` vía regex — nada específico de `Camara` — así que

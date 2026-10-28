@@ -104,3 +104,28 @@ def test_logger_slack_usuarios_conserva_nombre():
     from core.services import slack_usuarios
 
     assert slack_usuarios.logger.name == "slack_baneo_worker.slack_user_resolver"
+
+
+def test_core_no_importa_el_worker_de_slack():
+    """Invariante de P11: `core/` no depende del worker de Slack.
+
+    Verifica dos cosas sobre `core/**/*.py`: (1) ningún import real (incluidos los perezosos
+    indentados) del paquete `modules.slack_baneo_notifier`; (2) el grep literal del spec
+    (`modules.slack_baneo_notifier`, donde el `.` también matchea `/`) devuelve 0.
+    """
+    import re
+    from pathlib import Path
+
+    raiz = Path(__file__).resolve().parent.parent / "core"
+    re_import = re.compile(
+        r"^\s*(from\s+modules\.slack_baneo_notifier\b|import\s+modules\.slack_baneo_notifier\b)"
+    )
+    re_literal = re.compile(r"modules.slack_baneo_notifier")
+    fallas = []
+    for archivo in sorted(raiz.rglob("*.py")):
+        for nro, linea in enumerate(archivo.read_text(encoding="utf-8").splitlines(), start=1):
+            if re_import.search(linea):
+                fallas.append(f"{archivo}:{nro}: import del worker de Slack: {linea.strip()}")
+            elif re_literal.search(linea):
+                fallas.append(f"{archivo}:{nro}: menciona el worker de Slack: {linea.strip()}")
+    assert not fallas, "core/ no debe depender del worker de Slack:\n" + "\n".join(fallas)

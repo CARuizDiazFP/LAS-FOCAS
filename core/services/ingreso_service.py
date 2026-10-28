@@ -82,7 +82,7 @@ def registrar_movimiento_ingreso(
     `tipo_movimiento="Ingreso"`.
 
     `momento` (opcional): horario a usar en vez de "ahora" — para el mecanismo "Revalidar ingreso"
-    (`modules/slack_baneo_notifier/listener.py`), que reintenta un caso `IngresoSinMatch` pendiente
+    (`slack_baneo_notifier/listener.py`), que reintenta un caso `IngresoSinMatch` pendiente
     mucho después del intento original y necesita preservar el horario REAL en que el técnico entró/
     salió, no el momento en que se corrió la revalidación.
 
