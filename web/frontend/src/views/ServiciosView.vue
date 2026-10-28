@@ -7,7 +7,8 @@
   <ViewerShell
     bloque="servicios-view"
     :loading="loading"
-    error=""
+    :error="error"
+    :error-inline="false"
     :vacio="items.length === 0 && !error"
     :hay-mas="hasMore"
     texto-vacio="Ningún servicio coincide"

@@ -7,7 +7,7 @@
   <section :class="['viewer-shell', bloque]">
     <slot name="toolbar" />
 
-    <div v-if="error" class="viewer-shell__inline-error">{{ error }}</div>
+    <div v-if="error && errorInline" class="viewer-shell__inline-error">{{ error }}</div>
 
     <slot name="avisos" />
 
@@ -64,6 +64,9 @@ const props = withDefaults(
     cargaInicial?: 'nada' | 'caja' | 'fila';
     /** Título de la caja de carga inicial; si falta, la caja muestra sólo el spinner. */
     textoCargaInicial?: string;
+    /** Si es false no se pinta el error inline (el viewer muestra el suyo), pero `error` sigue
+     * siendo el error real: la re-medición del sentinel lo usa para no reintentar en loop. */
+    errorInline?: boolean;
     /** `max-width` de la caja de estado (p. ej. `260px`); si falta, sin tope. */
     anchoEstado?: string;
   }>(),
@@ -73,6 +76,7 @@ const props = withDefaults(
     cargaInicial: 'nada',
     textoCargaInicial: '',
     anchoEstado: undefined,
+    errorInline: true,
   },
 );
 
