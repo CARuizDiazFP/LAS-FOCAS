@@ -134,7 +134,7 @@ responder 403 `{"error": "Solo admin"}`.
 - Se mantiene compatibilidad con `/?tab=infra|rep|repetitividad|vlan|fo|ciena` mediante redirects hacia las rutas nuevas.
 - La administración incorpora `/admin/ingesta` como **hub de navegación** con tres sub-módulos:
   - `/admin/ingesta/servicios` → carga del Excel de Servicios SLA con barra de progreso.
-  - `/admin/ingesta/cromo` → ingesta del inventario de fibra desde Cromo Red, con progreso en vivo por SSE y un selector de alcance de nueve modos (`CROMO_MODOS_INGESTA_INFO` en `web/frontend/src/api/cromo.ts`). El backend valida contra `MODOS_INGESTA` de `core/services/cromo/ingesta.py`, que tiene diez: el décimo, `SOLO_PELOS_INNER`, no está en el selector (ver `docs/modulo_ingesta_cromo.md`).
+  - `/admin/ingesta/cromo` → ingesta del inventario de fibra desde Cromo Red, con progreso en vivo por SSE y un selector de alcance de nueve modos (`CROMO_MODOS_INGESTA_INFO` en `web/frontend/src/api/cromoIngesta.ts`). El backend valida contra `MODOS_INGESTA` de `core/services/cromo/ingesta.py`, que tiene diez: el décimo, `SOLO_PELOS_INNER`, no está en el selector (ver `docs/modulo_ingesta_cromo.md`).
   - `/admin/ingesta/camaras` → ingesta masiva de cámaras críticas desde Excel (col B, sin cabecera) con modal de motivo de baneo y baneo administrativo masivo. Desde el refactor de baneos (2026-08-24) suma un "Revisor Manual": los alias que no matchearon contra el inventario se listan con selección múltiple, para descartarlos (marcar revisado en lote) o asociarlos a mano a una Cámara/Botella existente vía typeahead — la ingesta ya no crea `Camara` nuevas por su cuenta. Detalle completo en `docs/infra.md`, sección "Ingesta Excel de cámaras baneadas".
 
 El SPA tiene un único entry point (`src/main.ts` → monta en `#app`) y un único router,
@@ -218,8 +218,8 @@ sesión) y en las mutaciones de `web/fo_monitor_routes.py`. Los endpoints no rec
 - `tests/test_web_csrf.py` recorre `app.routes` y falla si aparece una ruta mutante sin la dependencia;
   además prueba 403/paso en cada una. Una ruta nueva en un router existente ya queda cubierta; un
   router nuevo tiene que declararla.
-- Front: `api/client.ts` manda `X-CSRF-Token` en todo pedido mutante (aunque no pida `csrf: true`); los
-  `fetch` crudos que quedan (InfraTab, migración en P10) lo mandan a mano.
+- Front: `api/client.ts` manda `X-CSRF-Token` en todo pedido mutante (aunque no pida `csrf: true`); desde
+  P10 no queda `fetch` fuera de `src/api/` ni `src/admin/api/` (lo vigila `tests/test_spa_capa_api.py`).
 
 ### Tope de uploads
 
@@ -233,7 +233,7 @@ Repetitividad (10 MB, a disco) tienen su propio tope.
 - `web/frontend/src/api/client.ts` centraliza `fetch` same-origin con `credentials: 'include'`, serialización JSON/FormData, inyección de CSRF y normalización de errores.
 - `web/frontend/src/composables/useSla.ts` contiene el flujo reactivo del informe SLA y corrige el manejo de archivos seleccionados, que antes no era reactivo en la vista.
 - `web/frontend/src/composables/useCiena.ts` desacopla el procesamiento del CSV de alarmas Ciena y la descarga del XLSX resultante.
-- Esta capa es la base para seguir extrayendo lógica desde `RepetitividadTab`, `VlanTab` e `InfraTab`.
+- Desde P10 toda la capa HTTP del SPA vive en `src/api/` (un módulo por dominio) y `src/admin/api/`; `InfraTab` se partió en composables (`composables/infra/`) y modales (`components/infra/infratab/`).
 
 ### Superficies legacy del frontend
 
