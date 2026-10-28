@@ -640,6 +640,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useSession } from '../../composables/useSession';
+import { descargarEmlBaneo } from '../../api/infra';
 
 const { csrf } = useSession();
 
@@ -1115,10 +1116,9 @@ async function confirmLiftBan(inc: IncidenteActivo) {
   }
 }
 
-async function openAvisoModal(inc: IncidenteActivo) {
+function openAvisoModal(inc: IncidenteActivo) {
   avisoIncidente.value = inc;
   avisoLoadingId.value = inc.id;
-  avisoLoadingTemplate.value = true;
   avisoForm.value.include_xls = true;
   avisoForm.value.include_txt = true;
 
@@ -1138,17 +1138,6 @@ async function openAvisoModal(inc: IncidenteActivo) {
   avisoForm.value.subject = '[AVISO] BANEO de Camaras';
   avisoForm.value.body = buildAvisoBody(inc, ahora);
 
-  // Intentar sobreescribir con plantilla guardada en el backend
-  try {
-    const res = await fetch(`/api/infra/ban/${inc.id}`, { credentials: 'include' });
-    if (res.ok) {
-      const det = await res.json() as { email_subject?: string | null; email_body?: string | null };
-      if (det.email_subject) avisoForm.value.subject = det.email_subject;
-      if (det.email_body) avisoForm.value.body = det.email_body;
-    }
-  } catch { /* usar plantilla local */ }
-
-  avisoLoadingTemplate.value = false;
   avisoLoadingId.value = null;
   avisoModalEl.value?.showModal();
 }
@@ -1204,30 +1193,13 @@ async function downloadEml() {
   if (!avisoIncidente.value) return;
   saveAvisoDestinatarios();
   const toList = avisoForm.value.to.split(',').map(s => s.trim()).filter(Boolean);
-  const fd = new FormData();
-  fd.append('incident_id', String(avisoIncidente.value.id));
-  if (toList.length) fd.append('recipients', toList.join(', '));
-  if (avisoForm.value.subject.trim()) fd.append('subject', avisoForm.value.subject.trim());
-  if (avisoForm.value.body.trim()) fd.append('html_body', avisoForm.value.body.trim());
   try {
-    const res = await fetch('/api/infra/notify/download-eml', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'X-CSRF-Token': csrf() },
-      body: fd,
+    const filename = await descargarEmlBaneo({
+      incident_id: avisoIncidente.value.id,
+      recipients: toList.join(', '),
+      subject: avisoForm.value.subject.trim(),
+      html_body: avisoForm.value.body.trim(),
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error((err as Record<string, string>).detail ?? `Error ${res.status}`);
-    }
-    const blob = await res.blob();
-    const cd = res.headers.get('Content-Disposition') ?? '';
-    const match = cd.match(/filename="(.+?)"/);
-    const filename = match ? match[1] : `aviso_baneo_${avisoIncidente.value.id}.eml`;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
     showToast('success', 'EML descargado', filename);
   } catch (e: unknown) {
     showToast('error', 'Error al generar EML', e instanceof Error ? e.message : String(e));

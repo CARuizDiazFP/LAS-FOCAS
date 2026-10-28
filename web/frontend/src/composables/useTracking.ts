@@ -3,32 +3,9 @@
 // Descripción: Utilidades reutilizables para consultar y descargar tracking de rutas FO en el panel web
 
 import { ApiError, requestDownload } from '../api/client';
-import { obtenerTrackingRuta } from '../api/infra';
+import { obtenerTrackingRuta, type TrackingDetailPayload } from '../api/infra';
 
-export interface TrackingPointInfo {
-  sitio: string;
-  identificador: string;
-  conector: string;
-}
-
-export interface TrackingEntry {
-  tipo: 'camara' | 'cable' | string;
-  descripcion?: string;
-  empalme_id?: number | null;
-  nombre?: string;
-  atenuacion_db?: number | null;
-}
-
-export interface TrackingDetailPayload {
-  status: string;
-  ruta_id: number;
-  servicio_id: string;
-  ruta_nombre: string;
-  ruta_tipo: string;
-  tracking: TrackingEntry[];
-  punta_a: TrackingPointInfo | null;
-  punta_b: TrackingPointInfo | null;
-}
+export type { TrackingEntry, TrackingPointInfo, TrackingDetailPayload } from '../api/infra';
 
 export async function loadTrackingDetail(rutaId: number): Promise<TrackingDetailPayload> {
   return obtenerTrackingRuta(rutaId);
