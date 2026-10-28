@@ -19,8 +19,6 @@ export type CausaHuerfano = (typeof CAUSAS_HUERFANO)[number];
 
 export const ESTADOS_HUERFANO = ['PENDIENTE', 'NORMALIZADO', 'DESCARTADO'] as const;
 
-export type EstadoHuerfano = (typeof ESTADOS_HUERFANO)[number];
-
 const CAUSA_LABELS: Record<CausaHuerfano, string> = {
   CABLE_DESUSO: 'Cable en desuso',
   PELO_DANADO: 'Pelo dañado',
@@ -161,11 +159,4 @@ export async function lanzarAuditoriaGlobal(
     json: maxServicios ? { max_servicios: maxServicios } : {},
     csrf: true,
   });
-}
-
-/** Mismo SSE que las corridas de ingesta: un evento `pagina` por Servicio auditado. `desde` es el
- * último id de evento ya visto: un EventSource nuevo no puede mandar `Last-Event-ID`. */
-export function streamUrlAuditoria(corridaId: number, desde?: number): string {
-  const base = `/api/admin/ingesta/cromo/corridas/${corridaId}/stream`;
-  return desde ? `${base}?desde=${desde}` : base;
 }

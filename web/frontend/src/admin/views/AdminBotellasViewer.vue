@@ -4,162 +4,120 @@
   Descripción: Dashboard /admin/servicios/viewer/Botellas — listado dual grid/lista de Botellas (Cromo + legado) y detección de duplicados dentro de la misma Cámara padre
 -->
 <template>
-  <section class="botellas-viewer">
-    <AdminPageHeader
-      kicker="Panel admin · Viewer"
-      title="Botellas"
-      subtitle="Listado de Botellas (Cromo + legado) y detección de candidatas a duplicado dentro de la misma Cámara padre."
-    />
+  <ViewerShell
+    ref="shell"
+    bloque="botellas-viewer"
+    :loading="!soloDuplicados && loading"
+    :error="error"
+    :vacio="!soloDuplicados && items.length === 0"
+    :hay-mas="hasMore"
+    texto-vacio="Ninguna botella coincide"
+    texto-cargando="Cargando más botellas..."
+    ancho-estado="260px"
+    :scroll-infinito="!soloDuplicados"
+    @cargar-mas="cargarSiguiente"
+  >
+    <template #toolbar>
+      <AdminPageHeader
+        kicker="Panel admin · Viewer"
+        title="Botellas"
+        subtitle="Listado de Botellas (Cromo + legado) y detección de candidatas a duplicado dentro de la misma Cámara padre."
+      />
 
-    <div class="botellas-viewer__toolbar">
-      <div class="botellas-viewer__toolbar-row">
-        <template v-if="!soloDuplicados">
-          <div class="botellas-viewer__search">
-            <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-            <input v-model="query" type="search" placeholder="Buscar por nombre" @input="onSearchInput" />
-          </div>
+      <div class="botellas-viewer__toolbar">
+        <div class="botellas-viewer__toolbar-row">
+          <template v-if="!soloDuplicados">
+            <div class="botellas-viewer__search">
+              <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+              <input v-model="query" type="search" placeholder="Buscar por nombre" @input="onSearchInput" />
+            </div>
 
-          <label class="botellas-viewer__checkbox">
-            <input v-model="incluirNoOperativas" type="checkbox" @change="reloadFromZero" />
-            Mostrar no operativas
-          </label>
+            <label class="botellas-viewer__checkbox">
+              <input v-model="incluirNoOperativas" type="checkbox" @change="recargarDesdeCero" />
+              Mostrar no operativas
+            </label>
 
-          <div class="botellas-viewer__view-toggle" role="radiogroup" aria-label="Tipo de vista">
-            <button
-              type="button"
-              role="radio"
-              :aria-checked="vista === 'grid'"
-              :class="['botellas-viewer__view-option', { 'is-active': vista === 'grid' }]"
-              title="Vista grilla"
-              @click="setVista('grid')"
-            >
-              <i class="ph ph-squares-four" aria-hidden="true"></i>
-            </button>
-            <button
-              type="button"
-              role="radio"
-              :aria-checked="vista === 'list'"
-              :class="['botellas-viewer__view-option', { 'is-active': vista === 'list' }]"
-              title="Vista lista"
-              @click="setVista('list')"
-            >
-              <i class="ph ph-rows" aria-hidden="true"></i>
-            </button>
-          </div>
-        </template>
+            <div class="botellas-viewer__view-toggle" role="radiogroup" aria-label="Tipo de vista">
+              <button
+                type="button"
+                role="radio"
+                :aria-checked="vista === 'grid'"
+                :class="['botellas-viewer__view-option', { 'is-active': vista === 'grid' }]"
+                title="Vista grilla"
+                @click="setVista('grid')"
+              >
+                <i class="ph ph-squares-four" aria-hidden="true"></i>
+              </button>
+              <button
+                type="button"
+                role="radio"
+                :aria-checked="vista === 'list'"
+                :class="['botellas-viewer__view-option', { 'is-active': vista === 'list' }]"
+                title="Vista lista"
+                @click="setVista('list')"
+              >
+                <i class="ph ph-rows" aria-hidden="true"></i>
+              </button>
+            </div>
+          </template>
 
-        <button
-          type="button"
-          :class="['botellas-viewer__chip', 'botellas-viewer__chip--duplicadas', { 'is-active': soloDuplicados }]"
-          @click="toggleSoloDuplicados"
-        >
-          <i class="ph ph-copy" aria-hidden="true"></i>
-          Sólo duplicadas
-        </button>
+          <button
+            type="button"
+            :class="['botellas-viewer__chip', 'botellas-viewer__chip--duplicadas', { 'is-active': soloDuplicados }]"
+            @click="toggleSoloDuplicados"
+          >
+            <i class="ph ph-copy" aria-hidden="true"></i>
+            Sólo duplicadas
+          </button>
 
-        <button class="btn primary" type="button" :disabled="loading || loadingGrupos" @click="refrescar">
-          <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
-          Actualizar
-        </button>
+          <button class="btn primary" type="button" :disabled="loading || loadingGrupos" @click="refrescar">
+            <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
+            Actualizar
+          </button>
 
-        <button
-          v-if="soloDuplicados"
-          class="btn subtle"
-          type="button"
-          :disabled="loadingGrupos || gruposResolubles.length === 0"
-          @click="abrirApropiacionMasiva"
-        >
-          <i class="ph ph-stack" aria-hidden="true"></i>
-          Apropiación masiva
-        </button>
+          <button
+            v-if="soloDuplicados"
+            class="btn subtle"
+            type="button"
+            :disabled="loadingGrupos || gruposResolubles.length === 0"
+            @click="abrirApropiacionMasiva"
+          >
+            <i class="ph ph-stack" aria-hidden="true"></i>
+            Apropiación masiva
+          </button>
 
-        <button
-          v-if="soloDuplicados"
-          class="btn subtle"
-          type="button"
-          @click="abrirConsolidarManual"
-        >
-          <i class="ph ph-git-merge" aria-hidden="true"></i>
-          Consolidar manualmente
-        </button>
+          <button
+            v-if="soloDuplicados"
+            class="btn subtle"
+            type="button"
+            @click="abrirConsolidarManual"
+          >
+            <i class="ph ph-git-merge" aria-hidden="true"></i>
+            Consolidar manualmente
+          </button>
 
-        <a class="btn subtle" :href="exportarBotellasInconsistenciasUrl()" target="_blank" rel="noopener">
-          <i class="ph ph-file-xls" aria-hidden="true"></i>
-          Exportar inconsistencias
-        </a>
-      </div>
-
-      <div v-if="!soloDuplicados" class="botellas-viewer__toolbar-row">
-        <span class="botellas-viewer__count">
-          <strong>{{ total.toLocaleString('es-AR') }}</strong> botellas · mostrando {{ items.length }}
-        </span>
-      </div>
-
-      <div v-else class="botellas-viewer__toolbar-row">
-        <span class="botellas-viewer__count">
-          <strong>{{ grupos.length }}</strong> grupo{{ grupos.length !== 1 ? 's' : '' }} candidato{{ grupos.length !== 1 ? 's' : '' }} a duplicado
-        </span>
-      </div>
-    </div>
-
-    <div v-if="error" class="botellas-viewer__inline-error">{{ error }}</div>
-
-    <!-- Vista dual (listado general): grid/lista con scroll infinito -->
-    <div v-if="!soloDuplicados" ref="scrollEl" class="botellas-viewer__scroll">
-      <template v-if="items.length > 0">
-        <div v-if="vista === 'grid'" class="botellas-viewer__grid">
-          <BotellaViewerCard v-for="item in items" :key="`${item.origen}:${item.id}`" :botella="item" />
+          <a class="btn subtle" :href="exportarBotellasInconsistenciasUrl()" target="_blank" rel="noopener">
+            <i class="ph ph-file-xls" aria-hidden="true"></i>
+            Exportar inconsistencias
+          </a>
         </div>
 
-        <div v-else class="botellas-viewer__list-layout">
-          <div class="botellas-viewer__list">
-            <div
-              v-for="item in items"
-              :key="`${item.origen}:${item.id}`"
-              role="button"
-              tabindex="0"
-              :class="['botellas-viewer__list-row', { 'is-selected': selectedKey === `${item.origen}:${item.id}` }]"
-              @click="selectedKey = `${item.origen}:${item.id}`"
-              @keyup.enter="selectedKey = `${item.origen}:${item.id}`"
-            >
-              <span :class="['botellas-viewer__list-dot', `is-${estadoBotellaToken(item.estado)}`]" aria-hidden="true"></span>
-              <span class="botellas-viewer__list-nombre">{{ item.nombre || `Botella ${item.id}` }}</span>
-              <span :class="['botellas-viewer__origen-badge', `is-${item.origen}`]">{{ item.origen === 'legado' ? 'Legado' : 'Cromo' }}</span>
-              <span class="botellas-viewer__list-estado">{{ item.estado }}</span>
-            </div>
-          </div>
-
-          <aside v-if="selectedItem" class="botellas-viewer__preview">
-            <span class="botellas-viewer__preview-kicker">Vista previa</span>
-            <h2 class="botellas-viewer__preview-title">{{ selectedItem.nombre || `Botella ${selectedItem.id}` }}</h2>
-            <div class="botellas-viewer__preview-tags">
-              <span class="botellas-viewer__preview-tag is-accent">{{ selectedItem.estado }}</span>
-              <span class="botellas-viewer__preview-tag">{{ selectedItem.origen === 'legado' ? 'Legado' : 'Cromo' }}</span>
-            </div>
-            <RouterLink class="btn primary" :to="botellaDetailPath(selectedItem.origen, selectedItem.id)">
-              Abrir detalle completo
-              <i class="ph ph-arrow-right" aria-hidden="true"></i>
-            </RouterLink>
-          </aside>
+        <div v-if="!soloDuplicados" class="botellas-viewer__toolbar-row">
+          <span class="botellas-viewer__count">
+            <strong>{{ total.toLocaleString('es-AR') }}</strong> botellas · mostrando {{ items.length }}
+          </span>
         </div>
-      </template>
 
-      <div v-else-if="!loading" class="botellas-viewer__state-box">
-        <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-        <h3>Ninguna botella coincide</h3>
-        <p>Probá con otro nombre.</p>
+        <div v-else class="botellas-viewer__toolbar-row">
+          <span class="botellas-viewer__count">
+            <strong>{{ grupos.length }}</strong> grupo{{ grupos.length !== 1 ? 's' : '' }} candidato{{ grupos.length !== 1 ? 's' : '' }} a duplicado
+          </span>
+        </div>
       </div>
-
-      <div v-if="loading && items.length > 0" class="botellas-viewer__loading-more">
-        <i class="ph ph-circle-notch botellas-viewer__spin" aria-hidden="true"></i>
-        Cargando más botellas...
-      </div>
-
-      <div ref="sentinel" class="botellas-viewer__sentinel" aria-hidden="true"></div>
-    </div>
+    </template>
 
     <!-- Vista de duplicadas: tarjeta por grupo, agrupada por Cámara padre -->
-    <div v-else class="botellas-viewer__scroll">
+    <template v-if="soloDuplicados">
       <div v-if="loadingGrupos" class="botellas-viewer__state-box">
         <i class="ph ph-circle-notch botellas-viewer__spin" aria-hidden="true"></i>
         <h3>Calculando grupos...</h3>
@@ -245,42 +203,87 @@
           </div>
         </article>
       </div>
-    </div>
+    </template>
 
-    <ModalConsolidarBotellas
-      :open="modalConsolidarOpen"
-      :grupo="grupoParaConsolidar"
-      @close="modalConsolidarOpen = false"
-      @consolidado="handleConsolidado"
-    />
+    <!-- Vista dual (listado general): grid/lista con scroll infinito -->
+    <template v-else>
+      <div v-if="vista === 'grid'" class="botellas-viewer__grid">
+        <BotellaViewerCard v-for="item in items" :key="`${item.origen}:${item.id}`" :botella="item" />
+      </div>
 
-    <ModalApropiarBotella
-      :open="modalOpen"
-      :legado-id="modalLegadoId"
-      :legado-nombre="modalLegadoNombre"
-      :cromo-n-id="modalCromoNId"
-      :cromo-nombre="modalCromoNombre"
-      :camara-padre-nombre="modalCamaraPadreNombre"
-      @close="modalOpen = false"
-      @apropiada="handleApropiada"
-      @error="handleModalError"
-    />
+      <div v-else class="botellas-viewer__list-layout">
+        <div class="botellas-viewer__list">
+          <div
+            v-for="item in items"
+            :key="`${item.origen}:${item.id}`"
+            role="button"
+            tabindex="0"
+            :class="['botellas-viewer__list-row', { 'is-selected': selectedKey === `${item.origen}:${item.id}` }]"
+            @click="selectedKey = `${item.origen}:${item.id}`"
+            @keyup.enter="selectedKey = `${item.origen}:${item.id}`"
+          >
+            <span :class="['botellas-viewer__list-dot', `is-${estadoBotellaToken(item.estado)}`]" aria-hidden="true"></span>
+            <span class="botellas-viewer__list-nombre">{{ item.nombre || `Botella ${item.id}` }}</span>
+            <span :class="['botellas-viewer__origen-badge', `is-${item.origen}`]">{{ item.origen === 'legado' ? 'Legado' : 'Cromo' }}</span>
+            <span class="botellas-viewer__list-estado">{{ item.estado }}</span>
+          </div>
+        </div>
 
-    <ModalConfirmarAccionMasiva
-      :open="modalMasivaOpen"
-      titulo="Apropiación masiva de Botellas duplicadas"
-      :mensaje="mensajeApropiacionMasiva"
-      :confirmando="confirmandoMasiva"
-      :error="errorMasiva"
-      :resultado="resultadoMasiva"
-      @close="modalMasivaOpen = false"
-      @confirm="confirmarApropiacionMasiva"
-    />
-  </section>
+        <aside v-if="selectedItem" class="botellas-viewer__preview">
+          <span class="botellas-viewer__preview-kicker">Vista previa</span>
+          <h2 class="botellas-viewer__preview-title">{{ selectedItem.nombre || `Botella ${selectedItem.id}` }}</h2>
+          <div class="botellas-viewer__preview-tags">
+            <span class="botellas-viewer__preview-tag is-accent">{{ selectedItem.estado }}</span>
+            <span class="botellas-viewer__preview-tag">{{ selectedItem.origen === 'legado' ? 'Legado' : 'Cromo' }}</span>
+          </div>
+          <RouterLink class="btn primary" :to="botellaDetailPath(selectedItem.origen, selectedItem.id)">
+            Abrir detalle completo
+            <i class="ph ph-arrow-right" aria-hidden="true"></i>
+          </RouterLink>
+        </aside>
+      </div>
+    </template>
+
+    <template #vacio>
+      <p>Probá con otro nombre.</p>
+    </template>
+
+    <template #extra>
+      <ModalConsolidarBotellas
+        :open="modalConsolidarOpen"
+        :grupo="grupoParaConsolidar"
+        @close="modalConsolidarOpen = false"
+        @consolidado="handleConsolidado"
+      />
+
+      <ModalApropiarBotella
+        :open="modalOpen"
+        :legado-id="modalLegadoId"
+        :legado-nombre="modalLegadoNombre"
+        :cromo-n-id="modalCromoNId"
+        :cromo-nombre="modalCromoNombre"
+        :camara-padre-nombre="modalCamaraPadreNombre"
+        @close="modalOpen = false"
+        @apropiada="handleApropiada"
+        @error="handleModalError"
+      />
+
+      <ModalConfirmarAccionMasiva
+        :open="modalMasivaOpen"
+        titulo="Apropiación masiva de Botellas duplicadas"
+        :mensaje="mensajeApropiacionMasiva"
+        :confirmando="confirmandoMasiva"
+        :error="errorMasiva"
+        :resultado="resultadoMasiva"
+        @close="modalMasivaOpen = false"
+        @confirm="confirmarApropiacionMasiva"
+      />
+    </template>
+  </ViewerShell>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
 import AdminPageHeader from '../components/AdminPageHeader.vue';
@@ -288,6 +291,8 @@ import BotellaViewerCard from '../../components/infra/BotellaViewerCard.vue';
 import ModalConfirmarAccionMasiva from '../../components/infra/ModalConfirmarAccionMasiva.vue';
 import ModalApropiarBotella from '../../components/infra/ModalApropiarBotella.vue';
 import ModalConsolidarBotellas from '../../components/infra/ModalConsolidarBotellas.vue';
+import ViewerShell from '../../components/viewer/ViewerShell.vue';
+import { usePaginatedSearch } from '../../composables/usePaginatedSearch';
 import {
   apropiarMasivoBotellas,
   eliminarGrupoCromo,
@@ -307,14 +312,7 @@ const VISTA_STORAGE_KEY = 'botellas-admin-viewer.vista';
 
 const query = ref('');
 const incluirNoOperativas = ref(false);
-const items = ref<BotellaUnificadaItem[]>([]);
-const total = ref(0);
-const loading = ref(false);
-const error = ref('');
-const offset = ref(0);
-const hasMore = ref(true);
-const sentinel = ref<HTMLElement | null>(null);
-const scrollEl = ref<HTMLElement | null>(null);
+const shell = ref<InstanceType<typeof ViewerShell> | null>(null);
 const selectedKey = ref<string | null>(null);
 
 const soloDuplicados = ref(false);
@@ -359,53 +357,26 @@ const mensajeApropiacionMasiva = computed(
     'que requieren revisión manual no se tocan. Esta acción no se puede deshacer.',
 );
 
-let observer: IntersectionObserver | null = null;
-let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+const { items, total, loading, error, hasMore, cargarSiguiente, recargarDesdeCero, recargarConDebounce } =
+  usePaginatedSearch({
+    limit: LIMIT,
+    cargarPagina: async (offset, limit) => {
+      const response = await getBotellasViewer({
+        q: query.value.trim(),
+        limit,
+        offset,
+        incluirNoOperativas: incluirNoOperativas.value,
+      });
+      return { items: response.botellas, total: response.total };
+    },
+    claveItem: (item: BotellaUnificadaItem) => `${item.origen}:${item.id}`,
+    mensajeError: 'No se pudo consultar Botellas',
+  });
 
 const { on } = useAdminNotifications();
 on('botellas_duplicados_recalculado', () => {
   void reloadDuplicados();
 });
-
-function mergeItems(next: BotellaUnificadaItem[]): void {
-  const seen = new Set(items.value.map((item) => `${item.origen}:${item.id}`));
-  for (const item of next) {
-    const key = `${item.origen}:${item.id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    items.value.push(item);
-  }
-}
-
-async function loadNextPage(): Promise<void> {
-  if (loading.value || !hasMore.value) return;
-  loading.value = true;
-  error.value = '';
-  try {
-    const response = await getBotellasViewer({
-      q: query.value.trim(),
-      limit: LIMIT,
-      offset: offset.value,
-      incluirNoOperativas: incluirNoOperativas.value,
-    });
-    total.value = response.total;
-    mergeItems(response.botellas);
-    offset.value += response.botellas.length;
-    hasMore.value = response.botellas.length === LIMIT && offset.value < response.total;
-  } catch (err: unknown) {
-    error.value = err instanceof Error ? err.message : 'No se pudo consultar Botellas';
-  } finally {
-    loading.value = false;
-  }
-}
-
-async function reloadFromZero(): Promise<void> {
-  items.value = [];
-  total.value = 0;
-  offset.value = 0;
-  hasMore.value = true;
-  await loadNextPage();
-}
 
 // `forzar` sólo lo usa el botón "Actualizar": saltea la caché Redis del backend y fuerza el
 // recálculo. El refetch automático por WebSocket NO fuerza — el worker ya dejó la caché fresca.
@@ -423,8 +394,7 @@ async function reloadDuplicados(forzar = false): Promise<void> {
 }
 
 function onSearchInput(): void {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => void reloadFromZero(), 320);
+  recargarConDebounce();
 }
 
 function setVista(next: 'grid' | 'list'): void {
@@ -434,6 +404,8 @@ function setVista(next: 'grid' | 'list'): void {
 
 function toggleSoloDuplicados(): void {
   soloDuplicados.value = !soloDuplicados.value;
+  // Cada modo tenía su propio contenedor de scroll: al alternar, la vista vuelve al tope.
+  if (shell.value?.scrollEl) shell.value.scrollEl.scrollTop = 0;
   if (soloDuplicados.value && grupos.value.length === 0) {
     void reloadDuplicados();
   }
@@ -443,7 +415,7 @@ function refrescar(): void {
   if (soloDuplicados.value) {
     void reloadDuplicados(true);
   } else {
-    void reloadFromZero();
+    void recargarDesdeCero();
   }
 }
 
@@ -460,7 +432,7 @@ function abrirApropiacion(grupo: GrupoBotellasDuplicadas, miembro: BotellaDuplic
 
 async function handleApropiada(): Promise<void> {
   modalOpen.value = false;
-  await reloadFromZero();
+  await recargarDesdeCero();
 }
 
 function abrirApropiacionMasiva(): void {
@@ -478,7 +450,7 @@ async function confirmarApropiacionMasiva(): Promise<void> {
     resultadoMasiva.value =
       `${respuesta.grupos_apropiados} de ${respuesta.grupos_resolubles} grupos resolubles apropiados` +
       (respuesta.grupos_con_error > 0 ? ` — ${respuesta.grupos_con_error} con error.` : '.');
-    await reloadFromZero();
+    await recargarDesdeCero();
   } catch (err: unknown) {
     errorMasiva.value = err instanceof Error ? err.message : 'No se pudo ejecutar la apropiación masiva.';
   } finally {
@@ -501,7 +473,7 @@ function abrirConsolidarManual(): void {
 }
 
 async function handleConsolidado(): Promise<void> {
-  await reloadFromZero();
+  await recargarDesdeCero();
 }
 
 function grupoKey(grupo: GrupoBotellasDuplicadas): string {
@@ -539,7 +511,7 @@ async function confirmarEliminarGrupo(grupo: GrupoBotellasDuplicadas): Promise<v
     // Mientras tanto, sacamos el grupo de la vista de forma optimista.
     const key = grupoKey(grupo);
     grupos.value = grupos.value.filter((g) => grupoKey(g) !== key);
-    await reloadFromZero();
+    await recargarDesdeCero();
   } catch (err: unknown) {
     errorEliminarGrupo.value = err instanceof Error ? err.message : 'No se pudo eliminar el grupo.';
   } finally {
@@ -547,34 +519,12 @@ async function confirmarEliminarGrupo(grupo: GrupoBotellasDuplicadas): Promise<v
   }
 }
 
-onMounted(async () => {
-  await reloadFromZero();
-
-  observer = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        if (entry.isIntersecting && !soloDuplicados.value) void loadNextPage();
-      }
-    },
-    { root: scrollEl.value, rootMargin: '300px 0px', threshold: 0.1 },
-  );
-  if (sentinel.value) observer.observe(sentinel.value);
-});
-
-onBeforeUnmount(() => {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  if (observer) observer.disconnect();
+onMounted(() => {
+  void recargarDesdeCero();
 });
 </script>
 
 <style scoped>
-.botellas-viewer {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-}
-
 .botellas-viewer__toolbar {
   padding: 4px 0 14px;
   display: flex;
@@ -688,21 +638,6 @@ onBeforeUnmount(() => {
 }
 
 .botellas-viewer__count strong { color: var(--color-text); font-weight: 500; }
-
-.botellas-viewer__inline-error {
-  margin-bottom: 10px;
-  padding: 10px 14px;
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--color-state-error) 14%, transparent);
-  color: var(--color-state-error);
-  font-size: 12.5px;
-}
-
-.botellas-viewer__scroll {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
 
 .botellas-viewer__grid {
   display: grid;
@@ -853,18 +788,7 @@ onBeforeUnmount(() => {
 .botellas-viewer__state-box.is-error { box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-state-error) 45%, transparent); }
 .botellas-viewer__state-box.is-error i { color: var(--color-state-error); }
 
-.botellas-viewer__loading-more {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 14px 0;
-  font-size: 12px;
-  color: color-mix(in srgb, var(--color-text) 45%, transparent);
-}
-
 .botellas-viewer__spin { font-size: 14px; animation: spin 1s linear infinite; }
-.botellas-viewer__sentinel { height: 2px; }
 
 @keyframes spin {
   from { transform: rotate(0deg); }

@@ -180,94 +180,18 @@ import ModalRegistros from '../components/infra/ModalRegistros.vue';
 import ModalBotellas from '../components/infra/ModalBotellas.vue';
 import ModalUnificarCamara from '../components/infra/ModalUnificarCamara.vue';
 import { ApiError } from '../api/client';
-import { eliminarCamara } from '../api/camaras';
-import { eliminarBotella, type BloqueoEliminacion, type BotellaOrigen } from '../api/botellas';
-
-interface RutaItem {
-  ruta_id: number;
-  servicio_id: string;
-  ruta_nombre: string;
-  ruta_tipo: string;
-  alias_ids: string[];
-  transitos_count: number;
-  punta_a_sitio: string | null;
-  punta_b_sitio: string | null;
-}
-
-interface CamaraDetail {
-  id: number;
-  nombre: string;
-  direccion: string | null;
-  estado: string;
-  editable: boolean;
-  rutas: RutaItem[];
-  es_botella: boolean;
-  camara_padre_id: number | null;
-  camara_padre_nombre: string | null;
-}
-
-interface AliasItem {
-  id: number;
-  nombre: string;
-  created_at: string | null;
-}
-
-interface BotellaItem {
-  id: number;
-  nombre: string | null;
-  estado: string | null;
-  servicios: string[];
-  origen: BotellaOrigen;
-}
-
-interface RegistrosContexto {
-  estado_actual: string;
-  estado_sugerido: string | null;
-  tiene_baneo_activo: boolean;
-  tiene_ingreso_activo: boolean;
-}
-
-interface RegistrosBaneo {
-  id: number;
-  ticket_asociado: string | null;
-  servicio_protegido_id: string;
-  ruta_protegida_id: number | null;
-  fecha_inicio: string | null;
-  fecha_fin: string | null;
-  motivo: string | null;
-  activo: boolean;
-}
-
-interface RegistrosAuditoria {
-  id: number;
-  usuario: string;
-  motivo: string;
-  estado_anterior: string | null;
-  estado_nuevo: string | null;
-  estado_sugerido: string | null;
-  created_at: string | null;
-}
-
-interface RegistrosIngreso {
-  id: number;
-  fecha_inicio: string | null;
-  fecha_fin: string | null;
-  tecnico_id: string | null;
-  cromo_botella_id: number | null;
-  botella_label: string;
-  tipo: string;
-  anulado: boolean;
-  anulado_at: string | null;
-  anulado_por: string | null;
-  anulado_motivo: string | null;
-}
-
-interface RegistrosPayload {
-  contexto: RegistrosContexto | null;
-  baneos: RegistrosBaneo[];
-  auditoria: RegistrosAuditoria[];
-  ingresos: RegistrosIngreso[];
-}
+import {
+  eliminarCamara,
+  obtenerAliasesCamara,
+  obtenerBotellasCamara,
+  obtenerCamara,
+  obtenerRegistrosCamara,
+  type AliasItem,
+  type BotellaItem,
+  type CamaraDetail,
+  type RegistrosPayload,
+} from '../api/camaras';
+import { eliminarBotella, type BloqueoEliminacion } from '../api/botellas';
 
 const route = useRoute();
 const router = useRouter();
@@ -325,31 +249,18 @@ function getCamaraId(): number {
   return value;
 }
 
-async function parseResponse<T>(response: Response): Promise<T> {
-  const data = await response.json() as T & { error?: string };
-  if (!response.ok) {
-    throw new Error(data.error ?? `Error ${response.status}`);
-  }
-  return data;
-}
-
 async function loadCamaraDetail(): Promise<void> {
   loading.value = true;
   errorMessage.value = '';
   try {
     const camaraId = getCamaraId();
     const registrosQs = isAdmin.value && mostrarAnulados.value ? '?incluir_anulados=1' : '';
-    const [camaraResponse, aliasesResponse, registrosResponse, botellasResponse] = await Promise.all([
-      fetch(`/api/infra/camaras/${camaraId}`, { credentials: 'include' }),
-      fetch(`/api/infra/camaras/${camaraId}/aliases`, { credentials: 'include' }),
-      fetch(`/api/infra/camaras/${camaraId}/registros${registrosQs}`, { credentials: 'include' }),
-      fetch(`/api/infra/camaras/${camaraId}/botellas`, { credentials: 'include' }),
+    const [camaraData, aliasesData, registrosData, botellasData] = await Promise.all([
+      obtenerCamara(camaraId),
+      obtenerAliasesCamara(camaraId),
+      obtenerRegistrosCamara(camaraId, registrosQs),
+      obtenerBotellasCamara(camaraId),
     ]);
-
-    const camaraData = await parseResponse<{ camara: CamaraDetail }>(camaraResponse);
-    const aliasesData = await parseResponse<{ aliases: AliasItem[] }>(aliasesResponse);
-    const registrosData = await parseResponse<RegistrosPayload>(registrosResponse);
-    const botellasData = await parseResponse<{ botellas: BotellaItem[] }>(botellasResponse);
 
     camara.value = camaraData.camara;
     aliases.value = aliasesData.aliases ?? [];

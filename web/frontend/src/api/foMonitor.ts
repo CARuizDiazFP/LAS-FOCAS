@@ -259,3 +259,12 @@ export interface FichaCable {
 export function obtenerFichaCable(cableNId: number) {
   return requestJson<FichaCable>(`/api/fo-monitor/cables/${cableNId}/ficha`);
 }
+
+export async function obtenerMapaRed(): Promise<GeoJSON.FeatureCollection> {
+  return requestJson<GeoJSON.FeatureCollection>('/api/fo-monitor/mapa/red');
+}
+
+/** `bbox` = "oeste,sur,este,norte" ya formateado. */
+export async function obtenerMapaBotellas(bbox: string): Promise<GeoJSON.FeatureCollection> {
+  return requestJson<GeoJSON.FeatureCollection>(`/api/fo-monitor/mapa/botellas?bbox=${bbox}`);
+}

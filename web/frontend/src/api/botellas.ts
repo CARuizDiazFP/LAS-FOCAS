@@ -397,3 +397,44 @@ export async function separarBotellaDeCamaraPadre(
     csrf: true,
   });
 }
+
+// ── Botellas Cromo huérfanas (sin Cámara padre) ──
+
+export interface BotellaHuerfanaItem {
+  n_id: number;
+  nombre: string | null;
+  calle: string | null;
+  localidad: string | null;
+}
+
+export interface BotellasHuerfanasResponse {
+  error?: string;
+  total?: number;
+  botellas?: BotellaHuerfanaItem[];
+}
+
+export async function listarBotellasHuerfanas(params: URLSearchParams): Promise<BotellasHuerfanasResponse> {
+  return requestJson<BotellasHuerfanasResponse>(`/api/infra/cromo-botellas/huerfanas?${params}`);
+}
+
+export interface AsociarBotellasHuerfanasBody {
+  n_ids: number[];
+  camara_id?: number;
+  nombre_nueva_camara?: string;
+}
+
+export interface AsociarBotellasHuerfanasResponse {
+  error?: string;
+  ok?: boolean;
+  camara_id?: number;
+  camara_creada?: boolean;
+  botellas_vinculadas?: number;
+}
+
+export async function asociarBotellasHuerfanas(body: AsociarBotellasHuerfanasBody): Promise<AsociarBotellasHuerfanasResponse> {
+  return requestJson<AsociarBotellasHuerfanasResponse>('/api/infra/cromo-botellas/asociar', {
+    method: 'POST',
+    headers: { Accept: 'application/json' },
+    json: { ...body },
+  });
+}

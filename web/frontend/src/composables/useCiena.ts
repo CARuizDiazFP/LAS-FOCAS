@@ -3,7 +3,7 @@
 // Descripción: Composable del flujo Alarmas Ciena con estado reactivo, descarga segura y parsing de metadatos
 
 import { ref } from 'vue';
-import { request } from '../api/client';
+import { procesarAlarmasCiena } from '../api/herramientas';
 
 type ResultTone = 'muted' | 'info' | 'success' | 'error';
 
@@ -41,19 +41,8 @@ export function useCiena() {
     resultText.value = 'Procesando...';
     resultClass.value = 'info';
 
-    const formData = new FormData();
-    formData.append('file', selectedFile.value);
-
     try {
-      const response = await request('/api/tools/alarmas-ciena', {
-        method: 'POST',
-        formData,
-        csrf: true,
-      });
-      const formato = response.headers.get('X-Formato-Detectado') ?? 'desconocido';
-      const filas = response.headers.get('X-Filas-Procesadas') ?? '?';
-      const columnas = response.headers.get('X-Columnas') ?? '?';
-      const blob = await response.blob();
+      const { blob, formato, filas, columnas } = await procesarAlarmasCiena(selectedFile.value);
 
       triggerDownload(blob, selectedFile.value.name.replace(/\.csv$/i, '') + '_procesado.xlsx');
 

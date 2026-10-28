@@ -3,6 +3,7 @@
 // Descripción: Cliente frontend para la ingesta masiva de cámaras, el listado del dashboard Viewer y la detección de duplicados
 
 import { ApiError, CSRF_HEADER, getCsrfToken, requestJson } from './client';
+import type { BotellaOrigen } from './botellas';
 
 export interface CamaraViewerItem {
   id: number;
@@ -242,10 +243,7 @@ export async function buscarCamarasRaiz(
 ): Promise<CamaraCandidata[]> {
   const params = new URLSearchParams({ q, limit: String(options.limit ?? 10), solo_raiz: 'true' });
   if (options.excluirId != null) params.set('excluir_id', String(options.excluirId));
-  const data = await requestJson<{ camaras?: CamaraCandidata[] }>(`/api/infra/camaras/buscar?${params}`, {
-    signal: options.signal,
-  });
-  return data.camaras ?? [];
+  return buscarCamaras(params, options.signal);
 }
 
 export interface BotellaCromoHija {
@@ -271,4 +269,196 @@ export async function getBotellasCromoDeCamara(
   return (data.botellas ?? [])
     .filter((botella) => botella.origen === 'cromo')
     .map((botella) => ({ origen: 'cromo' as const, id: botella.id, nombre: botella.nombre, estado: botella.estado }));
+}
+
+// ── Búsqueda de Cámaras y operaciones usadas por modales y vistas de detalle ──
+
+/** Candidata devuelta por `GET /api/infra/camaras/buscar`; los campos de Botella aparecen sólo con `solo_raiz=false`. */
+export interface CamaraBuscada extends CamaraCandidata {
+  es_botella?: boolean;
+  camara_padre_id?: number | null;
+  camara_padre_nombre?: string | null;
+}
+
+/** Búsqueda liviana de Cámaras (`q`, `limit`, `excluir_id`, `solo_raiz`); devuelve la lista ya desempaquetada. */
+export async function buscarCamaras(params: URLSearchParams, signal?: AbortSignal): Promise<CamaraBuscada[]> {
+  const data = await requestJson<{ camaras?: CamaraBuscada[] }>(`/api/infra/camaras/buscar?${params}`, { signal });
+  return data.camaras ?? [];
+}
+
+export interface UnificarCamarasBody {
+  camara_principal_id: number | null;
+  camara_secundaria_id: number;
+  guardar_alias: boolean;
+}
+
+export interface FusionarGrupoCamarasBody {
+  camara_principal_id: number | null;
+  camara_secundaria_ids: number[];
+  guardar_alias: boolean;
+}
+
+export interface MergeCamarasResponse {
+  error?: string;
+  ok?: boolean;
+}
+
+export async function unificarCamaras(body: UnificarCamarasBody): Promise<MergeCamarasResponse> {
+  return requestJson<MergeCamarasResponse>('/api/infra/camaras/merge', {
+    method: 'POST',
+    headers: { Accept: 'application/json' },
+    json: { ...body },
+  });
+}
+
+export async function fusionarGrupoCamaras(body: FusionarGrupoCamarasBody): Promise<MergeCamarasResponse> {
+  return requestJson<MergeCamarasResponse>('/api/infra/camaras/merge-grupo', {
+    method: 'POST',
+    headers: { Accept: 'application/json' },
+    json: { ...body },
+  });
+}
+
+export interface EstadoContextoItem {
+  id: number;
+  ticket_asociado: string | null;
+  servicio_protegido_id: string;
+  ruta_protegida_id: number | null;
+}
+
+export interface EstadoContexto {
+  estado_actual: string;
+  estado_sugerido: string | null;
+  tiene_baneo_activo: boolean;
+  tiene_ingreso_activo: boolean;
+  inconsistente: boolean;
+  incidentes_activos: EstadoContextoItem[];
+}
+
+export interface EstadoCamaraResponse {
+  error?: string;
+  contexto?: EstadoContexto;
+  estados_disponibles?: string[];
+}
+
+export interface CambiarEstadoCamaraResponse {
+  error?: string;
+  success?: boolean;
+}
+
+export async function obtenerEstadoCamara(id: number): Promise<EstadoCamaraResponse> {
+  return requestJson<EstadoCamaraResponse>(`/api/infra/camaras/${id}/estado`);
+}
+
+export async function cambiarEstadoCamara(id: number, estado: string, motivo: string): Promise<CambiarEstadoCamaraResponse> {
+  return requestJson<CambiarEstadoCamaraResponse>(`/api/infra/camaras/${id}/estado`, {
+    method: 'POST',
+    headers: { Accept: 'application/json' },
+    json: { estado, motivo },
+  });
+}
+
+// ── Detalle de Cámara ──
+
+export interface RutaItem {
+  ruta_id: number;
+  servicio_id: string;
+  ruta_nombre: string;
+  ruta_tipo: string;
+  alias_ids: string[];
+  transitos_count: number;
+  punta_a_sitio: string | null;
+  punta_b_sitio: string | null;
+}
+
+export interface CamaraDetail {
+  id: number;
+  nombre: string;
+  direccion: string | null;
+  estado: string;
+  editable: boolean;
+  rutas: RutaItem[];
+  es_botella: boolean;
+  camara_padre_id: number | null;
+  camara_padre_nombre: string | null;
+}
+
+export interface AliasItem {
+  id: number;
+  nombre: string;
+  created_at: string | null;
+}
+
+export interface BotellaItem {
+  id: number;
+  nombre: string | null;
+  estado: string | null;
+  servicios: string[];
+  origen: BotellaOrigen;
+}
+
+export interface RegistrosContexto {
+  estado_actual: string;
+  estado_sugerido: string | null;
+  tiene_baneo_activo: boolean;
+  tiene_ingreso_activo: boolean;
+}
+
+export interface RegistrosBaneo {
+  id: number;
+  ticket_asociado: string | null;
+  servicio_protegido_id: string;
+  ruta_protegida_id: number | null;
+  fecha_inicio: string | null;
+  fecha_fin: string | null;
+  motivo: string | null;
+  activo: boolean;
+}
+
+export interface RegistrosAuditoria {
+  id: number;
+  usuario: string;
+  motivo: string;
+  estado_anterior: string | null;
+  estado_nuevo: string | null;
+  estado_sugerido: string | null;
+  created_at: string | null;
+}
+
+export interface RegistrosIngreso {
+  id: number;
+  fecha_inicio: string | null;
+  fecha_fin: string | null;
+  tecnico_id: string | null;
+  cromo_botella_id: number | null;
+  botella_label: string;
+  tipo: string;
+  anulado: boolean;
+  anulado_at: string | null;
+  anulado_por: string | null;
+  anulado_motivo: string | null;
+}
+
+export interface RegistrosPayload {
+  contexto: RegistrosContexto | null;
+  baneos: RegistrosBaneo[];
+  auditoria: RegistrosAuditoria[];
+  ingresos: RegistrosIngreso[];
+}
+
+export async function obtenerCamara(id: number): Promise<{ camara: CamaraDetail }> {
+  return requestJson<{ camara: CamaraDetail }>(`/api/infra/camaras/${id}`);
+}
+
+export async function obtenerAliasesCamara(id: number): Promise<{ aliases?: AliasItem[] }> {
+  return requestJson<{ aliases?: AliasItem[] }>(`/api/infra/camaras/${id}/aliases`);
+}
+
+/** `qs` es el query string completo (con `?`) o vacío, p. ej. `?incluir_anulados=1`. */
+export async function obtenerRegistrosCamara(id: number, qs: string): Promise<RegistrosPayload> {
+  return requestJson<RegistrosPayload>(`/api/infra/camaras/${id}/registros${qs}`);
+}
+
+export async function obtenerBotellasCamara(id: number): Promise<{ botellas?: BotellaItem[] }> {
+  return requestJson<{ botellas?: BotellaItem[] }>(`/api/infra/camaras/${id}/botellas`);
 }

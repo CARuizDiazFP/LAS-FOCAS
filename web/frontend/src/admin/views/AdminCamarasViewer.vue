@@ -4,164 +4,111 @@
   Descripción: Dashboard /admin/servicios/viewer/Camaras — listado dual grid/lista de Cámaras raíz y detección de duplicados por nombre normalizado
 -->
 <template>
-  <section class="camaras-viewer">
-    <AdminPageHeader
-      kicker="Panel admin · Viewer"
-      title="Cámaras"
-      subtitle="Listado de Cámaras raíz y detección de candidatas a duplicado por nombre."
-    />
+  <ViewerShell
+    ref="shell"
+    bloque="camaras-viewer"
+    :loading="!soloDuplicados && loading"
+    :error="error"
+    :vacio="!soloDuplicados && items.length === 0"
+    :hay-mas="hasMore"
+    texto-vacio="Ninguna cámara coincide"
+    texto-cargando="Cargando más cámaras..."
+    ancho-estado="260px"
+    :scroll-infinito="!soloDuplicados"
+    @cargar-mas="cargarSiguiente"
+  >
+    <template #toolbar>
+      <AdminPageHeader
+        kicker="Panel admin · Viewer"
+        title="Cámaras"
+        subtitle="Listado de Cámaras raíz y detección de candidatas a duplicado por nombre."
+      />
 
-    <div class="camaras-viewer__toolbar">
-      <div class="camaras-viewer__toolbar-row">
-        <template v-if="!soloDuplicados">
-          <div class="camaras-viewer__search">
-            <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-            <input v-model="query" type="search" placeholder="Buscar por nombre" @input="onSearchInput" />
-          </div>
+      <div class="camaras-viewer__toolbar">
+        <div class="camaras-viewer__toolbar-row">
+          <template v-if="!soloDuplicados">
+            <div class="camaras-viewer__search">
+              <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+              <input v-model="query" type="search" placeholder="Buscar por nombre" @input="onSearchInput" />
+            </div>
 
-          <div class="camaras-viewer__view-toggle" role="radiogroup" aria-label="Tipo de vista">
-            <button
-              type="button"
-              role="radio"
-              :aria-checked="vista === 'grid'"
-              :class="['camaras-viewer__view-option', { 'is-active': vista === 'grid' }]"
-              title="Vista grilla"
-              @click="setVista('grid')"
-            >
-              <i class="ph ph-squares-four" aria-hidden="true"></i>
-            </button>
-            <button
-              type="button"
-              role="radio"
-              :aria-checked="vista === 'list'"
-              :class="['camaras-viewer__view-option', { 'is-active': vista === 'list' }]"
-              title="Vista lista"
-              @click="setVista('list')"
-            >
-              <i class="ph ph-rows" aria-hidden="true"></i>
-            </button>
-          </div>
-        </template>
+            <div class="camaras-viewer__view-toggle" role="radiogroup" aria-label="Tipo de vista">
+              <button
+                type="button"
+                role="radio"
+                :aria-checked="vista === 'grid'"
+                :class="['camaras-viewer__view-option', { 'is-active': vista === 'grid' }]"
+                title="Vista grilla"
+                @click="setVista('grid')"
+              >
+                <i class="ph ph-squares-four" aria-hidden="true"></i>
+              </button>
+              <button
+                type="button"
+                role="radio"
+                :aria-checked="vista === 'list'"
+                :class="['camaras-viewer__view-option', { 'is-active': vista === 'list' }]"
+                title="Vista lista"
+                @click="setVista('list')"
+              >
+                <i class="ph ph-rows" aria-hidden="true"></i>
+              </button>
+            </div>
+          </template>
 
-        <button
-          type="button"
-          :class="['camaras-viewer__chip', 'camaras-viewer__chip--duplicadas', { 'is-active': soloDuplicados }]"
-          @click="toggleSoloDuplicados"
-        >
-          <i class="ph ph-copy" aria-hidden="true"></i>
-          Sólo duplicadas
-        </button>
+          <button
+            type="button"
+            :class="['camaras-viewer__chip', 'camaras-viewer__chip--duplicadas', { 'is-active': soloDuplicados }]"
+            @click="toggleSoloDuplicados"
+          >
+            <i class="ph ph-copy" aria-hidden="true"></i>
+            Sólo duplicadas
+          </button>
 
-        <button class="btn primary" type="button" :disabled="loading || loadingGrupos" @click="refrescar">
-          <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
-          Actualizar
-        </button>
+          <button class="btn primary" type="button" :disabled="loading || loadingGrupos" @click="refrescar">
+            <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
+            Actualizar
+          </button>
 
-        <button
-          v-if="soloDuplicados"
-          class="btn subtle"
-          type="button"
-          :disabled="loadingGrupos || grupos.length === 0"
-          @click="abrirFusionMasiva"
-        >
-          <i class="ph ph-stack" aria-hidden="true"></i>
-          Fusión masiva
-        </button>
-      </div>
-
-      <div v-if="!soloDuplicados" class="camaras-viewer__toolbar-row camaras-viewer__chips-row">
-        <span class="camaras-viewer__chips-label">Estado</span>
-        <button
-          v-for="chip in estadoChips"
-          :key="chip.value"
-          type="button"
-          :class="['camaras-viewer__chip', { 'is-active': filtroEstado === chip.value }]"
-          @click="setEstado(chip.value)"
-        >
-          <span :class="['camaras-viewer__chip-dot', `is-${chip.token}`]" aria-hidden="true"></span>
-          {{ chip.label }}
-        </button>
-        <span class="camaras-viewer__count">
-          <strong>{{ total.toLocaleString('es-AR') }}</strong> cámaras raíz · mostrando {{ items.length }}
-        </span>
-      </div>
-
-      <div v-else class="camaras-viewer__toolbar-row">
-        <span class="camaras-viewer__count">
-          <strong>{{ grupos.length }}</strong> grupo{{ grupos.length !== 1 ? 's' : '' }} candidato{{ grupos.length !== 1 ? 's' : '' }} a duplicado
-        </span>
-      </div>
-    </div>
-
-    <div v-if="error" class="camaras-viewer__inline-error">{{ error }}</div>
-
-    <!-- Vista dual (listado general): grid/lista con scroll infinito -->
-    <div v-if="!soloDuplicados" ref="scrollEl" class="camaras-viewer__scroll">
-      <template v-if="items.length > 0">
-        <div v-if="vista === 'grid'" class="camaras-viewer__grid">
-          <CamaraViewerCard v-for="item in items" :key="item.id" :camara="item" />
+          <button
+            v-if="soloDuplicados"
+            class="btn subtle"
+            type="button"
+            :disabled="loadingGrupos || grupos.length === 0"
+            @click="abrirFusionMasiva"
+          >
+            <i class="ph ph-stack" aria-hidden="true"></i>
+            Fusión masiva
+          </button>
         </div>
 
-        <div v-else class="camaras-viewer__list-layout">
-          <div class="camaras-viewer__list">
-            <div
-              v-for="item in items"
-              :key="item.id"
-              role="button"
-              tabindex="0"
-              :class="['camaras-viewer__list-row', { 'is-selected': item.id === selectedId }]"
-              @click="selectedId = item.id"
-              @keyup.enter="selectedId = item.id"
-            >
-              <span :class="['camaras-viewer__list-dot', `is-${estadoCamaraToken(item.estado)}`]" aria-hidden="true"></span>
-              <span class="camaras-viewer__list-nombre">{{ item.nombre || `Cámara ${item.id}` }}</span>
-              <span class="camaras-viewer__list-stat">{{ item.botellas_count }} bot.</span>
-              <span class="camaras-viewer__list-stat">{{ item.cables_count }} cbl.</span>
-              <span class="camaras-viewer__list-estado">{{ item.estado }}</span>
-            </div>
-          </div>
-
-          <aside v-if="selectedItem" class="camaras-viewer__preview">
-            <span class="camaras-viewer__preview-kicker">Vista previa</span>
-            <h2 class="camaras-viewer__preview-title">{{ selectedItem.nombre || `Cámara ${selectedItem.id}` }}</h2>
-            <div class="camaras-viewer__preview-tags">
-              <span class="camaras-viewer__preview-tag is-accent">{{ selectedItem.estado }}</span>
-              <span class="camaras-viewer__preview-tag">ID {{ selectedItem.id }}</span>
-            </div>
-            <div class="camaras-viewer__preview-stats">
-              <div class="camaras-viewer__preview-stat">
-                <span class="camaras-viewer__preview-label">Botellas</span>
-                <strong>{{ selectedItem.botellas_count }}</strong>
-              </div>
-              <div class="camaras-viewer__preview-stat">
-                <span class="camaras-viewer__preview-label">Cables</span>
-                <strong>{{ selectedItem.cables_count }}</strong>
-              </div>
-            </div>
-            <RouterLink class="btn primary" :to="`/infra/Camaras/${selectedItem.id}`">
-              Abrir detalle completo
-              <i class="ph ph-arrow-right" aria-hidden="true"></i>
-            </RouterLink>
-          </aside>
+        <div v-if="!soloDuplicados" class="camaras-viewer__toolbar-row camaras-viewer__chips-row">
+          <span class="camaras-viewer__chips-label">Estado</span>
+          <button
+            v-for="chip in estadoChips"
+            :key="chip.value"
+            type="button"
+            :class="['camaras-viewer__chip', { 'is-active': filtroEstado === chip.value }]"
+            @click="setEstado(chip.value)"
+          >
+            <span :class="['camaras-viewer__chip-dot', `is-${chip.token}`]" aria-hidden="true"></span>
+            {{ chip.label }}
+          </button>
+          <span class="camaras-viewer__count">
+            <strong>{{ total.toLocaleString('es-AR') }}</strong> cámaras raíz · mostrando {{ items.length }}
+          </span>
         </div>
-      </template>
 
-      <div v-else-if="!loading" class="camaras-viewer__state-box">
-        <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-        <h3>Ninguna cámara coincide</h3>
-        <p>Probá con otro nombre o quitá el filtro de estado.</p>
+        <div v-else class="camaras-viewer__toolbar-row">
+          <span class="camaras-viewer__count">
+            <strong>{{ grupos.length }}</strong> grupo{{ grupos.length !== 1 ? 's' : '' }} candidato{{ grupos.length !== 1 ? 's' : '' }} a duplicado
+          </span>
+        </div>
       </div>
-
-      <div v-if="loading && items.length > 0" class="camaras-viewer__loading-more">
-        <i class="ph ph-circle-notch camaras-viewer__spin" aria-hidden="true"></i>
-        Cargando más cámaras...
-      </div>
-
-      <div ref="sentinel" class="camaras-viewer__sentinel" aria-hidden="true"></div>
-    </div>
+    </template>
 
     <!-- Vista de duplicadas: tarjeta por grupo -->
-    <div v-else class="camaras-viewer__scroll">
+    <template v-if="soloDuplicados">
       <div v-if="loadingGrupos" class="camaras-viewer__state-box">
         <i class="ph ph-circle-notch camaras-viewer__spin" aria-hidden="true"></i>
         <h3>Calculando grupos...</h3>
@@ -203,41 +150,97 @@
           </div>
         </article>
       </div>
-    </div>
+    </template>
 
-    <ModalUnificarCamara
-      :open="modalOpen"
-      :camara-id="modalCamaraId"
-      :camara-nombre="modalCamaraNombre"
-      :sugerencia-inicial="modalSugerencia"
-      @close="modalOpen = false"
-      @merged="handleMerged"
-      @error="handleModalError"
-    />
+    <!-- Vista dual (listado general): grid/lista con scroll infinito -->
+    <template v-else>
+      <div v-if="vista === 'grid'" class="camaras-viewer__grid">
+        <CamaraViewerCard v-for="item in items" :key="item.id" :camara="item" />
+      </div>
 
-    <ModalFusionarGrupo
-      :open="modalGrupoOpen"
-      :grupo="modalGrupoSeleccionado"
-      @close="modalGrupoOpen = false"
-      @merged="handleMerged"
-      @error="handleModalError"
-    />
+      <div v-else class="camaras-viewer__list-layout">
+        <div class="camaras-viewer__list">
+          <div
+            v-for="item in items"
+            :key="item.id"
+            role="button"
+            tabindex="0"
+            :class="['camaras-viewer__list-row', { 'is-selected': item.id === selectedId }]"
+            @click="selectedId = item.id"
+            @keyup.enter="selectedId = item.id"
+          >
+            <span :class="['camaras-viewer__list-dot', `is-${estadoCamaraToken(item.estado)}`]" aria-hidden="true"></span>
+            <span class="camaras-viewer__list-nombre">{{ item.nombre || `Cámara ${item.id}` }}</span>
+            <span class="camaras-viewer__list-stat">{{ item.botellas_count }} bot.</span>
+            <span class="camaras-viewer__list-stat">{{ item.cables_count }} cbl.</span>
+            <span class="camaras-viewer__list-estado">{{ item.estado }}</span>
+          </div>
+        </div>
 
-    <ModalConfirmarAccionMasiva
-      :open="modalMasivaOpen"
-      titulo="Fusión masiva de Cámaras duplicadas"
-      :mensaje="mensajeFusionMasiva"
-      :confirmando="confirmandoMasiva"
-      :error="errorMasiva"
-      :resultado="resultadoMasiva"
-      @close="modalMasivaOpen = false"
-      @confirm="confirmarFusionMasiva"
-    />
-  </section>
+        <aside v-if="selectedItem" class="camaras-viewer__preview">
+          <span class="camaras-viewer__preview-kicker">Vista previa</span>
+          <h2 class="camaras-viewer__preview-title">{{ selectedItem.nombre || `Cámara ${selectedItem.id}` }}</h2>
+          <div class="camaras-viewer__preview-tags">
+            <span class="camaras-viewer__preview-tag is-accent">{{ selectedItem.estado }}</span>
+            <span class="camaras-viewer__preview-tag">ID {{ selectedItem.id }}</span>
+          </div>
+          <div class="camaras-viewer__preview-stats">
+            <div class="camaras-viewer__preview-stat">
+              <span class="camaras-viewer__preview-label">Botellas</span>
+              <strong>{{ selectedItem.botellas_count }}</strong>
+            </div>
+            <div class="camaras-viewer__preview-stat">
+              <span class="camaras-viewer__preview-label">Cables</span>
+              <strong>{{ selectedItem.cables_count }}</strong>
+            </div>
+          </div>
+          <RouterLink class="btn primary" :to="`/infra/Camaras/${selectedItem.id}`">
+            Abrir detalle completo
+            <i class="ph ph-arrow-right" aria-hidden="true"></i>
+          </RouterLink>
+        </aside>
+      </div>
+    </template>
+
+    <template #vacio>
+      <p>Probá con otro nombre o quitá el filtro de estado.</p>
+    </template>
+
+    <template #extra>
+      <ModalUnificarCamara
+        :open="modalOpen"
+        :camara-id="modalCamaraId"
+        :camara-nombre="modalCamaraNombre"
+        :sugerencia-inicial="modalSugerencia"
+        @close="modalOpen = false"
+        @merged="handleMerged"
+        @error="handleModalError"
+      />
+
+      <ModalFusionarGrupo
+        :open="modalGrupoOpen"
+        :grupo="modalGrupoSeleccionado"
+        @close="modalGrupoOpen = false"
+        @merged="handleMerged"
+        @error="handleModalError"
+      />
+
+      <ModalConfirmarAccionMasiva
+        :open="modalMasivaOpen"
+        titulo="Fusión masiva de Cámaras duplicadas"
+        :mensaje="mensajeFusionMasiva"
+        :confirmando="confirmandoMasiva"
+        :error="errorMasiva"
+        :resultado="resultadoMasiva"
+        @close="modalMasivaOpen = false"
+        @confirm="confirmarFusionMasiva"
+      />
+    </template>
+  </ViewerShell>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 
 import AdminPageHeader from '../components/AdminPageHeader.vue';
@@ -245,6 +248,8 @@ import ModalFusionarGrupo from '../../components/infra/ModalFusionarGrupo.vue';
 import ModalConfirmarAccionMasiva from '../../components/infra/ModalConfirmarAccionMasiva.vue';
 import CamaraViewerCard from '../../components/infra/CamaraViewerCard.vue';
 import ModalUnificarCamara from '../../components/infra/ModalUnificarCamara.vue';
+import ViewerShell from '../../components/viewer/ViewerShell.vue';
+import { usePaginatedSearch } from '../../composables/usePaginatedSearch';
 import {
   estadoCamaraToken,
   getCamarasDuplicados,
@@ -258,14 +263,7 @@ const LIMIT = 60;
 const VISTA_STORAGE_KEY = 'camaras-viewer.vista';
 
 const query = ref('');
-const items = ref<CamaraViewerItem[]>([]);
-const total = ref(0);
-const loading = ref(false);
-const error = ref('');
-const offset = ref(0);
-const hasMore = ref(true);
-const sentinel = ref<HTMLElement | null>(null);
-const scrollEl = ref<HTMLElement | null>(null);
+const shell = ref<InstanceType<typeof ViewerShell> | null>(null);
 const filtroEstado = ref('');
 const selectedId = ref<number | null>(null);
 
@@ -308,47 +306,21 @@ const selectedItem = computed(
   () => items.value.find((item) => item.id === selectedId.value) ?? items.value[0] ?? null,
 );
 
-let observer: IntersectionObserver | null = null;
-let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-function mergeItems(next: CamaraViewerItem[]): void {
-  const seen = new Set(items.value.map((item) => item.id));
-  for (const item of next) {
-    if (seen.has(item.id)) continue;
-    seen.add(item.id);
-    items.value.push(item);
-  }
-}
-
-async function loadNextPage(): Promise<void> {
-  if (loading.value || !hasMore.value) return;
-  loading.value = true;
-  error.value = '';
-  try {
-    const response = await searchCamarasViewer({
-      q: query.value.trim(),
-      estado: filtroEstado.value,
-      limit: LIMIT,
-      offset: offset.value,
-    });
-    total.value = response.total;
-    mergeItems(response.camaras);
-    offset.value += response.camaras.length;
-    hasMore.value = response.camaras.length === LIMIT && offset.value < response.total;
-  } catch (err: unknown) {
-    error.value = err instanceof Error ? err.message : 'No se pudo consultar cámaras';
-  } finally {
-    loading.value = false;
-  }
-}
-
-async function reloadFromZero(): Promise<void> {
-  items.value = [];
-  total.value = 0;
-  offset.value = 0;
-  hasMore.value = true;
-  await loadNextPage();
-}
+const { items, total, loading, error, hasMore, cargarSiguiente, recargarDesdeCero, recargarConDebounce } =
+  usePaginatedSearch({
+    limit: LIMIT,
+    cargarPagina: async (offset, limit) => {
+      const response = await searchCamarasViewer({
+        q: query.value.trim(),
+        estado: filtroEstado.value,
+        limit,
+        offset,
+      });
+      return { items: response.camaras, total: response.total };
+    },
+    claveItem: (item: CamaraViewerItem) => item.id,
+    mensajeError: 'No se pudo consultar cámaras',
+  });
 
 async function reloadDuplicados(): Promise<void> {
   loadingGrupos.value = true;
@@ -364,13 +336,12 @@ async function reloadDuplicados(): Promise<void> {
 }
 
 function onSearchInput(): void {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => void reloadFromZero(), 320);
+  recargarConDebounce();
 }
 
 function setEstado(value: string): void {
   filtroEstado.value = filtroEstado.value === value ? '' : value;
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function setVista(next: 'grid' | 'list'): void {
@@ -380,6 +351,8 @@ function setVista(next: 'grid' | 'list'): void {
 
 function toggleSoloDuplicados(): void {
   soloDuplicados.value = !soloDuplicados.value;
+  // Cada modo tenía su propio contenedor de scroll: al alternar, la vista vuelve al tope.
+  if (shell.value?.scrollEl) shell.value.scrollEl.scrollTop = 0;
   if (soloDuplicados.value && grupos.value.length === 0) {
     void reloadDuplicados();
   }
@@ -389,7 +362,7 @@ function refrescar(): void {
   if (soloDuplicados.value) {
     void reloadDuplicados();
   } else {
-    void reloadFromZero();
+    void recargarDesdeCero();
   }
 }
 
@@ -421,7 +394,7 @@ async function confirmarFusionMasiva(): Promise<void> {
     resultadoMasiva.value =
       `${respuesta.grupos_fusionados} de ${respuesta.total_grupos} grupos fusionados` +
       (respuesta.grupos_con_error > 0 ? ` — ${respuesta.grupos_con_error} con error.` : '.');
-    await Promise.all([reloadDuplicados(), reloadFromZero()]);
+    await Promise.all([reloadDuplicados(), recargarDesdeCero()]);
   } catch (err: unknown) {
     errorMasiva.value = err instanceof Error ? err.message : 'No se pudo ejecutar la fusión masiva.';
   } finally {
@@ -431,41 +404,19 @@ async function confirmarFusionMasiva(): Promise<void> {
 
 async function handleMerged(): Promise<void> {
   modalOpen.value = false;
-  await Promise.all([reloadDuplicados(), reloadFromZero()]);
+  await Promise.all([reloadDuplicados(), recargarDesdeCero()]);
 }
 
 function handleModalError(message: string): void {
   error.value = message;
 }
 
-onMounted(async () => {
-  await reloadFromZero();
-
-  observer = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        if (entry.isIntersecting && !soloDuplicados.value) void loadNextPage();
-      }
-    },
-    { root: scrollEl.value, rootMargin: '300px 0px', threshold: 0.1 },
-  );
-  if (sentinel.value) observer.observe(sentinel.value);
-});
-
-onBeforeUnmount(() => {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  if (observer) observer.disconnect();
+onMounted(() => {
+  void recargarDesdeCero();
 });
 </script>
 
 <style scoped>
-.camaras-viewer {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-}
-
 .camaras-viewer__toolbar {
   padding: 4px 0 14px;
   display: flex;
@@ -591,21 +542,6 @@ onBeforeUnmount(() => {
 }
 
 .camaras-viewer__count strong { color: var(--color-text); font-weight: 500; }
-
-.camaras-viewer__inline-error {
-  margin-bottom: 10px;
-  padding: 10px 14px;
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--color-state-error) 14%, transparent);
-  color: var(--color-state-error);
-  font-size: 12.5px;
-}
-
-.camaras-viewer__scroll {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
 
 .camaras-viewer__grid {
   display: grid;
@@ -766,18 +702,7 @@ onBeforeUnmount(() => {
 .camaras-viewer__state-box.is-error { box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-state-error) 45%, transparent); }
 .camaras-viewer__state-box.is-error i { color: var(--color-state-error); }
 
-.camaras-viewer__loading-more {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 14px 0;
-  font-size: 12px;
-  color: color-mix(in srgb, var(--color-text) 45%, transparent);
-}
-
 .camaras-viewer__spin { font-size: 14px; animation: spin 1s linear infinite; }
-.camaras-viewer__sentinel { height: 2px; }
 
 @keyframes spin {
   from { transform: rotate(0deg); }

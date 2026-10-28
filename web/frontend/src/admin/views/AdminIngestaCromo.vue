@@ -300,9 +300,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 
 import AdminPageHeader from '../components/AdminPageHeader.vue';
+import { useCorridaSse } from '../../composables/useCorridaSse';
 import {
   CROMO_CATALOGO_BOTELLAS,
   CROMO_CLASE_EXCLUIDA,
@@ -316,7 +317,6 @@ import {
   obtenerDetalleCromo,
   obtenerHistoricoCromo,
   obtenerSaludWorkerCromo,
-  streamUrlIngestaCromo,
   type CromoCorrida,
   type CromoDetalle,
   type CromoModoIngesta,
@@ -354,8 +354,6 @@ const cargandoHistorico = ref(false);
 
 const detalle = ref<CromoDetalle | null>(null);
 const dialogDetalleEl = ref<HTMLDialogElement | null>(null);
-
-let eventSource: EventSource | null = null;
 
 // ── Scheduler automático (Etapa 7) — formulario independiente del de "Nueva corrida" ────────────
 const clasesSchedulerSeleccionadas = ref<Set<number>>(new Set());
@@ -422,64 +420,59 @@ function toggleClase(clase: number): void {
   clasesSeleccionadas.value = new Set(clasesSeleccionadas.value);
 }
 
-function cerrarStream(): void {
-  eventSource?.close();
-  eventSource = null;
+// Tras una caída de conexión no hay función previa que relea la corrida actual: se la relee con
+// el detalle (`obtenerDetalleCromo`). Si sigue EN_CURSO se reconecta (con backoff y `?desde=`);
+// si terminó sin RESUMEN (p.ej. la reconcilió el worker) se refresca el histórico.
+async function recargarEstadoCorrida(): Promise<void> {
+  const id = corridaActual.value?.id;
+  if (id == null) return;
+  try {
+    const { corrida } = await obtenerDetalleCromo(id);
+    corridaActual.value = corrida;
+    if (corrida.estado === 'EN_CURSO') sse.conectar(corrida.id);
+    else await cargarHistorico();
+  } catch {
+    // El backend no respondió: se vuelve a intentar con el mismo backoff.
+    sse.conectar(id);
+  }
 }
 
-function conectarStream(corridaId: number): void {
-  cerrarStream();
-  const es = new EventSource(streamUrlIngestaCromo(corridaId));
-  eventSource = es;
-
-  es.addEventListener('inicio', (ev) => {
-    const data = JSON.parse((ev as MessageEvent).data);
-    if (corridaActual.value) corridaActual.value.total_objetivo = data.total_objetivo;
-  });
-
-  es.addEventListener('fase', (ev) => {
-    const data = JSON.parse((ev as MessageEvent).data);
-    faseActual.value = data.descripcion ?? data.fase;
-  });
-
-  es.addEventListener('pagina', (ev) => {
-    const data = JSON.parse((ev as MessageEvent).data);
+const sse = useCorridaSse({
+  recargarEstado: recargarEstadoCorrida,
+  onInicio: (data) => {
+    if (corridaActual.value) corridaActual.value.total_objetivo = data.total_objetivo as number | null;
+  },
+  onFase: (data) => {
+    faseActual.value = String(data.descripcion ?? data.fase ?? '');
+  },
+  onPagina: (data) => {
     if (!corridaActual.value) return;
-    corridaActual.value.leidas = data.leidas;
-    corridaActual.value.creadas = data.creadas;
-    corridaActual.value.actualizadas = data.actualizadas;
-    corridaActual.value.sin_cambios = data.sin_cambios;
-    corridaActual.value.errores = data.errores;
-  });
-
-  // El evento nativo de EventSource también se llama "error" (caídas de conexión, sin .data);
-  // el nuestro es un evento SSE con nombre "error" y viene como MessageEvent con .data poblado.
-  es.addEventListener('error', (ev) => {
-    const raw = (ev as MessageEvent).data;
-    if (!raw) return;
-    try {
-      const data = JSON.parse(raw);
-      erroresRecientes.value = [data, ...erroresRecientes.value].slice(0, 20);
-    } catch {
-      // payload no-JSON: se ignora, no es un evento de negocio.
-    }
-  });
-
-  es.addEventListener('resumen', (ev) => {
-    const data = JSON.parse((ev as MessageEvent).data);
+    corridaActual.value.leidas = data.leidas as number;
+    corridaActual.value.creadas = data.creadas as number;
+    corridaActual.value.actualizadas = data.actualizadas as number;
+    corridaActual.value.sin_cambios = data.sin_cambios as number;
+    corridaActual.value.errores = data.errores as number;
+  },
+  // Sólo llega con JSON válido; un payload no-JSON se ignora, como antes.
+  onErrorDatos: (data) => {
+    erroresRecientes.value = [
+      data as unknown as { n_id: number | null; clase: number | null; detalle: string | null },
+      ...erroresRecientes.value,
+    ].slice(0, 20);
+  },
+  onResumen: (data) => {
     if (corridaActual.value) {
-      corridaActual.value.estado = data.estado;
-      corridaActual.value.leidas = data.leidas;
-      corridaActual.value.creadas = data.creadas;
-      corridaActual.value.actualizadas = data.actualizadas;
-      corridaActual.value.sin_cambios = data.sin_cambios;
-      corridaActual.value.errores = data.errores;
-      corridaActual.value.refs_colgadas = data.refs_colgadas;
+      corridaActual.value.estado = data.estado as string;
+      corridaActual.value.leidas = data.leidas as number;
+      corridaActual.value.creadas = data.creadas as number;
+      corridaActual.value.actualizadas = data.actualizadas as number;
+      corridaActual.value.sin_cambios = data.sin_cambios as number;
+      corridaActual.value.errores = data.errores as number;
+      corridaActual.value.refs_colgadas = data.refs_colgadas as number;
     }
-    cerrarStream();
-    cargarHistorico();
-  });
-}
+    void cargarHistorico();
+  },
+});
 
 async function onDisparar(): Promise<void> {
   feedback.value = '';
@@ -513,7 +506,7 @@ async function onDisparar(): Promise<void> {
       iniciada_at: new Date().toISOString(),
       finalizada_at: null,
     };
-    conectarStream(corrida_id);
+    sse.conectar(corrida_id);
   } catch (err: unknown) {
     feedbackType.value = 'err';
     feedback.value = err instanceof Error ? err.message : 'No se pudo iniciar la corrida';
@@ -544,7 +537,7 @@ async function cargarHistorico(): Promise<void> {
     const masReciente = resultado.corridas[0];
     if (masReciente && masReciente.estado === 'EN_CURSO' && !corridaActual.value) {
       corridaActual.value = masReciente;
-      conectarStream(masReciente.id);
+      sse.conectar(masReciente.id);
     }
   } catch {
     // El histórico es informativo — un fallo puntual no debe romper el resto de la vista.
@@ -658,10 +651,6 @@ onMounted(() => {
   cargarHistorico();
   cargarConfigScheduler();
   verificarSaludScheduler();
-});
-
-onUnmounted(() => {
-  cerrarStream();
 });
 </script>
 

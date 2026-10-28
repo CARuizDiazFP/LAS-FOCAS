@@ -29,8 +29,6 @@ function _applyState(data: SessionState): void {
 }
 
 export function useSession() {
-  const csrf = (): string => state.value.csrf ?? '';
-
   async function fetchSession(): Promise<SessionState> {
     const data = await getSession();
     _applyState(data);
@@ -64,5 +62,5 @@ export function useSession() {
     }
   }
 
-  return { state, csrf, fetchSession, ensureSession, setSession, clearSession, logoutSession };
+  return { state, fetchSession, ensureSession, setSession, clearSession, logoutSession };
 }

@@ -593,10 +593,8 @@ import {
   type OdfDelCamino,
   type PosicionPosible,
   type RolOdfConfirmada,
-  etiquetaAdicional,
-  etiquetaPosicion,
-  etiquetaTramo,
 } from '../../api/cromoPath';
+import { etiquetaAdicional, etiquetaPosicion, etiquetaTramo } from '../../utils/cromoPathPresentacion';
 import type { OdfDelTramo, useCromoPath } from '../../composables/useCromoPath';
 import { useSession } from '../../composables/useSession';
 import CromoConsistenciaPanel from './CromoConsistenciaPanel.vue';
