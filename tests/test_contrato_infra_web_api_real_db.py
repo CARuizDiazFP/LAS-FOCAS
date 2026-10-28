@@ -314,6 +314,31 @@ def test_tracking_download_inexistente_404(web, api):
     assert_forma(res_api.json(), {"detail": str})
 
 
+# --- Análisis de tracking (sólo lectura: servicio inexistente) --------------------------------------
+
+CLAVES_ANALISIS_API = {
+    "status": str, "servicio_id": (str, NONE), "servicio_db_id": (int, NONE), "nuevo_hash": (str, NONE),
+    "rutas_existentes": list, "ruta_identica_id": (int, NONE), "parsed_empalmes_count": int, "message": str,
+    "error": (str, NONE), "upgrade_info": (dict, NONE), "strand_info": (dict, NONE),
+    "punta_a_sitio": (str, NONE), "punta_b_sitio": (str, NONE), "cantidad_pelos": (int, NONE),
+    "alias_id": (str, NONE),
+}
+CLAVES_ANALISIS_WEB = {
+    **{k: v for k, v in CLAVES_ANALISIS_API.items()},
+    "empalmes_nuevos": int, "suggested_action": (str, NONE), "hash_match": bool,
+}
+
+
+def test_analyze_tracking_sin_ubicaciones_error_en_las_dos_apps(web, api):
+    archivo = {"file": ("FO 999999991 C2.txt", b"sin empalmes", "text/plain")}
+    res_web = web.post("/api/infra/trackings/analyze", files=archivo)
+    res_api = api.post("/api/infra/trackings/analyze", files=archivo)
+    assert res_web.status_code == res_api.status_code == 200
+    assert_forma(res_web.json(), CLAVES_ANALISIS_WEB)
+    assert_forma(res_api.json(), CLAVES_ANALISIS_API)
+    assert res_web.json()["status"] == res_api.json()["status"] == "ERROR"
+
+
 # --- Sin escritura (ids inexistentes) ---------------------------------------------------------------
 
 def test_ban_create_servicios_inexistentes_200_success_false(web, api):

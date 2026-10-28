@@ -195,10 +195,10 @@ def test_rutas_de_servicio_500_con_ref(con_sesion, monkeypatch, caplog):
 
 
 def test_upload_tracking_500_con_ref(con_sesion, monkeypatch, caplog):
-    from core.parsers import tracking_parser
+    from core.services import tracking_operaciones
 
     con_sesion("user", username="pepe")
-    monkeypatch.setattr(tracking_parser, "parse_tracking", _roto)
+    monkeypatch.setattr(tracking_operaciones, "parse_tracking", _roto)
     caplog.set_level(logging.INFO, logger="web")
 
     res = _cliente().post("/api/infra/upload_tracking", files={"file": ("t.txt", b"contenido")})

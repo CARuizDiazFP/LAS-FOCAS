@@ -24,6 +24,19 @@ from ..comun import (
     leer_upload_sync,
     logger,
 )
+from core.services.infra_service import analyze_tracking_file
+from core.services.tracking_operaciones import (
+    MAX_TRACKING_MB,
+    TrackingOriginalNoDisponible,
+    TrackingSinServicioId,
+    TrackingSinUbicaciones,
+    decodificar_tracking,
+    obtener_tracking_original,
+    procesar_tracking_legacy,
+    serializar_analisis,
+)
+from db.session import SessionLocal
+
 from ..dependencias import UsuarioSesion, requiere_csrf, usuario_admin, usuario_sesion
 from ..http_interno import cliente_api_interna
 from ..errores import (
@@ -36,9 +49,6 @@ from ..errores import (
 )
 
 router = APIRouter(dependencies=[Depends(usuario_sesion), Depends(requiere_csrf)])
-
-# Los trackings son .txt de una ruta (KB): 5 MB ya es un archivo equivocado.
-MAX_TRACKING_MB = 5
 
 
 def _find_servicio_por_identificador_web(session: Any, servicio_id: str) -> Optional[Any]:
@@ -617,39 +627,24 @@ def download_tracking_alias(
     ruta_id: int,
 ) -> Response:
     """Alias de /api/infra/rutas/{ruta_id}/download para compatibilidad."""
-    
+
     try:
-        from db.models.infra import RutaServicio
-        from db.session import SessionLocal
-        
         with SessionLocal() as session:
-            ruta = session.query(RutaServicio).filter(RutaServicio.id == ruta_id).first()
-            
-            if not ruta:
-                return JSONResponse({"error": "Ruta no encontrada"}, status_code=404)
-            
-            # Usar raw_file_content si existe
-            if ruta.raw_file_content:
-                filename = ruta.nombre_archivo_origen or f"tracking_ruta_{ruta_id}.txt"
-                
-                return Response(
-                    content=ruta.raw_file_content,
-                    media_type="text/plain; charset=utf-8",
-                    headers={
-                        "Content-Disposition": f'attachment; filename="{filename}"',
-                    }
-                )
-            
-            # No hay contenido original
-            return JSONResponse(
-                {"error": "Archivo original no disponible para esta ruta"},
-                status_code=404
-            )
-            
+            original = obtener_tracking_original(session, ruta_id)
+    except TrackingOriginalNoDisponible:
+        return JSONResponse({"error": "Archivo original no disponible para esta ruta"}, status_code=404)
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
         return error_interno("download_tracking_alias", exc, ruta_id=ruta_id)
+
+    if original is None:
+        return JSONResponse({"error": "Ruta no encontrada"}, status_code=404)
+    return Response(
+        content=original.contenido,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{original.filename}"'},
+    )
 
 
 @router.post("/api/servicios/ingest")
@@ -2156,118 +2151,45 @@ def upload_tracking_web(
         )
 
     try:
-        from core.parsers.tracking_parser import parse_tracking
-        from core.services.infra_service import (
-            _get_or_create_empalme,
-            _resolve_camara_o_registrar_sin_match,
-        )
-        from db.models.infra import Servicio
-        from db.session import SessionLocal
-
-        # Leer contenido
         content = leer_upload_sync(file, max_mb=MAX_TRACKING_MB)  # endpoint sync: corre en el threadpool
-        try:
-            raw_text = content.decode("utf-8")
-        except UnicodeDecodeError:
-            raw_text = content.decode("latin-1")
-
-        # Parsear
-        result = parse_tracking(raw_text, file.filename)
-
-        if not result.servicio_id:
-            return JSONResponse(
-                {"error": f"No se pudo extraer el ID del servicio desde: {file.filename}"},
-                status_code=400
-            )
-
-        topologia = result.get_topologia()
-        if not topologia:
-            return JSONResponse(
-                {"error": "No se encontraron empalmes/ubicaciones en el archivo"},
-                status_code=400
-            )
-
-        logger.info(
-            "action=upload_tracking user=%s filename=%s servicio_id=%s empalmes=%d",
-            username,
-            file.filename,
-            result.servicio_id,
-            len(topologia),
-        )
-
-        camaras_existentes = 0
-        ubicaciones_sin_match = 0
-        empalmes_registrados = 0
+        raw_text = decodificar_tracking(content)
 
         with SessionLocal() as session:
-            # Obtener o crear servicio
-            servicio = session.query(Servicio).filter(
-                Servicio.servicio_id == result.servicio_id
-            ).first()
-
-            if servicio:
-                servicio.nombre_archivo_origen = file.filename
-            else:
-                servicio = Servicio(
-                    servicio_id=result.servicio_id,
-                    nombre_archivo_origen=file.filename,
-                )
-                session.add(servicio)
-                session.flush()
-
-            servicio.raw_tracking_data = result.to_dict()
-
-            # Procesar empalmes — la búsqueda de cámara/botella y el registro de "sin match" están
-            # unificados en `core.services.infra_service` (Tarea 3 del refactor "Adjuntar
-            # tracking", 2026-08-23): antes esta ruta tenía su propia búsqueda O(n) duplicada de
-            # `api/app/routes/infra.py` e `InfraService`.
-            for empalme_id, ubicacion in topologia:
-                # Cromo Red es la fuente de verdad del inventario: nunca se crea una Camara nueva.
-                # Sin match, se registra un IngresoSinMatch (dentro de la función) y el empalme
-                # queda sin camara_id — el procesamiento nunca se bloquea por esto.
-                camara = _resolve_camara_o_registrar_sin_match(
-                    session, ubicacion, filename=file.filename, servicio_id=result.servicio_id
-                )
-                if camara is not None:
-                    camaras_existentes += 1
-                else:
-                    ubicaciones_sin_match += 1
-
-                # Registrar empalme — `_get_or_create_empalme` nunca pisa con `None` un
-                # `camara_id` previo válido de una corrida anterior cuando esta corrida no matchea.
-                tracking_id_completo = f"{result.servicio_id}_{empalme_id}"
-                empalme, empalme_nuevo = _get_or_create_empalme(session, tracking_id_completo, camara)
-                if servicio not in empalme.servicios:
-                    empalme.servicios.append(servicio)
-                if empalme_nuevo:
-                    empalmes_registrados += 1
-
-            session.commit()
-
-            logger.info(
-                "action=upload_tracking_complete user=%s servicio_id=%s camaras_existentes=%d "
-                "ubicaciones_sin_match=%d empalmes=%d",
-                username,
-                result.servicio_id,
-                camaras_existentes,
-                ubicaciones_sin_match,
-                empalmes_registrados,
-            )
-
-            return JSONResponse({
-                "status": "ok",
-                "servicios_procesados": 1,
-                "servicio_id": result.servicio_id,
-                "camaras_existentes": camaras_existentes,
-                "ubicaciones_sin_match": ubicaciones_sin_match,
-                "empalmes_registrados": empalmes_registrados,
-                "mensaje": f"Tracking del servicio {result.servicio_id} procesado correctamente",
-            })
-
+            resultado = procesar_tracking_legacy(session, raw_text, file.filename)
+    except TrackingSinServicioId:
+        return JSONResponse(
+            {"error": f"No se pudo extraer el ID del servicio desde: {file.filename}"},
+            status_code=400
+        )
+    except TrackingSinUbicaciones:
+        return JSONResponse(
+            {"error": "No se encontraron empalmes/ubicaciones en el archivo"},
+            status_code=400
+        )
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
         return error_interno("upload_tracking", exc, user=username, filename=file.filename)
+
+    logger.info(
+        "action=upload_tracking_web user=%s filename=%s servicio_id=%s camaras_existentes=%d "
+        "ubicaciones_sin_match=%d empalmes=%d",
+        username,
+        file.filename,
+        resultado.servicio_id,
+        resultado.camaras_existentes,
+        resultado.ubicaciones_sin_match,
+        resultado.empalmes_registrados,
+    )
+    return JSONResponse({
+        "status": "ok",
+        "servicios_procesados": 1,
+        "servicio_id": resultado.servicio_id,
+        "camaras_existentes": resultado.camaras_existentes,
+        "ubicaciones_sin_match": resultado.ubicaciones_sin_match,
+        "empalmes_registrados": resultado.empalmes_registrados,
+        "mensaje": f"Tracking del servicio {resultado.servicio_id} procesado correctamente",
+    })
 
 
 class TrackingResolveRequestModel(BaseModel):
@@ -2289,75 +2211,33 @@ def analyze_tracking_web(
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Analiza un archivo de tracking (Fase 1 del Portero).
-    
+
     Detecta si el servicio es nuevo, idéntico o hay conflicto.
     """
     username, _ = usuario
-    
+
     # Leer contenido del archivo
     raw_bytes = leer_upload_sync(file, max_mb=MAX_TRACKING_MB)  # endpoint sync: corre en el threadpool
-    try:
-        raw_content = raw_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        raw_content = raw_bytes.decode("latin-1")
-    
+    raw_content = decodificar_tracking(raw_bytes)
     filename_used = file.filename or "unknown.txt"
-    
+
     try:
-        from core.services.infra_service import InfraService
-        from db.session import SessionLocal
-        
         with SessionLocal() as session:
-            service = InfraService(session)
-            result = service.analyze_tracking(raw_content, filename_used)
-            
-            logger.info(
-                "action=analyze_tracking user=%s filename=%s status=%s servicio=%s",
-                username,
-                filename_used,
-                result.status.value,
-                result.servicio_id,
-            )
-            
-            # Convertir rutas_existentes a dict
-            rutas_list = []
-            for r in result.rutas_existentes:
-                rutas_list.append(r.to_dict())
-            
-            # Sugerir acción basada en el status
-            suggested_action = None
-            if result.status.value == "NEW":
-                suggested_action = "CREATE_NEW"
-            elif result.status.value == "IDENTICAL":
-                suggested_action = "SKIP"
-            elif result.status.value == "CONFLICT":
-                suggested_action = "REPLACE"  # Default, el usuario puede elegir otra
-            elif result.status.value == "POTENTIAL_UPGRADE":
-                suggested_action = "CONFIRM_UPGRADE"
-            
-            return JSONResponse({
-                "status": result.status.value,
-                "servicio_id": result.servicio_id,
-                "servicio_db_id": result.servicio_db_id,
-                "nuevo_hash": result.nuevo_hash,
-                "rutas_existentes": rutas_list,
-                "ruta_identica_id": result.ruta_identica_id,
-                "parsed_empalmes_count": result.parsed_empalmes_count,
-                "empalmes_nuevos": result.parsed_empalmes_count,
-                "message": result.message,
-                "error": result.error,
-                "suggested_action": suggested_action,
-                "hash_match": result.ruta_identica_id is not None,
-                "upgrade_info": result.upgrade_info.to_dict() if result.upgrade_info else None,
-                "strand_info": result.strand_info.to_dict() if result.strand_info else None,
-                "punta_a_sitio": result.punta_a_sitio,
-                "punta_b_sitio": result.punta_b_sitio,
-            })
-            
+            result = analyze_tracking_file(session, raw_content, filename_used)
+            payload = serializar_analisis(result)
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
         return error_interno("analyze_tracking", exc, user=username, filename=filename_used)
+
+    logger.info(
+        "action=analyze_tracking user=%s filename=%s status=%s servicio=%s",
+        username,
+        filename_used,
+        result.status.value,
+        result.servicio_id,
+    )
+    return JSONResponse(payload)
 
 
 @router.post("/api/infra/trackings/resolve")

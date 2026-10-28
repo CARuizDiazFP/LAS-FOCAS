@@ -104,6 +104,45 @@ def test_web_upload_tracking_6mb_413(con_sesion):
     assert_forma(res.json(), {"error": str})
 
 
+def test_web_analyze_tracking_6mb_413(con_sesion):
+    grande = b"x" * (6 * 1024 * 1024)
+    res = cliente_web(con_sesion).post(
+        "/api/infra/trackings/analyze", files={"file": ("grande.txt", grande, "text/plain")}
+    )
+    assert res.status_code == 413
+    assert_forma(res.json(), {"error": str})
+
+
+# --- API: tope de 5 MB del upload y del análisis de tracking (B10: antes sin tope) -----------------
+
+def test_api_upload_tracking_6mb_413():
+    grande = b"x" * (6 * 1024 * 1024)
+    res = cliente_api().post(
+        "/api/infra/upload_tracking", files={"file": ("grande.txt", grande, "text/plain")}
+    )
+    assert res.status_code == 413
+    assert_forma(res.json(), {"detail": str})
+
+
+def test_api_analyze_tracking_6mb_413():
+    grande = b"x" * (6 * 1024 * 1024)
+    res = cliente_api().post(
+        "/api/infra/trackings/analyze", files={"file": ("grande.txt", grande, "text/plain")}
+    )
+    assert res.status_code == 413
+    assert_forma(res.json(), {"detail": str})
+
+
+def test_upload_tracking_sin_servicio_id_400_en_las_dos_apps(con_sesion):
+    """Falla antes de escribir: el nombre no trae ID de servicio."""
+    archivo = {"file": ("sin_id.txt", b"Empalme 1: Algun lugar", "text/plain")}
+    res_web = cliente_web(con_sesion).post("/api/infra/upload_tracking", files=archivo)
+    res_api = cliente_api().post("/api/infra/upload_tracking", files=archivo)
+    assert res_web.status_code == res_api.status_code == 400
+    assert_forma(res_web.json(), {"error": str})
+    assert_forma(res_api.json(), {"detail": str})
+
+
 def test_web_ban_create_ticket_65_caracteres_422(con_sesion):
     """D2: el panel aplica el mismo límite de la API (antes: 200 success:false 'Error inesperado')."""
     res = cliente_web(con_sesion).post(

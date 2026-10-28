@@ -8,6 +8,7 @@ import asyncio
 import logging
 from dataclasses import asdict
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
@@ -17,7 +18,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from core.parsers.tracking_parser import parse_tracking
 from core.services.baneo_operaciones import (
     LARGO_MOTIVO,
     LARGO_SERVICIO,
@@ -50,16 +50,24 @@ from core.services.camaras_consulta import (
 )
 from core.services.infra_sync import sync_camaras_from_sheet
 from core.services.infra_service import (
-    AnalysisResult,
     ResolveAction,
     ResolveResult,
-    _get_or_create_empalme,
-    _resolve_camara_o_registrar_sin_match,
     analyze_tracking_file,
     resolve_tracking_file,
 )
+from core.services.tracking_operaciones import (
+    MAX_TRACKING_MB,
+    ResultadoUploadTracking,
+    TrackingOriginal,
+    TrackingOriginalNoDisponible,
+    TrackingSinServicioId,
+    TrackingSinUbicaciones,
+    decodificar_tracking,
+    obtener_tracking_original,
+    procesar_tracking_legacy,
+    serializar_analisis,
+)
 from db.models.infra import (
-    Camara,
     Empalme,
     RutaServicio,
     RutaTipo,
@@ -385,103 +393,37 @@ async def trigger_infra_sync(payload: InfraSyncRequest | None = None) -> InfraSy
     )
 
 
-def _obtener_o_crear_servicio(session, servicio_id: str, nombre_archivo: str) -> tuple[Servicio, bool]:
-    """Obtiene un servicio existente o crea uno nuevo.
-
-    Args:
-        session: Sesión de SQLAlchemy.
-        servicio_id: ID único del servicio.
-        nombre_archivo: Nombre del archivo de origen.
-
-    Returns:
-        Tupla (servicio, es_nuevo).
-    """
-
-    servicio = session.query(Servicio).filter(Servicio.servicio_id == servicio_id).first()
-
-    if servicio:
-        # Actualizar nombre de archivo si cambió
-        if nombre_archivo and servicio.nombre_archivo_origen != nombre_archivo:
-            servicio.nombre_archivo_origen = nombre_archivo
-        return servicio, False
-
-    servicio = Servicio(
-        servicio_id=servicio_id,
-        nombre_archivo_origen=nombre_archivo,
-    )
-    session.add(servicio)
-    session.flush()
-
-    logger.info(
-        "action=crear_servicio servicio_id=%s nombre_archivo=%s",
-        servicio_id,
-        nombre_archivo,
-    )
-    return servicio, True
-
-
-def _registrar_empalme(
-    session,
-    servicio: Servicio,
-    empalme_id: str,
-    camara: Optional[Camara],
-) -> tuple[Empalme, bool]:
-    """Registra un empalme y lo asocia al servicio.
-
-    Delega la resolución de `camara_id` en `_get_or_create_empalme` (mismo helper que usa
-    `InfraService`, Tarea 3 del refactor "Adjuntar tracking"): `camara` puede ser `None` (ubicación
-    sin match — ver `_resolve_camara_o_registrar_sin_match`) y un reproceso sin match no pisa un
-    `camara_id` previo válido de una corrida anterior.
-
-    Args:
-        session: Sesión de SQLAlchemy.
-        servicio: Servicio al que pertenece el empalme.
-        empalme_id: ID del empalme en el tracking.
-        camara: Cámara donde se ubica el empalme, o `None` si no matcheó.
-
-    Returns:
-        Tupla (empalme, es_nuevo).
-    """
-
-    tracking_id_completo = f"{servicio.servicio_id}_{empalme_id}"
-    empalme, es_nuevo = _get_or_create_empalme(session, tracking_id_completo, camara)
-
-    if servicio not in empalme.servicios:
-        empalme.servicios.append(servicio)
-
-    if es_nuevo:
-        logger.debug(
-            "action=registrar_empalme tracking_id=%s camara_id=%s servicio_id=%s",
-            tracking_id_completo,
-            empalme.camara_id,
-            servicio.servicio_id,
+async def _leer_tracking(file: UploadFile) -> str:
+    """Lee el upload con tope de `MAX_TRACKING_MB` (413 si lo supera) y lo decodifica."""
+    limite = MAX_TRACKING_MB * 1024 * 1024
+    contenido = await file.read(limite + 1)
+    if len(contenido) > limite:
+        logger.warning("action=upload_rechazado reason=tamano archivo=%s limite=%s", file.filename, limite)
+        raise HTTPException(
+            status_code=413,
+            detail=f"{Path(file.filename or 'El archivo').name} supera el límite de {MAX_TRACKING_MB} MB",
         )
-    return empalme, es_nuevo
+    return decodificar_tracking(contenido)
 
 
 @router.post("/api/infra/upload_tracking", response_model=TrackingUploadResponse)
 async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadResponse:
     """Procesa un archivo de tracking de fibra óptica y puebla la base de datos.
 
-    El endpoint realiza las siguientes operaciones:
-    1. Parsea el archivo para extraer el ID del servicio y la topología (empalmes/ubicaciones).
-    2. Crea o actualiza el servicio en la base de datos.
-    3. Para cada empalme/ubicación:
-       - Busca la cámara/botella contra el inventario real (Camara y CromoBotella — Cromo Red es
-         la fuente de verdad desde 2026-08-11).
-       - Si no matchea, **no crea una cámara nueva**: registra un `IngresoSinMatch`
-         (`origen="tracking"`) para revisión manual y deja el empalme sin `camara_id`. El
-         procesamiento nunca se bloquea por esto.
-       - Registra el paso del servicio por esa cámara.
+    Delega en `core.services.tracking_operaciones.procesar_tracking_legacy`: parsea el archivo,
+    crea o actualiza el servicio y registra cada empalme contra el inventario real (Cromo Red es la
+    fuente de verdad: una ubicación sin match no crea cámara, queda en `IngresoSinMatch` con
+    `origen="tracking"` y el empalme sin `camara_id`).
 
     Args:
-        file: Archivo .txt con el tracking de fibra óptica.
+        file: Archivo .txt con el tracking de fibra óptica (máximo `MAX_TRACKING_MB`).
 
     Returns:
         Resumen del procesamiento con conteos de elementos procesados.
 
     Raises:
         HTTPException 400: Si el archivo no tiene extensión .txt o no contiene datos válidos.
+        HTTPException 413: Si el archivo supera el tope.
         HTTPException 500: Si ocurre un error durante el procesamiento.
     """
 
@@ -492,104 +434,40 @@ async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadRespons
             detail="El archivo debe tener extensión .txt",
         )
 
+    filename = file.filename
+
+    def _procesar(raw_text: str) -> ResultadoUploadTracking:
+        with SessionLocal() as session:
+            return procesar_tracking_legacy(session, raw_text, filename)
+
     try:
-        # Leer contenido del archivo
-        content = await file.read()
-        try:
-            raw_text = content.decode("utf-8")
-        except UnicodeDecodeError:
-            raw_text = content.decode("latin-1")
-
-        # Parsear el tracking
-        result = parse_tracking(raw_text, file.filename)
-
-        if not result.servicio_id:
-            raise HTTPException(
-                status_code=400,
-                detail=f"No se pudo extraer el ID del servicio desde el nombre del archivo: {file.filename}",
-            )
-
-        topologia = result.get_topologia()
-        if not topologia:
-            raise HTTPException(
-                status_code=400,
-                detail="No se encontraron empalmes/ubicaciones en el archivo",
-            )
-
-        logger.info(
-            "action=upload_tracking filename=%s servicio_id=%s empalmes=%d",
-            file.filename,
-            result.servicio_id,
-            len(topologia),
+        raw_text = await _leer_tracking(file)
+        resultado = await asyncio.to_thread(_procesar, raw_text)
+    except TrackingSinServicioId:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No se pudo extraer el ID del servicio desde el nombre del archivo: {filename}",
         )
-
-        # Procesar en base de datos (bloqueante — usa SessionLocal en thread)
-        _servicio_id = result.servicio_id
-        _topologia = topologia
-        _filename = file.filename
-
-        def _persist() -> tuple[int, int, int]:
-            camaras_existentes = 0
-            ubicaciones_sin_match = 0
-            empalmes_registrados = 0
-
-            with SessionLocal() as session:
-                try:
-                    servicio, _ = _obtener_o_crear_servicio(session, _servicio_id, _filename)
-                    servicio.raw_tracking_data = result.to_dict()
-
-                    for empalme_id, ubicacion in _topologia:
-                        # Cromo Red es la fuente de verdad del inventario: nunca se crea una
-                        # Camara nueva. Sin match, se registra un IngresoSinMatch (dentro de
-                        # `_resolve_camara_o_registrar_sin_match`) y el empalme queda sin
-                        # camara_id — el procesamiento del tracking nunca se bloquea por esto.
-                        camara = _resolve_camara_o_registrar_sin_match(
-                            session, ubicacion, filename=_filename, servicio_id=_servicio_id
-                        )
-                        if camara is not None:
-                            camaras_existentes += 1
-                        else:
-                            ubicaciones_sin_match += 1
-
-                        _, empalme_nuevo = _registrar_empalme(session, servicio, empalme_id, camara)
-                        if empalme_nuevo:
-                            empalmes_registrados += 1
-
-                    session.commit()
-                    logger.info(
-                        "action=upload_tracking_complete servicio_id=%s camaras_existentes=%d "
-                        "ubicaciones_sin_match=%d empalmes=%d",
-                        _servicio_id,
-                        camaras_existentes,
-                        ubicaciones_sin_match,
-                        empalmes_registrados,
-                    )
-                    return camaras_existentes, ubicaciones_sin_match, empalmes_registrados
-
-                except Exception as exc:
-                    session.rollback()
-                    logger.exception(
-                        "action=upload_tracking_error servicio_id=%s error=%s", _servicio_id, exc
-                    )
-                    raise
-
-        camaras_existentes, ubicaciones_sin_match, empalmes_registrados = await asyncio.to_thread(_persist)
-
-        return TrackingUploadResponse(
-            status="ok",
-            servicios_procesados=1,
-            servicio_id=result.servicio_id,
-            camaras_nuevas=0,
-            camaras_existentes=camaras_existentes,
-            empalmes_registrados=empalmes_registrados,
-            ubicaciones_sin_match=ubicaciones_sin_match,
-            mensaje=f"Tracking del servicio {result.servicio_id} procesado correctamente",
+    except TrackingSinUbicaciones:
+        raise HTTPException(
+            status_code=400,
+            detail="No se encontraron empalmes/ubicaciones en el archivo",
         )
-
     except HTTPException:
         raise
     except Exception as exc:
-        return error_interno("upload_tracking", exc, filename=file.filename)
+        return error_interno("upload_tracking", exc, filename=filename)
+
+    return TrackingUploadResponse(
+        status="ok",
+        servicios_procesados=1,
+        servicio_id=resultado.servicio_id,
+        camaras_nuevas=0,
+        camaras_existentes=resultado.camaras_existentes,
+        empalmes_registrados=resultado.empalmes_registrados,
+        ubicaciones_sin_match=resultado.ubicaciones_sin_match,
+        mensaje=f"Tracking del servicio {resultado.servicio_id} procesado correctamente",
+    )
 
 
 # =============================================================================
@@ -727,11 +605,7 @@ async def analyze_tracking_endpoint(
     """
     # Obtener contenido del archivo o del body
     if file:
-        raw_bytes = await file.read()
-        try:
-            raw_content = raw_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            raw_content = raw_bytes.decode("latin-1")
+        raw_content = await _leer_tracking(file)
         filename_used = file.filename or "unknown.txt"
     elif content:
         raw_content = content
@@ -741,68 +615,15 @@ async def analyze_tracking_endpoint(
             status_code=400,
             detail="Debe enviar un archivo (file) o contenido (content + filename)",
         )
-    
-    def _analyze() -> AnalysisResult:
+
+    def _analyze() -> dict[str, Any]:
         with SessionLocal() as session:
-            return analyze_tracking_file(session, raw_content, filename_used)
+            return serializar_analisis(analyze_tracking_file(session, raw_content, filename_used))
 
     try:
-        result = await asyncio.to_thread(_analyze)
-
-        # Convertir upgrade_info si existe
-        upgrade_info_response = None
-        if result.upgrade_info:
-            upgrade_info_response = UpgradeInfoResponse(
-                old_service_id=result.upgrade_info.old_service_id,
-                old_service_db_id=result.upgrade_info.old_service_db_id,
-                new_service_id=result.upgrade_info.new_service_id,
-                match_reason=result.upgrade_info.match_reason,
-                punta_a_match=result.upgrade_info.punta_a_match,
-                punta_b_match=result.upgrade_info.punta_b_match,
-            )
-
-        # Convertir strand_info si existe
-        strand_info_response = None
-        if result.strand_info:
-            strand_info_response = StrandInfoResponse(
-                service_id=result.strand_info.service_id,
-                service_db_id=result.strand_info.service_db_id,
-                ruta_id=result.strand_info.ruta_id,
-                current_strands=result.strand_info.current_strands,
-                new_strand_pelo=result.strand_info.new_strand_pelo,
-                new_strand_conector=result.strand_info.new_strand_conector,
-            )
-
-        return TrackingAnalyzeResponse(
-            status=result.status.value,
-            servicio_id=result.servicio_id,
-            servicio_db_id=result.servicio_db_id,
-            nuevo_hash=result.nuevo_hash,
-            rutas_existentes=[
-                RutaInfoResponse(
-                    id=r.id,
-                    nombre=r.nombre,
-                    tipo=r.tipo,
-                    hash_contenido=r.hash_contenido,
-                    empalmes_count=r.empalmes_count,
-                    activa=r.activa,
-                    created_at=r.created_at,
-                    nombre_archivo_origen=r.nombre_archivo_origen,
-                )
-                for r in result.rutas_existentes
-            ],
-            ruta_identica_id=result.ruta_identica_id,
-            parsed_empalmes_count=result.parsed_empalmes_count,
-            message=result.message,
-            error=result.error,
-            upgrade_info=upgrade_info_response,
-            strand_info=strand_info_response,
-            punta_a_sitio=result.punta_a_sitio,
-            punta_b_sitio=result.punta_b_sitio,
-            cantidad_pelos=result.cantidad_pelos,
-            alias_id=result.alias_id,
-        )
-
+        # Las claves que `TrackingAnalyzeResponse` no declara (sugerencias del panel) se descartan
+        # solas; `UpgradeInfoResponse` ignora los `terminal_*` extra.
+        return TrackingAnalyzeResponse(**await asyncio.to_thread(_analyze))
     except HTTPException:
         raise
     except Exception as exc:
@@ -1385,10 +1206,7 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
 
 
 @router.get("/api/infra/tracking/{ruta_id}/download")
-async def download_tracking_file(
-    ruta_id: int,
-    db: AsyncSession = Depends(get_async_db),
-) -> Response:
+async def download_tracking_file(ruta_id: int) -> Response:
     """Descarga el archivo de tracking original de una ruta.
 
     IMPORTANTE: Devuelve el archivo TXT ORIGINAL tal como fue cargado,
@@ -1400,38 +1218,31 @@ async def download_tracking_file(
     Returns:
         Archivo TXT original o error 404 si no está disponible
     """
+
+    def _leer() -> TrackingOriginal | None:
+        with SessionLocal() as session:
+            return obtener_tracking_original(session, ruta_id)
+
     try:
-        stmt = select(RutaServicio).where(RutaServicio.id == ruta_id)
-        ruta = (await db.execute(stmt)).scalars().first()
-
-        if not ruta:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Ruta {ruta_id} no encontrada",
-            )
-
-        if not ruta.raw_file_content:
-            raise HTTPException(
-                status_code=404,
-                detail="Archivo original no disponible para esta ruta. "
-                "Solo las rutas creadas después de la actualización del sistema "
-                "tienen el archivo original guardado.",
-            )
-
-        filename = ruta.nombre_archivo_origen or f"tracking_ruta_{ruta_id}.txt"
-
-        return Response(
-            content=ruta.raw_file_content.encode("utf-8"),
-            media_type="text/plain; charset=utf-8",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-            },
+        original = await asyncio.to_thread(_leer)
+    except TrackingOriginalNoDisponible:
+        raise HTTPException(
+            status_code=404,
+            detail="Archivo original no disponible para esta ruta. "
+            "Solo las rutas creadas después de la actualización del sistema "
+            "tienen el archivo original guardado.",
         )
-
-    except HTTPException:
-        raise
     except Exception as exc:
         return error_interno("download_tracking", exc, ruta_id=ruta_id)
+
+    if original is None:
+        raise HTTPException(status_code=404, detail=f"Ruta {ruta_id} no encontrada")
+
+    return Response(
+        content=original.contenido.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{original.filename}"'},
+    )
 
 
 @router.get("/api/infra/notify/email/config")
