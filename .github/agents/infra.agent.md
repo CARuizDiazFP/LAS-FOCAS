@@ -74,7 +74,7 @@ dentro de la MISMA cámara física, diferenciadas por sufijo "Bot N" en `nombre`
 240 CF" / "Cra 14 de Julio 240 Bot 2 CF"). Modelado con `camara_padre_id` auto-referencial (2 niveles).
 
 - `core/services/camara_hierarchy_service.py` — detección del sufijo "Bot N" (reusa
-  `modules/slack_baneo_notifier/camara_search.py::RE_BOT_SUFIJO`), `resolver_o_crear_padre()` para
+  `core/text/normalizacion.py::RE_BOT_SUFIJO`), `resolver_o_crear_padre()` para
   altas en vivo (conectado a los 6 caminos reales de alta de `Camara`).
 - `core/services/camara_estado_service.py::aplicar_estado_a_grupo()` — único punto que debe escribir
   `Camara.estado` directamente; cascada bidireccional completa (banear cualquier miembro del grupo
