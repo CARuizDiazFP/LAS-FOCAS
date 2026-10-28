@@ -2055,7 +2055,9 @@ si `SMTP_HOST` no está vacío (`EmailService.is_configured()`, `core/services/e
 
 - **Body (JSON):** `to` (lista, mín. 1), `cc` (opcional), `subject` (1-256), `body`,
   `incidente_ids` (lista, mín. 1), `include_xls` (default `true`: adjunta `baneos_activos.xlsx` con
-  las cámaras de cada incidente) e `include_txt` (default `true`: adjunta el TXT original del primer
+  las cámaras de cada incidente; una fila por cámara e incidente, con las columnas `Incidente ID`, `Ticket`,
+  `Servicio Afectado`, `Servicio Protegido`, `ID`, `Nombre`, `Fontine_ID`, `Dirección`, `Estado`, `Servicios`,
+  `Latitud`, `Longitud`, `Fecha Inicio`, `Motivo`) e `include_txt` (default `true`: adjunta el TXT original del primer
   tracking con `raw_file_content` del servicio protegido).
 - **Respuesta 200 (`EmailNotifyResponse`):** `{"success", "message", "error", "recipients_count"}`.
   Responde **siempre 200**: SMTP sin configurar, IDs inexistentes o un error al enviar llegan como
@@ -2074,7 +2076,7 @@ Alternativa sin SMTP: genera un `.eml` para abrir y enviar desde el cliente de c
   (opcionales). Si llegan `subject` o `html_body`, **se guardan** en el incidente
   (`email_subject`/`email_body`) DESPUÉS de generar el archivo y sólo si el incidente existe.
 - **Adjuntos:** el TXT del tracking de la ruta protegida (o de la primera ruta del servicio con
-  contenido), armado con `armar_eml_baneo` (`core/services/baneo_aviso.py`), el mismo que usa el panel; el XLS adjunto trae la columna `Servicios`.
+  contenido), armado con `armar_eml_baneo` (`core/services/baneo_aviso.py`), el mismo que usa el panel; el XLS adjunto es el mismo que el de `notify/email` (`baneos_activos.xlsx`, hoja `Baneos_Activos`, mismas columnas; antes `camaras_baneadas_{ticket}.xlsx` / `Camaras_Baneadas`).
 - **Respuesta 200:** `message/rfc822` con `Content-Disposition: attachment;
   filename="notificacion_{ticket o id}_{UTC %Y%m%d_%H%M%S}.eml"` (nombre sólo ASCII) y header `X-Unsent: 1`.
 - **Errores:** `404` `{"detail": "Incidente no encontrado"}`; `500` con referencia.
