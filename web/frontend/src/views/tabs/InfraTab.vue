@@ -390,9 +390,8 @@
               <div class="active-ban-actions">
                 <button
                   class="btn warning small"
-                  :disabled="avisoLoadingId === inc.id"
                   @click="openAvisoModal(inc)"
-                >{{ avisoLoadingId === inc.id ? '...' : '📧 Dar Aviso' }}</button>
+                >📧 Dar Aviso</button>
                 <button
                   class="btn success small"
                   :disabled="liftLoadingId === inc.id"
@@ -417,8 +416,6 @@
           <h3 class="modal-title">📧 Dar Aviso — {{ avisoIncidente.ticket_asociado || 'Sin ticket' }}</h3>
           <button class="close-btn" @click="closeAvisoModal()">×</button>
         </div>
-        <div v-if="avisoLoadingTemplate" class="aviso-loading-template">⏳ Cargando plantilla...</div>
-        <template v-else>
           <label class="form-label">Destinatarios <span class="req">*</span> <span class="aviso-hint">(separados por coma)</span></label>
           <input v-model="avisoForm.to" type="text" placeholder="operador@empresa.com, supervisor@empresa.com" />
           <label class="form-label">Con copia (CC) <span class="aviso-hint">(opcional)</span></label>
@@ -450,7 +447,6 @@
               @click="sendAviso"
             >{{ avisoSending ? 'Enviando...' : '📧 Enviar Aviso' }}</button>
           </div>
-        </template>
       </div>
     </dialog>
 
@@ -975,13 +971,11 @@ const activeBans = ref<IncidenteActivo[]>([]);
 const activeBansLoading = ref(false);
 const activeBansError = ref('');
 const liftLoadingId = ref<number | null>(null);
-const avisoLoadingId = ref<number | null>(null);
 
 // Sub-modal Dar Aviso
 const avisoModalEl = ref<HTMLDialogElement | null>(null);
 const avisoIncidente = ref<IncidenteActivo | null>(null);
 const avisoSending = ref(false);
-const avisoLoadingTemplate = ref(false);
 interface AvisoForm {
   to: string;
   cc: string;
@@ -1082,7 +1076,6 @@ async function confirmLiftBan(inc: IncidenteActivo) {
 
 function openAvisoModal(inc: IncidenteActivo) {
   avisoIncidente.value = inc;
-  avisoLoadingId.value = inc.id;
   avisoForm.value.include_xls = true;
   avisoForm.value.include_txt = true;
 
@@ -1102,7 +1095,6 @@ function openAvisoModal(inc: IncidenteActivo) {
   avisoForm.value.subject = '[AVISO] BANEO de Camaras';
   avisoForm.value.body = buildAvisoBody(inc, ahora);
 
-  avisoLoadingId.value = null;
   avisoModalEl.value?.showModal();
 }
 
@@ -1747,7 +1739,6 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 /* Sub-modal Dar Aviso */
 .aviso-modal { max-width: 560px; }
 .aviso-hint { font-size: .75rem; color: var(--muted); font-weight: 400; }
-.aviso-loading-template { padding: 24px 0; text-align: center; color: var(--muted); font-size: .88rem; }
 .aviso-body-textarea { font-family: inherit; font-size: .84rem; line-height: 1.5; resize: vertical; min-height: 200px; }
 .aviso-options { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .aviso-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: .85rem; cursor: pointer; }
