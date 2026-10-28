@@ -634,27 +634,23 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { ApiError } from '../../api/client';
+import { ref, onMounted, onUnmounted } from 'vue';
 import {
   analizarTracking,
   baneosActivos,
-  crearBaneo,
   descargarEmlBaneo,
-  descargarTrackingRuta,
   exportarCamaras,
   levantarBaneo,
   limpiarEmpalmesServicio,
   notificarBaneoEmail,
   resolverTracking,
-  rutasDeServicio,
   type AnalyzeResult,
-  type BanRutaOption,
   type IncidenteActivo,
   type ResolverTrackingBody,
 } from '../../api/infra';
 import type { Notificar } from '../../composables/infra/tipos';
 import { useInfraBusqueda } from '../../composables/infra/useInfraBusqueda';
+import { useBaneoWizard } from '../../composables/infra/useBaneoWizard';
 
 // --- Toast ---
 interface Toast { id: number; type: string; title: string; message?: string }
@@ -708,135 +704,34 @@ onMounted(() => {
   void runSearch();
 });
 
-// --- Protocolo de Protección (ban) — Wizard 3 pasos ---
-interface BanFormData {
-  ticket_asociado: string;
-  servicio_afectado_id: string;
-  servicio_protegido_id: string;
-  motivo: string;
-  usuario_ejecutor: string;
-}
-
-const banModalEl = ref<HTMLDialogElement | null>(null);
-const banLoading = ref(false);
-const currentBanStep = ref<1 | 2 | 3>(1);
-const banProtMode = ref<'same' | 'other'>('same');
-const banSearchServicioInput = ref('');
-const banRutas = ref<BanRutaOption[]>([]);
-const banLoadingRutas = ref(false);
-const banRutasError = ref('');
-const banSelectedRutaId = ref<number | null>(null);
-const banConfirmChecked = ref(false);
-
-function resetBanModalState() {
-  banForm.value = { ticket_asociado: '', servicio_afectado_id: '', servicio_protegido_id: '', motivo: '', usuario_ejecutor: '' };
-  currentBanStep.value = 1;
-  banProtMode.value = 'same';
-  banSearchServicioInput.value = '';
-  banRutas.value = [];
-  banLoadingRutas.value = false;
-  banRutasError.value = '';
-  banSelectedRutaId.value = null;
-  banConfirmChecked.value = false;
-}
-
-const banForm = ref<BanFormData>({
-  ticket_asociado: '',
-  servicio_afectado_id: '',
-  servicio_protegido_id: '',
-  motivo: '',
-  usuario_ejecutor: '',
-});
-
-const banEstimatedCamaras = computed<number>(() => {
-  if (banSelectedRutaId.value === null) {
-    return banRutas.value.filter(r => r.activa).reduce((s, r) => s + r.empalmes_count, 0);
-  }
-  return banRutas.value.find(r => r.id === banSelectedRutaId.value)?.empalmes_count ?? 0;
-});
-
-function openBanModal() {
-  resetBanModalState();
-  banModalEl.value?.showModal();
-}
-
-// Siempre se llama con paréntesis: con `@click="closeBanModal"` Vue pasaría el MouseEvent como
-// `force` (truthy) y el modal se cerraría durante "Activando...", saltándose la guarda.
-function closeBanModal(force = false) {
-  if (banLoading.value && !force) return;
-  banModalEl.value?.close();
-  resetBanModalState();
-}
-
-async function loadRutasForBan(servicioId: string) {
-  if (!servicioId) return;
-  banLoadingRutas.value = true;
-  banRutasError.value = '';
-  banRutas.value = [];
-  banSelectedRutaId.value = null;
-  banForm.value.servicio_protegido_id = servicioId;
-  try {
-    const data = await rutasDeServicio(servicioId);
-    banRutas.value = data.rutas ?? [];
-    if (banRutas.value.length === 0) banRutasError.value = `El servicio ${servicioId} no tiene rutas registradas.`;
-  } catch (e: unknown) {
-    banRutasError.value = e instanceof Error ? e.message : String(e);
-    banForm.value.servicio_protegido_id = '';
-  } finally {
-    banLoadingRutas.value = false;
-  }
-}
-
-function banSwitchMode(mode: 'same' | 'other') {
-  if (banProtMode.value === mode) return;
-  banProtMode.value = mode;
-  banRutas.value = [];
-  banRutasError.value = '';
-  banSelectedRutaId.value = null;
-  banSearchServicioInput.value = '';
-  banForm.value.servicio_protegido_id = '';
-  if (mode === 'same') {
-    void loadRutasForBan(banForm.value.servicio_afectado_id.trim());
-  }
-}
-
-async function banGoNext() {
-  if (currentBanStep.value === 1) {
-    if (!banForm.value.servicio_afectado_id.trim()) {
-      showToast('warning', 'Campo requerido', 'Ingresá el ID del servicio afectado');
-      return;
-    }
-    currentBanStep.value = 2;
-    if (banProtMode.value === 'same') {
-      await loadRutasForBan(banForm.value.servicio_afectado_id.trim());
-    }
-  } else if (currentBanStep.value === 2) {
-    if (!banForm.value.servicio_protegido_id.trim()) {
-      showToast('warning', 'Servicio requerido', banProtMode.value === 'other' ? 'Buscá un servicio para proteger' : 'No se pudo cargar el servicio');
-      return;
-    }
-    currentBanStep.value = 3;
-  }
-}
-
-function banGoPrev() {
-  if (currentBanStep.value > 1) currentBanStep.value = (currentBanStep.value - 1) as 1 | 2 | 3;
-}
-
-// Descarga tracking de una ruta directamente (sin abrir el modal de tracking)
-async function downloadTrackingByRutaId(rutaId: number) {
-  try {
-    const filename = await descargarTrackingRuta(rutaId);
-    showToast('success', 'Descarga completa', filename);
-  } catch (e: unknown) {
-    if (e instanceof ApiError && e.status === 404) { showToast('warning', 'Sin archivo', 'El TXT original no está disponible'); return; }
-    showToast('error', 'Error de descarga', e instanceof Error ? e.message : String(e));
-  }
-}
+// --- Protocolo de Protección (ban) — Wizard 3 pasos (useBaneoWizard) ---
+const {
+  banModalEl,
+  banLoading,
+  currentBanStep,
+  banProtMode,
+  banSearchServicioInput,
+  banRutas,
+  banLoadingRutas,
+  banRutasError,
+  banSelectedRutaId,
+  banConfirmChecked,
+  banForm,
+  banEstimatedCamaras,
+  abrir: openBanModal,
+  cerrar: closeBanModal,
+  ocultar: ocultarBanModal,
+  loadRutasForBan,
+  banSwitchMode,
+  banGoNext,
+  banGoPrev,
+  downloadTrackingByRutaId,
+  submitBan,
+} = useBaneoWizard(notificar, refrescarSiBuscado);
 
 // Abre el flujo de upload tracking desde el wizard de ban
 function triggerUploadTrackingForBan(_rutaId: number) {
-  banModalEl.value?.close();
+  ocultarBanModal();
   trackingFileInputEl.value?.click();
 }
 
@@ -1028,33 +923,6 @@ async function downloadEml() {
     showToast('success', 'EML descargado', filename);
   } catch (e: unknown) {
     showToast('error', 'Error al generar EML', e instanceof Error ? e.message : String(e));
-  }
-}
-
-async function submitBan() {
-  if (!banForm.value.servicio_afectado_id.trim() || !banForm.value.servicio_protegido_id.trim()) {
-    showToast('warning', 'Campos requeridos', 'Faltan datos del servicio');
-    return;
-  }
-  banLoading.value = true;
-  try {
-    const payload = {
-      ticket_asociado: banForm.value.ticket_asociado.trim() || null,
-      servicio_afectado_id: banForm.value.servicio_afectado_id.trim(),
-      servicio_protegido_id: banForm.value.servicio_protegido_id.trim(),
-      ruta_protegida_id: banSelectedRutaId.value,
-      motivo: banForm.value.motivo.trim() || null,
-      usuario_ejecutor: banForm.value.usuario_ejecutor.trim() || null,
-    };
-    const data = await crearBaneo(payload);
-    closeBanModal(true);
-    const baneadas = data.camaras_baneadas ?? 0;
-    showToast('success', 'Protocolo activado', `${baneadas} cámara(s) baneadas`);
-    await refrescarSiBuscado();
-  } catch (e: unknown) {
-    showToast('error', 'Error al activar protocolo', e instanceof Error ? e.message : String(e));
-  } finally {
-    banLoading.value = false;
   }
 }
 
