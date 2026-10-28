@@ -450,38 +450,6 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
   border-radius: 4px; font-family: var(--font-heading); font-size: 11px; font-weight: 500;
   color: var(--color-accent); text-decoration: none;
 }
-/* Modal */
-.camera-state-modal, .tracking-detail-modal { position: fixed; inset: 0; margin: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--color-surface); color: var(--text); padding: 24px; max-width: 520px; width: 95vw; max-height: 90vh; overflow-y: auto; }
-.camera-state-modal::backdrop, .tracking-detail-modal::backdrop { background: rgba(0,0,0,.6); }
-.camera-state-title-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
-.camera-state-meta-row { display: flex; gap: 16px; flex-wrap: wrap; font-size: .85rem; margin-bottom: 8px; color: var(--muted); }
-.camera-state-badge { padding: 2px 8px; border-radius: 10px; font-size: .75rem; }
-.camera-state-badge.ok { background: color-mix(in srgb, var(--color-state-ok) 15%, transparent); color: var(--color-state-ok); }
-.camera-state-badge.warning { background: color-mix(in srgb, var(--color-state-warn) 15%, transparent); color: var(--color-state-warn); }
-.camera-state-incidents { margin: 12px 0; }
-.camera-state-incidents-title { font-size: .8rem; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
-.camera-state-incident-item { font-size: .82rem; padding: 6px 0; border-bottom: 1px solid var(--border); display: flex; gap: 12px; flex-wrap: wrap; }
-.camera-state-empty { font-size: .82rem; color: var(--muted); margin: 8px 0; }
-.camera-state-select { width: 100%; margin: 8px 0 14px; }
-.camera-state-actions { display: flex; gap: 8px; margin-top: 14px; }
-/* Tracking modal */
-.tracking-detail-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-.tracking-detail-title { margin: 0; font-size: 1rem; flex: 1; }
-.tracking-detail-close { background: none; border: none; cursor: pointer; color: var(--muted); font-size: 1.3rem; }
-.tracking-download-btn { font-size: .78rem; padding: 4px 10px; background: color-mix(in srgb, var(--color-text) 7%, transparent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; color: var(--text); }
-.tracking-rutas-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
-.tracking-ruta-tab { padding: 5px 12px; border-radius: 14px; font-size: .8rem; border: 1px solid var(--border); background: none; cursor: pointer; color: var(--text); }
-.tracking-ruta-tab.active { background: var(--tab-color, var(--color-accent)); color: var(--color-neutral-100); border-color: transparent; }
-.tracking-sequence { display: flex; flex-direction: column; gap: 6px; }
-.tracking-item { display: flex; align-items: flex-start; gap: 8px; font-size: .85rem; padding: 6px 0; border-bottom: 1px solid var(--border); }
-.tracking-punta { color: var(--color-accent); }
-.tracking-punta-label { font-size: .72rem; color: var(--muted); display: block; }
-.tracking-cable { flex-direction: column; gap: 2px; }
-.tracking-cable-name { font-weight: 600; }
-.tracking-atenuacion { color: var(--color-state-warn); font-size: .78rem; }
-.tracking-empalme-id { color: var(--muted); font-size: .75rem; }
-.tracking-loading, .tracking-error, .tracking-empty { padding: 16px; color: var(--muted); font-size: .85rem; }
-.tracking-error { color: var(--color-state-error); }
 /* Toasts */
 .toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
 .toast { display: flex; align-items: flex-start; gap: 10px; background: var(--color-surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; min-width: 260px; max-width: 380px; pointer-events: all; box-shadow: 0 4px 12px rgba(0,0,0,.4); }
@@ -509,8 +477,6 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 /* Botones extra (modificadores de .btn global) */
 .btn.danger { background: transparent; color: oklch(0.72 0.11 25); border: 1px solid color-mix(in srgb, var(--color-state-error) 50%, transparent); }
 .btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-error) 12%, transparent); }
-.btn.danger-subtle { background: transparent; color: var(--color-state-error); border: 1px solid color-mix(in srgb, var(--color-state-error) 20%, transparent); }
-.btn.danger-subtle:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-error) 10%, transparent); }
 
 /* Dropdown descargar */
 .download-dropdown-wrapper { position: relative; }
