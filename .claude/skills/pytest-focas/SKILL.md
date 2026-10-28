@@ -619,6 +619,11 @@ trampas reales:
   reescribieron registrando `threading.get_ident()` en un fake async (el hilo del loop) y en el fake
   sync, y comparando. Un fake async que el camino probado no llama (p. ej. leer la caché con
   `refrescar=true`) deja la clave sin registrar: elegir uno que sí se ejecute.
+- **Parchear `asyncio.to_thread` del módulo atrapa *todas* sus llamadas, también las que se agreguen
+  después.** Tres tests de Repetitividad lo reemplazaban por un fake que sólo devolvía el informe; al
+  pasar el historial y `_save_upload` a `to_thread` (P17, 2026-10-27), el fake recibió esas llamadas y
+  los tests fallaron sin que el endpoint estuviera roto. Parchear la función de negocio
+  (`web_informes.generar_informe_desde_excel`), no el mecanismo.
 - **"La cantidad de queries no crece con N": comparar 20 contra 200, no 5 contra 200.** Con pocas
   filas algunas etapas de `selectinload` no tienen padres y no consultan (12 vs 13 sentencias, falso
   rojo). Y `selectinload` parte cada 500 padres: con 500 filas aparecen 5 sentencias más, una por lote,
@@ -640,6 +645,23 @@ trampas reales:
 
 Para bajarlos, matar por PID o con `pgrep -f "[a]pp_medicion"`: un `pkill -f app_medicion` corrido
 desde el mismo `bash -c` matchea su propia línea de comando y mata la shell (exit 144).
+
+**Arnés viejo-vs-nuevo de un solo módulo** (cuando la versión anterior y la nueva se comparan en la
+misma sesión y la misma DB). Patrón de `scripts/arnes_smart_search_terminos.py` (P17: 267 casos, 0
+diferencias, antes de reemplazar el matching en Python por SQL):
+
+```python
+fuente = subprocess.run(["git", "show", f"{rev}:core/services/<modulo>.py"],
+                        check=True, capture_output=True, text=True).stdout
+modulo = types.ModuleType("<modulo>_base")
+sys.modules[modulo.__name__] = modulo  # sin esto, @dataclass no resuelve sus anotaciones
+exec(compile(fuente, f"<{rev}>", "exec"), modulo.__dict__)
+```
+
+Comparar total **y** lista ordenada de ids (no sólo conjuntos), recorrer todas las páginas de la
+versión nueva, incluir términos de borde (acentos, `%`, `_`, `\`, valores de enum) y términos reales
+sacados de la DB, y salir con exit 1 ante cualquier diferencia. Correr viejo y nuevo uno después del
+otro reduce la deriva de dev (los workers escriben). Sólo `SELECT`, y abortar si la DB no es focas_dev.
 
 ## E2E contra dev sin rebuild ni deploy (lección 2026-10-27, P16)
 

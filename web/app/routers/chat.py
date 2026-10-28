@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import secrets
+import threading
 import time
 import unicodedata
 from mimetypes import guess_type
@@ -68,14 +69,22 @@ def _load_metrics() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("action=metrics_load error=%s", exc)
 
-def _persist_metrics() -> None:
+# Serializa las escrituras: `_persist_metrics` corre en el threadpool y dos mensajes simultáneos
+# compartirían el mismo `.tmp`.
+_METRICS_LOCK = threading.Lock()
+
+
+def _persist_metrics(contadores: dict[str, int]) -> None:
+    """Escribe `contadores` (una copia tomada en el event loop) de forma atómica. Sync: se llama con
+    ``asyncio.to_thread``."""
     if not METRICS_PERSIST_PATH:
         return
     try:
         p = Path(METRICS_PERSIST_PATH)
         tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(INTENT_COUNTER, ensure_ascii=False))
-        tmp.replace(p)
+        with _METRICS_LOCK:
+            tmp.write_text(json.dumps(contadores, ensure_ascii=False))
+            tmp.replace(p)
     except Exception as exc:  # noqa: BLE001
         logger.warning("action=metrics_persist error=%s", exc)
 
@@ -208,7 +217,7 @@ async def chat_message(
     mapped = data.get("intention") or data.get("intent")
     if mapped in INTENT_COUNTER:
         INTENT_COUNTER[mapped] += 1
-        _persist_metrics()
+        await asyncio.to_thread(_persist_metrics, dict(INTENT_COUNTER))
     # Logging prudente: opcionalmente no incluir el texto completo
     if LOG_RAW_TEXT:
         payload["user_text"] = text
@@ -267,21 +276,19 @@ async def chat_upload_attachment(
     token = secrets.token_urlsafe(6)
     stored_name = f"chat_{int(time.time())}_{token}_{safe_name}"
     dest = UPLOADS_DIR / stored_name
+    # Se lee en memoria (tope MAX_CHAT_UPLOAD_BYTES) y se escribe una sola vez en el threadpool: la
+    # escritura a disco no corre en el event loop y un adjunto excedido no llega a crear el archivo.
+    partes: list[bytes] = []
     size = 0
     try:
-        with dest.open("wb") as buffer:
-            while True:
-                chunk = await file.read(512 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > MAX_CHAT_UPLOAD_BYTES:
-                    buffer.close()
-                    dest.unlink(missing_ok=True)
-                    return JSONResponse({"error": "Adjunto supera el límite permitido"}, status_code=413)
-                buffer.write(chunk)
+        while chunk := await file.read(512 * 1024):
+            size += len(chunk)
+            if size > MAX_CHAT_UPLOAD_BYTES:
+                return JSONResponse({"error": "Adjunto supera el límite permitido"}, status_code=413)
+            partes.append(chunk)
     finally:
         await file.close()
+    await asyncio.to_thread(dest.write_bytes, b"".join(partes))
     logger.info(
         "action=chat_upload user=%s filename=%s size_bytes=%s stored=%s",
         username,

@@ -12,7 +12,10 @@ El módulo **Infraestructura FO** permite la gestión de cámaras de fibra ópti
 
 ### Búsqueda de cámaras
 - **Smart Search**: búsqueda libre por servicio, dirección, cámara, cable (`POST /api/infra/smart-search`,
-  `web/app/routers/camaras.py`)
+  `web/app/routers/camaras.py` → `core/services/camaras_consulta.py`). Desde P17 (2026-10-27) cada término
+  es una condición SQL (`condicion_termino`, `ILIKE` con `%`/`_` escapados) y sólo se carga la página:
+  ~6,3 s → ~0,13 s en dev. El criterio no cambió (arnés `scripts/arnes_smart_search_terminos.py`: 267
+  casos, 0 diferencias contra la versión anterior); correrlo si se toca el matching o la normalización.
 - **Filtros rápidos**: por estado (Libre, Ocupada, Baneada, No operativa); `DETECTADA` y el pseudo-estado
   "Tracking" se retiraron el 2026-08-11 (ver "Estados operables" más abajo)
 - **Upload de tracking**: carga archivos `.txt` de tracking para asociar cámaras a servicios
@@ -506,7 +509,9 @@ operativos para mantenimiento, pensado para crecer con más módulos) → tarjet
 - **Filtro "Sólo duplicadas"**: cambia el contenido a una tarjeta por cada grupo de 2+ Cámaras
   candidatas a duplicado (`GET /api/admin/infra/camaras/viewer/duplicados`,
   `core/services/camara_duplicados_service.py::detectar_grupos_duplicados`) — sin paginar, calculado
-  sobre el universo completo de Cámaras raíz (~10.212 filas, O(n) en Python, sub-segundo, sin cache).
+  sobre el universo completo de Cámaras raíz (~10.212 filas, O(n) en Python, sin cache). Los conteos
+  de Botellas/cables por miembro salen de 4 consultas agregadas (P17: eran 4 lazy loads por miembro,
+  ~790 consultas y 3,3 s; ahora 5 consultas y ~0,65 s).
   Cada tarjeta muestra un badge "⚠ Estados distintos" si los miembros no coinciden en estado, y un
   botón "Fusionar" por miembro que abre `ModalUnificarCamara.vue` (reusado tal cual, con el nombre
   del otro miembro del grupo precargado como sugerencia de búsqueda vía el prop nuevo
@@ -691,7 +696,10 @@ por normalización).
 llama de forma síncrona en 3 endpoints; su costo escala con el tamaño total de `app.camaras`/
 `app.cromo_botellas`, no con la cantidad de duplicados reales. Se agregó una caché Redis de lectura +
 un worker dedicado que la recalcula en background + un canal WebSocket que avisa a cualquier panel
-admin abierto cuando el recálculo termina — sin tocar la función de detección en sí. Detalle completo
+admin abierto cuando el recálculo termina — sin tocar la función de detección en sí. **P17 (2026-10-27)**:
+el minuto de cómputo en frío (64 s con Redis vacío) no era Python sino traer las filas enteras de
+`cromo_botellas` con su JSONB (138 MB en dev); con `load_only` la detección baja a ~1,2 s, así que un
+cache miss o "Actualizar" ya no hacen esperar. Detalle completo
 (arquitectura, convenciones exactas, decisiones de infraestructura confirmadas y alcance YAGNI) en
 `docs/superpowers/specs/2026-08-21-botellas-duplicados-redis-ws.md`; acá sólo el resumen operativo.
 

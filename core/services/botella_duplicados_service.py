@@ -27,7 +27,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Literal
 
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, load_only
 
 from core.services.camara_hierarchy_service import estado_mas_restrictivo, normalizar_para_agrupar_extendido
 from db.models.cromo import CromoBotella
@@ -68,7 +68,11 @@ def detectar_grupos_duplicados_botellas(session: Session) -> list[GrupoBotellasD
     filas, a diferencia de una colección), y el `sleep(0)` fuerza un checkpoint de liberación del GIL
     a intervalos predecibles — sin él, medido en vivo el 2026-08-22, la construcción de miles de
     objetos ORM seguidos retiene el GIL el tiempo suficiente para bloquear el hilo del event loop que
-    espera este cómputo vía `asyncio.to_thread` (worker y `web/app/main.py`)."""
+    espera este cómputo vía `asyncio.to_thread` (worker y `web/app/main.py`).
+
+    `load_only`: sólo las columnas que se usan. `cromo_botellas` guarda el payload de Cromo en JSONB
+    (138 MB para ~11.000 filas en dev): traer la fila entera costaba ~30 s de decodificación JSON y
+    ~20 s de transferencia, casi todo el minuto que tardaba el visor con la caché vacía (P17)."""
     # Agrupar primero por Cámara padre, luego dentro de cada padre por nombre normalizado extendido.
     por_padre: dict[int, dict[str, list[BotellaDuplicadaItem]]] = defaultdict(lambda: defaultdict(list))
     padres_nombre: dict[int, str] = {}
@@ -77,7 +81,10 @@ def detectar_grupos_duplicados_botellas(session: Session) -> list[GrupoBotellasD
     legado_query = (
         session.query(Camara)
         .filter(Camara.camara_padre_id.isnot(None))
-        .options(joinedload(Camara.camara_padre))
+        .options(
+            load_only(Camara.id, Camara.nombre, Camara.estado),
+            joinedload(Camara.camara_padre).load_only(Camara.id, Camara.nombre),
+        )
         .yield_per(_BATCH_SIZE)
     )
     for indice, botella in enumerate(legado_query, start=1):
@@ -100,7 +107,10 @@ def detectar_grupos_duplicados_botellas(session: Session) -> list[GrupoBotellasD
     cromo_query = (
         session.query(CromoBotella)
         .filter(CromoBotella.camara_id.isnot(None), CromoBotella.vigente.is_(True))
-        .options(joinedload(CromoBotella.camara))
+        .options(
+            load_only(CromoBotella.n_id, CromoBotella.nombre, CromoBotella.estado),
+            joinedload(CromoBotella.camara).load_only(Camara.id, Camara.nombre),
+        )
         .yield_per(_BATCH_SIZE)
     )
     for indice, cromo_botella in enumerate(cromo_query, start=1):
