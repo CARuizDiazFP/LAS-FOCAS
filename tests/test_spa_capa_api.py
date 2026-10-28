@@ -21,20 +21,12 @@ SRC = Path(__file__).resolve().parents[1] / "web" / "frontend" / "src"
 
 # Archivos con `fetch(` aún sin migrar a la capa api/ (rutas relativas a web/frontend/src).
 PENDIENTES_FETCH: set[str] = {
-    "components/infra/CamaraEstadoModal.vue",
     "views/ReportsHistoryView.vue",
-    "components/infra/ModalFusionarGrupo.vue",
-    "views/CamaraDetailView.vue",
-    "views/BotellasInventarioView.vue",
-    "components/infra/ModalAsociarHuerfanas.vue",
     "views/tabs/VlanTab.vue",
-    "components/infra/ModalUnificarCamara.vue",
     "views/tabs/InfraTab.vue",
     "views/tabs/RepetitividadTab.vue",
     "composables/useTracking.ts",
-    "views/BotellaDetalleUnificadaView.vue",
     "views/tabs/ChatTab.vue",
-    "admin/components/ModalAsociarSinMatch.vue",
 }
 
 # EventSource directo aún fuera de composables/ (se migran a useCorridaSse).

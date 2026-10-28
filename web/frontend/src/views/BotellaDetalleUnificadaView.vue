@@ -36,6 +36,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { obtenerEstadoAsociacionBotella } from '../api/botellas';
 import ModalAsociarHuerfanas from '../components/infra/ModalAsociarHuerfanas.vue';
 
 /**
@@ -72,14 +73,11 @@ onMounted(async () => {
 
   nId.value = Number(id);
   try {
-    const res = await fetch(`/api/infra/cromo-botellas/${nId.value}/estado-asociacion`, { credentials: 'include' });
-    if (res.ok) {
-      const data = await res.json() as { huerfana?: boolean; nombre?: string | null };
-      if (data.huerfana) {
-        huerfana.value = true;
-        nombreBotella.value = data.nombre ?? '';
-        return;
-      }
+    const data = await obtenerEstadoAsociacionBotella(nId.value);
+    if (data.huerfana) {
+      huerfana.value = true;
+      nombreBotella.value = data.nombre ?? '';
+      return;
     }
   } catch {
     // Si el chequeo falla, seguimos con el comportamiento anterior (redirigir sin más vueltas).

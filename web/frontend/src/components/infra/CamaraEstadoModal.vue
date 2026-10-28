@@ -56,23 +56,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue';
-import { useSession } from '../../composables/useSession';
-
-interface EstadoContextoItem {
-  id: number;
-  ticket_asociado: string | null;
-  servicio_protegido_id: string;
-  ruta_protegida_id: number | null;
-}
-
-interface EstadoContexto {
-  estado_actual: string;
-  estado_sugerido: string | null;
-  tiene_baneo_activo: boolean;
-  tiene_ingreso_activo: boolean;
-  inconsistente: boolean;
-  incidentes_activos: EstadoContextoItem[];
-}
+import { cambiarEstadoCamara, obtenerEstadoCamara, type EstadoContexto } from '../../api/camaras';
 
 const props = defineProps<{
   open: boolean;
@@ -86,7 +70,6 @@ const emit = defineEmits<{
   error: [message: string];
 }>();
 
-const { csrf } = useSession();
 const dialogEl = ref<HTMLDialogElement | null>(null);
 const contexto = ref<EstadoContexto | null>(null);
 // Fallback si el fetch de /estado todavía no resolvió — vocabulario vigente desde 2026-08-11
@@ -105,15 +88,7 @@ async function loadContexto(): Promise<void> {
   loading.value = true;
   errorMessage.value = '';
   try {
-    const res = await fetch(`/api/infra/camaras/${props.camaraId}/estado`, { credentials: 'include' });
-    const data = await res.json() as {
-      error?: string;
-      contexto?: EstadoContexto;
-      estados_disponibles?: string[];
-    };
-    if (!res.ok) {
-      throw new Error(data.error ?? `Error ${res.status}`);
-    }
+    const data = await obtenerEstadoCamara(props.camaraId);
     contexto.value = data.contexto ?? null;
     estadosDisponibles.value = data.estados_disponibles?.length ? data.estados_disponibles : estadosDisponibles.value;
     newEstado.value = data.contexto?.estado_actual ?? 'LIBRE';
@@ -147,14 +122,8 @@ async function saveCameraState(): Promise<void> {
   savingState.value = true;
   errorMessage.value = '';
   try {
-    const res = await fetch(`/api/infra/camaras/${props.camaraId}/estado`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ estado: newEstado.value, motivo: motivo.value.trim(), csrf_token: csrf() }),
-    });
-    const data = await res.json() as { error?: string; success?: boolean };
-    if (!res.ok || !data.success) {
+    const data = await cambiarEstadoCamara(props.camaraId, newEstado.value, motivo.value.trim());
+    if (!data.success) {
       throw new Error(data.error ?? 'No se pudo guardar el estado');
     }
     emit('updated');
