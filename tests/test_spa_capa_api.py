@@ -6,8 +6,7 @@
 
 La capa HTTP del SPA es `src/api/client.ts` (`request`, `requestJson`, `requestDownload`), que pone el
 header `X-CSRF-Token` en todo método mutante. Estos tests impiden que vuelvan `fetch(`, CSRF armado a mano
-o transportes crudos fuera de esa capa. `PENDIENTES_FETCH` es la lista de archivos todavía sin migrar:
-cada tarea de P10 la achica y la última la deja vacía.
+o transportes crudos fuera de esa capa: no hay excepciones.
 
 Capa api = los directorios `api/` del SPA (`src/api/` y `src/admin/api/`, que también usa `client.ts`).
 """
@@ -18,12 +17,6 @@ import re
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "web" / "frontend" / "src"
-
-# Archivos con `fetch(` aún sin migrar a la capa api/ (rutas relativas a web/frontend/src).
-PENDIENTES_FETCH: set[str] = set()
-
-# EventSource directo aún fuera de composables/ (ya migrados a useCorridaSse: vacío).
-PENDIENTES_SSE: set[str] = set()
 
 CSRF_A_MANO = re.compile(r"csrf_token|X-CSRF-Token|\bcsrf\(\)")
 FETCH = re.compile(r"\bfetch\(")
@@ -47,33 +40,23 @@ def _fuera_de_api() -> dict[str, str]:
 
 
 def test_fetch_solo_en_capa_api() -> None:
-    # `fetch(` fuera de api/ sólo se tolera en los archivos pendientes de migrar.
-    con_fetch = {r for r, t in _fuera_de_api().items() if FETCH.search(t)}
-    sobran = sorted(con_fetch - PENDIENTES_FETCH)
-    assert not sobran, f"fetch( fuera de src/api/ (usar request/requestJson): {sobran}"
-
-
-def test_pendientes_siguen_pendientes() -> None:
-    # Obliga a sacar del set el archivo apenas se migra: el set sólo se achica.
-    fuentes = _fuentes()
-    migrados = sorted(r for r in PENDIENTES_FETCH if r not in fuentes or not FETCH.search(fuentes[r]))
-    assert not migrados, f"ya sin fetch( — quitar de PENDIENTES_FETCH: {migrados}"
+    con_fetch = sorted(r for r, t in _fuera_de_api().items() if FETCH.search(t))
+    assert not con_fetch, f"fetch( fuera de src/api/ (usar request/requestJson): {con_fetch}"
 
 
 def test_sin_csrf_a_mano_fuera_de_api() -> None:
-    # El CSRF lo pone `request()`; armarlo a mano fuera de api/ se tolera sólo junto a un fetch pendiente.
-    a_mano = {r for r, t in _fuera_de_api().items() if CSRF_A_MANO.search(t)}
-    sobran = sorted(a_mano - PENDIENTES_FETCH)
-    assert not sobran, f"CSRF armado a mano fuera de src/api/: {sobran}"
+    # El CSRF lo pone `request()`; armarlo a mano fuera de api/ no se tolera.
+    a_mano = sorted(r for r, t in _fuera_de_api().items() if CSRF_A_MANO.search(t))
+    assert not a_mano, f"CSRF armado a mano fuera de src/api/: {a_mano}"
 
 
 def test_transportes_crudos_solo_en_api_o_composables() -> None:
-    # XMLHttpRequest sólo en api/; EventSource sólo en composables/ (más los pendientes de migrar).
+    # XMLHttpRequest sólo en api/; EventSource sólo en composables/ (useCorridaSse).
     xhr, sse = [], []
     for r, t in _fuera_de_api().items():
         if "XMLHttpRequest" in t:
             xhr.append(r)
-        if "new EventSource" in t and not r.startswith("composables/") and r not in PENDIENTES_SSE:
+        if "new EventSource" in t and not r.startswith("composables/"):
             sse.append(r)
     assert not xhr, f"XMLHttpRequest fuera de src/api/: {sorted(xhr)}"
     assert not sse, f"new EventSource fuera de composables/: {sorted(sse)}"
