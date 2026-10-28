@@ -4,261 +4,260 @@
   Descripción: Visor de servicios — búsqueda multipropósito, chips de filtro, grilla/lista con scroll infinito
 -->
 <template>
-  <section class="servicios-view">
-    <header class="servicios-view__header">
-      <span class="servicios-view__kicker">Operación diaria</span>
-      <div class="servicios-view__heading-row">
-        <h1>Servicios</h1>
-        <p class="servicios-view__subtitle">Buscador multipropósito con paginación incremental.</p>
-      </div>
-    </header>
+  <ViewerShell
+    bloque="servicios-view"
+    :loading="loading"
+    error=""
+    :vacio="items.length === 0 && !error"
+    :hay-mas="hasMore"
+    texto-vacio="Ningún servicio coincide"
+    texto-cargando="Cargando más servicios..."
+    ancho-estado="230px"
+    @cargar-mas="cargarSiguiente"
+  >
+    <template #toolbar>
+      <header class="servicios-view__header">
+        <span class="servicios-view__kicker">Operación diaria</span>
+        <div class="servicios-view__heading-row">
+          <h1>Servicios</h1>
+          <p class="servicios-view__subtitle">Buscador multipropósito con paginación incremental.</p>
+        </div>
+      </header>
 
-    <hr class="noc-rule servicios-view__rule" />
+      <hr class="noc-rule servicios-view__rule" />
 
-    <div class="servicios-view__toolbar">
-      <div class="servicios-view__toolbar-row">
-        <div class="servicios-view__search">
-          <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-          <input
-            v-model="query"
-            type="search"
-            placeholder="Buscar por ID, cliente, domicilio, tipo o estado"
-            @input="onSearchInput"
-          />
+      <div class="servicios-view__toolbar">
+        <div class="servicios-view__toolbar-row">
+          <div class="servicios-view__search">
+            <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+            <input
+              v-model="query"
+              type="search"
+              placeholder="Buscar por ID, cliente, domicilio, tipo o estado"
+              @input="onSearchInput"
+            />
+          </div>
+
+          <div class="servicios-view__view-toggle" role="radiogroup" aria-label="Tipo de vista">
+            <button
+              type="button"
+              role="radio"
+              :aria-checked="vista === 'grid'"
+              :class="['servicios-view__view-option', { 'is-active': vista === 'grid' }]"
+              title="Vista grilla"
+              @click="setVista('grid')"
+            >
+              <i class="ph ph-squares-four" aria-hidden="true"></i>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              :aria-checked="vista === 'list'"
+              :class="['servicios-view__view-option', { 'is-active': vista === 'list' }]"
+              title="Vista lista"
+              @click="setVista('list')"
+            >
+              <i class="ph ph-rows" aria-hidden="true"></i>
+            </button>
+          </div>
+
+          <button class="btn primary" type="button" :disabled="loading" @click="recargarDesdeCero">
+            <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
+            {{ loading && items.length === 0 ? 'Buscando...' : 'Actualizar' }}
+          </button>
         </div>
 
-        <div class="servicios-view__view-toggle" role="radiogroup" aria-label="Tipo de vista">
+        <div class="servicios-view__toolbar-row servicios-view__chips-row">
+          <span class="servicios-view__chips-label">Filtros</span>
+
           <button
+            v-for="chip in tipoChips"
+            :key="chip.value"
             type="button"
-            role="radio"
-            :aria-checked="vista === 'grid'"
-            :class="['servicios-view__view-option', { 'is-active': vista === 'grid' }]"
-            title="Vista grilla"
-            @click="setVista('grid')"
+            :class="['servicios-view__chip', { 'is-active': filtros.tipo === chip.value }]"
+            @click="setTipo(chip.value)"
           >
-            <i class="ph ph-squares-four" aria-hidden="true"></i>
+            {{ chip.label }}
           </button>
+
           <button
+            v-for="chip in estadoChips"
+            :key="chip.value"
             type="button"
-            role="radio"
-            :aria-checked="vista === 'list'"
-            :class="['servicios-view__view-option', { 'is-active': vista === 'list' }]"
-            title="Vista lista"
-            @click="setVista('list')"
+            :class="['servicios-view__chip', { 'is-active': filtros.estado === chip.value }]"
+            @click="setEstado(chip.value)"
           >
-            <i class="ph ph-rows" aria-hidden="true"></i>
+            <span :class="['servicios-view__chip-dot', `is-${chip.token}`]" aria-hidden="true"></span>
+            {{ chip.label }}
           </button>
+
+          <span class="servicios-view__count">
+            <strong>{{ total.toLocaleString('es-AR') }}</strong> servicios · mostrando {{ items.length }}
+          </span>
         </div>
 
-        <button class="btn primary" type="button" :disabled="loading" @click="reloadFromZero">
-          <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
-          {{ loading && items.length === 0 ? 'Buscando...' : 'Actualizar' }}
-        </button>
+        <div class="servicios-view__toolbar-row servicios-view__chips-row">
+          <span class="servicios-view__chips-label">Nivel Cliente</span>
+
+          <button
+            v-for="chip in categoriaChips"
+            :key="chip.value"
+            type="button"
+            :class="['servicios-view__chip', { 'is-active': filtros.categoria === chip.value }]"
+            @click="setCategoria(chip.value)"
+          >
+            {{ chip.label }}
+          </button>
+        </div>
+      </div>
+    </template>
+
+    <template v-if="items.length > 0">
+      <div v-if="vista === 'grid'" class="servicios-view__grid">
+        <ServicioCard
+          v-for="item in items"
+          :key="item.numero_primer_servicio"
+          :servicio="item"
+          :selected="seleccionadas.has(item.id)"
+          @open-detail="openServicioDetail"
+          @toggle-select="toggleSeleccion(item.id)"
+        />
       </div>
 
-      <div class="servicios-view__toolbar-row servicios-view__chips-row">
-        <span class="servicios-view__chips-label">Filtros</span>
-
-        <button
-          v-for="chip in tipoChips"
-          :key="chip.value"
-          type="button"
-          :class="['servicios-view__chip', { 'is-active': filtros.tipo === chip.value }]"
-          @click="setTipo(chip.value)"
-        >
-          {{ chip.label }}
-        </button>
-
-        <button
-          v-for="chip in estadoChips"
-          :key="chip.value"
-          type="button"
-          :class="['servicios-view__chip', { 'is-active': filtros.estado === chip.value }]"
-          @click="setEstado(chip.value)"
-        >
-          <span :class="['servicios-view__chip-dot', `is-${chip.token}`]" aria-hidden="true"></span>
-          {{ chip.label }}
-        </button>
-
-        <span class="servicios-view__count">
-          <strong>{{ total.toLocaleString('es-AR') }}</strong> servicios · mostrando {{ items.length }}
-        </span>
-      </div>
-
-      <div class="servicios-view__toolbar-row servicios-view__chips-row">
-        <span class="servicios-view__chips-label">Nivel Cliente</span>
-
-        <button
-          v-for="chip in categoriaChips"
-          :key="chip.value"
-          type="button"
-          :class="['servicios-view__chip', { 'is-active': filtros.categoria === chip.value }]"
-          @click="setCategoria(chip.value)"
-        >
-          {{ chip.label }}
-        </button>
-      </div>
-    </div>
-
-    <div ref="scrollEl" class="servicios-view__scroll">
-      <template v-if="items.length > 0">
-        <div v-if="vista === 'grid'" class="servicios-view__grid">
-          <ServicioCard
+      <div v-else class="servicios-view__list-layout">
+        <div class="servicios-view__list">
+          <div
             v-for="item in items"
             :key="item.numero_primer_servicio"
-            :servicio="item"
-            :selected="seleccionadas.has(item.id)"
-            @open-detail="openServicioDetail"
-            @toggle-select="toggleSeleccion(item.id)"
-          />
+            role="button"
+            tabindex="0"
+            :class="['servicios-view__list-row', { 'is-selected': item.numero_primer_servicio === selectedIdOrigen }]"
+            @click="selectedIdOrigen = item.numero_primer_servicio"
+            @keyup.enter="selectedIdOrigen = item.numero_primer_servicio"
+          >
+            <input
+              type="checkbox"
+              class="servicios-view__list-checkbox"
+              :checked="seleccionadas.has(item.id)"
+              @click.stop
+              @change="toggleSeleccion(item.id)"
+            />
+            <span :class="['servicios-view__list-dot', `is-${estadoServicioToken(item.estado_servicio)}`]" aria-hidden="true"></span>
+            <span :class="['servicios-view__list-cliente', { 'is-baja': estadoServicioToken(item.estado_servicio) === 'error' }]">{{ item.nombre_cliente || 'Cliente sin dato' }}</span>
+            <span class="servicios-view__list-categoria">{{ categoriaLabel(item.categoria) }}</span>
+            <span class="servicios-view__list-historico">{{ historicoLabel(item) }}</span>
+            <span class="servicios-view__list-tipo">{{ (item.tipo_servicio || 'SERVICIO').toUpperCase() }}</span>
+            <span class="servicios-view__list-cta">{{ ctaLabel(item) }}</span>
+          </div>
         </div>
 
-        <div v-else class="servicios-view__list-layout">
-          <div class="servicios-view__list">
-            <div
-              v-for="item in items"
-              :key="item.numero_primer_servicio"
-              role="button"
-              tabindex="0"
-              :class="['servicios-view__list-row', { 'is-selected': item.numero_primer_servicio === selectedIdOrigen }]"
-              @click="selectedIdOrigen = item.numero_primer_servicio"
-              @keyup.enter="selectedIdOrigen = item.numero_primer_servicio"
-            >
-              <input
-                type="checkbox"
-                class="servicios-view__list-checkbox"
-                :checked="seleccionadas.has(item.id)"
-                @click.stop
-                @change="toggleSeleccion(item.id)"
-              />
-              <span :class="['servicios-view__list-dot', `is-${estadoServicioToken(item.estado_servicio)}`]" aria-hidden="true"></span>
-              <span :class="['servicios-view__list-cliente', { 'is-baja': estadoServicioToken(item.estado_servicio) === 'error' }]">{{ item.nombre_cliente || 'Cliente sin dato' }}</span>
-              <span class="servicios-view__list-categoria">{{ categoriaLabel(item.categoria) }}</span>
-              <span class="servicios-view__list-historico">{{ historicoLabel(item) }}</span>
-              <span class="servicios-view__list-tipo">{{ (item.tipo_servicio || 'SERVICIO').toUpperCase() }}</span>
-              <span class="servicios-view__list-cta">{{ ctaLabel(item) }}</span>
+        <aside v-if="selectedItem" class="servicios-view__preview">
+          <div>
+            <span class="servicios-view__preview-kicker">Vista previa</span>
+            <h2 :class="['servicios-view__preview-title', { 'is-baja': estadoServicioToken(selectedItem.estado_servicio) === 'error' }]">{{ selectedItem.nombre_cliente || 'Cliente sin dato' }}</h2>
+            <p class="servicios-view__preview-domicilio">{{ previewDomicilio(selectedItem) }}</p>
+          </div>
+
+          <div class="servicios-view__preview-tags">
+            <span class="servicios-view__preview-tag is-accent">{{ selectedItem.estado_servicio || 'Sin estado' }}</span>
+            <span class="servicios-view__preview-tag">{{ (selectedItem.tipo_servicio || 'SERVICIO').toUpperCase() }}</span>
+            <span v-if="selectedItem.sla_prometido" class="servicios-view__preview-tag is-outline">SLA {{ selectedItem.sla_prometido }}</span>
+            <span v-if="!selectedItem.es_verificable" class="servicios-view__preview-tag is-warn">No verificable</span>
+          </div>
+
+          <div class="servicios-view__hairline"></div>
+
+          <div class="servicios-view__preview-historico">
+            <span class="servicios-view__preview-label">Histórico de IDs</span>
+            <div class="servicios-view__preview-nodos">
+              <span class="servicios-view__preview-nodo">{{ selectedItem.numero_primer_servicio }}</span>
+              <template v-if="selectedItem.numero_linea && selectedItem.numero_linea !== selectedItem.numero_primer_servicio">
+                <i class="ph ph-arrow-right" aria-hidden="true"></i>
+                <span class="servicios-view__preview-nodo is-current">{{ selectedItem.numero_linea }}</span>
+              </template>
             </div>
           </div>
 
-          <aside v-if="selectedItem" class="servicios-view__preview">
-            <div>
-              <span class="servicios-view__preview-kicker">Vista previa</span>
-              <h2 :class="['servicios-view__preview-title', { 'is-baja': estadoServicioToken(selectedItem.estado_servicio) === 'error' }]">{{ selectedItem.nombre_cliente || 'Cliente sin dato' }}</h2>
-              <p class="servicios-view__preview-domicilio">{{ previewDomicilio(selectedItem) }}</p>
+          <div class="servicios-view__preview-stats">
+            <div class="servicios-view__preview-stat">
+              <span class="servicios-view__preview-label">Reclamos 12m</span>
+              <strong>{{ selectedItem.reclamos?.length ?? 0 }}</strong>
             </div>
-
-            <div class="servicios-view__preview-tags">
-              <span class="servicios-view__preview-tag is-accent">{{ selectedItem.estado_servicio || 'Sin estado' }}</span>
-              <span class="servicios-view__preview-tag">{{ (selectedItem.tipo_servicio || 'SERVICIO').toUpperCase() }}</span>
-              <span v-if="selectedItem.sla_prometido" class="servicios-view__preview-tag is-outline">SLA {{ selectedItem.sla_prometido }}</span>
-              <span v-if="!selectedItem.es_verificable" class="servicios-view__preview-tag is-warn">No verificable</span>
+            <div class="servicios-view__preview-stat">
+              <span class="servicios-view__preview-label">SLA prometido</span>
+              <strong>{{ selectedItem.sla_prometido || '—' }}</strong>
             </div>
+          </div>
 
-            <div class="servicios-view__hairline"></div>
-
-            <div class="servicios-view__preview-historico">
-              <span class="servicios-view__preview-label">Histórico de IDs</span>
-              <div class="servicios-view__preview-nodos">
-                <span class="servicios-view__preview-nodo">{{ selectedItem.numero_primer_servicio }}</span>
-                <template v-if="selectedItem.numero_linea && selectedItem.numero_linea !== selectedItem.numero_primer_servicio">
-                  <i class="ph ph-arrow-right" aria-hidden="true"></i>
-                  <span class="servicios-view__preview-nodo is-current">{{ selectedItem.numero_linea }}</span>
-                </template>
-              </div>
-            </div>
-
-            <div class="servicios-view__preview-stats">
-              <div class="servicios-view__preview-stat">
-                <span class="servicios-view__preview-label">Reclamos 12m</span>
-                <strong>{{ selectedItem.reclamos?.length ?? 0 }}</strong>
-              </div>
-              <div class="servicios-view__preview-stat">
-                <span class="servicios-view__preview-label">SLA prometido</span>
-                <strong>{{ selectedItem.sla_prometido || '—' }}</strong>
-              </div>
-            </div>
-
-            <button class="btn primary" type="button" @click="openServicioDetail(selectedItem.numero_primer_servicio)">
-              Abrir detalle completo
-              <i class="ph ph-arrow-right" aria-hidden="true"></i>
-            </button>
-          </aside>
-        </div>
-      </template>
-
-      <div v-else-if="!loading && !error" class="servicios-view__state-box">
-        <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
-        <h3>Ningún servicio coincide</h3>
-        <p>Probá con el ID de origen, el nombre del cliente o quitá algún filtro.</p>
-        <button class="btn subtle" type="button" @click="clearFiltros">Limpiar filtros</button>
+          <button class="btn primary" type="button" @click="openServicioDetail(selectedItem.numero_primer_servicio)">
+            Abrir detalle completo
+            <i class="ph ph-arrow-right" aria-hidden="true"></i>
+          </button>
+        </aside>
       </div>
+    </template>
 
-      <div v-else-if="error && items.length === 0" class="servicios-view__state-box is-error">
-        <i class="ph ph-warning-circle" aria-hidden="true"></i>
-        <h3>No se pudo consultar servicios</h3>
-        <p>{{ error }}</p>
-        <button class="btn primary" type="button" @click="reloadFromZero">
-          <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
-          Reintentar
-        </button>
-      </div>
+    <div v-else class="servicios-view__state-box is-error">
+      <i class="ph ph-warning-circle" aria-hidden="true"></i>
+      <h3>No se pudo consultar servicios</h3>
+      <p>{{ error }}</p>
+      <button class="btn primary" type="button" @click="recargarDesdeCero">
+        <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
+        Reintentar
+      </button>
+    </div>
 
-      <div v-if="loading && items.length > 0" class="servicios-view__loading-more">
-        <i class="ph ph-circle-notch servicios-view__spin" aria-hidden="true"></i>
-        Cargando más servicios...
-      </div>
+    <template #vacio>
+      <p>Probá con el ID de origen, el nombre del cliente o quitá algún filtro.</p>
+      <button class="btn subtle" type="button" @click="clearFiltros">Limpiar filtros</button>
+    </template>
 
-      <div v-else-if="hasMore && items.length > 0" class="servicios-view__load-more">
-        <button class="btn subtle" type="button" @click="loadNextPage">
+    <template #pie>
+      <div v-if="!loading && hasMore && items.length > 0" class="servicios-view__load-more">
+        <button class="btn subtle" type="button" @click="cargarSiguiente">
           Cargar más resultados
           <i class="ph ph-arrow-down" aria-hidden="true"></i>
         </button>
       </div>
+    </template>
 
-      <div ref="sentinel" class="servicios-view__sentinel" aria-hidden="true"></div>
-    </div>
+    <template #extra>
+      <ServiciosCambioCategoriaModal
+        :open="modalCategoriaOpen"
+        :servicio-ids="Array.from(seleccionadas)"
+        :categoria="categoriaMasivaSeleccionada"
+        @close="modalCategoriaOpen = false"
+        @aplicada="handleCategoriaAplicada"
+      />
 
-    <ServiciosCambioCategoriaModal
-      :open="modalCategoriaOpen"
-      :servicio-ids="Array.from(seleccionadas)"
-      :categoria="categoriaMasivaSeleccionada"
-      @close="modalCategoriaOpen = false"
-      @aplicada="handleCategoriaAplicada"
-    />
-
-    <ServiciosBulkActionsPanel
-      v-if="seleccionadas.size > 0"
-      :count="seleccionadas.size"
-      v-model="categoriaMasivaSeleccionada"
-      :error="errorCategoriaMasiva"
-      @apply="modalCategoriaOpen = true"
-      @clear="limpiarSeleccion"
-    />
-  </section>
+      <ServiciosBulkActionsPanel
+        v-if="seleccionadas.size > 0"
+        :count="seleccionadas.size"
+        v-model="categoriaMasivaSeleccionada"
+        :error="errorCategoriaMasiva"
+        @apply="modalCategoriaOpen = true"
+        @clear="limpiarSeleccion"
+      />
+    </template>
+  </ViewerShell>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { categoriaLabel, estadoServicioToken, searchServicios, type ServicioItem } from '../api/servicios';
 import ServicioCard from '../components/servicios/ServicioCard.vue';
 import ServiciosBulkActionsPanel from '../components/servicios/ServiciosBulkActionsPanel.vue';
 import ServiciosCambioCategoriaModal from '../components/servicios/ServiciosCambioCategoriaModal.vue';
+import ViewerShell from '../components/viewer/ViewerShell.vue';
+import { usePaginatedSearch } from '../composables/usePaginatedSearch';
 
 const LIMIT = 30;
 const VISTA_STORAGE_KEY = 'servicios.vista';
 const router = useRouter();
 
 const query = ref('');
-const items = ref<ServicioItem[]>([]);
-const total = ref(0);
-const loading = ref(false);
-const error = ref('');
-const offset = ref(0);
-const hasMore = ref(true);
-const sentinel = ref<HTMLElement | null>(null);
-const scrollEl = ref<HTMLElement | null>(null);
 // Sin filtro de Nivel Cliente por default: el campo dejó de ser "sin clasificar vs clasificado"
 // (donde C6 era una cola de triage útil) y pasó a traer el Nivel Cliente real del Excel, así que
 // filtrar por C6 al entrar dejaba el listado casi vacío después de cada ingesta — mismo bug que ya
@@ -305,81 +304,52 @@ const selectedItem = computed(() => {
   return items.value.find((item) => item.numero_primer_servicio === selectedIdOrigen.value) ?? items.value[0] ?? null;
 });
 
-let observer: IntersectionObserver | null = null;
-let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-function mergeItems(next: ServicioItem[]): void {
-  const seen = new Set(items.value.map((item) => item.numero_primer_servicio));
-  for (const item of next) {
-    if (seen.has(item.numero_primer_servicio)) continue;
-    seen.add(item.numero_primer_servicio);
-    items.value.push(item);
-  }
-}
-
-async function loadNextPage(): Promise<void> {
-  if (loading.value || !hasMore.value) return;
-
-  loading.value = true;
-  error.value = '';
-  try {
-    const response = await searchServicios({
-      q: query.value.trim(),
-      tipo: filtros.value.tipo,
-      estado: filtros.value.estado,
-      categoria: filtros.value.categoria,
-      limit: LIMIT,
-      offset: offset.value,
-    });
-
-    total.value = response.total;
-    mergeItems(response.servicios);
-    offset.value += response.servicios.length;
-    hasMore.value = response.servicios.length === LIMIT && offset.value < response.total;
-  } catch (err: unknown) {
-    error.value = err instanceof Error ? err.message : 'No se pudo consultar servicios';
-  } finally {
-    loading.value = false;
-  }
-}
-
-async function reloadFromZero(): Promise<void> {
-  items.value = [];
-  total.value = 0;
-  offset.value = 0;
-  hasMore.value = true;
-  seleccionadas.value = new Set();
-  await loadNextPage();
-}
+const { items, total, loading, error, hasMore, cargarSiguiente, recargarDesdeCero, recargarConDebounce } =
+  usePaginatedSearch({
+    limit: LIMIT,
+    cargarPagina: async (offset, limit) => {
+      const response = await searchServicios({
+        q: query.value.trim(),
+        tipo: filtros.value.tipo,
+        estado: filtros.value.estado,
+        categoria: filtros.value.categoria,
+        limit,
+        offset,
+      });
+      return { items: response.servicios, total: response.total };
+    },
+    claveItem: (item: ServicioItem) => item.numero_primer_servicio,
+    alReiniciar: () => {
+      seleccionadas.value = new Set();
+    },
+    mensajeError: 'No se pudo consultar servicios',
+  });
 
 function onSearchInput(): void {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    void reloadFromZero();
-  }, 320);
+  recargarConDebounce();
 }
 
 function setTipo(value: string): void {
   if (filtros.value.tipo === value) return;
   filtros.value.tipo = value;
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function setEstado(value: string): void {
   filtros.value.estado = filtros.value.estado === value ? '' : value;
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function setCategoria(value: string): void {
   if (filtros.value.categoria === value) return;
   filtros.value.categoria = value;
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function clearFiltros(): void {
   query.value = '';
   filtros.value = { tipo: '', estado: 'activo', categoria: '' };
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function toggleSeleccion(id: number): void {
@@ -398,7 +368,7 @@ function handleCategoriaAplicada(payload: { actualizados: number; noEncontrados:
     payload.noEncontrados.length > 0
       ? `${payload.noEncontrados.length} servicio(s) ya no existían y no se actualizaron.`
       : '';
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function setVista(next: 'grid' | 'list'): void {
@@ -437,41 +407,12 @@ watch(items, (next) => {
   }
 });
 
-onMounted(async () => {
-  await reloadFromZero();
-
-  observer = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        if (entry.isIntersecting) {
-          void loadNextPage();
-        }
-      }
-    },
-    {
-      root: scrollEl.value,
-      rootMargin: '300px 0px',
-      threshold: 0.1,
-    },
-  );
-
-  if (sentinel.value) observer.observe(sentinel.value);
-});
-
-onBeforeUnmount(() => {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  if (observer) observer.disconnect();
+onMounted(() => {
+  void recargarDesdeCero();
 });
 </script>
 
 <style scoped>
-.servicios-view {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-}
-
 .servicios-view__header {
   padding: 22px 0 0;
 }
@@ -639,13 +580,6 @@ onBeforeUnmount(() => {
 .servicios-view__count strong {
   color: var(--color-text);
   font-weight: 500;
-}
-
-.servicios-view__scroll {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 12px 0 30px;
 }
 
 .servicios-view__grid {
@@ -927,29 +861,15 @@ onBeforeUnmount(() => {
   color: var(--color-state-error);
 }
 
-.servicios-view__loading-more {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 14px 0;
-  font-size: 12px;
-  color: color-mix(in srgb, var(--color-text) 45%, transparent);
-}
-
-.servicios-view__spin {
-  font-size: 14px;
-  animation: spin 1s linear infinite;
+/* El padding del scroll lo dibuja ViewerShell; sólo este viewer lo suma, de ahí el :deep. */
+.servicios-view :deep(.viewer-shell__scroll) {
+  padding: 12px 0 30px;
 }
 
 .servicios-view__load-more {
   display: flex;
   justify-content: center;
   padding: 14px 0;
-}
-
-.servicios-view__sentinel {
-  height: 2px;
 }
 
 @media (max-width: 1100px) {
