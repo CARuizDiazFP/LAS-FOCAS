@@ -19,11 +19,15 @@ export interface OpcionesCorridaSse {
    * nuevo a `conectar`; si terminó (p.ej. el worker la reconcilió a FALLIDA), no reconecta. */
   recargarEstado: () => Promise<void>;
   onInicio?: (data: Record<string, unknown>) => void;
+  /** Cambio de fase de la corrida (sólo la ingesta lo emite). */
+  onFase?: (data: Record<string, unknown>) => void;
   onPagina?: (data: Record<string, unknown>) => void;
   /** El RESUMEN cierra el stream. */
   onResumen?: (data: Record<string, unknown>) => void;
   /** Evento SSE `error` de negocio (con `data`): se informa y nada más. */
   onErrorNegocio?: (detalle: string) => void;
+  /** Mismo evento `error` de negocio, con el JSON completo; sólo se llama si `data` es JSON válido. */
+  onErrorDatos?: (data: Record<string, unknown>) => void;
 }
 
 export function useCorridaSse(opciones: OpcionesCorridaSse) {
@@ -32,6 +36,9 @@ export function useCorridaSse(opciones: OpcionesCorridaSse) {
   let reintentoTimer: ReturnType<typeof setTimeout> | null = null;
   let ultimoEventoId = 0;
   let corridaStream: number | null = null;
+  // Se marca al desmontar: un fetch de `recargarEstado` en vuelo al desmontar volvía a llamar a
+  // `conectar` y dejaba un EventSource huérfano.
+  let desmontado = false;
 
   function cerrar(): void {
     eventSource?.close();
@@ -58,6 +65,7 @@ export function useCorridaSse(opciones: OpcionesCorridaSse) {
   }
 
   function conectar(corridaId: number): void {
+    if (desmontado) return;
     cerrar();
     cancelarReintento();
     if (corridaStream !== corridaId) {
@@ -68,6 +76,9 @@ export function useCorridaSse(opciones: OpcionesCorridaSse) {
     eventSource = es;
     es.addEventListener('inicio', (ev) => {
       if (eventoNuevo(ev)) opciones.onInicio?.(datos(ev));
+    });
+    es.addEventListener('fase', (ev) => {
+      if (eventoNuevo(ev)) opciones.onFase?.(datos(ev));
     });
     es.addEventListener('pagina', (ev) => {
       if (eventoNuevo(ev)) opciones.onPagina?.(datos(ev));
@@ -86,6 +97,7 @@ export function useCorridaSse(opciones: OpcionesCorridaSse) {
         try {
           const data = JSON.parse(ev.data);
           opciones.onErrorNegocio?.(String(data.detalle ?? ev.data));
+          opciones.onErrorDatos?.(data);
         } catch {
           opciones.onErrorNegocio?.(String(ev.data));
         }
@@ -97,7 +109,9 @@ export function useCorridaSse(opciones: OpcionesCorridaSse) {
       cerrar();
       const espera = backoffMs;
       backoffMs = Math.min(backoffMs * 2, BACKOFF_MAXIMO_MS);
-      reintentoTimer = setTimeout(() => void opciones.recargarEstado(), espera);
+      reintentoTimer = setTimeout(() => {
+        if (!desmontado) void opciones.recargarEstado();
+      }, espera);
     });
   }
 
@@ -106,7 +120,10 @@ export function useCorridaSse(opciones: OpcionesCorridaSse) {
     cerrar();
   }
 
-  onBeforeUnmount(detener);
+  onBeforeUnmount(() => {
+    desmontado = true;
+    detener();
+  });
 
   return { conectar, detener };
 }

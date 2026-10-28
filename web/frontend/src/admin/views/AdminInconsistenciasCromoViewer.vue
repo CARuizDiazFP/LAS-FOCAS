@@ -29,261 +29,271 @@
     <ReglasArbitroPanel v-else-if="pestana === 'reglas'" />
 
     <template v-else>
-    <div class="inconsistencias-viewer__toolbar">
-      <div class="inconsistencias-viewer__toolbar-row">
-        <label class="inconsistencias-viewer__servicio">
-          <span>Servicio (ID interno)</span>
-          <input v-model="servicioTexto" type="search" inputmode="numeric" placeholder="Todos" @input="onFiltroTextoInput" />
-        </label>
-        <label class="inconsistencias-viewer__localidad">
-          <span>Localidad</span>
-          <input v-model="localidadTexto" type="search" placeholder="Todas" @input="onFiltroTextoInput" />
-        </label>
+      <ViewerShell
+        bloque="inconsistencias-viewer__casos"
+        :loading="loading"
+        :error="error"
+        :vacio="items.length === 0"
+        :hay-mas="hasMore"
+        texto-vacio="Sin casos"
+        texto-cargando="Cargando..."
+        icono-vacio="ph-check-circle"
+        carga-inicial="fila"
+        ancho-estado="320px"
+        :scroll-infinito="false"
+      >
+        <template #toolbar>
+        <div class="inconsistencias-viewer__toolbar">
+          <div class="inconsistencias-viewer__toolbar-row">
+            <label class="inconsistencias-viewer__servicio">
+              <span>Servicio (ID interno)</span>
+              <input v-model="servicioTexto" type="search" inputmode="numeric" placeholder="Todos" @input="onFiltroTextoInput" />
+            </label>
+            <label class="inconsistencias-viewer__localidad">
+              <span>Localidad</span>
+              <input v-model="localidadTexto" type="search" placeholder="Todas" @input="onFiltroTextoInput" />
+            </label>
 
-        <div class="inconsistencias-viewer__chips">
-          <span class="inconsistencias-viewer__chips-label">Estado</span>
-          <button
-            v-for="opcion in estadosFiltro"
-            :key="opcion.valor"
-            type="button"
-            :class="['inconsistencias-viewer__chip', { 'is-active': filtroEstado === opcion.valor }]"
-            @click="setEstado(opcion.valor)"
-          >
-            {{ opcion.label }}
-          </button>
+            <div class="inconsistencias-viewer__chips">
+              <span class="inconsistencias-viewer__chips-label">Estado</span>
+              <button
+                v-for="opcion in estadosFiltro"
+                :key="opcion.valor"
+                type="button"
+                :class="['inconsistencias-viewer__chip', { 'is-active': filtroEstado === opcion.valor }]"
+                @click="setEstado(opcion.valor)"
+              >
+                {{ opcion.label }}
+              </button>
+            </div>
+
+            <button class="btn primary" type="button" :disabled="loading" @click="refrescar">
+              <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
+              Actualizar
+            </button>
+          </div>
+
+          <div class="inconsistencias-viewer__toolbar-row">
+            <span class="inconsistencias-viewer__chips-label">Revisión</span>
+            <button
+              v-for="opcion in revisionesFiltro"
+              :key="opcion.valor"
+              type="button"
+              :class="['inconsistencias-viewer__chip', { 'is-active': filtroRevision === opcion.valor }]"
+              @click="setRevision(opcion.valor)"
+            >
+              {{ opcion.label }}
+            </button>
+            <span class="inconsistencias-viewer__separador" aria-hidden="true"></span>
+            <span class="inconsistencias-viewer__chips-label">Tipo</span>
+            <button
+              type="button"
+              :class="['inconsistencias-viewer__chip', { 'is-active': filtroTipo === '' }]"
+              @click="setTipo('')"
+            >
+              Todos
+            </button>
+            <button
+              v-for="tipo in tipos"
+              :key="tipo"
+              type="button"
+              :class="['inconsistencias-viewer__chip', { 'is-active': filtroTipo === tipo }]"
+              @click="setTipo(tipo)"
+            >
+              {{ tipoInconsistenciaLabel(tipo) }}
+              <span class="inconsistencias-viewer__chip-count">{{ conteos[tipo] ?? (loading ? '…' : 0) }}</span>
+            </button>
+            <span class="inconsistencias-viewer__count">
+              <strong>{{ total.toLocaleString('es-AR') }}</strong> casos · mostrando {{ items.length }}
+            </span>
+          </div>
+
+          <div class="inconsistencias-viewer__toolbar-row inconsistencias-viewer__acciones">
+            <button
+              class="btn primary"
+              type="button"
+              :disabled="accionando || seleccion.size === 0"
+              title="Los pelos del caso dejan de contar como uso de sus servicios"
+              @click="aplicarSeleccion('CUARENTENA')"
+            >
+              <i class="ph ph-prohibit" aria-hidden="true"></i>
+              Cuarentena ({{ seleccion.size }})
+            </button>
+            <button class="btn" type="button" :disabled="accionando || seleccion.size === 0" @click="aplicarSeleccion('ACEPTADA')">
+              <i class="ph ph-check-circle" aria-hidden="true"></i>
+              Aceptar ({{ seleccion.size }})
+            </button>
+            <button class="btn" type="button" :disabled="accionando || seleccion.size === 0" @click="aplicarSeleccion('REPORTADA')">
+              <i class="ph ph-paper-plane-tilt" aria-hidden="true"></i>
+              Reportada ({{ seleccion.size }})
+            </button>
+            <button class="btn" type="button" :disabled="accionando || seleccion.size === 0" @click="aplicarSeleccion('PENDIENTE')">
+              <i class="ph ph-arrow-counter-clockwise" aria-hidden="true"></i>
+              Liberar ({{ seleccion.size }})
+            </button>
+
+            <span class="inconsistencias-viewer__separador" aria-hidden="true"></span>
+
+            <button class="btn" type="button" :disabled="exportando" @click="exportarXlsx">
+              <i class="ph ph-file-xls" aria-hidden="true"></i>
+              Exportar XLSX
+            </button>
+
+            <button class="btn" type="button" :disabled="deteccionEnCurso || lanzando" @click="lanzarDeteccionManual">
+              <i class="ph ph-magnifying-glass-plus" aria-hidden="true"></i>
+              Detectar ahora
+            </button>
+            <span v-if="deteccion" class="inconsistencias-viewer__deteccion">
+              Corrida #{{ deteccion.id }} · {{ deteccion.estado }} ·
+              <template v-if="faseActual">{{ faseActual }} · </template>
+              {{ deteccion.leidas }}/{{ deteccion.total_objetivo ?? '?' }} fases ·
+              {{ deteccion.errores }} errores
+            </span>
+            <ul v-if="erroresDeteccion.length" class="inconsistencias-viewer__errores-deteccion">
+              <li v-for="(e, i) in erroresDeteccion" :key="i">{{ e }}</li>
+            </ul>
+          </div>
         </div>
 
-        <button class="btn primary" type="button" :disabled="loading" @click="refrescar">
-          <i class="ph ph-arrows-clockwise" aria-hidden="true"></i>
-          Actualizar
-        </button>
-      </div>
+        <details class="inconsistencias-viewer__aviso">
+          <summary>Aviso de casos nuevos a Slack</summary>
+          <form class="inconsistencias-viewer__aviso-form" @submit.prevent="guardarAviso">
+            <label>
+              Canales (separados por coma, ej. #cromo-alertas)
+              <input v-model="avisoCanales" type="text" maxlength="512" placeholder="#canal,C0123456789" />
+            </label>
+            <label class="inconsistencias-viewer__aviso-check">
+              <input v-model="avisoActivo" type="checkbox" />
+              Activo
+            </label>
+            <button class="btn" type="submit" :disabled="guardandoAviso">Guardar</button>
+          </form>
+        </details>
+        </template>
 
-      <div class="inconsistencias-viewer__toolbar-row">
-        <span class="inconsistencias-viewer__chips-label">Revisión</span>
-        <button
-          v-for="opcion in revisionesFiltro"
-          :key="opcion.valor"
-          type="button"
-          :class="['inconsistencias-viewer__chip', { 'is-active': filtroRevision === opcion.valor }]"
-          @click="setRevision(opcion.valor)"
-        >
-          {{ opcion.label }}
-        </button>
-        <span class="inconsistencias-viewer__separador" aria-hidden="true"></span>
-        <span class="inconsistencias-viewer__chips-label">Tipo</span>
-        <button
-          type="button"
-          :class="['inconsistencias-viewer__chip', { 'is-active': filtroTipo === '' }]"
-          @click="setTipo('')"
-        >
-          Todos
-        </button>
-        <button
-          v-for="tipo in tipos"
-          :key="tipo"
-          type="button"
-          :class="['inconsistencias-viewer__chip', { 'is-active': filtroTipo === tipo }]"
-          @click="setTipo(tipo)"
-        >
-          {{ tipoInconsistenciaLabel(tipo) }}
-          <span class="inconsistencias-viewer__chip-count">{{ conteos[tipo] ?? (loading ? '…' : 0) }}</span>
-        </button>
-        <span class="inconsistencias-viewer__count">
-          <strong>{{ total.toLocaleString('es-AR') }}</strong> casos · mostrando {{ items.length }}
-        </span>
-      </div>
+        <template #avisos>
+        <div v-if="mensaje" class="inconsistencias-viewer__inline-ok">{{ mensaje }}</div>
+        <div v-if="rechazados.length" class="inconsistencias-viewer__rechazados" role="status">
+          <strong>{{ rechazados.length }} caso(s) no se aplicaron:</strong>
+          <ul>
+            <li v-for="r in rechazados" :key="r.id">Caso {{ r.id }}: {{ r.motivo }}</li>
+          </ul>
+          <button type="button" class="btn subtle" @click="rechazados = []">Cerrar</button>
+        </div>
+        </template>
 
-      <div class="inconsistencias-viewer__toolbar-row inconsistencias-viewer__acciones">
-        <button
-          class="btn primary"
-          type="button"
-          :disabled="accionando || seleccion.size === 0"
-          title="Los pelos del caso dejan de contar como uso de sus servicios"
-          @click="aplicarSeleccion('CUARENTENA')"
-        >
-          <i class="ph ph-prohibit" aria-hidden="true"></i>
-          Cuarentena ({{ seleccion.size }})
-        </button>
-        <button class="btn" type="button" :disabled="accionando || seleccion.size === 0" @click="aplicarSeleccion('ACEPTADA')">
-          <i class="ph ph-check-circle" aria-hidden="true"></i>
-          Aceptar ({{ seleccion.size }})
-        </button>
-        <button class="btn" type="button" :disabled="accionando || seleccion.size === 0" @click="aplicarSeleccion('REPORTADA')">
-          <i class="ph ph-paper-plane-tilt" aria-hidden="true"></i>
-          Reportada ({{ seleccion.size }})
-        </button>
-        <button class="btn" type="button" :disabled="accionando || seleccion.size === 0" @click="aplicarSeleccion('PENDIENTE')">
-          <i class="ph ph-arrow-counter-clockwise" aria-hidden="true"></i>
-          Liberar ({{ seleccion.size }})
-        </button>
+        <table class="inconsistencias-viewer__tabla">
+          <thead>
+            <tr>
+              <th class="inconsistencias-viewer__check">
+                <input
+                  type="checkbox"
+                  :checked="todosSeleccionados"
+                  aria-label="Seleccionar todos los casos visibles"
+                  @change="toggleTodos"
+                />
+              </th>
+              <th>Tipo</th>
+              <th>Revisión</th>
+              <th>Estado</th>
+              <th>Objeto</th>
+              <th>Localidad</th>
+              <th>Afectados</th>
+              <th>Motivo / evidencia</th>
+              <th>Primera / última vez</th>
+              <th>Acción</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in items" :key="item.id">
+              <td class="inconsistencias-viewer__check">
+                <input
+                  type="checkbox"
+                  :disabled="!esEditable(item)"
+                  :checked="seleccion.has(item.id)"
+                  :aria-label="`Seleccionar caso ${item.id}`"
+                  @change="toggle(item.id)"
+                />
+              </td>
+              <td><span class="inconsistencias-viewer__tipo">{{ tipoInconsistenciaLabel(item.tipo) }}</span></td>
+              <td>
+                <span :class="['inconsistencias-viewer__revision', `is-${item.revision.toLowerCase()}`]">
+                  {{ item.revision === 'AUTO' ? 'Automática' : 'Manual' }}
+                </span>
+              </td>
+              <td>
+                <span :class="['inconsistencias-viewer__estado', `is-${item.estado.toLowerCase()}`]">{{ item.estado }}</span>
+                <span v-if="item.actualizado_por" class="inconsistencias-viewer__sub">{{ item.actualizado_por }}</span>
+              </td>
+              <td>
+                {{ item.nombre ?? '—' }}
+                <span class="inconsistencias-viewer__sub">n_id {{ item.objeto_n_id }}</span>
+              </td>
+              <td>{{ item.localidad ?? '—' }}</td>
+              <td>
+                {{ item.pelos }} pelo(s)
+                <span class="inconsistencias-viewer__sub">{{ item.servicios }} servicio(s)</span>
+              </td>
+              <td class="inconsistencias-viewer__evidencia">{{ evidenciaCompacta(item) }}</td>
+              <td class="inconsistencias-viewer__sub-celda">
+                {{ fecha(item.primera_vez) }}
+                <span class="inconsistencias-viewer__sub">{{ fecha(item.ultima_vez) }}</span>
+              </td>
+              <td class="inconsistencias-viewer__acciones-fila">
+                <template v-if="esEditable(item)">
+                  <button
+                    v-if="item.estado !== 'CUARENTENA'"
+                    type="button"
+                    class="btn subtle"
+                    :disabled="accionando"
+                    @click="aplicar([item.id], 'CUARENTENA')"
+                  >
+                    Cuarentena
+                  </button>
+                  <button
+                    v-if="item.estado !== 'ACEPTADA'"
+                    type="button"
+                    class="btn subtle"
+                    :disabled="accionando"
+                    @click="aplicar([item.id], 'ACEPTADA')"
+                  >
+                    Aceptar
+                  </button>
+                  <button
+                    v-if="item.estado !== 'REPORTADA'"
+                    type="button"
+                    class="btn subtle"
+                    :disabled="accionando"
+                    @click="aplicar([item.id], 'REPORTADA')"
+                  >
+                    Reportada
+                  </button>
+                  <button
+                    v-if="item.estado !== 'PENDIENTE'"
+                    type="button"
+                    class="btn subtle"
+                    :disabled="accionando"
+                    @click="aplicar([item.id], 'PENDIENTE')"
+                  >
+                    Liberar
+                  </button>
+                </template>
+                <span v-else class="inconsistencias-viewer__sub">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
 
-        <span class="inconsistencias-viewer__separador" aria-hidden="true"></span>
+        <template #vacio>
+          <p>Nada coincide con los filtros. Los casos se registran al correr la detección (después de cada ingesta o con "Detectar ahora").</p>
+        </template>
 
-        <button class="btn" type="button" :disabled="exportando" @click="exportarXlsx">
-          <i class="ph ph-file-xls" aria-hidden="true"></i>
-          Exportar XLSX
-        </button>
-
-        <button class="btn" type="button" :disabled="deteccionEnCurso || lanzando" @click="lanzarDeteccionManual">
-          <i class="ph ph-magnifying-glass-plus" aria-hidden="true"></i>
-          Detectar ahora
-        </button>
-        <span v-if="deteccion" class="inconsistencias-viewer__deteccion">
-          Corrida #{{ deteccion.id }} · {{ deteccion.estado }} ·
-          <template v-if="faseActual">{{ faseActual }} · </template>
-          {{ deteccion.leidas }}/{{ deteccion.total_objetivo ?? '?' }} fases ·
-          {{ deteccion.errores }} errores
-        </span>
-        <ul v-if="erroresDeteccion.length" class="inconsistencias-viewer__errores-deteccion">
-          <li v-for="(e, i) in erroresDeteccion" :key="i">{{ e }}</li>
-        </ul>
-      </div>
-    </div>
-
-    <details class="inconsistencias-viewer__aviso">
-      <summary>Aviso de casos nuevos a Slack</summary>
-      <form class="inconsistencias-viewer__aviso-form" @submit.prevent="guardarAviso">
-        <label>
-          Canales (separados por coma, ej. #cromo-alertas)
-          <input v-model="avisoCanales" type="text" maxlength="512" placeholder="#canal,C0123456789" />
-        </label>
-        <label class="inconsistencias-viewer__aviso-check">
-          <input v-model="avisoActivo" type="checkbox" />
-          Activo
-        </label>
-        <button class="btn" type="submit" :disabled="guardandoAviso">Guardar</button>
-      </form>
-    </details>
-
-    <div v-if="error" class="inconsistencias-viewer__inline-error">{{ error }}</div>
-    <div v-if="mensaje" class="inconsistencias-viewer__inline-ok">{{ mensaje }}</div>
-    <div v-if="rechazados.length" class="inconsistencias-viewer__rechazados" role="status">
-      <strong>{{ rechazados.length }} caso(s) no se aplicaron:</strong>
-      <ul>
-        <li v-for="r in rechazados" :key="r.id">Caso {{ r.id }}: {{ r.motivo }}</li>
-      </ul>
-      <button type="button" class="btn subtle" @click="rechazados = []">Cerrar</button>
-    </div>
-
-    <div class="inconsistencias-viewer__scroll">
-      <table v-if="items.length > 0" class="inconsistencias-viewer__tabla">
-        <thead>
-          <tr>
-            <th class="inconsistencias-viewer__check">
-              <input
-                type="checkbox"
-                :checked="todosSeleccionados"
-                aria-label="Seleccionar todos los casos visibles"
-                @change="toggleTodos"
-              />
-            </th>
-            <th>Tipo</th>
-            <th>Revisión</th>
-            <th>Estado</th>
-            <th>Objeto</th>
-            <th>Localidad</th>
-            <th>Afectados</th>
-            <th>Motivo / evidencia</th>
-            <th>Primera / última vez</th>
-            <th>Acción</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="item in items" :key="item.id">
-            <td class="inconsistencias-viewer__check">
-              <input
-                type="checkbox"
-                :disabled="!esEditable(item)"
-                :checked="seleccion.has(item.id)"
-                :aria-label="`Seleccionar caso ${item.id}`"
-                @change="toggle(item.id)"
-              />
-            </td>
-            <td><span class="inconsistencias-viewer__tipo">{{ tipoInconsistenciaLabel(item.tipo) }}</span></td>
-            <td>
-              <span :class="['inconsistencias-viewer__revision', `is-${item.revision.toLowerCase()}`]">
-                {{ item.revision === 'AUTO' ? 'Automática' : 'Manual' }}
-              </span>
-            </td>
-            <td>
-              <span :class="['inconsistencias-viewer__estado', `is-${item.estado.toLowerCase()}`]">{{ item.estado }}</span>
-              <span v-if="item.actualizado_por" class="inconsistencias-viewer__sub">{{ item.actualizado_por }}</span>
-            </td>
-            <td>
-              {{ item.nombre ?? '—' }}
-              <span class="inconsistencias-viewer__sub">n_id {{ item.objeto_n_id }}</span>
-            </td>
-            <td>{{ item.localidad ?? '—' }}</td>
-            <td>
-              {{ item.pelos }} pelo(s)
-              <span class="inconsistencias-viewer__sub">{{ item.servicios }} servicio(s)</span>
-            </td>
-            <td class="inconsistencias-viewer__evidencia">{{ evidenciaCompacta(item) }}</td>
-            <td class="inconsistencias-viewer__sub-celda">
-              {{ fecha(item.primera_vez) }}
-              <span class="inconsistencias-viewer__sub">{{ fecha(item.ultima_vez) }}</span>
-            </td>
-            <td class="inconsistencias-viewer__acciones-fila">
-              <template v-if="esEditable(item)">
-                <button
-                  v-if="item.estado !== 'CUARENTENA'"
-                  type="button"
-                  class="btn subtle"
-                  :disabled="accionando"
-                  @click="aplicar([item.id], 'CUARENTENA')"
-                >
-                  Cuarentena
-                </button>
-                <button
-                  v-if="item.estado !== 'ACEPTADA'"
-                  type="button"
-                  class="btn subtle"
-                  :disabled="accionando"
-                  @click="aplicar([item.id], 'ACEPTADA')"
-                >
-                  Aceptar
-                </button>
-                <button
-                  v-if="item.estado !== 'REPORTADA'"
-                  type="button"
-                  class="btn subtle"
-                  :disabled="accionando"
-                  @click="aplicar([item.id], 'REPORTADA')"
-                >
-                  Reportada
-                </button>
-                <button
-                  v-if="item.estado !== 'PENDIENTE'"
-                  type="button"
-                  class="btn subtle"
-                  :disabled="accionando"
-                  @click="aplicar([item.id], 'PENDIENTE')"
-                >
-                  Liberar
-                </button>
-              </template>
-              <span v-else class="inconsistencias-viewer__sub">—</span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-
-      <div v-else-if="!loading" class="inconsistencias-viewer__state-box">
-        <i class="ph ph-check-circle" aria-hidden="true"></i>
-        <h3>Sin casos</h3>
-        <p>Nada coincide con los filtros. Los casos se registran al correr la detección (después de cada ingesta o con "Detectar ahora").</p>
-      </div>
-
-      <div v-if="loading" class="inconsistencias-viewer__loading-more">
-        <i class="ph ph-circle-notch inconsistencias-viewer__spin" aria-hidden="true"></i>
-        Cargando...
-      </div>
-
-      <div v-if="hasMore && !loading" class="inconsistencias-viewer__mas">
-        <button type="button" class="btn" @click="loadNextPage">Cargar más</button>
-      </div>
-    </div>
+        <template #pie>
+          <div v-if="hasMore && !loading && items.length > 0" class="inconsistencias-viewer__mas">
+            <button type="button" class="btn" @click="cargarSiguiente">Cargar más</button>
+          </div>
+        </template>
+      </ViewerShell>
     </template>
   </section>
 </template>
@@ -295,6 +305,7 @@ import { useRoute, useRouter } from 'vue-router';
 import AdminPageHeader from '../components/AdminPageHeader.vue';
 import PropuestasArbitroPanel from '../components/arbitro/PropuestasArbitroPanel.vue';
 import ReglasArbitroPanel from '../components/arbitro/ReglasArbitroPanel.vue';
+import ViewerShell from '../../components/viewer/ViewerShell.vue';
 import {
   TIPOS_INCONSISTENCIA,
   cambiarEstadoInconsistencias,
@@ -310,6 +321,7 @@ import {
   type InconsistenciaItem,
 } from '../../api/inconsistenciasCromo';
 import { useAdminNotifications } from '../../composables/useAdminNotifications';
+import { usePaginatedSearch } from '../../composables/usePaginatedSearch';
 import { useCorridaSse } from '../../composables/useCorridaSse';
 
 const LIMIT = 100;
@@ -358,19 +370,13 @@ const pestana = ref<Pestana>(
 function setPestana(valor: Pestana): void {
   const vuelveACasos = valor === 'casos' && pestana.value !== 'casos';
   pestana.value = valor;
-  if (vuelveACasos) void reloadFromZero();
+  if (vuelveACasos) void recargarDesdeCero();
   void router.replace({ query: { ...route.query, tab: valor === 'casos' ? undefined : valor } });
 }
 
-const items = ref<InconsistenciaItem[]>([]);
-const total = ref(0);
 const conteos = ref<Record<string, number>>({});
-const loading = ref(false);
-const error = ref('');
 const mensaje = ref('');
 const rechazados = ref<{ id: number; motivo: string }[]>([]);
-const offset = ref(0);
-const hasMore = ref(false);
 const filtroTipo = ref('');
 const filtroEstado = ref('PENDIENTE');
 const filtroRevision = ref('');
@@ -424,42 +430,29 @@ function evidenciaCompacta(item: InconsistenciaItem): string {
   return partes.join(' · ') || '—';
 }
 
-async function loadNextPage(): Promise<void> {
-  if (loading.value) return;
-  loading.value = true;
-  error.value = '';
-  try {
-    const response = await listarInconsistencias({
+const { items, total, loading, error, hasMore, cargarSiguiente, recargarDesdeCero } = usePaginatedSearch({
+  limit: LIMIT,
+  cargarPagina: (offset, limit) =>
+    listarInconsistencias({
       tipo: filtroTipo.value || undefined,
       estado: filtroEstado.value || undefined,
       revision: filtroRevision.value || undefined,
       localidad: localidadTexto.value.trim() || undefined,
       servicio_id: servicioId.value,
-      limit: LIMIT,
-      offset: offset.value,
-    });
-    total.value = response.total;
-    conteos.value = response.conteos_por_tipo;
-    const vistos = new Set(items.value.map((i) => i.id));
-    items.value.push(...response.items.filter((i) => !vistos.has(i.id)));
-    offset.value += response.items.length;
-    hasMore.value = response.items.length === LIMIT && offset.value < response.total;
-  } catch (err: unknown) {
-    error.value = err instanceof Error ? err.message : 'No se pudo consultar las inconsistencias';
-  } finally {
-    loading.value = false;
-  }
-}
+      limit,
+      offset,
+    }),
+  claveItem: (item: InconsistenciaItem) => item.id,
+  alRecibir: (respuesta) => {
+    conteos.value = respuesta.conteos_por_tipo;
+  },
+  alReiniciar: () => {
+    seleccion.value = new Set();
+  },
+  mensajeError: 'No se pudo consultar las inconsistencias',
+});
 
-async function reloadFromZero(): Promise<void> {
-  items.value = [];
-  total.value = 0;
-  offset.value = 0;
-  hasMore.value = false;
-  seleccion.value = new Set();
-  await loadNextPage();
-}
-
+// El debounce propio sigue acá: además de recargar actualiza la URL (`router.replace`).
 function onFiltroTextoInput(): void {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
@@ -470,23 +463,23 @@ function onFiltroTextoInput(): void {
         localidad: localidadTexto.value.trim() || undefined,
       },
     });
-    void reloadFromZero();
+    void recargarDesdeCero();
   }, 320);
 }
 
 function setTipo(valor: string): void {
   filtroTipo.value = filtroTipo.value === valor ? '' : valor;
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function setEstado(valor: string): void {
   filtroEstado.value = valor;
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function setRevision(valor: string): void {
   filtroRevision.value = valor;
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 const exportando = ref(false);
@@ -546,17 +539,17 @@ const { on } = useAdminNotifications();
 on('cromo_inconsistencias_nuevas', (mensajeWs) => {
   const nuevos = Number(mensajeWs.nuevos ?? 0);
   mensaje.value = `El detector encontró ${nuevos} caso(s) nuevo(s).`;
-  void reloadFromZero();
+  void recargarDesdeCero();
 });
 
 // Una evaluación del árbitro puede haber corregido casos: la pestaña Casos se recarga igual.
 // Con otra pestaña visible no se recarga: se recarga al volver a Casos (setPestana).
 on('arbitro_cromo_evaluado', () => {
-  if (pestana.value === 'casos') void reloadFromZero();
+  if (pestana.value === 'casos') void recargarDesdeCero();
 });
 
 function refrescar(): void {
-  void reloadFromZero();
+  void recargarDesdeCero();
 }
 
 function toggle(id: number): void {
@@ -582,7 +575,7 @@ async function aplicar(ids: number[], estado: EstadoDestinoInconsistencia): Prom
     const resultado = await cambiarEstadoInconsistencias(ids, estado);
     mensaje.value = `${resultado.aplicados.length} caso(s) ${accion.verbo}.`;
     rechazados.value = resultado.rechazados;
-    await reloadFromZero();
+    await recargarDesdeCero();
   } catch (err: unknown) {
     error.value = err instanceof Error ? err.message : `No se pudo completar: ${accion.verbo}`;
   } finally {
@@ -610,7 +603,7 @@ const sse = useCorridaSse({
   onResumen: (data) => {
     if (deteccion.value && typeof data.estado === 'string') deteccion.value.estado = data.estado;
     faseActual.value = '';
-    void reloadFromZero();
+    void recargarDesdeCero();
   },
   onErrorNegocio: (detalle) => {
     erroresDeteccion.value = [detalle, ...erroresDeteccion.value].slice(0, 10);
@@ -655,7 +648,7 @@ async function lanzarDeteccionManual(): Promise<void> {
 }
 
 onMounted(async () => {
-  await Promise.all([reloadFromZero(), cargarDeteccion(), cargarAviso()]);
+  await Promise.all([recargarDesdeCero(), cargarDeteccion(), cargarAviso()]);
 });
 
 onBeforeUnmount(() => {
@@ -669,6 +662,13 @@ onBeforeUnmount(() => {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+}
+
+/* El shell va debajo de las pestañas: ocupa el resto de la columna en vez de la altura entera. */
+.inconsistencias-viewer .inconsistencias-viewer__casos {
+  flex: 1;
+  min-height: 0;
+  height: auto;
 }
 
 .inconsistencias-viewer__tabs {
@@ -841,20 +841,11 @@ onBeforeUnmount(() => {
   color: color-mix(in srgb, var(--color-text) 60%, transparent);
 }
 
-.inconsistencias-viewer__inline-error,
 .inconsistencias-viewer__inline-ok {
   margin-bottom: 10px;
   padding: 10px 14px;
   border-radius: var(--radius-md);
   font-size: 12.5px;
-}
-
-.inconsistencias-viewer__inline-error {
-  background: color-mix(in srgb, var(--color-state-error) 14%, transparent);
-  color: var(--color-state-error);
-}
-
-.inconsistencias-viewer__inline-ok {
   background: color-mix(in srgb, var(--color-state-ok) 14%, transparent);
   color: var(--color-state-ok);
 }
@@ -869,12 +860,6 @@ onBeforeUnmount(() => {
 }
 
 .inconsistencias-viewer__rechazados ul { margin: 6px 0 8px; padding-left: 18px; }
-
-.inconsistencias-viewer__scroll {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
 
 .inconsistencias-viewer__tabla {
   width: 100%;
@@ -967,29 +952,6 @@ onBeforeUnmount(() => {
   color: var(--color-text);
 }
 
-.inconsistencias-viewer__state-box {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  max-width: 320px;
-  margin: 34px auto;
-  padding: 34px 22px;
-  border-radius: var(--radius-md);
-  box-shadow: 0 0 0 1px var(--color-neutral-800);
-  text-align: center;
-}
-
-.inconsistencias-viewer__state-box i { font-size: 26px; color: var(--color-neutral-600); margin-bottom: 4px; }
-.inconsistencias-viewer__state-box h3 { font-size: 15px; font-weight: 500; margin: 0; }
-.inconsistencias-viewer__state-box p {
-  font-size: 12.5px;
-  line-height: 1.5;
-  margin: 0;
-  color: color-mix(in srgb, var(--color-text) 60%, transparent);
-}
-
-.inconsistencias-viewer__loading-more,
 .inconsistencias-viewer__mas {
   display: flex;
   align-items: center;
@@ -998,12 +960,5 @@ onBeforeUnmount(() => {
   padding: 14px 0;
   font-size: 12px;
   color: color-mix(in srgb, var(--color-text) 45%, transparent);
-}
-
-.inconsistencias-viewer__spin { font-size: 14px; animation: spin 1s linear infinite; }
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
 }
 </style>

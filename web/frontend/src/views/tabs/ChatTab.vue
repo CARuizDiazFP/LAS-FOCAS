@@ -78,12 +78,12 @@
 
 <script setup lang="ts">
 import { ref, nextTick } from 'vue';
+import { enviarMensajeChat, subirAdjuntoChat, type AdjuntoChat } from '../../api/chat';
 import { useSession } from '../../composables/useSession';
 
 interface ChatMessage { role: string; text: string }
-interface Attachment { name: string; path: string; size: number }
 
-const { csrf, state } = useSession();
+const { state } = useSession();
 const username = ref('');
 username.value = state.value.username ?? '';
 
@@ -93,7 +93,7 @@ const statusText = ref('');
 const statusMode = ref('');
 const sending = ref(false);
 const isDragging = ref(false);
-const attachments = ref<Attachment[]>([]);
+const attachments = ref<AdjuntoChat[]>([]);
 const logEl = ref<HTMLDivElement | null>(null);
 const fileInputEl = ref<HTMLInputElement | null>(null);
 
@@ -128,14 +128,9 @@ function removeAttachment(i: number) {
 }
 
 async function uploadFile(file: File) {
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('csrf_token', csrf());
   setStatus(`Subiendo ${file.name}...`);
   try {
-    const res = await fetch('/api/chat/uploads', { method: 'POST', body: fd, credentials: 'include' });
-    const j = await res.json();
-    if (!res.ok) throw new Error(j.error ?? 'Error');
+    const j = await subirAdjuntoChat(file);
     attachments.value.push({ name: j.name, path: j.path, size: j.size });
     setStatus('');
   } catch (e: unknown) {
@@ -163,18 +158,8 @@ async function handleSubmit() {
   inputText.value = '';
   sending.value = true;
   setStatus('Enviando...');
-  const body = new URLSearchParams();
-  body.set('text', text);
-  body.set('csrf_token', csrf());
   try {
-    const res = await fetch('/api/chat/message', {
-      method: 'POST',
-      body,
-      credentials: 'include',
-      headers: { Accept: 'application/json' },
-    });
-    const j = await res.json();
-    if (!res.ok) throw new Error(j.error ?? 'Error');
+    const j = await enviarMensajeChat(text);
     addMessage('assistant', j.reply ?? '(sin respuesta)');
     setStatus('');
   } catch (e: unknown) {

@@ -35,22 +35,8 @@ export const CSRF_HEADER = 'X-CSRF-Token';
 
 let csrfToken: string | null = null;
 
-function legacyWindow(): Window & { CSRF_TOKEN?: string } {
-  return window as Window & { CSRF_TOKEN?: string };
-}
-
-function syncLegacyCsrfToken(token: string | null): void {
-  const target = legacyWindow();
-  if (token) {
-    target.CSRF_TOKEN = token;
-    return;
-  }
-  delete target.CSRF_TOKEN;
-}
-
 export function setCsrfToken(token: string | null): void {
   csrfToken = token;
-  syncLegacyCsrfToken(token);
 }
 
 export function clearCsrfToken(): void {
@@ -58,7 +44,7 @@ export function clearCsrfToken(): void {
 }
 
 export function getCsrfToken(): string {
-  return csrfToken ?? legacyWindow().CSRF_TOKEN ?? '';
+  return csrfToken ?? '';
 }
 
 function cloneFormData(source: FormData): FormData {

@@ -82,19 +82,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { asociarSinMatchCamaras, type AsociarSinMatchResponse } from '../../api/camaras';
-
-interface CamaraCandidata {
-  id: number;
-  nombre: string;
-  direccion: string | null;
-  estado: string;
-  botellas_count: number;
-  cables_count: number;
-  es_botella: boolean;
-  camara_padre_id: number | null;
-  camara_padre_nombre: string | null;
-}
+import { asociarSinMatchCamaras, buscarCamaras, type AsociarSinMatchResponse, type CamaraBuscada } from '../../api/camaras';
 
 const props = defineProps<{
   open: boolean;
@@ -109,8 +97,8 @@ const emit = defineEmits<{
 
 const dialogEl = ref<HTMLDialogElement | null>(null);
 const query = ref('');
-const resultados = ref<CamaraCandidata[]>([]);
-const seleccionada = ref<CamaraCandidata | null>(null);
+const resultados = ref<CamaraBuscada[]>([]);
+const seleccionada = ref<CamaraBuscada | null>(null);
 const motivo = ref('');
 const buscando = ref(false);
 const confirmando = ref(false);
@@ -119,7 +107,7 @@ let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 const puedeConfirmar = computed(() => seleccionada.value !== null);
 
-function descripcionCandidata(candidata: CamaraCandidata): string {
+function descripcionCandidata(candidata: CamaraBuscada): string {
   return candidata.es_botella ? `Botella de "${candidata.camara_padre_nombre}"` : 'Cámara raíz';
 }
 
@@ -137,10 +125,7 @@ async function buscar(): Promise<void> {
   error.value = '';
   try {
     const params = new URLSearchParams({ q: query.value.trim(), limit: '10', solo_raiz: 'false' });
-    const res = await fetch(`/api/infra/camaras/buscar?${params}`, { credentials: 'include' });
-    const data = (await res.json()) as { error?: string; camaras?: CamaraCandidata[] };
-    if (!res.ok) throw new Error(data.error ?? `Error ${res.status}`);
-    resultados.value = data.camaras ?? [];
+    resultados.value = await buscarCamaras(params);
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'No se pudo buscar cámaras.';
   } finally {

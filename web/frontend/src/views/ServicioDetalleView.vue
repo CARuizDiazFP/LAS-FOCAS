@@ -220,16 +220,13 @@ import {
   type ServicioItem,
 } from '../api/servicios';
 import {
-  type InfraRutaItem,
   type InfraServicioIngreso,
-  type ReportHistoryItem,
   getBaneosServicio,
   getIngresosServicio,
   getOdfsCromoServicio,
-  getRutasServicio,
-  getTrackingRuta,
-  getUltimoReporte,
 } from '../api/servicioSecciones';
+import { obtenerTrackingRuta, rutasDeServicio, type BanRutaOption } from '../api/infra';
+import { getUltimoReporte, type ReportHistoryItem } from '../api/informes';
 import ServicioSeccionCard from '../components/servicios/detalle/ServicioSeccionCard.vue';
 import ServiceTimeline from '../components/servicios/ServiceTimeline.vue';
 import { useCromoPath } from '../composables/useCromoPath';
@@ -260,7 +257,7 @@ const errorVerificable = ref('');
 
 const foLoading = ref(false);
 const foError = ref('');
-const foRutas = ref<InfraRutaItem[]>([]);
+const foRutas = ref<BanRutaOption[]>([]);
 
 // Sólo se usan las semillas y la descarga: la resolución completa del camino (con su auditoría)
 // vive en el gestor de Servicios sin ODF, que es admin-only.
@@ -283,7 +280,6 @@ const ingresos = ref<InfraServicioIngreso[]>([]);
 const reportesLoading = ref(false);
 const reportesError = ref('');
 const reporteSla = ref<ReportHistoryItem | null>(null);
-const reporteRepetitividad = ref<ReportHistoryItem | null>(null);
 
 const idParam = computed(() => String(route.params.idServicio ?? '').trim());
 
@@ -538,13 +534,13 @@ async function loadFoResumen(idOrigen: string): Promise<void> {
   foTrackingResumen.value = null;
 
   try {
-    const rutasData = await getRutasServicio(clean);
+    const rutasData = await rutasDeServicio(clean);
     foRutas.value = rutasData.rutas ?? [];
 
     const principal = rutaPrincipal.value;
     if (!principal) return;
 
-    const trackingData = await getTrackingRuta(principal.id);
+    const trackingData = await obtenerTrackingRuta(principal.id);
     const entries = trackingData.tracking ?? [];
 
     foTrackingResumen.value = {
@@ -598,16 +594,10 @@ async function loadReportesResumen(): Promise<void> {
   reportesLoading.value = true;
   reportesError.value = '';
   reporteSla.value = null;
-  reporteRepetitividad.value = null;
 
   try {
-    const [slaData, repData] = await Promise.all([
-      getUltimoReporte('sla'),
-      getUltimoReporte('repetitividad'),
-    ]);
-
+    const slaData = await getUltimoReporte('sla');
     reporteSla.value = (slaData.items ?? [])[0] ?? null;
-    reporteRepetitividad.value = (repData.items ?? [])[0] ?? null;
   } catch (err: unknown) {
     reportesError.value = err instanceof Error ? err.message : 'No se pudo cargar historial de informes';
   } finally {

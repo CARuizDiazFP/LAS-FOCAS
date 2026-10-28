@@ -1,0 +1,37 @@
+/*
+# Nombre de archivo: infra-modal.css
+# Ubicación de archivo: web/frontend/src/components/infra/infratab/infra-modal.css
+# Descripción: Reglas compartidas por los modales de InfraTab; cada modal la importa con <style scoped src>
+*/
+
+.close-btn { background: none; border: none; cursor: pointer; color: var(--muted); font-size: 1.3rem; margin-left: auto; }
+
+/* Botones extra (modificadores de .btn global) */
+.btn.danger { background: transparent; color: oklch(0.72 0.11 25); border: 1px solid color-mix(in srgb, var(--color-state-error) 50%, transparent); }
+.btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-error) 12%, transparent); }
+.btn.warning { background: transparent; color: var(--color-state-warn); border: 1px solid color-mix(in srgb, var(--color-state-warn) 50%, transparent); }
+.btn.warning:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-warn) 12%, transparent); }
+.btn.small { padding: 4px 10px; font-size: .78rem; }
+
+/* Modal genérico compartido */
+.infra-generic-modal {
+  position: fixed; inset: 0; margin: auto;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--color-surface);
+  color: var(--text); padding: 0; max-width: 520px; width: 95vw; max-height: 90vh; overflow-y: auto;
+}
+.infra-generic-modal::backdrop { background: rgba(0,0,0,.6); }
+.modal-inner { padding: 24px; display: flex; flex-direction: column; gap: 6px; }
+.modal-header-row { display: flex; align-items: center; margin-bottom: 10px; }
+.modal-title { margin: 0; font-size: 1rem; flex: 1; }
+.req { color: var(--color-state-error); }
+.modal-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+
+/* Ancho de cada modal. Van acá, y no en el modal dueño, porque el <dialog> raíz de un componente
+   hijo también lleva el atributo scoped del padre: si el padre (o el modal que contiene a otro, como
+   Baneos activos → Aviso) trae `.infra-generic-modal` en su hoja, su `max-width: 520px` le ganaría
+   por orden de hoja al ancho propio. Con ambas reglas en el mismo archivo, el orden se conserva en
+   cualquier hoja que las incluya. */
+.ban-wizard-modal { max-width: 600px; }
+.tracking-resolve-modal { max-width: 580px; }
+.active-bans-modal { max-width: 640px; }
+.aviso-modal { max-width: 560px; }

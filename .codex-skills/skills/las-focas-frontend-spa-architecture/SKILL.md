@@ -202,6 +202,33 @@ la ruta en el router **y** el ítem en `AppShell.vue`.
 
 ---
 
+## Capa API, viewers paginados y SSE — Hechos Verificados (P10, 2026-10-28)
+
+- **Todo HTTP va en `src/api/` (o `src/admin/api/`)**, un módulo por dominio, y lo vigila
+  `tests/test_spa_capa_api.py`: falla ante `fetch(`, CSRF armado a mano (`csrf_token`, `X-CSRF-Token`,
+  `csrf()`), `XMLHttpRequest` fuera de `api/`, `new EventSource` fuera de `composables/` y `fetch(` en
+  cualquier archivo que no sea `api/client.ts`. `test_cliente_http_solo_desde_capa_api` además impide que
+  fuera de `api/` se importen `request`, `requestJson` o `requestDownload` de `client` (sí se permiten
+  `ApiError`, `saveBlob`, `setCsrfToken`/`clearCsrfToken` y tipos). Los componentes y composables sólo
+  llaman funciones tipadas de `api/`: el invariante se cumple en todo el SPA, sin excepciones.
+- **El CSRF lo pone `request()`** (`api/client.ts`) en todo método ≠ GET. No mandar `csrf_token` en el
+  body ni leerlo de `useSession()`. Errores: `ApiError` (mensaje de `error`, `detail`, `message`, o `Error N`).
+- **Descargas**: `requestDownload` descarga, guarda el archivo con `saveBlob` y devuelve el nombre usado (el del header `Content-Disposition` o el de respaldo); nunca `fetch` + `blob()` a mano.
+- **Viewers paginados**: `composables/usePaginatedSearch.ts` + `components/viewer/ViewerShell.vue`.
+  Props clave del shell: `anchoEstado` (`max-width` de la caja de estado), `errorInline` (`false` si el
+  viewer pinta su propia caja de error), `scrollInfinito` (`false` si usa botón "Cargar más").
+  **Trampa**: pasar siempre en `error` el error real, aunque `errorInline` sea `false`; con `error=""` la
+  guarda de re-medición del sentinel se cumple tras un fallo y `cargar-mas` se emite en bucle (ServiciosView, P10).
+  Fuera del patrón queda `BotellasInventarioView` (paginación propia, pendiente).
+- **SSE de corridas**: `composables/useCorridaSse.ts` es el único cliente (reconexión con backoff, `?desde=`,
+  eventos repetidos ignorados por id, cierre en `onBeforeUnmount`). No crear `EventSource` nuevos.
+- **Helpers de presentación** (etiquetas, íconos, mensajes de error) van en `src/utils/`; `api/` no
+  depende de `utils/` (`utils/` puede importar de `api/`).
+- **Vistas grandes**: `InfraTab` se partió en `composables/infra/` + `components/infra/infratab/`; seguir
+  ese patrón (orquestador + composables + modales con `defineExpose({ abrir })`) antes de pasar ~600 líneas.
+
+---
+
 ## Guardrails
 
 1. **No crear** un segundo router (p. ej. `src/admin/router/index.ts`): las rutas van en `src/router/index.ts`.
@@ -218,7 +245,9 @@ la ruta en el router **y** el ítem en `AppShell.vue`.
    `dist/assets/` contenga el `*-worker-*.js`. MapLibre 6 tampoco tiene export default (`import * as
    maplibregl`) y sus tipos (`kdbush`) requieren TS ≥ 5.7 → `skipLibCheck: true` con TS 5.5.
    Hallazgo real (2026-10-14, `FoMonitorMap.vue`, ver `docs/cierres/2026-10-17.md`).
-7. **Build desde un worktree: `npm ci` adentro, no el `node_modules` del control.** El
+7. **No agregar `fetch`, CSRF manual ni `EventSource` fuera de la capa api/composables** (ver sección
+   anterior): `tests/test_spa_capa_api.py` lo rechaza y no hay lista de excepciones.
+8. **Build desde un worktree: `npm ci` adentro, no el `node_modules` del control.** El
    `node_modules` del checkout de control no tiene `maplibre-gl`, `pmtiles` ni `@protomaps/basemaps`
    (FO Monitor), así que enlazarlo hace fallar `vue-tsc` (la auditoría del 2026-10-24 midió 27 errores ajenos) y
    `vite build`. Desde el
@@ -227,6 +256,17 @@ la ruta en el router **y** el ítem en `AppShell.vue`.
    `npm run build` es `vue-tsc --noEmit && vite build`, así que un solo comando verifica tipos y
    plantillas. El aviso de `agent_worktree.py start` ("enlazar desde el control") es anterior.
    El `vite.config` temporal que externalizaba MapLibre (2026-10-19) ya no hace falta.
+9. **Partir un componente con `<style scoped>` en hijos: cada regla va al componente dueño del
+   elemento, y el orden de las hojas no es el del original.** Un hijo de raíz única recibe también el
+   atributo scoped del padre en su raíz, y la hoja del hijo se emite **antes** que la del padre (el
+   padre importa al hijo en el script). Por eso una regla genérica del padre (`.infra-generic-modal {
+   max-width: 520px }`) le gana a una más específica del hijo con la misma especificidad. Las reglas
+   compartidas entre hermanos van a un `.css` común importado con `<style scoped src="./x.css">` en
+   cada hijo, junto con las que dependen de su orden (anchos). Por la misma razón, `:deep()` sobre la
+   raíz de un hijo es frágil: deja de aplicar si el hijo pasa a ser fragmento. Preferir una prop
+   (`anchoEstado` en `ViewerShell`). Verificar con el multiconjunto de clases antes y después y con el
+   CSS emitido en `dist/`, porque sin navegador no hay otra evidencia. Real: P10, 2026-10-28,
+   `InfraTab.vue` y `ViewerShell` (ver `docs/cierres/2026-10-28.md`).
 
 ## Relación con otras skills
 

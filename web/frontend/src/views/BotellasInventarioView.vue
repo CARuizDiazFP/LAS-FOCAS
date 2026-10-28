@@ -230,9 +230,11 @@ import { useRouter } from 'vue-router';
 
 import {
   estadoBotellaToken,
+  listarBotellasHuerfanas,
   searchBotellas,
   updateBotellasEstadoMasivo,
   type BotellaClave,
+  type BotellaHuerfanaItem,
   type BotellaOrigen,
   type BotellaUnificadaItem,
   type EstadoBotellaValor,
@@ -241,13 +243,6 @@ import BotellaCard from '../components/infra/BotellaCard.vue';
 import BotellasBulkActionsPanel from '../components/infra/BotellasBulkActionsPanel.vue';
 import ModalAsociarHuerfanas from '../components/infra/ModalAsociarHuerfanas.vue';
 import { botellaDetailPath } from '../utils/botellaLinks';
-
-interface BotellaHuerfanaItem {
-  n_id: number;
-  nombre: string | null;
-  calle: string | null;
-  localidad: string | null;
-}
 
 const LIMIT = 30;
 const VISTA_STORAGE_KEY = 'botellas.vista';
@@ -379,9 +374,7 @@ async function loadNextPageHuerfanas(): Promise<void> {
       limit: String(LIMIT),
       offset: String(offsetHuerfanas.value),
     });
-    const res = await fetch(`/api/infra/cromo-botellas/huerfanas?${params}`, { credentials: 'include' });
-    const data = await res.json() as { error?: string; total?: number; botellas?: BotellaHuerfanaItem[] };
-    if (!res.ok) throw new Error(data.error ?? `Error ${res.status}`);
+    const data = await listarBotellasHuerfanas(params);
 
     const nuevas = data.botellas ?? [];
     totalHuerfanas.value = data.total ?? 0;

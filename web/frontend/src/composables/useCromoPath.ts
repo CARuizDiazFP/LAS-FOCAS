@@ -27,8 +27,6 @@ import {
   desconfirmarOdfServicio,
   descargarTrackingCromo,
   listarPelosCamino,
-  mensajeErrorCromoPath,
-  mensajeErrorPosicionVigente,
   normalizarConsistencia,
   obtenerPosicionVigente,
   relevarOdfsDelCamino,
@@ -37,6 +35,7 @@ import {
   restaurarPeloServicio,
   retirarPosicionVigente,
 } from '../api/cromoPath';
+import { mensajeErrorCromoPath, mensajeErrorPosicionVigente } from '../utils/cromoPathPresentacion';
 
 /** Resultado de bajar los trackings de los pelos elegidos. */
 export interface ResultadoDescargaTrackings {

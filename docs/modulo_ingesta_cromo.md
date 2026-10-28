@@ -42,8 +42,8 @@ datos contra la API real antes de comprometerse a un esquema de base llevaron a 
    el panel web (entonces `web/app/main.py`; desde el refactor a routers esos endpoints viven en
    `web/app/routers/admin_datos.py`). Detalle de la decisión de arquitectura en `docs/PR/2026-08-06.md`.
 5. **Etapa 5 — Interfaz** (completa): vista `/admin/ingesta/cromo` — selector de clases, `psize` fijo a
-   5 valores, progreso en vivo consumiendo el SSE de la Etapa 4 con `EventSource` nativo del browser
-   (primer uso en el proyecto), histórico y detalle de corridas. Validada de punta a punta contra el
+   5 valores, progreso en vivo consumiendo el SSE de la Etapa 4 (al inicio con `EventSource` nativo; desde P10
+   vía `composables/useCorridaSse.ts`, con reconexión con backoff y `?desde=`), histórico y detalle de corridas. Validada de punta a punta contra el
    backend real (Cromo + `lasfocasdev-postgres`) por HTTP/SSE crudo — el entorno de esta sesión no pudo
    levantar un browser real (sin permisos para instalar las librerías de sistema de Chromium), así que
    la renderización de Vue en sí no se vio en pantalla; el contrato de datos que consume sí se validó
@@ -166,7 +166,7 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
 
     `SOLO_CABLES` (2026-10-02, cables fantasma) barre sólo la 51 sin esperar una `COMPLETA` entera
     (botellas son horas); objetos y duración son los aproximados que muestra el selector del SPA
-    (`CROMO_MODOS_INGESTA_INFO` en `web/frontend/src/api/cromo.ts`), no una medición de este documento.
+    (`CROMO_MODOS_INGESTA_INFO` en `web/frontend/src/api/cromoIngesta.ts`), no una medición de este documento.
     Ese selector ofrece nueve de los diez modos: `SOLO_PELOS_INNER` no está; corre por el scheduler
     semanal (fila `id=2` de `cromo_ingesta_config`) o a mano con `scripts/cromo_barrido_pelos_inner.py`
     (el endpoint igual lo acepta, porque valida contra `MODOS_INGESTA`). Tras `COMPLETA`, `SOLO_CABLES`, `SOLO_CABLES_BAJADA` y
@@ -445,7 +445,7 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
   consulta, no administración. Desde 2026-08-28, también `GET /api/infra/cromo/odfs` (mismos filtros
   que cables, sin `jerarquia`/`propietario` en la UI), `GET /api/infra/cromo/odfs/{n_id}/detalle` y
   `GET /api/infra/cromo/odfs/{odf_n_id}/servicios`, con el mismo criterio de sesión.
-- `web/frontend/src/api/cromo.ts`: cliente API del SPA (wrappers sobre `request`/`requestJson` de
+- `web/frontend/src/api/cromo.ts` (desde P10 un barrel sobre `cromoIngesta`, `cromoScheduler`, `cromoVerificacion`, `cromoInventario` y `cromoDetalle`): cliente API del SPA (wrappers sobre `request`/`requestJson` de
   `src/api/client.ts`) + catálogo estático de clases botella (mismo seed que la migración) + funciones
   del verificador (`verificarServiciosPor{Cable,Tubo,Botella}`, con `CromoVerificacionBotella.cables:
   CromoCableDeBotella[]` desde 2026-08-18) + funciones del scheduler del worker
@@ -458,7 +458,7 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
 - `web/frontend/src/admin/views/AdminIngestaCromo.vue`: vista en `/admin/ingesta/cromo` — card de
   scheduler automático (habilitar/deshabilitar, intervalo, hora de inicio, clases/psize/max_páginas
   del ciclo periódico, estado del worker, "Ejecutar ahora"), dispara corridas manuales y consume el
-  SSE con `EventSource` nativo (replay por `Last-Event-ID` automático del browser, sin código propio),
+  SSE vía `useCorridaSse` (reconexión con backoff y replay por `?desde=`; desde P10 ya no es `EventSource` crudo),
   histórico y detalle. Registrada en `web/frontend/src/router/index.ts` y con su tarjeta en el hub
   `AdminIngesta.vue`, siguiendo la skill `frontend-spa-architecture`.
 - `web/frontend/src/admin/components/AdminPageHeader.vue`: cabecera estándar (kicker + título +

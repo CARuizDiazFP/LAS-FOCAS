@@ -14,48 +14,6 @@
 
 import { requestJson } from './client';
 
-// ── Camino FO (tracking legado por ruta) ──────────────────────────────────
-
-export interface InfraRutaItem {
-  id: number;
-  nombre: string;
-  tipo: string;
-  empalmes_count: number;
-  activa: boolean;
-}
-
-export interface InfraRutasResponse {
-  status: string;
-  rutas: InfraRutaItem[];
-}
-
-export interface TrackingEntry {
-  tipo: string;
-}
-
-export interface InfraPunta {
-  sitio?: string | null;
-  identificador?: string | null;
-  conector?: string | null;
-}
-
-export interface InfraTrackingResponse {
-  status: string;
-  tracking: TrackingEntry[];
-  punta_a?: InfraPunta | null;
-  punta_b?: InfraPunta | null;
-}
-
-export async function getRutasServicio(idOrigen: string): Promise<InfraRutasResponse> {
-  return requestJson<InfraRutasResponse>(
-    `/api/infra/servicios/${encodeURIComponent(idOrigen)}/rutas`,
-  );
-}
-
-export async function getTrackingRuta(rutaId: number): Promise<InfraTrackingResponse> {
-  return requestJson<InfraTrackingResponse>(`/api/infra/rutas/${rutaId}/tracking`);
-}
-
 // ── ODFs asociadas ────────────────────────────────────────────────────────
 
 /**
@@ -299,23 +257,6 @@ export async function anularIngreso(
     json: { motivo },
     csrf: true,
   });
-}
-
-// ── Reportes ──────────────────────────────────────────────────────────────
-
-export interface ReportHistoryItem {
-  id: number;
-  status: string;
-  started_at: string | null;
-  report_type: string;
-}
-
-export interface ReportsHistoryResponse {
-  items?: ReportHistoryItem[];
-}
-
-export async function getUltimoReporte(tipo: 'sla' | 'repetitividad'): Promise<ReportsHistoryResponse> {
-  return requestJson<ReportsHistoryResponse>(`/api/reports/history?type=${tipo}&limit=1`);
 }
 
 // ── Baneos ────────────────────────────────────────────────────────────────

@@ -52,10 +52,9 @@ import { layers, namedFlavor } from '@protomaps/basemaps';
 import { Protocol } from 'pmtiles';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
-  buscarEnMapa, obtenerMapaConfig, type ColorSemaforo, type GeoServicios, type MapaConfig, type ServicioResaltado,
+  buscarEnMapa, obtenerMapaBotellas, obtenerMapaConfig, obtenerMapaRed, type ColorSemaforo, type GeoServicios, type MapaConfig, type ServicioResaltado,
   type TipoBusquedaMapa,
 } from '../../api/foMonitor';
-import { requestJson } from '../../api/client';
 import { PALETA_SERVICIOS, paletaSemaforo, resolverColor, resolverToken } from './colores';
 
 const props = defineProps<{
@@ -125,7 +124,7 @@ function expresionColor(paleta: Record<ColorSemaforo, string>): maplibregl.Expre
 async function cargarRed(): Promise<void> {
   if (!mapa || mapa.getSource('red')) return;
   cargandoRed.value = true;
-  const red = await requestJson<GeoJSON.FeatureCollection>('/api/fo-monitor/mapa/red').finally(() => {
+  const red = await obtenerMapaRed().finally(() => {
     cargandoRed.value = false;
   });
   if (!mapa || mapa.getSource('red')) return;
@@ -146,7 +145,7 @@ async function cargarBotellas(): Promise<void> {
   if (!mapa || !verBotellas.value || mapa.getZoom() < 15) return;
   const b = mapa.getBounds();
   const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((v) => v.toFixed(5)).join(',');
-  const datos = await requestJson<GeoJSON.FeatureCollection>(`/api/fo-monitor/mapa/botellas?bbox=${bbox}`);
+  const datos = await obtenerMapaBotellas(bbox);
   (mapa.getSource('botellas') as GeoJSONSource | undefined)?.setData(datos);
 }
 

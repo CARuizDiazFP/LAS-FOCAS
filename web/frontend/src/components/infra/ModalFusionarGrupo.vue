@@ -54,8 +54,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 
-import { useSession } from '../../composables/useSession';
-import type { GrupoCamarasDuplicadas } from '../../api/camaras';
+import { fusionarGrupoCamaras, type GrupoCamarasDuplicadas } from '../../api/camaras';
 
 const props = defineProps<{
   open: boolean;
@@ -68,7 +67,6 @@ const emit = defineEmits<{
   error: [message: string];
 }>();
 
-const { csrf } = useSession();
 const dialogEl = ref<HTMLDialogElement | null>(null);
 const principalId = ref<number | null>(null);
 const guardarAlias = ref(true);
@@ -102,19 +100,12 @@ async function handleConfirmar(): Promise<void> {
   error.value = '';
   try {
     const secundarias = props.grupo.miembros.filter((m) => m.id !== principalId.value).map((m) => m.id);
-    const res = await fetch('/api/infra/camaras/merge-grupo', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({
-        camara_principal_id: principalId.value,
-        camara_secundaria_ids: secundarias,
-        guardar_alias: guardarAlias.value,
-        csrf_token: csrf(),
-      }),
+    const data = await fusionarGrupoCamaras({
+      camara_principal_id: principalId.value,
+      camara_secundaria_ids: secundarias,
+      guardar_alias: guardarAlias.value,
     });
-    const data = await res.json() as { error?: string; ok?: boolean };
-    if (!res.ok || !data.ok) throw new Error(data.error ?? 'No se pudo fusionar el grupo de Cámaras.');
+    if (!data.ok) throw new Error(data.error ?? 'No se pudo fusionar el grupo de Cámaras.');
     emit('merged');
     handleClose();
   } catch (e: unknown) {

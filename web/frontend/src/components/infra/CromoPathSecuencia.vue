@@ -100,7 +100,8 @@
 </template>
 
 <script setup lang="ts">
-import { type NodoCamino, tipoNodoIcono, tipoNodoLabel } from '../../api/cromoPath';
+import type { NodoCamino } from '../../api/cromoPath';
+import { tipoNodoIcono, tipoNodoLabel } from '../../utils/cromoPathPresentacion';
 
 const props = defineProps<{
   nodos: NodoCamino[];

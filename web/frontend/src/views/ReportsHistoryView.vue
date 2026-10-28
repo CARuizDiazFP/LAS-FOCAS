@@ -109,26 +109,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-
-interface ReportHistoryItem {
-  id: number;
-  report_type: string;
-  status: string;
-  username: string;
-  source: string;
-  period_month: number;
-  period_year: number;
-  started_at: string | null;
-  finished_at: string | null;
-  duration_ms: number | null;
-  input_metadata: Record<string, unknown>;
-  output_metadata: {
-    outputs?: Record<string, string | string[]>;
-    stats?: Record<string, unknown>;
-  };
-  error_code: string | null;
-  error_message: string | null;
-}
+import { listarHistorialInformes, type ReportHistoryItem } from '../api/informes';
 
 const items = ref<ReportHistoryItem[]>([]);
 const loading = ref(false);
@@ -150,9 +131,7 @@ async function loadFiles() {
     if (filters.value.month) params.set('month', String(filters.value.month));
     if (filters.value.year) params.set('year', String(filters.value.year));
     const query = params.toString();
-    const res = await fetch(`/api/reports/history${query ? `?${query}` : ''}`, { credentials: 'include' });
-    if (!res.ok) throw new Error(`Error ${res.status}`);
-    const data = await res.json();
+    const data = await listarHistorialInformes(query);
     items.value = data.items ?? [];
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'Error cargando reportes';

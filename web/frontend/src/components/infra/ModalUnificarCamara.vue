@@ -83,16 +83,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue';
-import { useSession } from '../../composables/useSession';
-
-interface CamaraCandidata {
-  id: number;
-  nombre: string;
-  direccion: string | null;
-  estado: string;
-  botellas_count: number;
-  cables_count: number;
-}
+import { buscarCamaras, unificarCamaras, type CamaraBuscada } from '../../api/camaras';
 
 const props = defineProps<{
   open: boolean;
@@ -107,11 +98,10 @@ const emit = defineEmits<{
   error: [message: string];
 }>();
 
-const { csrf } = useSession();
 const dialogEl = ref<HTMLDialogElement | null>(null);
 const query = ref('');
-const resultados = ref<CamaraCandidata[]>([]);
-const seleccionada = ref<CamaraCandidata | null>(null);
+const resultados = ref<CamaraBuscada[]>([]);
+const seleccionada = ref<CamaraBuscada | null>(null);
 const buscando = ref(false);
 const confirmando = ref(false);
 const error = ref('');
@@ -133,10 +123,7 @@ async function buscar(): Promise<void> {
   try {
     const params = new URLSearchParams({ q: query.value.trim(), limit: '10' });
     if (props.camaraId != null) params.set('excluir_id', String(props.camaraId));
-    const res = await fetch(`/api/infra/camaras/buscar?${params}`, { credentials: 'include' });
-    const data = await res.json() as { error?: string; camaras?: CamaraCandidata[] };
-    if (!res.ok) throw new Error(data.error ?? `Error ${res.status}`);
-    resultados.value = data.camaras ?? [];
+    resultados.value = await buscarCamaras(params);
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'No se pudo buscar cámaras.';
   } finally {
@@ -163,19 +150,12 @@ async function handleConfirmar(): Promise<void> {
   confirmando.value = true;
   error.value = '';
   try {
-    const res = await fetch('/api/infra/camaras/merge', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({
-        camara_principal_id: props.camaraId,
-        camara_secundaria_id: seleccionada.value.id,
-        guardar_alias: guardarAlias.value,
-        csrf_token: csrf(),
-      }),
+    const data = await unificarCamaras({
+      camara_principal_id: props.camaraId,
+      camara_secundaria_id: seleccionada.value.id,
+      guardar_alias: guardarAlias.value,
     });
-    const data = await res.json() as { error?: string; ok?: boolean };
-    if (!res.ok || !data.ok) throw new Error(data.error ?? 'No se pudo unificar las cámaras.');
+    if (!data.ok) throw new Error(data.error ?? 'No se pudo unificar las cámaras.');
     emit('merged');
     handleClose();
   } catch (e: unknown) {

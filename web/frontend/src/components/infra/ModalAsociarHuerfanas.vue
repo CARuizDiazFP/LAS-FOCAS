@@ -88,15 +88,8 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { useSession } from '../../composables/useSession';
-
-interface CamaraCandidata {
-  id: number;
-  nombre: string;
-  direccion: string | null;
-  estado: string;
-  botellas_count: number;
-}
+import { asociarBotellasHuerfanas } from '../../api/botellas';
+import { buscarCamaras, type CamaraBuscada } from '../../api/camaras';
 
 const props = defineProps<{
   open: boolean;
@@ -108,12 +101,11 @@ const emit = defineEmits<{
   asociada: [payload: { camaraId: number; camaraCreada: boolean; botellasVinculadas: number }];
 }>();
 
-const { csrf } = useSession();
 const dialogEl = ref<HTMLDialogElement | null>(null);
 const modo = ref<'existente' | 'nueva'>('existente');
 const query = ref('');
-const resultados = ref<CamaraCandidata[]>([]);
-const seleccionada = ref<CamaraCandidata | null>(null);
+const resultados = ref<CamaraBuscada[]>([]);
+const seleccionada = ref<CamaraBuscada | null>(null);
 const nombreNueva = ref('');
 const buscando = ref(false);
 const confirmando = ref(false);
@@ -142,10 +134,7 @@ async function buscar(): Promise<void> {
   error.value = '';
   try {
     const params = new URLSearchParams({ q: query.value.trim(), limit: '10' });
-    const res = await fetch(`/api/infra/camaras/buscar?${params}`, { credentials: 'include' });
-    const data = await res.json() as { error?: string; camaras?: CamaraCandidata[] };
-    if (!res.ok) throw new Error(data.error ?? `Error ${res.status}`);
-    resultados.value = data.camaras ?? [];
+    resultados.value = await buscarCamaras(params);
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'No se pudo buscar cámaras.';
   } finally {
@@ -173,25 +162,12 @@ async function handleConfirmar(): Promise<void> {
   confirmando.value = true;
   error.value = '';
   try {
-    const res = await fetch('/api/infra/cromo-botellas/asociar', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({
-        n_ids: props.nIds,
-        camara_id: modo.value === 'existente' ? seleccionada.value?.id : undefined,
-        nombre_nueva_camara: modo.value === 'nueva' ? nombreNueva.value.trim() : undefined,
-        csrf_token: csrf(),
-      }),
+    const data = await asociarBotellasHuerfanas({
+      n_ids: props.nIds,
+      camara_id: modo.value === 'existente' ? seleccionada.value?.id : undefined,
+      nombre_nueva_camara: modo.value === 'nueva' ? nombreNueva.value.trim() : undefined,
     });
-    const data = await res.json() as {
-      error?: string;
-      ok?: boolean;
-      camara_id?: number;
-      camara_creada?: boolean;
-      botellas_vinculadas?: number;
-    };
-    if (!res.ok || !data.ok) throw new Error(data.error ?? 'No se pudo asociar la Botella.');
+    if (!data.ok) throw new Error(data.error ?? 'No se pudo asociar la Botella.');
     emit('asociada', {
       camaraId: data.camara_id ?? 0,
       camaraCreada: data.camara_creada ?? false,

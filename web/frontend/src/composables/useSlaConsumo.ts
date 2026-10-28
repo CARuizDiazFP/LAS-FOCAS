@@ -3,7 +3,7 @@
 // Descripción: Estado y llamada al informe de SLA consumido (persiste el histórico de reclamos)
 
 import { ref } from 'vue';
-import { request } from '../api/client';
+import { generarInformeSlaConsumo } from '../api/informes';
 
 export interface SlaConsumoTotales {
   servicios_universo?: number;
@@ -80,15 +80,9 @@ export function useSlaConsumo() {
     mensaje.value = 'Procesando…';
     tono.value = 'info';
     try {
-      const response = await request('/api/reports/sla-consumo', {
-        method: 'POST',
-        formData,
-        csrf: true,
-        throwOnError: false,
-      });
-      const data = (await response.json().catch(() => ({}))) as SlaConsumoResultado;
-      if (!response.ok || data.ok === false) {
-        throw new Error(data.error ?? data.detail ?? data.message ?? `Error ${response.status}`);
+      const { ok, status, data } = await generarInformeSlaConsumo<SlaConsumoResultado>(formData);
+      if (!ok || data.ok === false) {
+        throw new Error(data.error ?? data.detail ?? data.message ?? `Error ${status}`);
       }
       resultado.value = data;
       const sinCambios = data.reclamos_sin_cambios

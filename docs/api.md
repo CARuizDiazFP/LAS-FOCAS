@@ -2043,11 +2043,10 @@ Obtiene el detalle de un incidente específico con las cámaras afectadas.
 
 Tres endpoints en `api/app/routes/infra.py` (API key interna). El panel web tiene implementaciones
 **propias, no proxies**, en los mismos paths (`web/app/routers/camaras.py`, con sesión); la SPA
-(`InfraTab.vue`) llama a las del panel web, cuyo `download-eml` declara cuerpo JSON
+(`InfraTab.vue`, vía `api/infra.ts`) llama a las del panel web, cuyo `download-eml` declara cuerpo JSON
 (`EmlDownloadRequestModel`: `incident_id`, `recipients`, `subject`, `html_body`, `include_xls`,
-`include_txt`) en lugar de form-data. **Discrepancia abierta (lectura de código, 2026-10-26, sin
-verificar en runtime):** `downloadEml()` de `InfraTab.vue` envía `FormData`, el formato del endpoint
-de la API, no el JSON que espera el del panel web.
+`include_txt`) en lugar de form-data. **Discrepancia cerrada (P10, 2026-10-28):** el SPA enviaba `FormData` (formato del endpoint de la
+API) y el del panel web lo rechazaba; ahora `descargarEmlBaneo()` (`api/infra.ts`) manda JSON.
 La configuración SMTP sale de `core/config.py` (`SmtpSettings`): el servicio se considera configurado
 si `SMTP_HOST` no está vacío (`EmailService.is_configured()`, `core/services/email_service.py`).
 
