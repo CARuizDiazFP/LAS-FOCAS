@@ -1,6 +1,6 @@
 # Nombre de archivo: tracking_operaciones.py
 # Ubicación de archivo: core/services/tracking_operaciones.py
-# Descripción: Operaciones de tracking compartidas por el panel y la API (upload, análisis y descarga del original)
+# Descripción: Operaciones de tracking compartidas por el panel y la API (upload, análisis, descarga del original, rutas de un servicio y limpieza de empalmes)
 
 """Lógica de tracking que antes estaba duplicada en `web/app/routers/servicios.py` y
 `api/app/routes/infra.py` (P12, Task 10).
@@ -17,7 +17,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy import or_
+from sqlalchemy.orm import Session, selectinload
 
 from core.parsers.tracking_parser import parse_tracking
 from core.services.infra_service import (
@@ -276,3 +277,93 @@ def obtener_tracking_original(session: Session, ruta_id: int) -> TrackingOrigina
         filename=ruta.nombre_archivo_origen or f"tracking_ruta_{ruta_id}.txt",
         contenido=ruta.raw_file_content,
     )
+
+
+# --- Rutas de un servicio y limpieza de empalmes ----------------------------------------------------
+
+def buscar_servicio_por_identificador(session: Session, identificador: str, *opciones: Any) -> Servicio | None:
+    """Resuelve un `Servicio` por `servicio_id`, `numero_primer_servicio` o `numero_linea`.
+
+    Ordena por `Servicio.id` para que, con identificadores ambiguos, gane siempre el de menor id.
+    `opciones` son opciones de carga (`selectinload`) opcionales para la consulta.
+    """
+    consulta = session.query(Servicio).filter(
+        or_(
+            Servicio.servicio_id == identificador,
+            Servicio.numero_primer_servicio == identificador,
+            Servicio.numero_linea == identificador,
+        )
+    )
+    if opciones:
+        consulta = consulta.options(*opciones)
+    return consulta.order_by(Servicio.id).first()
+
+
+def obtener_rutas_de_servicio(session: Session, identificador: str) -> dict[str, Any] | None:
+    """Rutas de un servicio (forma común al panel y a la API), o `None` si no existe.
+
+    Serializa dentro de la sesión: el llamador puede cerrarla al volver.
+    """
+    servicio = buscar_servicio_por_identificador(
+        session, identificador, selectinload(Servicio.rutas).selectinload(RutaServicio.empalmes)
+    )
+    if servicio is None:
+        return None
+    rutas = [
+        {
+            "id": ruta.id,
+            "nombre": ruta.nombre,
+            "tipo": ruta.tipo.value if ruta.tipo else "PRINCIPAL",
+            "hash_contenido": ruta.hash_contenido,
+            "empalmes_count": len(ruta.empalmes),
+            "activa": bool(ruta.activa),
+            "created_at": ruta.created_at.isoformat() if ruta.created_at else None,
+            "nombre_archivo_origen": ruta.nombre_archivo_origen,
+        }
+        for ruta in servicio.rutas
+    ]
+    return {
+        "status": "ok",
+        "servicio_id": servicio.servicio_id,
+        "servicio_db_id": servicio.id,
+        "cliente": servicio.cliente,
+        "rutas": rutas,
+        "total_rutas": len(rutas),
+    }
+
+
+def limpiar_empalmes_de_servicio(session: Session, servicio_id: str) -> dict[str, Any] | None:
+    """Borra las asociaciones legacy y las rutas (con su cascada ORM) de un servicio; hace commit.
+
+    Los `Empalme` quedan vivos. Devuelve `None` si el servicio no existe (sin escribir).
+    """
+    servicio = (
+        session.query(Servicio)
+        .filter(Servicio.servicio_id == servicio_id)
+        .options(selectinload(Servicio.empalmes), selectinload(Servicio.rutas).selectinload(RutaServicio.empalmes))
+        .first()
+    )
+    if servicio is None:
+        return None
+
+    legacy = len(servicio.empalmes)
+    rutas = len(servicio.rutas)
+    empalmes_rutas = sum(len(r.empalmes) for r in servicio.rutas)
+
+    servicio.empalmes = []
+    for ruta in list(servicio.rutas):
+        session.delete(ruta)
+    session.commit()
+
+    logger.info(
+        "action=delete_servicio_empalmes servicio_id=%s empalmes_legacy=%d rutas=%d empalmes_rutas=%d",
+        servicio_id, legacy, rutas, empalmes_rutas,
+    )
+    return {
+        "status": "ok",
+        "servicio_id": servicio_id,
+        "message": f"Eliminadas {legacy} asociaciones legacy y {rutas} rutas",
+        "empalmes_legacy_eliminados": legacy,
+        "rutas_eliminadas": rutas,
+        "empalmes_rutas_eliminados": empalmes_rutas,
+    }

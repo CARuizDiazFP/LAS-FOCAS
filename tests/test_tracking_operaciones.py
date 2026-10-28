@@ -25,6 +25,13 @@ class SesionDoble:
     def filter(self, *_):
         return self
 
+    def options(self, *_):
+        return self
+
+    def order_by(self, *criterios):
+        self.orden = criterios
+        return self
+
     def first(self):
         return self.primero
 
@@ -176,3 +183,82 @@ def test_serializar_resolucion_claves_del_panel():
         "error",
     }
     assert datos["action"] == "REPLACE" and datos["success"] is False and datos["error"] == "e"
+
+
+# --- Rutas de un servicio y limpieza de empalmes (Task 12) -----------------------------------------------
+
+def test_buscar_servicio_por_numero_linea():
+    """El criterio del panel (servicio_id OR numero_primer_servicio OR numero_linea) está en el filtro."""
+    from sqlalchemy.dialects import postgresql
+
+    capturado = []
+
+    class Sesion(SesionDoble):
+        def filter(self, *criterios):
+            capturado.extend(criterios)
+            return self
+
+    servicio = SimpleNamespace(id=1)
+    assert ops.buscar_servicio_por_identificador(Sesion(servicio), "LIN-9") is servicio
+    sql = str(capturado[0].compile(dialect=postgresql.dialect()))
+    assert "numero_linea" in sql and "numero_primer_servicio" in sql and "servicio_id" in sql
+
+
+def test_buscar_servicio_orden_determinista():
+    """Con dos candidatos se ordena por `Servicio.id` antes del `.first()` (gana el de menor id)."""
+    sesion = SesionDoble(SimpleNamespace(id=1))
+    ops.buscar_servicio_por_identificador(sesion, "X")
+    assert [str(c) for c in sesion.orden] == ["Servicio.id"]
+
+
+def test_rutas_de_servicio_inexistente_devuelve_none():
+    assert ops.obtener_rutas_de_servicio(SesionDoble(None), "X") is None
+
+
+def test_rutas_de_servicio_forma():
+    from datetime import datetime
+
+    from db.models.infra import RutaTipo
+
+    ruta = SimpleNamespace(
+        id=7, nombre="R1", tipo=RutaTipo.BACKUP, hash_contenido="h", empalmes=[1, 2], activa=1,
+        created_at=datetime(2026, 1, 2, 3, 4, 5), nombre_archivo_origen="a.txt",
+    )
+    sin_tipo = SimpleNamespace(
+        id=8, nombre="R2", tipo=None, hash_contenido=None, empalmes=[], activa=0,
+        created_at=None, nombre_archivo_origen=None,
+    )
+    servicio = SimpleNamespace(servicio_id="111", id=5, cliente="ACME", rutas=[ruta, sin_tipo])
+    datos = ops.obtener_rutas_de_servicio(SesionDoble(servicio), "111")
+    assert set(datos) == {"status", "servicio_id", "servicio_db_id", "cliente", "rutas", "total_rutas"}
+    assert datos["total_rutas"] == 2 and datos["servicio_db_id"] == 5
+    assert datos["rutas"][0] == {
+        "id": 7, "nombre": "R1", "tipo": "BACKUP", "hash_contenido": "h", "empalmes_count": 2,
+        "activa": True, "created_at": "2026-01-02T03:04:05", "nombre_archivo_origen": "a.txt",
+    }
+    assert datos["rutas"][1]["tipo"] == "PRINCIPAL" and datos["rutas"][1]["activa"] is False
+
+
+def test_limpiar_empalmes_inexistente_no_commitea():
+    sesion = SesionDoble(None)
+    assert ops.limpiar_empalmes_de_servicio(sesion, "X") is None
+    assert "commit" not in sesion.llamadas
+
+
+def test_limpiar_empalmes_cuenta_borra_y_commitea():
+    borradas = []
+
+    class Sesion(SesionDoble):
+        def delete(self, obj):
+            borradas.append(obj)
+
+    r1, r2 = SimpleNamespace(empalmes=[1, 2]), SimpleNamespace(empalmes=[3])
+    servicio = SimpleNamespace(servicio_id="52547", empalmes=[1, 2, 3, 4], rutas=[r1, r2])
+    sesion = Sesion(servicio)
+    datos = ops.limpiar_empalmes_de_servicio(sesion, "52547")
+    assert datos == {
+        "status": "ok", "servicio_id": "52547",
+        "message": "Eliminadas 4 asociaciones legacy y 2 rutas",
+        "empalmes_legacy_eliminados": 4, "rutas_eliminadas": 2, "empalmes_rutas_eliminados": 3,
+    }
+    assert borradas == [r1, r2] and servicio.empalmes == [] and sesion.llamadas == ["commit"]

@@ -34,7 +34,10 @@ from core.services.tracking_operaciones import (
     TrackingOriginalNoDisponible,
     TrackingSinServicioId,
     TrackingSinUbicaciones,
+    buscar_servicio_por_identificador,
     decodificar_tracking,
+    limpiar_empalmes_de_servicio,
+    obtener_rutas_de_servicio,
     obtener_tracking_original,
     parsear_accion_resolve,
     parsear_ruta_tipo,
@@ -59,25 +62,11 @@ router = APIRouter(dependencies=[Depends(usuario_sesion), Depends(requiere_csrf)
 
 
 def _find_servicio_por_identificador_web(session: Any, servicio_id: str) -> Optional[Any]:
-    """Resuelve un `Servicio` por identificador flexible: `servicio_id`,
-    `numero_primer_servicio` o `numero_linea`. Lookup compartido por
-    `get_servicio_rutas_web` y `get_servicio_odfs` (ambos reciben el mismo tipo
-    de identificador desde el frontend)."""
+    """Resuelve un `Servicio` por identificador flexible (`servicio_id`, `numero_primer_servicio` o
+    `numero_linea`); delega en el criterio común de core. Lo comparten `get_servicio_rutas_web`
+    (vía core), `get_servicio_odfs` y el resto de rutas del panel que reciben ese identificador."""
 
-    from db.models.infra import Servicio
-    from sqlalchemy import or_
-
-    return (
-        session.query(Servicio)
-        .filter(
-            or_(
-                Servicio.servicio_id == servicio_id,
-                Servicio.numero_primer_servicio == servicio_id,
-                Servicio.numero_linea == servicio_id,
-            )
-        )
-        .first()
-    )
+    return buscar_servicio_por_identificador(session, servicio_id)
 
 
 @router.get("/api/infra/servicios/{servicio_id}/rutas")
@@ -90,46 +79,20 @@ def get_servicio_rutas_web(
     username, _ = usuario
 
     try:
-        from db.session import SessionLocal
-
         with SessionLocal() as session:
-            servicio = _find_servicio_por_identificador_web(session, servicio_id)
+            datos = obtener_rutas_de_servicio(session, servicio_id)
 
-            if not servicio:
-                return JSONResponse(
-                    {"error": f"Servicio {servicio_id} no encontrado"},
-                    status_code=404
-                )
-            
-            rutas_info = []
-            for ruta in servicio.rutas:
-                rutas_info.append({
-                    "id": ruta.id,
-                    "nombre": ruta.nombre,
-                    "tipo": ruta.tipo.value if ruta.tipo else "PRINCIPAL",
-                    "hash_contenido": ruta.hash_contenido,
-                    "empalmes_count": len(ruta.empalmes),
-                    "activa": bool(ruta.activa),
-                    "created_at": ruta.created_at.isoformat() if ruta.created_at else None,
-                    "nombre_archivo_origen": ruta.nombre_archivo_origen,
-                })
-            
-            logger.info(
-                "action=get_servicio_rutas user=%s servicio_id=%s rutas=%d",
-                username,
-                servicio_id,
-                len(rutas_info),
-            )
-            
-            return JSONResponse({
-                "status": "ok",
-                "servicio_id": servicio.servicio_id,
-                "servicio_db_id": servicio.id,
-                "cliente": servicio.cliente,
-                "rutas": rutas_info,
-                "total_rutas": len(rutas_info),
-            })
-            
+        if datos is None:
+            return JSONResponse({"error": f"Servicio {servicio_id} no encontrado"}, status_code=404)
+
+        logger.info(
+            "action=get_servicio_rutas user=%s servicio_id=%s rutas=%d",
+            username,
+            servicio_id,
+            datos["total_rutas"],
+        )
+        return JSONResponse(datos)
+
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:
@@ -2312,55 +2275,24 @@ def delete_servicio_empalmes_web(
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
     """Elimina todas las asociaciones de empalmes de un servicio.
-    
+
     ⚠️ PRECAUCIÓN: Operación destructiva.
     """
     username, _ = usuario
-    
+
     try:
-        from db.models.infra import Servicio
-        from db.session import SessionLocal
-        
         with SessionLocal() as session:
-            servicio = session.query(Servicio).filter(
-                Servicio.servicio_id == servicio_id
-            ).first()
-            
-            if not servicio:
-                return JSONResponse(
-                    {"error": f"Servicio {servicio_id} no encontrado"},
-                    status_code=404
-                )
-            
-            # Contar antes de eliminar
-            empalmes_legacy_count = len(servicio.empalmes)
-            rutas_count = len(servicio.rutas)
-            
-            # Eliminar asociaciones legacy
-            servicio.empalmes.clear()
-            
-            # Eliminar rutas
-            for ruta in list(servicio.rutas):
-                session.delete(ruta)
-            
-            session.commit()
-            
-            logger.info(
-                "action=delete_servicio_empalmes user=%s servicio_id=%s empalmes=%d rutas=%d",
-                username,
-                servicio_id,
-                empalmes_legacy_count,
-                rutas_count,
-            )
-            
-            return JSONResponse({
-                "status": "ok",
-                "servicio_id": servicio_id,
-                "message": f"Eliminadas {empalmes_legacy_count} asociaciones y {rutas_count} rutas",
-                "empalmes_legacy_eliminados": empalmes_legacy_count,
-                "rutas_eliminadas": rutas_count,
-            })
-            
+            datos = limpiar_empalmes_de_servicio(session, servicio_id)
+
+        if datos is None:
+            return JSONResponse({"error": f"Servicio {servicio_id} no encontrado"}, status_code=404)
+
+        datos["message"] = (
+            f"Eliminadas {datos['empalmes_legacy_eliminados']} asociaciones y {datos['rutas_eliminadas']} rutas"
+        )
+        logger.info("action=delete_servicio_empalmes_web user=%s servicio_id=%s", username, servicio_id)
+        return JSONResponse(datos)
+
     except (HTTPException, ErrorDeDominio):
         raise
     except Exception as exc:

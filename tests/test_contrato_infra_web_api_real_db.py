@@ -288,6 +288,22 @@ def test_api_servicio_rutas_forma(api, ruta_con_tracking):
     assert_forma(cuerpo["rutas"][0], RUTA_ITEM)
 
 
+def test_servicio_rutas_por_numero_primer_servicio(web, api):
+    """Ambas apps resuelven el servicio por `numero_primer_servicio` (D12) y devuelven las mismas claves."""
+    with SessionLocal() as session:
+        fila = session.execute(text(
+            "SELECT numero_primer_servicio FROM app.servicios WHERE numero_primer_servicio IS NOT NULL "
+            "AND numero_primer_servicio <> '' ORDER BY id LIMIT 1"
+        )).first()
+    if fila is None:
+        pytest.skip("focas_dev no tiene servicios con numero_primer_servicio")
+    res_web = web.get(f"/api/infra/servicios/{fila[0]}/rutas")
+    res_api = api.get(f"/api/infra/servicios/{fila[0]}/rutas")
+    assert res_web.status_code == res_api.status_code == 200
+    assert_forma(res_web.json(), RUTAS_SERVICIO)
+    assert_forma(res_api.json(), RUTAS_SERVICIO)
+
+
 def test_servicio_rutas_inexistente_404(web, api):
     res_web = web.get(f"/api/infra/servicios/{INEXISTENTE}/rutas")
     res_api = api.get(f"/api/infra/servicios/{INEXISTENTE}/rutas")

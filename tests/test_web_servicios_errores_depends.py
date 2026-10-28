@@ -177,10 +177,8 @@ def test_categoria_500_con_ref(con_sesion, monkeypatch, caplog):
 
 
 def test_rutas_de_servicio_500_con_ref(con_sesion, monkeypatch, caplog):
-    from db import session as db_session
-
     con_sesion("user", username="pepe")
-    monkeypatch.setattr(db_session, "SessionLocal", _roto)
+    monkeypatch.setattr(servicios, "SessionLocal", _roto)
     caplog.set_level(logging.INFO, logger="web")
 
     res = _cliente().get("/api/infra/servicios/ABC/rutas")

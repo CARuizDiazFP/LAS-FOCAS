@@ -65,6 +65,8 @@ from core.services.tracking_operaciones import (
     TrackingSinServicioId,
     TrackingSinUbicaciones,
     decodificar_tracking,
+    limpiar_empalmes_de_servicio,
+    obtener_rutas_de_servicio,
     obtener_tracking_original,
     parsear_accion_resolve,
     parsear_ruta_tipo,
@@ -75,7 +77,6 @@ from core.services.tracking_operaciones import (
 from db.models.infra import (
     Empalme,
     RutaServicio,
-    Servicio,
 )
 from db.session import SessionLocal, get_async_db
 
@@ -712,56 +713,25 @@ async def resolve_tracking_endpoint(
 
 
 @router.get("/api/infra/servicios/{servicio_id}/rutas", response_model=ServicioRutasResponse)
-async def get_servicio_rutas(
-    servicio_id: str,
-    db: AsyncSession = Depends(get_async_db),
-) -> ServicioRutasResponse:
+async def get_servicio_rutas(servicio_id: str) -> ServicioRutasResponse:
     """Obtiene las rutas de un servicio.
-    
+
     Args:
-        servicio_id: ID del servicio (ej: "111995")
-    
+        servicio_id: ID del servicio (ej: "111995"), su `numero_primer_servicio` o su `numero_linea`
+
     Returns:
         ServicioRutasResponse con información del servicio y sus rutas
     """
+
+    def _consultar() -> dict[str, Any] | None:
+        with SessionLocal() as session:
+            return obtener_rutas_de_servicio(session, servicio_id)
+
     try:
-        stmt = (
-            select(Servicio)
-            .where(Servicio.servicio_id == servicio_id)
-            .options(
-                selectinload(Servicio.rutas).selectinload(RutaServicio.empalmes)
-            )
-        )
-        servicio = (await db.execute(stmt)).scalars().first()
-
-        if not servicio:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Servicio {servicio_id} no encontrado",
-            )
-
-        rutas_info = [
-            RutaInfoResponse(
-                id=ruta.id,
-                nombre=ruta.nombre,
-                tipo=ruta.tipo.value if ruta.tipo else "PRINCIPAL",
-                hash_contenido=ruta.hash_contenido,
-                empalmes_count=len(ruta.empalmes),
-                activa=bool(ruta.activa),
-                created_at=ruta.created_at.isoformat() if ruta.created_at else None,
-                nombre_archivo_origen=ruta.nombre_archivo_origen,
-            )
-            for ruta in servicio.rutas
-        ]
-
-        return ServicioRutasResponse(
-            status="ok",
-            servicio_id=servicio.servicio_id,
-            servicio_db_id=servicio.id,
-            cliente=servicio.cliente,
-            rutas=rutas_info,
-            total_rutas=len(rutas_info),
-        )
+        datos = await asyncio.to_thread(_consultar)
+        if datos is None:
+            raise HTTPException(status_code=404, detail=f"Servicio {servicio_id} no encontrado")
+        return ServicioRutasResponse(**datos)
 
     except HTTPException:
         raise
@@ -839,71 +809,31 @@ async def get_ruta_empalmes(
 
 
 @router.delete("/api/infra/servicios/{servicio_id}/empalmes")
-async def delete_servicio_empalmes(
-    servicio_id: str,
-    db: AsyncSession = Depends(get_async_db),
-) -> Dict[str, Any]:
+async def delete_servicio_empalmes(servicio_id: str) -> Dict[str, Any]:
     """Elimina todas las asociaciones empalmes de un servicio.
-    
+
     Esto permite "limpiar" un servicio para volver a asociarlo con nuevos empalmes.
-    Elimina tanto las asociaciones legacy (servicio_empalme_association) como 
+    Elimina tanto las asociaciones legacy (servicio_empalme_association) como
     las rutas (rutas_servicio + ruta_empalme_association).
-    
+
     ⚠️ PRECAUCIÓN: Esta operación es destructiva y no se puede deshacer.
-    
+
     Args:
         servicio_id: ID del servicio (ej: "52547")
-    
+
     Returns:
         Dict con información de las asociaciones eliminadas
     """
+
+    def _limpiar() -> dict[str, Any] | None:
+        with SessionLocal() as session:
+            return limpiar_empalmes_de_servicio(session, servicio_id)
+
     try:
-        stmt = (
-            select(Servicio)
-            .where(Servicio.servicio_id == servicio_id)
-            .options(
-                selectinload(Servicio.empalmes),
-                selectinload(Servicio.rutas).selectinload(RutaServicio.empalmes),
-            )
-        )
-        servicio = (await db.execute(stmt)).scalars().first()
-
-        if not servicio:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Servicio {servicio_id} no encontrado",
-            )
-
-        # Contar antes de eliminar
-        empalmes_legacy_count = len(servicio.empalmes)
-        rutas_count = len(servicio.rutas)
-        empalmes_rutas_count = sum(len(r.empalmes) for r in servicio.rutas)
-
-        # Eliminar asociaciones legacy (N-a-N servicio_empalme_association)
-        servicio.empalmes = []
-
-        # Eliminar rutas (cascade elimina ruta_empalme_association)
-        for ruta in list(servicio.rutas):
-            await db.delete(ruta)
-
-        await db.commit()
-
-        logger.info(
-            "action=delete_servicio_empalmes servicio_id=%s empalmes_legacy=%d rutas=%d empalmes_rutas=%d",
-            servicio_id,
-            empalmes_legacy_count,
-            rutas_count,
-            empalmes_rutas_count,
-        )
-
-        return {
-            "status": "ok",
-            "servicio_id": servicio_id,
-            "message": f"Eliminadas {empalmes_legacy_count} asociaciones legacy y {rutas_count} rutas",
-            "empalmes_legacy_eliminados": empalmes_legacy_count,
-            "rutas_eliminadas": rutas_count,
-            "empalmes_rutas_eliminados": empalmes_rutas_count,
-        }
+        datos = await asyncio.to_thread(_limpiar)
+        if datos is None:
+            raise HTTPException(status_code=404, detail=f"Servicio {servicio_id} no encontrado")
+        return datos
 
     except HTTPException:
         raise
