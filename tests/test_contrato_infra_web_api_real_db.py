@@ -178,10 +178,59 @@ def test_api_smart_search_forma(api):
     _primero(cuerpo["camaras"], CAMARA_BASE)
 
 
-def test_web_smart_search_21_terminos_200(web):
-    res = web.post("/api/infra/smart-search", json={"terms": ["a"] * 21, "limit": 5})
+@pytest.mark.parametrize("terminos", [["  "], [], ["", " "]])
+@pytest.mark.parametrize("limit", [1, 500])
+def test_api_smart_search_sin_terminos_efectivos_cuenta_todas(api, terminos, limit):
+    """D3: sin términos efectivos la API matchea todo su universo (Botellas y NO_OPERATIVA incluidas)."""
+    with SessionLocal() as session:
+        total_db = session.execute(text("SELECT count(*) FROM app.camaras")).scalar_one()
+    res = api.post("/api/infra/smart-search", json={"terms": terminos, "limit": limit})
     assert res.status_code == 200
-    assert res.json()["filters_applied"] == 21
+    cuerpo = res.json()
+    assert cuerpo["total"] == total_db
+    assert cuerpo["filters_applied"] == 0
+    assert len(cuerpo["camaras"]) == min(limit, total_db)
+
+
+def test_api_smart_search_encuentra_botella_por_su_servicio(api):
+    """Una Botella con ruta propia aparece al buscar por su servicio (criterio = lo que se le muestra)."""
+    with SessionLocal() as session:
+        fila = session.execute(text(
+            "SELECT c.id, s.servicio_id FROM app.camaras c "
+            "JOIN app.empalmes e ON e.camara_id = c.id "
+            "JOIN app.ruta_empalme_association rea ON rea.empalme_id = e.id "
+            "JOIN app.rutas_servicio r ON r.id = rea.ruta_id "
+            "JOIN app.servicios s ON s.id = r.servicio_id "
+            "WHERE c.camara_padre_id IS NOT NULL AND s.servicio_id IS NOT NULL ORDER BY c.id LIMIT 1"
+        )).first()
+    if fila is None:
+        pytest.skip("focas_dev no tiene Botellas con ruta propia")
+    camara_id, servicio_id = fila
+    res = api.post("/api/infra/smart-search", json={"terms": [servicio_id], "limit": 500})
+    assert res.status_code == 200
+    camaras = res.json()["camaras"]
+    assert camara_id in {c["id"] for c in camaras}
+    botella = next(c for c in camaras if c["id"] == camara_id)
+    assert servicio_id in botella["servicios"]
+
+
+@pytest.mark.parametrize("termino", ["central", "libre", "1"])
+def test_buscar_solo_raiz_true_no_cambia_el_total(termino):
+    """El panel (`solo_raiz=True`) conserva el total de la consulta previa: raíces, sin NO_OPERATIVA."""
+    from core.services.camaras_consulta import buscar_camaras_por_terminos, condicion_termino
+    from db.models.infra import Camara, CamaraEstado
+
+    with SessionLocal() as session:
+        previo = (
+            session.query(Camara)
+            .filter(Camara.camara_padre_id.is_(None), Camara.estado != CamaraEstado.NO_OPERATIVA)
+            .filter(condicion_termino(termino))
+            .count()
+        )
+        actual = buscar_camaras_por_terminos(
+            session, [termino], estado=None, incluir_no_operativas=False, limit=1, offset=0
+        )
+    assert actual.total == previo
 
 
 def test_web_export_csv(web):

@@ -66,6 +66,18 @@ def test_api_export_format_invalido_422():
     assert_forma(res.json(), {"detail": list})
 
 
+# --- Panel: validaciones de smart-search (D2: los mismos límites que la API) ----------------------
+
+def test_web_smart_search_limit_cero_422(con_sesion):
+    res = cliente_web(con_sesion).post("/api/infra/smart-search", json={"terms": [], "limit": 0})
+    assert res.status_code == 422
+
+
+def test_web_smart_search_mas_de_20_terminos_422(con_sesion):
+    res = cliente_web(con_sesion).post("/api/infra/smart-search", json={"terms": ["a"] * 21, "limit": 5})
+    assert res.status_code == 422
+
+
 # --- Web: tope de 5 MB del upload de tracking ------------------------------------------------------
 
 def test_web_upload_tracking_6mb_413(con_sesion):

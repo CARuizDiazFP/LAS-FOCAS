@@ -147,7 +147,7 @@ def _raiz_del_grupo() -> tuple[Any, Any]:
     return grupo, func.coalesce(grupo.camara_padre_id, grupo.id)
 
 
-def condicion_termino(termino: str) -> Any:
+def condicion_termino(termino: str, *, incluir_propios: bool = False) -> Any:
     """Condición SQL de un término sobre la cámara raíz: aparece (insensible a mayúsculas, como subcadena)
     en nombre, dirección, `fontine_id`, servicios, cables, estado u origen.
 
@@ -155,7 +155,11 @@ def condicion_termino(termino: str) -> Any:
     empalmes de la raíz y sus Botellas y, sólo si el grupo no tiene ninguna ruta, de la relación legacy
     `servicio_empalme_association` de los empalmes propios; los cables son los de la raíz (origen o
     destino). Estado y origen se resuelven en Python contra los valores del enum. `autoescape` neutraliza
-    `%` y `_` del término."""
+    `%` y `_` del término.
+
+    `incluir_propios=True` (búsqueda que devuelve Botellas, `solo_raiz=False`): una Botella (fila con
+    `camara_padre_id`) también matchea por los servicios de sus empalmes PROPIOS (rutas y, si no tiene
+    rutas propias, legacy), que es lo que `_rutas_y_servicios` le muestra. Las raíces no cambian."""
 
     termino_lower = termino.lower()
 
@@ -195,6 +199,26 @@ def condicion_termino(termino: str) -> Any:
         Camara.id.in_(select(Cable.origen_camara_id).where(contiene(Cable.nombre))),
         Camara.id.in_(select(Cable.destino_camara_id).where(contiene(Cable.nombre))),
     ]
+    if incluir_propios:
+        propios_por_ruta = (
+            select(Empalme.camara_id)
+            .join(ruta_empalme_association, ruta_empalme_association.c.empalme_id == Empalme.id)
+            .join(RutaServicio, RutaServicio.id == ruta_empalme_association.c.ruta_id)
+            .join(Servicio, Servicio.id == RutaServicio.servicio_id)
+            .where(contiene(Servicio.servicio_id))
+        )
+        con_rutas_propias = select(Empalme.camara_id).join(
+            ruta_empalme_association, ruta_empalme_association.c.empalme_id == Empalme.id
+        )
+        condiciones.append(
+            and_(
+                Camara.camara_padre_id.is_not(None),
+                or_(
+                    Camara.id.in_(propios_por_ruta),
+                    and_(Camara.id.in_(servicios_legacy), Camara.id.not_in(con_rutas_propias)),
+                ),
+            )
+        )
     estados = [e for e in _CamaraEstado if termino_lower in e.value.lower()]
     if estados:
         condiciones.append(Camara.estado.in_(estados))
@@ -204,12 +228,16 @@ def condicion_termino(termino: str) -> Any:
     return or_(*condiciones)
 
 
-def _consulta_base(session: Session, estado: str | None, incluir_no_operativas: bool) -> tuple[Any, str | None]:
-    """Query de cámaras-raíz con el filtro de estado y el de NO_OPERATIVA. Devuelve (query, estado_filter)."""
+def _consulta_base(
+    session: Session, estado: str | None, incluir_no_operativas: bool, solo_raiz: bool = True
+) -> tuple[Any, str | None]:
+    """Query de cámaras (raíz por defecto) con el filtro de estado y el de NO_OPERATIVA. Devuelve (query, estado_filter)."""
 
     # Etapa Cámara/Botella: el dashboard sólo muestra cámaras-raíz — sus Botellas viven en el
     # detalle. `_CARGA_POR_LOTE` (incluye `Camara.botellas`) evita las queries lazy por cámara.
-    query = session.query(Camara).filter(Camara.camara_padre_id.is_(None)).options(*_CARGA_POR_LOTE)
+    query = session.query(Camara).options(*_CARGA_POR_LOTE)
+    if solo_raiz:
+        query = query.filter(Camara.camara_padre_id.is_(None))
     estado_filter: str | None = None
     if estado:
         estado_upper = estado.strip().upper()
@@ -237,19 +265,22 @@ def buscar_camaras_por_terminos(
     incluir_no_operativas: bool,
     limit: int,
     offset: int,
+    solo_raiz: bool = True,
 ) -> ResultadoSmartSearch:
-    """Query, filtros, matching AND y paginación de la smart search."""
+    """Query, filtros, matching AND y paginación de la smart search.
+
+    `solo_raiz=False` no filtra `camara_padre_id IS NULL`: devuelve también las Botellas (universo de la API)."""
 
     limit = min(limit, LIMITE_MAXIMO)
     offset = max(offset, 0)
-    query, estado_filter = _consulta_base(session, estado, incluir_no_operativas)
+    query, estado_filter = _consulta_base(session, estado, incluir_no_operativas, solo_raiz)
     terminos_limpios = normalizar_terminos(terminos)
 
     # Cada término es una condición SQL (AND entre términos): el filtro, el conteo y el LIMIT/OFFSET
     # corren en la base y sólo se carga la página. Antes se cargaba el grafo de todas las raíces
     # (~10.000 en dev) para matchear en Python: ~6 s por búsqueda.
     for termino in terminos_limpios:
-        query = query.filter(condicion_termino(termino))
+        query = query.filter(condicion_termino(termino, incluir_propios=not solo_raiz))
     total = query.count()
     # `Camara.id` desempata nombres repetidos: sin él, el orden entre páginas no es determinista.
     pagina = query.order_by(Camara.nombre, Camara.id).offset(offset).limit(limit).all()

@@ -170,6 +170,39 @@ def test_terminos_agregan_una_condicion_sql_por_termino():
     assert r.terminos_aplicados == 2
 
 
+def _hay_filtro_raiz(sesion) -> bool:
+    return any("camara_padre_id IS NULL" in f for f in sesion.filtros)
+
+
+def test_buscar_solo_raiz_false_incluye_botellas():
+    por_defecto, sin_raiz = _SesionFalsa(), _SesionFalsa()
+    _buscar(por_defecto)
+    _buscar(sin_raiz, solo_raiz=False)
+    assert _hay_filtro_raiz(por_defecto)
+    assert not _hay_filtro_raiz(sin_raiz)
+
+
+def test_solo_raiz_false_matchea_servicios_propios_de_la_botella():
+    s = _SesionFalsa()
+    _buscar(s, ["svc"], solo_raiz=False)
+    assert any("camara_padre_id IS NOT NULL" in f for f in s.filtros)
+
+
+def test_solo_raiz_true_no_cambia_el_sql_del_termino():
+    s = _SesionFalsa()
+    _buscar(s, ["svc"])
+    assert not any("camara_padre_id IS NOT NULL" in f for f in s.filtros)
+    assert _sql("svc") == _sql_propios_apagado("svc")
+
+
+def _sql_propios_apagado(termino: str) -> str:
+    from sqlalchemy.dialects import postgresql
+
+    return str(cc.condicion_termino(termino, incluir_propios=False).compile(
+        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+    ))
+
+
 def test_terminos_en_blanco_cuentan_cero_y_no_filtran():
     camaras = [_camara(empalmes=[], cables=[], botellas=[])]
     s = _SesionFalsa(camaras)

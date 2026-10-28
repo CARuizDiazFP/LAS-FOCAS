@@ -20,7 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from core.parsers.tracking_parser import parse_tracking
-from core.services.camaras_consulta import listar_camaras, serializar_camara_basica
+from core.services.camaras_consulta import (
+    buscar_camaras_por_terminos,
+    listar_camaras,
+    serializar_camara_basica,
+)
 from core.services.infra_sync import sync_camaras_from_sheet
 from core.services.infra_service import (
     AnalysisResult,
@@ -509,67 +513,6 @@ async def advanced_search_camaras(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _term_matches_camara(
-    term: str,
-    camara: Camara,
-    servicios_ids: list[str],
-    cables_nombres: list[str],
-) -> bool:
-    """Evalúa si un término coincide con algún campo de la cámara (OR).
-
-    Busca el término (case-insensitive) en:
-    - nombre de la cámara
-    - dirección
-    - fontine_id
-    - IDs de servicios asociados
-    - nombres de cables
-
-    Args:
-        term: Término de búsqueda (texto libre).
-        camara: Objeto Camara de la base de datos.
-        servicios_ids: Lista de IDs de servicios asociados.
-        cables_nombres: Lista de nombres de cables asociados.
-
-    Returns:
-        True si el término coincide con al menos un campo.
-    """
-    term_lower = term.lower()
-
-    # Buscar en nombre de cámara
-    if camara.nombre and term_lower in camara.nombre.lower():
-        return True
-
-    # Buscar en dirección
-    if camara.direccion and term_lower in camara.direccion.lower():
-        return True
-
-    # Buscar en fontine_id
-    if camara.fontine_id and term_lower in camara.fontine_id.lower():
-        return True
-
-    # Buscar en IDs de servicios
-    for svc_id in servicios_ids:
-        if term_lower in svc_id.lower():
-            return True
-
-    # Buscar en nombres de cables
-    for cable_nombre in cables_nombres:
-        if term_lower in cable_nombre.lower():
-            return True
-
-    # Buscar en estado (coincidencia exacta o parcial)
-    estado_actual = camara.estado.value if camara.estado else "LIBRE"
-    if term_lower in estado_actual.lower():
-        return True
-
-    # Buscar en origen de datos
-    origen_actual = camara.origen_datos.value if camara.origen_datos else "MANUAL"
-    if term_lower in origen_actual.lower():
-        return True
-
-    return False
-
-
 @router.post("/api/infra/smart-search", response_model=SearchResponse)
 async def smart_search_camaras(
     request: SmartSearchRequest,
@@ -604,85 +547,36 @@ async def smart_search_camaras(
     Returns:
         Lista de cámaras que coinciden con todos los términos.
     """
-    try:
-        stmt = (
-            select(Camara)
-            .options(
-                selectinload(Camara.empalmes).selectinload(Empalme.servicios),
-                selectinload(Camara.cables_origen),
-                selectinload(Camara.cables_destino),
-            )
-            .order_by(Camara.nombre)
-        )
-        all_camaras = (await db.execute(stmt)).scalars().all()
-
-        # Si no hay términos, devolver todas las cámaras
-        if not request.terms:
-            total = len(all_camaras)
-            paginated = all_camaras[request.offset : request.offset + request.limit]
-            camaras_response = [
-                _build_camara_response(cam, _get_camara_servicios(cam))
-                for cam in paginated
-            ]
-
-            logger.info(
-                "action=smart_search terms=0 total=%d returned=%d",
-                total,
-                len(camaras_response),
-            )
-
-            return SearchResponse(
-                total=total,
+    def _run() -> tuple[Any, list[dict[str, Any]]]:
+        # Sesión propia del thread: la consulta y la serialización terminan antes de cerrarla.
+        with SessionLocal() as session:
+            resultado = buscar_camaras_por_terminos(
+                session,
+                request.terms,
+                estado=None,
+                incluir_no_operativas=True,
                 limit=request.limit,
                 offset=request.offset,
-                filters_applied=0,
-                camaras=camaras_response,
+                solo_raiz=False,  # la API conserva su universo: Botellas y NO_OPERATIVA incluidas
             )
+            return resultado, [serializar_camara_basica(c) for c in resultado.camaras]
 
-        # Aplicar términos con lógica AND
-        matching_camaras = []
-        for camara in all_camaras:
-            servicios_ids = _get_camara_servicios(camara)
-            cables_nombres = _get_camara_cables(camara)
-
-            # Verificar que cumpla TODOS los términos
-            matches_all = True
-            for term in request.terms:
-                term_clean = term.strip()
-                if not term_clean:
-                    continue
-                if not _term_matches_camara(term_clean, camara, servicios_ids, cables_nombres):
-                    matches_all = False
-                    break
-
-            if matches_all:
-                matching_camaras.append((camara, servicios_ids))
-
-        # Aplicar paginación
-        total = len(matching_camaras)
-        paginated = matching_camaras[request.offset : request.offset + request.limit]
-        camaras_response = [
-            _build_camara_response(cam, svc_ids)
-            for cam, svc_ids in paginated
-        ]
-
-        terms_count = len([t for t in request.terms if t.strip()])
+    try:
+        resultado, camaras = await asyncio.to_thread(_run)
         logger.info(
             "action=smart_search terms=%d total=%d returned=%d offset=%d",
-            terms_count,
-            total,
-            len(camaras_response),
+            resultado.terminos_aplicados,
+            resultado.total,
+            len(camaras),
             request.offset,
         )
-
         return SearchResponse(
-            total=total,
+            total=resultado.total,
             limit=request.limit,
             offset=request.offset,
-            filters_applied=terms_count,
-            camaras=camaras_response,
+            filters_applied=resultado.terminos_aplicados,
+            camaras=[CamaraResponse(**c) for c in camaras],
         )
-
     except HTTPException:
         raise
     except Exception as exc:

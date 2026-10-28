@@ -1397,9 +1397,9 @@ def advanced_search_camaras_web(  # noqa: C901 - variante conservada a propósit
 
 class SmartSearchRequestModel(BaseModel):
     """Request para Smart Search con términos libres."""
-    terms: list[str] = []
-    limit: int = 100
-    offset: int = 0
+    terms: list[str] = Field(default_factory=list, max_length=20)
+    limit: int = Field(100, ge=1, le=500)
+    offset: int = Field(0, ge=0)
     estado: Optional[str] = None
     incluir_no_operativas: bool = False
 
