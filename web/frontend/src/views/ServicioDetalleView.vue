@@ -283,7 +283,6 @@ const ingresos = ref<InfraServicioIngreso[]>([]);
 const reportesLoading = ref(false);
 const reportesError = ref('');
 const reporteSla = ref<ReportHistoryItem | null>(null);
-const reporteRepetitividad = ref<ReportHistoryItem | null>(null);
 
 const idParam = computed(() => String(route.params.idServicio ?? '').trim());
 
@@ -598,16 +597,10 @@ async function loadReportesResumen(): Promise<void> {
   reportesLoading.value = true;
   reportesError.value = '';
   reporteSla.value = null;
-  reporteRepetitividad.value = null;
 
   try {
-    const [slaData, repData] = await Promise.all([
-      getUltimoReporte('sla'),
-      getUltimoReporte('repetitividad'),
-    ]);
-
+    const slaData = await getUltimoReporte('sla');
     reporteSla.value = (slaData.items ?? [])[0] ?? null;
-    reporteRepetitividad.value = (repData.items ?? [])[0] ?? null;
   } catch (err: unknown) {
     reportesError.value = err instanceof Error ? err.message : 'No se pudo cargar historial de informes';
   } finally {
