@@ -26,7 +26,7 @@
     </teleport>
 
     <!-- Hidden file input para tracking upload -->
-    <input ref="trackingFileInputEl" type="file" accept=".txt" style="display:none" @change="handleTrackingFile">
+    <input ref="trackingFileInputEl" type="file" accept=".txt" style="display:none" @change="onArchivoElegido">
 
     <!-- Modal: Protocolo de Protección (ban) — Wizard 3 pasos -->
     <dialog
@@ -493,9 +493,9 @@
             :class="{ 'drag-over': isDragOver }"
             role="button"
             tabindex="0"
-            @click="triggerUploadTracking"
-            @keydown.enter.prevent="triggerUploadTracking"
-            @keydown.space.prevent="triggerUploadTracking"
+            @click="elegirArchivo"
+            @keydown.enter.prevent="elegirArchivo"
+            @keydown.space.prevent="elegirArchivo"
             @dragover.prevent="onDragOver"
             @dragenter.prevent="onDragEnter"
             @dragleave="onDragLeave"
@@ -636,18 +636,15 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
 import {
-  analizarTracking,
   exportarCamaras,
   limpiarEmpalmesServicio,
-  resolverTracking,
-  type AnalyzeResult,
-  type ResolverTrackingBody,
 } from '../../api/infra';
 import type { Notificar } from '../../composables/infra/tipos';
 import { useInfraBusqueda } from '../../composables/infra/useInfraBusqueda';
 import { useBaneoWizard } from '../../composables/infra/useBaneoWizard';
 import { useBaneosActivos } from '../../composables/infra/useBaneosActivos';
 import { useNotificacionEmail } from '../../composables/infra/useNotificacionEmail';
+import { useResolucionTracking, useTrackingAnalisis } from '../../composables/infra/useTrackingAnalisis';
 
 // --- Toast ---
 interface Toast { id: number; type: string; title: string; message?: string }
@@ -729,7 +726,7 @@ const {
 // Abre el flujo de upload tracking desde el wizard de ban
 function triggerUploadTrackingForBan(_rutaId: number) {
   ocultarBanModal();
-  trackingFileInputEl.value?.click();
+  elegirArchivo();
 }
 
 // --- Baneos Activos (useBaneosActivos) ---
@@ -759,140 +756,30 @@ const {
   downloadEml,
 } = useNotificacionEmail(notificar);
 
-// --- Upload Tracking (flujo Portero 2 fases) ---
+// --- Upload Tracking (flujo Portero 2 fases): elección del archivo y resolución ---
+const {
+  trackingResolveModalEl,
+  uploadAnalyzing,
+  uploadResolving,
+  analyzeResult,
+  fileName,
+  resolveTargetRutaId,
+  resolveNewRutaNombre,
+  abrir: abrirResolucionTracking,
+  resolveTracking,
+  cerrar: closeUploadModal,
+} = useResolucionTracking(notificar, refrescarSiBuscado);
 
-const trackingFileInputEl = ref<HTMLInputElement | null>(null);
-const trackingResolveModalEl = ref<HTMLDialogElement | null>(null);
-const uploadAnalyzing = ref(false);
-const uploadResolving = ref(false);
-const analyzeResult = ref<AnalyzeResult | null>(null);
-const fileContent = ref('');
-const fileName = ref('');
-const resolveTargetRutaId = ref<number | null>(null);
-const resolveNewRutaNombre = ref('');
-
-function triggerUploadTracking() {
-  trackingFileInputEl.value?.click();
-}
-
-// --- Drag & Drop para la zona de upload de tracking ---
-const isDragOver = ref(false);
-
-function onDragOver() {
-  isDragOver.value = true;
-}
-
-function onDragEnter() {
-  isDragOver.value = true;
-}
-
-function onDragLeave(e: DragEvent) {
-  // Solo desactivar si el mouse salió del wrapper completo
-  const target = e.currentTarget as HTMLElement;
-  if (!target.contains(e.relatedTarget as Node)) {
-    isDragOver.value = false;
-  }
-}
-
-function onDrop(e: DragEvent) {
-  isDragOver.value = false;
-  const file = e.dataTransfer?.files?.[0];
-  if (!file) return;
-  if (!file.name.toLowerCase().endsWith('.txt')) {
-    showToast('warning', 'Archivo inválido', 'Solo se aceptan archivos .txt');
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    fileContent.value = (ev.target?.result as string) ?? '';
-    fileName.value = file.name;
-    void analyzeTracking();
-  };
-  reader.readAsText(file, 'utf-8');
-}
-
-function handleTrackingFile(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = '';
-  if (!file) return;
-  if (!file.name.toLowerCase().endsWith('.txt')) {
-    showToast('warning', 'Archivo inválido', 'Solo se aceptan archivos .txt');
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    fileContent.value = (e.target?.result as string) ?? '';
-    fileName.value = file.name;
-    void analyzeTracking();
-  };
-  reader.readAsText(file, 'utf-8');
-}
-
-async function analyzeTracking() {
-  uploadAnalyzing.value = true;
-  analyzeResult.value = null;
-  resolveTargetRutaId.value = null;
-  resolveNewRutaNombre.value = '';
-  trackingResolveModalEl.value?.showModal();
-  try {
-    const blob = new Blob([fileContent.value], { type: 'text/plain' });
-    const formData = new FormData();
-    formData.append('file', blob, fileName.value);
-    analyzeResult.value = await analizarTracking(formData);
-    if (analyzeResult.value.rutas_existentes?.length) {
-      resolveTargetRutaId.value = analyzeResult.value.rutas_existentes[0].id;
-    }
-  } catch (e: unknown) {
-    analyzeResult.value = {
-      status: 'ERROR', message: 'Error analizando el archivo',
-      parsed_empalmes_count: 0, rutas_existentes: [],
-      error: e instanceof Error ? e.message : String(e),
-    };
-  } finally {
-    uploadAnalyzing.value = false;
-  }
-}
-
-async function resolveTracking(action: string, extras: Partial<ResolverTrackingBody> = {}) {
-  uploadResolving.value = true;
-  try {
-    const body: ResolverTrackingBody = {
-      action,
-      content: fileContent.value,
-      filename: fileName.value,
-      ...extras,
-    };
-    const data = await resolverTracking(body);
-    if (!data.success) {
-      throw new Error(data.error ?? 'Error al resolver el tracking');
-    }
-    closeUploadModal();
-    showToast('success', 'Tracking procesado', data.message ?? '');
-    if (data.ubicaciones_sin_match && data.ubicaciones_sin_match > 0) {
-      showToast(
-        'warning',
-        'Ubicaciones sin match',
-        `${data.ubicaciones_sin_match} ubicación(es) sin cámara/botella asociada — revisar en Ingresos sin match`,
-      );
-    }
-    await refrescarSiBuscado();
-  } catch (e: unknown) {
-    showToast('error', 'Error al procesar tracking', e instanceof Error ? e.message : String(e));
-  } finally {
-    uploadResolving.value = false;
-  }
-}
-
-function closeUploadModal() {
-  trackingResolveModalEl.value?.close();
-  uploadAnalyzing.value = false;
-  analyzeResult.value = null;
-  fileContent.value = '';
-  fileName.value = '';
-  resolveTargetRutaId.value = null;
-  resolveNewRutaNombre.value = '';
-}
+const {
+  trackingFileInputEl,
+  isDragOver,
+  elegirArchivo,
+  onDragOver,
+  onDragEnter,
+  onDragLeave,
+  onDrop,
+  onArchivoElegido,
+} = useTrackingAnalisis(notificar, abrirResolucionTracking);
 
 // --- Limpiar servicio ---
 const limpiarModalEl = ref<HTMLDialogElement | null>(null);
