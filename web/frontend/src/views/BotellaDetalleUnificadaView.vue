@@ -36,7 +36,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { obtenerEstadoAsociacionBotella } from '../api/botellas';
+import { getCromoBotellaEstadoAsociacion } from '../api/botellas';
 import ModalAsociarHuerfanas from '../components/infra/ModalAsociarHuerfanas.vue';
 
 /**
@@ -73,7 +73,7 @@ onMounted(async () => {
 
   nId.value = Number(id);
   try {
-    const data = await obtenerEstadoAsociacionBotella(nId.value);
+    const data = await getCromoBotellaEstadoAsociacion(nId.value);
     if (data.huerfana) {
       huerfana.value = true;
       nombreBotella.value = data.nombre ?? '';

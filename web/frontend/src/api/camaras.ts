@@ -243,10 +243,7 @@ export async function buscarCamarasRaiz(
 ): Promise<CamaraCandidata[]> {
   const params = new URLSearchParams({ q, limit: String(options.limit ?? 10), solo_raiz: 'true' });
   if (options.excluirId != null) params.set('excluir_id', String(options.excluirId));
-  const data = await requestJson<{ camaras?: CamaraCandidata[] }>(`/api/infra/camaras/buscar?${params}`, {
-    signal: options.signal,
-  });
-  return data.camaras ?? [];
+  return buscarCamaras(params, options.signal);
 }
 
 export interface BotellaCromoHija {
@@ -284,8 +281,8 @@ export interface CamaraBuscada extends CamaraCandidata {
 }
 
 /** Búsqueda liviana de Cámaras (`q`, `limit`, `excluir_id`, `solo_raiz`); devuelve la lista ya desempaquetada. */
-export async function buscarCamaras(params: URLSearchParams): Promise<CamaraBuscada[]> {
-  const data = await requestJson<{ camaras?: CamaraBuscada[] }>(`/api/infra/camaras/buscar?${params}`);
+export async function buscarCamaras(params: URLSearchParams, signal?: AbortSignal): Promise<CamaraBuscada[]> {
+  const data = await requestJson<{ camaras?: CamaraBuscada[] }>(`/api/infra/camaras/buscar?${params}`, { signal });
   return data.camaras ?? [];
 }
 

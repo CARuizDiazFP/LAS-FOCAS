@@ -3,7 +3,7 @@
 // Descripción: Composable del flujo SLA con tipado estricto, estado reactivo y llamada segura al endpoint web
 
 import { ref } from 'vue';
-import { request } from '../api/client';
+import { generarInformeSla } from '../api/informes';
 
 export interface SlaPayload {
   mes: number;
@@ -75,15 +75,9 @@ export function useSla() {
     }
 
     try {
-      const response = await request('/api/reports/sla', {
-        method: 'POST',
-        formData,
-        csrf: true,
-        throwOnError: false,
-      });
-      const data = await response.json().catch(() => ({})) as SlaResponse;
-      if (!response.ok || data.ok === false) {
-        throw new Error(data.error ?? data.detail ?? data.message ?? `Error ${response.status}`);
+      const { ok, status, data } = await generarInformeSla<SlaResponse>(formData);
+      if (!ok || data.ok === false) {
+        throw new Error(data.error ?? data.detail ?? data.message ?? `Error ${status}`);
       }
       const base = data.message ?? 'Informe SLA generado correctamente.';
       // El PDF lo convierte office: si falla, el DOCX igual se entrega y se avisa el motivo.

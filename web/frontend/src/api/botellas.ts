@@ -417,15 +417,6 @@ export async function listarBotellasHuerfanas(params: URLSearchParams): Promise<
   return requestJson<BotellasHuerfanasResponse>(`/api/infra/cromo-botellas/huerfanas?${params}`);
 }
 
-export interface EstadoAsociacionBotella {
-  huerfana?: boolean;
-  nombre?: string | null;
-}
-
-export async function obtenerEstadoAsociacionBotella(nId: number): Promise<EstadoAsociacionBotella> {
-  return requestJson<EstadoAsociacionBotella>(`/api/infra/cromo-botellas/${nId}/estado-asociacion`);
-}
-
 export interface AsociarBotellasHuerfanasBody {
   n_ids: number[];
   camara_id?: number;

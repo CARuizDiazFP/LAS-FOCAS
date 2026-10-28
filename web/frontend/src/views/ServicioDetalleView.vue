@@ -220,14 +220,12 @@ import {
   type ServicioItem,
 } from '../api/servicios';
 import {
-  type InfraRutaItem,
   type InfraServicioIngreso,
   getBaneosServicio,
   getIngresosServicio,
   getOdfsCromoServicio,
-  getRutasServicio,
-  getTrackingRuta,
 } from '../api/servicioSecciones';
+import { obtenerTrackingRuta, rutasDeServicio, type BanRutaOption } from '../api/infra';
 import { getUltimoReporte, type ReportHistoryItem } from '../api/informes';
 import ServicioSeccionCard from '../components/servicios/detalle/ServicioSeccionCard.vue';
 import ServiceTimeline from '../components/servicios/ServiceTimeline.vue';
@@ -259,7 +257,7 @@ const errorVerificable = ref('');
 
 const foLoading = ref(false);
 const foError = ref('');
-const foRutas = ref<InfraRutaItem[]>([]);
+const foRutas = ref<BanRutaOption[]>([]);
 
 // Sólo se usan las semillas y la descarga: la resolución completa del camino (con su auditoría)
 // vive en el gestor de Servicios sin ODF, que es admin-only.
@@ -536,13 +534,13 @@ async function loadFoResumen(idOrigen: string): Promise<void> {
   foTrackingResumen.value = null;
 
   try {
-    const rutasData = await getRutasServicio(clean);
+    const rutasData = await rutasDeServicio(clean);
     foRutas.value = rutasData.rutas ?? [];
 
     const principal = rutaPrincipal.value;
     if (!principal) return;
 
-    const trackingData = await getTrackingRuta(principal.id);
+    const trackingData = await obtenerTrackingRuta(principal.id);
     const entries = trackingData.tracking ?? [];
 
     foTrackingResumen.value = {

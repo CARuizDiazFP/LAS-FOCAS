@@ -2,7 +2,7 @@
 // Ubicación de archivo: web/frontend/src/api/informes.ts
 // Descripción: Cliente frontend del historial de informes y de la generación de Repetitividad
 
-import { requestJson } from './client';
+import { request, requestJson } from './client';
 
 export interface ReportHistoryItem {
   id: number;
@@ -46,4 +46,27 @@ export interface RepetitividadResponse {
 
 export async function generarRepetitividad(data: FormData): Promise<RepetitividadResponse> {
   return requestJson<RepetitividadResponse>('/api/flows/repetitividad', { method: 'POST', formData: data });
+}
+
+/** Resultado de un informe que se interpreta con el status HTTP y el cuerpo (sin lanzar por no-2xx). */
+export interface ResultadoInforme<T> {
+  ok: boolean;
+  status: number;
+  data: T;
+}
+
+async function postInforme<T>(url: string, formData: FormData): Promise<ResultadoInforme<T>> {
+  const response = await request(url, { method: 'POST', formData, csrf: true, throwOnError: false });
+  const data = (await response.json().catch(() => ({}))) as T;
+  return { ok: response.ok, status: response.status, data };
+}
+
+/** Informe SLA. El llamador decide el error según `ok`/`status`/`data` (no lanza por no-2xx). */
+export async function generarInformeSla<T>(formData: FormData): Promise<ResultadoInforme<T>> {
+  return postInforme<T>('/api/reports/sla', formData);
+}
+
+/** Informe SLA consumido. Mismo contrato que `generarInformeSla`. */
+export async function generarInformeSlaConsumo<T>(formData: FormData): Promise<ResultadoInforme<T>> {
+  return postInforme<T>('/api/reports/sla-consumo', formData);
 }
