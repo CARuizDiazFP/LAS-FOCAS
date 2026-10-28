@@ -17,30 +17,30 @@ from pathlib import Path
 
 import pytest
 
-from modules.slack_baneo_notifier import camara_search as cs
-from modules.slack_baneo_notifier import cable_info
+from core.text import mensaje_ingreso as mi
+from core.text import normalizacion as nz
 
 FIXTURES = Path(__file__).parent / "fixtures" / "normalizacion"
 TAM_BLOQUE = 512
 
 FUNCIONES_GOLDEN = {
-    "limpiar_puntuacion": cs._limpiar_puntuacion,
-    "normalizar": cs._normalizar,
-    "expandir_abreviaturas": cs._expandir_abreviaturas,
-    "aplicar_sinonimos": cs._aplicar_sinonimos,
-    "expandir_abreviaturas_y_sinonimos": cs.expandir_abreviaturas_y_sinonimos,
-    "normalizar_candidato": cs.normalizar_candidato,
-    "limpiar_ruido_operativo": cs.limpiar_ruido_operativo,
-    "preparar_nombre_busqueda": cs.preparar_nombre_busqueda,
-    "quitar_botella_uno": cs.quitar_botella_uno,
-    "detectar_multi_bot": cs.detectar_multi_bot,
-    "separar_prefijo_empalme": cs.separar_prefijo_empalme,
-    "pocos_tokens_significativos": cs._pocos_tokens_significativos,
-    "re_bot_sufijo_search": lambda s: cs.RE_BOT_SUFIJO.search(s),
-    "extraer_nombre_camara": cs.extraer_nombre_camara,
-    "extraer_tipo_movimiento": cs.extraer_tipo_movimiento,
-    "extraer_slack_user_id_autorizacion": cs.extraer_slack_user_id_autorizacion,
-    "quitar_formato_slack": cable_info.quitar_formato_slack,
+    "limpiar_puntuacion": nz.limpiar_puntuacion,
+    "normalizar": nz.normalizar,
+    "expandir_abreviaturas": nz.expandir_abreviaturas,
+    "aplicar_sinonimos": nz.aplicar_sinonimos,
+    "expandir_abreviaturas_y_sinonimos": nz.expandir_abreviaturas_y_sinonimos,
+    "normalizar_candidato": nz.normalizar_candidato,
+    "limpiar_ruido_operativo": nz.limpiar_ruido_operativo,
+    "preparar_nombre_busqueda": nz.preparar_nombre_busqueda,
+    "quitar_botella_uno": nz.quitar_botella_uno,
+    "detectar_multi_bot": nz.detectar_multi_bot,
+    "separar_prefijo_empalme": nz.separar_prefijo_empalme,
+    "pocos_tokens_significativos": nz.pocos_tokens_significativos,
+    "re_bot_sufijo_search": lambda s: nz.RE_BOT_SUFIJO.search(s),
+    "extraer_nombre_camara": mi.extraer_nombre_camara,
+    "extraer_tipo_movimiento": mi.extraer_tipo_movimiento,
+    "extraer_slack_user_id_autorizacion": mi.extraer_slack_user_id_autorizacion,
+    "quitar_formato_slack": mi.quitar_formato_slack,
 }
 
 # Sobre qué lista del corpus se aplica cada función.

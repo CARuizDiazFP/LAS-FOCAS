@@ -32,7 +32,7 @@ import time
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from modules.slack_baneo_notifier.camara_search import _normalizar, preparar_nombre_busqueda, quitar_botella_uno
+from core.text.normalizacion import normalizar, preparar_nombre_busqueda, quitar_botella_uno
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ def _indice(session: Session) -> list[_Entrada]:
     except Exception as exc:  # una sugerencia nunca puede romper la respuesta al técnico
         logger.warning("No se pudo cargar el índice de sugerencias de cámara: %s", exc)
         return []
-    indice = [(fila[0], *_tokens(_normalizar(fila[0]))) for fila in filas if fila[0]]
+    indice = [(fila[0], *_tokens(normalizar(fila[0]))) for fila in filas if fila[0]]
     _cache = (ahora, indice)
     return indice
 
@@ -89,7 +89,7 @@ def sugerir_camaras(nombre: str, session: Session, *, limite: int = 3) -> list[s
     texto no tiene números o ningún token de calle."""
     # Mismo preprocesamiento que la búsqueda: sin él, el "1" de "Bot 1" se exigiría como número
     # ("Paseo colon 701 bot 1" no sugería nada) y "bot2" no aportaría el "2".
-    numeros, prefijos = _tokens(_normalizar(quitar_botella_uno(preparar_nombre_busqueda(nombre or ""))))
+    numeros, prefijos = _tokens(normalizar(quitar_botella_uno(preparar_nombre_busqueda(nombre or ""))))
     if not numeros or not prefijos:
         return []
     puntuadas: list[tuple[int, str]] = []
@@ -103,7 +103,7 @@ def sugerir_camaras(nombre: str, session: Session, *, limite: int = 3) -> list[s
     vistos: set[str] = set()
     resultado: list[str] = []
     for _, candidato in puntuadas:
-        clave = _normalizar(candidato)
+        clave = normalizar(candidato)
         if clave in vistos:
             continue
         vistos.add(clave)

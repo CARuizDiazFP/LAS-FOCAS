@@ -33,22 +33,24 @@ from sqlalchemy.orm import Session
 from modules.slack_baneo_notifier.camara_search import (
     AmbiguousSearchError,
     NumeroNoCoincideError,
-    _aplicar_sinonimos,
-    _expandir_abreviaturas,
     _filtrar_bots_secundarios,
     _filtrar_numero_de_botella,
     _filtrar_por_numeros,
-    _limpiar_puntuacion,
-    _normalizar,
     botella_cromo_por_n_id,
     buscar_camara,
     camara_por_prefijo_empalme,
-    normalizar_candidato,
-    preparar_nombre_busqueda,
-    quitar_botella_uno,
     recorte_pierde_la_botella,
     resto_corrobora_botella,
     tiene_gemela_critica,
+)
+from core.text.normalizacion import (
+    aplicar_sinonimos,
+    expandir_abreviaturas,
+    limpiar_puntuacion,
+    normalizar,
+    normalizar_candidato,
+    preparar_nombre_busqueda,
+    quitar_botella_uno,
 )
 
 if TYPE_CHECKING:
@@ -81,10 +83,10 @@ def _normalizar_pipeline(nombre_raw: str) -> str:
     internamente: limpiar puntuación → expandir abreviaturas → normalizar → sinónimos. Necesario
     para poder correr una cascada "equivalente" contra `CromoBotella.nombre` con el mismo criterio
     de normalización que ya usa la búsqueda canónica de `Camara`."""
-    nombre_limpio = _limpiar_puntuacion(nombre_raw)
-    nombre_expandido = _expandir_abreviaturas(nombre_limpio)
-    nombre_norm_base = _normalizar(nombre_expandido)
-    return _aplicar_sinonimos(nombre_norm_base)
+    nombre_limpio = limpiar_puntuacion(nombre_raw)
+    nombre_expandido = expandir_abreviaturas(nombre_limpio)
+    nombre_norm_base = normalizar(nombre_expandido)
+    return aplicar_sinonimos(nombre_norm_base)
 
 
 def _buscar_botella_ilike_lista(patron: str, session: Session) -> list["CromoBotella"]:
@@ -204,7 +206,7 @@ def _cascada_botella_intento(
     # Paridad con el Intento 4 de `buscar_camara()`: Cromo guarda "Av"/"Dr" literales, y la entrada
     # expandida ("avenida"/"doctor") no los encuentra. Caso real: "Cra Av Santa Fe 4276 Bot 2 CF"
     # existe EXACTO en `cromo_botellas` y quedaba sin match (8 filas de `ingresos_sin_match` de prod).
-    nombre_literal = _aplicar_sinonimos(_normalizar(_limpiar_puntuacion(nombre_raw)))
+    nombre_literal = aplicar_sinonimos(normalizar(limpiar_puntuacion(nombre_raw)))
     if extendida and nombre_literal != nombre_norm:
         resuelto = _evaluar(_filtrada(_buscar_botella_ilike_lista(nombre_literal, session)))
         if resuelto:

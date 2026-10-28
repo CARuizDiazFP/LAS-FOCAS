@@ -35,7 +35,7 @@ import time
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from modules.slack_baneo_notifier.camara_search import normalizar_candidato
+from core.text.normalizacion import normalizar_candidato
 
 logger = logging.getLogger(__name__)
 

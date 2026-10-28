@@ -46,12 +46,14 @@ from core.services.cromo.camara_botella_busqueda import buscar_camara_o_botella_
 from core.services.ingreso_service import registrar_egreso_historico, registrar_movimiento_ingreso
 from core.services.nodos_catalogo import corresponde_a_nodo
 from db.models.infra import Ingreso, IngresoSinMatch, IngresoTipo
-from modules.slack_baneo_notifier.camara_search import (
-    AmbiguousSearchError,
-    detectar_multi_bot,
+from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+from core.text.mensaje_ingreso import (
     extraer_nombre_camara,
     extraer_slack_user_id_autorizacion,
     extraer_tipo_movimiento,
+)
+from core.text.normalizacion import (
+    detectar_multi_bot,
     limpiar_ruido_operativo,
     normalizar_candidato,
     preparar_nombre_busqueda,

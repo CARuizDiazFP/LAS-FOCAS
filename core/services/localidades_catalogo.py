@@ -31,7 +31,7 @@ import time
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from modules.slack_baneo_notifier.camara_search import _normalizar
+from core.text.normalizacion import normalizar
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def invalidar_cache() -> None:
 
 def _clave(texto: str) -> str:
     """Forma comparable: sin acentos, minúsculas, sin puntuación ni paréntesis."""
-    return re.sub(r"\s+", " ", re.sub(r"[.,;:()\[\]]", " ", _normalizar(texto or ""))).strip()
+    return re.sub(r"\s+", " ", re.sub(r"[.,;:()\[\]]", " ", normalizar(texto or ""))).strip()
 
 
 def _cargar(session: Session) -> frozenset[str] | None:

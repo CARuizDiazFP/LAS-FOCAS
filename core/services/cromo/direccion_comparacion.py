@@ -8,8 +8,8 @@ Cromo (ej. `("AVENIDA BARTOLOME MITRE", "2525")`) y devuelve una señal (`SenalD
 el operador la vea en el modal de asociación manual — **nunca bloquea** la confirmación, sólo
 informa. Función pura: sin DB, sin efectos secundarios.
 
-Reusa la normalización de texto de `modules/slack_baneo_notifier/camara_search.py`
-(`_limpiar_puntuacion`, `_normalizar`, `expandir_abreviaturas_y_sinonimos`) para no duplicar las
+Reusa la normalización de texto de `core/text/normalizacion.py`
+(`limpiar_puntuacion`, `normalizar`, `expandir_abreviaturas_y_sinonimos`) para no duplicar las
 tablas de abreviaturas/sinónimos viales que ese módulo ya mantiene.
 """
 
@@ -18,10 +18,10 @@ from __future__ import annotations
 import re
 from enum import Enum
 
-from modules.slack_baneo_notifier.camara_search import (
-    _limpiar_puntuacion,
-    _normalizar,
+from core.text.normalizacion import (
     expandir_abreviaturas_y_sinonimos,
+    limpiar_puntuacion,
+    normalizar,
 )
 
 __all__ = ["SenalDireccion", "comparar_direccion_prov_vs_odf"]
@@ -86,7 +86,7 @@ def _extraer_calle_y_altura_prov(direccion: str | None) -> tuple[str | None, str
 def _tokens_significativos(texto: str) -> set[str]:
     """Normaliza y tokeniza `texto`, descartando tokens de menos de 3 caracteres y stopwords.
 
-    Reusa el pipeline de normalización de `camara_search.py` (limpieza de puntuación,
+    Reusa el pipeline de normalización de `core/text/normalizacion.py` (limpieza de puntuación,
     unaccent+lowercase, expansión de abreviaturas y sinónimos viales) para que variantes como
     `"AV."`/`"AVENIDA"` terminen siendo el mismo token — sin esto, la intersección de tokens
     fallaría por diferencias puramente ortográficas, no de contenido.
@@ -94,8 +94,8 @@ def _tokens_significativos(texto: str) -> set[str]:
     if not texto:
         return set()
 
-    limpio = _limpiar_puntuacion(texto)
-    normalizado = _normalizar(limpio)
+    limpio = limpiar_puntuacion(texto)
+    normalizado = normalizar(limpio)
     expandido = expandir_abreviaturas_y_sinonimos(normalizado)
     return {t for t in expandido.split() if len(t) >= 3 and t not in _STOPWORDS}
 

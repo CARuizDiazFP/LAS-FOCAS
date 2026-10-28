@@ -100,13 +100,13 @@ from db.models.fo_monitor import (
     FomonIntervencionServicio,
 )
 from db.models.infra import Camara, Ingreso, IngresoCorreccion, IngresoSinMatch, IngresoTipo
-from modules.slack_baneo_notifier.camara_search import (
-    AmbiguousSearchError,
+from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError
+from core.text.mensaje_ingreso import (
     extraer_nombre_camara,
     extraer_slack_user_id_autorizacion,
     extraer_tipo_movimiento,
-    limpiar_ruido_operativo,
 )
+from core.text.normalizacion import limpiar_ruido_operativo
 from modules.slack_baneo_notifier.correccion_ingreso import (
     ComandoForzarEgreso,
     ComandoForzarIngreso,

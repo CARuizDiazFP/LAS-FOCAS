@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # sufijo con palabra completa) queda fuera de alcance si apareciera en datos reales.
 #
 # `\.?` antes del `\s*` final (2026-08-14): mismo fix de raíz que `RE_BOT_SUFIJO`
-# (`modules/slack_baneo_notifier/camara_search.py`) — un punto inmediatamente después del dígito
+# (`core/text/normalizacion.py`) — un punto inmediatamente después del dígito
 # ("Botella 2. Resto...") quedaba sin consumir y sobrevivía como residuo al inicio del nombre
 # resultante. Nunca confirmado en datos reales para este camino de PREFIJO específico (a diferencia
 # del sufijo, que sí tiene 7 casos reales, ver `docs/decisiones.md` 2026-08-14) — se corrige igual por
