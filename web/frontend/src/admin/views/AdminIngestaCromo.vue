@@ -443,7 +443,7 @@ const sse = useCorridaSse({
     if (corridaActual.value) corridaActual.value.total_objetivo = data.total_objetivo as number | null;
   },
   onFase: (data) => {
-    faseActual.value = String(data.descripcion ?? data.fase);
+    faseActual.value = String(data.descripcion ?? data.fase ?? '');
   },
   onPagina: (data) => {
     if (!corridaActual.value) return;
