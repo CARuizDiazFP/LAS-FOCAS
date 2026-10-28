@@ -43,119 +43,13 @@
       @tracking-resuelto="refrescarSiBuscado"
     />
 
-    <!-- Modal: Baneos Activos -->
-    <dialog ref="activeBansModalEl" class="infra-generic-modal active-bans-modal" @click.self="closeActiveBansModal()" @cancel.prevent="closeActiveBansModal()">
-      <div class="modal-inner">
-        <div class="modal-header-row">
-          <h3 class="modal-title">🔒 Baneos Activos</h3>
-          <button class="close-btn" @click="closeActiveBansModal()">×</button>
-        </div>
-
-        <!-- Cargando -->
-        <div v-if="activeBansLoading" class="active-bans-loading">Cargando baneos activos...</div>
-
-        <!-- Error -->
-        <div v-else-if="activeBansError" class="active-bans-error">⚠ {{ activeBansError }}</div>
-
-        <!-- Sin baneos -->
-        <div v-else-if="activeBans.length === 0" class="active-bans-empty">
-          <span>✅ No hay baneos activos en este momento.</span>
-        </div>
-
-        <!-- Lista de incidentes -->
-        <template v-else>
-          <div class="active-bans-count">{{ activeBans.length }} incidente{{ activeBans.length !== 1 ? 's' : '' }} activo{{ activeBans.length !== 1 ? 's' : '' }}</div>
-          <div class="active-bans-list">
-            <div v-for="inc in activeBans" :key="inc.id" class="active-ban-card">
-              <div class="active-ban-card-header">
-                <div class="active-ban-ticket">
-                  <span class="active-ban-ticket-label">Ticket</span>
-                  <strong>{{ inc.ticket_asociado || '—' }}</strong>
-                </div>
-                <div class="active-ban-duracion">{{ formatDuracion(inc.duracion_horas) }}</div>
-              </div>
-              <div class="active-ban-servicios">
-                <span class="active-ban-svc-item afectado">
-                  <span class="active-ban-svc-dot afectado"></span>
-                  Afectado: <strong>{{ inc.servicio_afectado_id }}</strong>
-                </span>
-                <span class="active-ban-arrow">→</span>
-                <span class="active-ban-svc-item protegido">
-                  <span class="active-ban-svc-dot protegido"></span>
-                  Protegido: <strong>{{ inc.servicio_protegido_id }}</strong>
-                </span>
-              </div>
-              <div v-if="inc.ruta_protegida_id" class="active-ban-ruta">
-                Ruta: <span>ID {{ inc.ruta_protegida_id }}</span>
-              </div>
-              <div v-if="inc.motivo" class="active-ban-motivo">{{ inc.motivo }}</div>
-              <div class="active-ban-meta">
-                <span>Inicio: {{ formatFecha(inc.fecha_inicio) }}</span>
-                <span v-if="inc.camaras_count">· {{ inc.camaras_count }} cámara{{ inc.camaras_count !== 1 ? 's' : '' }}</span>
-                <span v-if="inc.usuario_ejecutor">· por {{ inc.usuario_ejecutor }}</span>
-              </div>
-              <div class="active-ban-actions">
-                <button
-                  class="btn warning small"
-                  @click="openAvisoModal(inc)"
-                >📧 Dar Aviso</button>
-                <button
-                  class="btn success small"
-                  :disabled="liftLoadingId === inc.id"
-                  @click="confirmLiftBan(inc)"
-                >{{ liftLoadingId === inc.id ? 'Levantando...' : '🔓 Levantar Baneo' }}</button>
-              </div>
-            </div>
-          </div>
-        </template>
-
-        <div class="modal-actions" style="margin-top:8px">
-          <button class="btn subtle" @click="closeActiveBansModal()">Cerrar</button>
-          <button class="btn primary small" :disabled="activeBansLoading" @click="loadActiveBans">↻ Actualizar</button>
-        </div>
-      </div>
-    </dialog>
-
-    <!-- Sub-modal: Dar Aviso por email -->
-    <dialog ref="avisoModalEl" class="infra-generic-modal aviso-modal" @click.self="closeAvisoModal()" @cancel.prevent="closeAvisoModal()">
-      <div class="modal-inner" v-if="avisoIncidente">
-        <div class="modal-header-row">
-          <h3 class="modal-title">📧 Dar Aviso — {{ avisoIncidente.ticket_asociado || 'Sin ticket' }}</h3>
-          <button class="close-btn" @click="closeAvisoModal()">×</button>
-        </div>
-          <label class="form-label">Destinatarios <span class="req">*</span> <span class="aviso-hint">(separados por coma)</span></label>
-          <input v-model="avisoForm.to" type="text" placeholder="operador@empresa.com, supervisor@empresa.com" />
-          <label class="form-label">Con copia (CC) <span class="aviso-hint">(opcional)</span></label>
-          <input v-model="avisoForm.cc" type="text" placeholder="noc@empresa.com" />
-          <label class="form-label">Asunto <span class="req">*</span></label>
-          <input v-model="avisoForm.subject" type="text" />
-          <label class="form-label">Cuerpo del mensaje <span class="req">*</span> <span class="aviso-hint">(editable)</span></label>
-          <textarea v-model="avisoForm.body" rows="11" class="aviso-body-textarea"></textarea>
-          <div class="aviso-options">
-            <label class="aviso-checkbox-row">
-              <input v-model="avisoForm.include_xls" type="checkbox" />
-              <span>Adjuntar resumen XLS</span>
-            </label>
-            <label class="aviso-checkbox-row">
-              <input v-model="avisoForm.include_txt" type="checkbox" />
-              <span>Adjuntar tracking TXT</span>
-            </label>
-          </div>
-          <div class="modal-actions">
-            <button class="btn subtle" :disabled="avisoSending" @click="closeAvisoModal()">Cancelar</button>
-            <button
-              class="btn primary small"
-              :disabled="avisoSending"
-              @click="downloadEml"
-            >📥 Descargar EML</button>
-            <button
-              class="btn warning"
-              :disabled="avisoSending || !avisoForm.to.trim() || !avisoForm.subject.trim() || !avisoForm.body.trim()"
-              @click="sendAviso"
-            >{{ avisoSending ? 'Enviando...' : '📧 Enviar Aviso' }}</button>
-          </div>
-      </div>
-    </dialog>
+    <!-- Modal: Baneos Activos (incluye el sub-modal Dar Aviso) -->
+    <BaneosActivosModal
+      ref="baneosActivosModal"
+      :notificar="notificar"
+      @baneo-levantado="refrescarSiBuscado"
+      @cantidad-cambiada="n => (cantidadBaneosActivos = n)"
+    />
 
     <!-- Modal: Limpiar servicio -->
     <dialog ref="limpiarModalEl" class="infra-generic-modal" @click.self="closeLimpiarModal()" @cancel.prevent="closeLimpiarModal()">
@@ -193,7 +87,7 @@
           <button class="btn subtle active-bans-btn" @click="openActiveBansModal">
             <i class="ph ph-lock-key" aria-hidden="true"></i>
             Baneos activos
-            <span v-if="activeBans.length > 0" class="active-bans-badge">{{ activeBans.length }}</span>
+            <span v-if="cantidadBaneosActivos > 0" class="active-bans-badge">{{ cantidadBaneosActivos }}</span>
           </button>
           <div
             class="btn subtle upload-drop-zone"
@@ -348,11 +242,10 @@ import {
 } from '../../api/infra';
 import type { Notificar } from '../../composables/infra/tipos';
 import { useInfraBusqueda } from '../../composables/infra/useInfraBusqueda';
-import { useBaneosActivos } from '../../composables/infra/useBaneosActivos';
-import { useNotificacionEmail } from '../../composables/infra/useNotificacionEmail';
 import { useTrackingAnalisis } from '../../composables/infra/useTrackingAnalisis';
 import BaneoWizardModal from '../../components/infra/infratab/BaneoWizardModal.vue';
 import TrackingResolveModal from '../../components/infra/infratab/TrackingResolveModal.vue';
+import BaneosActivosModal from '../../components/infra/infratab/BaneosActivosModal.vue';
 
 // --- Toast ---
 interface Toast { id: number; type: string; title: string; message?: string }
@@ -412,32 +305,13 @@ function openBanModal() {
   baneoWizardModal.value?.abrir();
 }
 
-// --- Baneos Activos (useBaneosActivos) ---
-const {
-  activeBansModalEl,
-  activeBans,
-  activeBansLoading,
-  activeBansError,
-  liftLoadingId,
-  loadActiveBans,
-  abrir: openActiveBansModal,
-  cerrar: closeActiveBansModal,
-  confirmLiftBan,
-  formatDuracion,
-  formatFecha,
-} = useBaneosActivos(notificar, refrescarSiBuscado);
-
-// --- Sub-modal Dar Aviso (useNotificacionEmail) ---
-const {
-  avisoModalEl,
-  avisoIncidente,
-  avisoSending,
-  avisoForm,
-  abrir: openAvisoModal,
-  cerrar: closeAvisoModal,
-  sendAviso,
-  downloadEml,
-} = useNotificacionEmail(notificar);
+// --- Baneos Activos (incluye el sub-modal Dar Aviso) ---
+const baneosActivosModal = ref<InstanceType<typeof BaneosActivosModal> | null>(null);
+// Badge del botón: se actualiza con cada carga del modal (como antes, no se consulta al montar).
+const cantidadBaneosActivos = ref(0);
+function openActiveBansModal() {
+  baneosActivosModal.value?.abrir();
+}
 
 // --- Upload Tracking (flujo Portero 2 fases): elección del archivo; el análisis y la resolución
 // viven en TrackingResolveModal ---
@@ -678,8 +552,6 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-error) 12%, transparent); }
 .btn.danger-subtle { background: transparent; color: var(--color-state-error); border: 1px solid color-mix(in srgb, var(--color-state-error) 20%, transparent); }
 .btn.danger-subtle:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-error) 10%, transparent); }
-.btn.success { background: transparent; color: var(--color-state-ok); border: 1px solid color-mix(in srgb, var(--color-state-ok) 50%, transparent); }
-.btn.success:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-ok) 12%, transparent); }
 
 /* Dropdown descargar */
 .download-dropdown-wrapper { position: relative; }
@@ -749,40 +621,6 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
   display: inline-flex; align-items: center; justify-content: center; line-height: 1;
 }
 .active-bans-modal { max-width: 640px; }
-.active-bans-loading, .active-bans-empty {
-  padding: 20px 0; text-align: center; color: var(--muted); font-size: .88rem;
-}
-.active-bans-error { color: var(--color-state-error); font-size: .85rem; padding: 8px 0; }
-.active-bans-count { font-size: .8rem; color: var(--muted); margin-bottom: 10px; }
-.active-bans-list { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow-y: auto; }
-.active-ban-card {
-  background: color-mix(in srgb, var(--color-text) 4%, transparent); border: 1px solid var(--border);
-  border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
-}
-.active-ban-card-header { display: flex; justify-content: space-between; align-items: flex-start; }
-.active-ban-ticket { display: flex; flex-direction: column; gap: 2px; }
-.active-ban-ticket-label { font-size: .72rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-.active-ban-duracion {
-  font-size: .78rem; font-weight: 600; color: var(--color-state-warn);
-  background: color-mix(in srgb, var(--color-state-warn) 10%, transparent); padding: 2px 8px; border-radius: 10px;
-  white-space: nowrap; align-self: flex-start;
-}
-.active-ban-servicios { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .85rem; }
-.active-ban-svc-item { display: flex; align-items: center; gap: 5px; }
-.active-ban-svc-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.active-ban-svc-dot.afectado { background: var(--color-state-warn); }
-.active-ban-svc-dot.protegido { background: var(--color-state-error); }
-.active-ban-arrow { color: var(--muted); font-size: .9rem; }
-.active-ban-ruta { font-size: .8rem; color: var(--muted); }
-.active-ban-motivo { font-size: .83rem; color: var(--text); font-style: italic; border-left: 2px solid var(--border); padding-left: 8px; }
-.active-ban-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: .78rem; color: var(--muted); }
-.active-ban-actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
-
 /* Sub-modal Dar Aviso */
 .aviso-modal { max-width: 560px; }
-.aviso-hint { font-size: .75rem; color: var(--muted); font-weight: 400; }
-.aviso-body-textarea { font-family: inherit; font-size: .84rem; line-height: 1.5; resize: vertical; min-height: 200px; }
-.aviso-options { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
-.aviso-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: .85rem; cursor: pointer; }
-.aviso-checkbox-row input[type=checkbox] { flex-shrink: 0; }
 </style>
