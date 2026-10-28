@@ -3,6 +3,7 @@
 // Descripción: Aviso por email de un baneo activo: plantilla local, envío, descarga del .eml y destinatarios guardados
 
 import { ref } from 'vue';
+import { textoPlanoAHtml } from '../../utils/textoPlanoAHtml';
 import { descargarEmlBaneo, notificarBaneoEmail, type IncidenteActivo } from '../../api/infra';
 import type { Notificar } from './tipos';
 
@@ -131,7 +132,9 @@ export function useNotificacionEmail(notificar: Notificar) {
         incident_id: avisoIncidente.value.id,
         recipients: toList.join(', '),
         subject: avisoForm.value.subject.trim(),
-        html_body: avisoForm.value.body.trim(),
+        html_body: textoPlanoAHtml(avisoForm.value.body.trim()),
+        include_xls: avisoForm.value.include_xls,
+        include_txt: avisoForm.value.include_txt,
       });
       notificar('success', 'EML descargado', filename);
     } catch (e: unknown) {

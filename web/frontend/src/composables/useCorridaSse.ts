@@ -36,6 +36,9 @@ export function useCorridaSse(opciones: OpcionesCorridaSse) {
   let reintentoTimer: ReturnType<typeof setTimeout> | null = null;
   let ultimoEventoId = 0;
   let corridaStream: number | null = null;
+  // Se marca al desmontar: un fetch de `recargarEstado` en vuelo al desmontar volvía a llamar a
+  // `conectar` y dejaba un EventSource huérfano.
+  let desmontado = false;
 
   function cerrar(): void {
     eventSource?.close();
@@ -62,6 +65,7 @@ export function useCorridaSse(opciones: OpcionesCorridaSse) {
   }
 
   function conectar(corridaId: number): void {
+    if (desmontado) return;
     cerrar();
     cancelarReintento();
     if (corridaStream !== corridaId) {
@@ -105,7 +109,9 @@ export function useCorridaSse(opciones: OpcionesCorridaSse) {
       cerrar();
       const espera = backoffMs;
       backoffMs = Math.min(backoffMs * 2, BACKOFF_MAXIMO_MS);
-      reintentoTimer = setTimeout(() => void opciones.recargarEstado(), espera);
+      reintentoTimer = setTimeout(() => {
+        if (!desmontado) void opciones.recargarEstado();
+      }, espera);
     });
   }
 
@@ -114,7 +120,10 @@ export function useCorridaSse(opciones: OpcionesCorridaSse) {
     cerrar();
   }
 
-  onBeforeUnmount(detener);
+  onBeforeUnmount(() => {
+    desmontado = true;
+    detener();
+  });
 
   return { conectar, detener };
 }

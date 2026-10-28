@@ -37,13 +37,15 @@ export async function obtenerTrackingRuta(rutaId: number): Promise<TrackingDetai
 
 /**
  * Descarga el `.eml` del aviso de baneo. El endpoint (`EmlDownloadRequestModel`) espera JSON, no
- * multipart: `include_xls` / `include_txt` se omiten para que valgan sus defaults (true).
+ * multipart: `include_xls` / `include_txt` indican si se adjunta el resumen XLS / el tracking TXT.
  */
 export async function descargarEmlBaneo(body: {
   incident_id: number;
   recipients: string;
   subject: string;
   html_body: string;
+  include_xls: boolean;
+  include_txt: boolean;
 }): Promise<string> {
   return requestDownload('/api/infra/notify/download-eml', {
     method: 'POST',
