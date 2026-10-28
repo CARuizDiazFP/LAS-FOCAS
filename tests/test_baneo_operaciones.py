@@ -33,21 +33,24 @@ def _resultado(success: bool):
 def avisos(monkeypatch):
     llamadas: list[tuple[str, dict, str]] = []
     monkeypatch.setattr(ops, "get_settings", lambda: SimpleNamespace(slack=SimpleNamespace(bot_token="tok")))
-    monkeypatch.setattr(ops, "notificar_evento_baneo", lambda s, tipo, datos, token: llamadas.append((tipo, datos, token)))
     return llamadas
 
 
-def _crear(sesion):
+def _notificador(llamadas):
+    return lambda s, tipo, datos, token: llamadas.append((tipo, datos, token))
+
+
+def _crear(sesion, notificar):
     return ops.crear_baneo_y_notificar(
         sesion, ticket_asociado="T1", servicio_afectado_id="A", servicio_protegido_id="P",
-        ruta_protegida_id=3, motivo="m", usuario_ejecutor="ana",
+        ruta_protegida_id=3, motivo="m", usuario_ejecutor="ana", notificar=notificar,
     )
 
 
 def test_crear_exito_commit_y_slack(monkeypatch, avisos):
     monkeypatch.setattr(ops, "create_ban", lambda *a, **k: _resultado(True))
     sesion = _Sesion()
-    assert _crear(sesion).success is True
+    assert _crear(sesion, _notificador(avisos)).success is True
     assert sesion.committed and not sesion.rolled_back
     tipo, datos, token = avisos[0]
     assert (tipo, token) == ("create", "tok")
@@ -58,7 +61,7 @@ def test_crear_exito_commit_y_slack(monkeypatch, avisos):
 def test_crear_falla_rollback_sin_slack(monkeypatch, avisos):
     monkeypatch.setattr(ops, "create_ban", lambda *a, **k: _resultado(False))
     sesion = _Sesion()
-    assert _crear(sesion).success is False
+    assert _crear(sesion, _notificador(avisos)).success is False
     assert sesion.rolled_back and not sesion.committed
     assert avisos == []
 
@@ -70,16 +73,17 @@ def test_crear_error_de_slack_no_cambia_respuesta(monkeypatch):
     def _falla(*a):
         raise RuntimeError("slack caído")
 
-    monkeypatch.setattr(ops, "notificar_evento_baneo", _falla)
     sesion = _Sesion()
-    assert _crear(sesion).success is True
+    assert _crear(sesion, _falla).success is True
     assert sesion.committed
 
 
 def test_levantar_exito_commit_y_slack(monkeypatch, avisos):
     monkeypatch.setattr(ops, "lift_ban", lambda *a, **k: _resultado(True))
     sesion = _Sesion()
-    res = ops.levantar_baneo_y_notificar(sesion, 5, usuario_ejecutor="ana", motivo_cierre="ok")
+    res = ops.levantar_baneo_y_notificar(
+        sesion, 5, usuario_ejecutor="ana", motivo_cierre="ok", notificar=_notificador(avisos)
+    )
     assert res.success is True and sesion.committed and not sesion.rolled_back
     tipo, datos, _ = avisos[0]
     assert tipo == "lift" and datos["usuario_ejecutor"] == "ana" and datos["motivo_cierre"] == "ok"
@@ -88,7 +92,9 @@ def test_levantar_exito_commit_y_slack(monkeypatch, avisos):
 def test_levantar_falla_rollback_sin_slack(monkeypatch, avisos):
     monkeypatch.setattr(ops, "lift_ban", lambda *a, **k: _resultado(False))
     sesion = _Sesion()
-    ops.levantar_baneo_y_notificar(sesion, 5, usuario_ejecutor=None, motivo_cierre=None)
+    ops.levantar_baneo_y_notificar(
+        sesion, 5, usuario_ejecutor=None, motivo_cierre=None, notificar=_notificador(avisos)
+    )
     assert sesion.rolled_back and not sesion.committed and avisos == []
 
 
@@ -96,7 +102,9 @@ def test_levantar_error_de_slack_no_cambia_respuesta(monkeypatch):
     monkeypatch.setattr(ops, "lift_ban", lambda *a, **k: _resultado(True))
     monkeypatch.setattr(ops, "get_settings", lambda: (_ for _ in ()).throw(RuntimeError("sin config")))
     sesion = _Sesion()
-    assert ops.levantar_baneo_y_notificar(sesion, 5, usuario_ejecutor=None, motivo_cierre=None).success is True
+    assert ops.levantar_baneo_y_notificar(
+        sesion, 5, usuario_ejecutor=None, motivo_cierre=None, notificar=lambda *a: None
+    ).success is True
     assert sesion.committed
 
 

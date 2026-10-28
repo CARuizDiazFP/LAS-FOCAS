@@ -5,7 +5,7 @@
 """Resuelve "a qué Botella pertenece esta fusión (empalme)" — la pregunta inversa de
 `core/services/cromo/empalmes.py` (que responde "qué empalmes tiene esta Botella"). Pensado para el
 mecanismo de "hilo esperando ID de empalme" del listener de Slack de ingreso de técnicos
-(`modules/slack_baneo_notifier/listener.py`): cuando el técnico no puede identificar la cámara por
+(`slack_baneo_notifier/listener.py`): cuando el técnico no puede identificar la cámara por
 nombre, se le ofrece responder con el ID de empalme más cercano, y este módulo resuelve la Botella
 (y su Cámara padre) a partir de ese ID — síncrono porque corre dentro de un callback síncrono de
 Slack Bolt (mismo motivo que `verificador.servicios_por_tubo_sync`).

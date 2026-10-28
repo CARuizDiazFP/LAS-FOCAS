@@ -37,7 +37,7 @@ class CableIdentificado:
     extremo_b: Optional[str]
 
 
-# Mismo criterio que `modules/slack_baneo_notifier/cable_info.py::buscar_cable_por_n_id_o_nombre` y
+# Mismo criterio que `slack_baneo_notifier/cable_info.py::buscar_cable_por_n_id_o_nombre` y
 # que `web/app/main.py::_resolver_cable_por_texto` (que la API no puede importar: `web/app` y
 # `api/app` son apps FastAPI distintas): n_id exacto si el texto es puramente numérico, si no nombre
 # exacto case-insensitive. Sólo cables vigentes. Los extremos se nombran como en `detalle.py`

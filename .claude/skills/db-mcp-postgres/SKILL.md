@@ -64,6 +64,12 @@ Para habilitar este skill, configura el servidor MCP en VS Code. Agrega en tu ar
 
 4. **No Exponer Secretos**: Nunca incluir resultados de queries que contengan passwords, tokens o datos sensibles en las respuestas.
 
+5. **Exportar texto libre sin `COPY … TO STDOUT` en formato texto**: ese formato escapa los saltos de
+   línea y las barras (un `\n` real sale como `\\n` dentro de un `json_agg`), así que el texto
+   exportado ya no es el de la base. Para mensajes multilínea (p. ej. `ingresos_sin_match.texto_mensaje`)
+   usar `psql -At -c "SELECT json_agg(x ORDER BY x) FROM (…) s(x)"` y leerlo con `json.load`. Real
+   (P11, 2026-10-28): el primer export de 483 textos de prod salió con 0 saltos de línea reales.
+
 ## 🛠️ Flujos de Depuración Específicos
 
 ### 1. Depuración de Infraestructura FO (Cámaras y Servicios)

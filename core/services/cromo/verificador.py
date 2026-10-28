@@ -604,7 +604,7 @@ async def servicios_por_tubo(sesion: AsyncSession, tubo_n_id: int) -> ResultadoT
 def servicios_por_tubo_sync(session: Session, tubo_n_id: int) -> ResultadoTubo:
     """Gemela síncrona de `servicios_por_tubo` — mismas queries (`text()` funciona igual sobre
     `Session` que sobre `AsyncSession`, sólo cambia el `await`), para el comando de Slack
-    "Verificar cable <nombre> B<N>" (`modules/slack_baneo_notifier/cable_info.py`), que corre dentro
+    "Verificar cable <nombre> B<N>" (`slack_baneo_notifier/cable_info.py`), que corre dentro
     de un callback síncrono de Slack Bolt."""
     tubo = session.execute(_SQL_TUBO_POR_N_ID, {"n_id": tubo_n_id}).first()
     filas = session.execute(_SQL_SERVICIOS_POR_TUBO, {"tubo_n_id": tubo_n_id}).all()

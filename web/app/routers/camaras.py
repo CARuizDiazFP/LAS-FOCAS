@@ -43,6 +43,8 @@ from core.services.camaras_consulta import (
 )
 from core.services.camaras_consulta import serializar_camara_panel as _serialize_camara_response
 
+from modules.slack_baneo_notifier.eventos import notificar_evento_baneo
+
 from ..comun import (
     _incluye_anulados,
     _serializar_bloqueos,
@@ -495,6 +497,7 @@ def create_ban_web(
                 ruta_protegida_id=ban_request.ruta_protegida_id,
                 motivo=ban_request.motivo,
                 usuario_ejecutor=username,
+                notificar=notificar_evento_baneo,
             )
             if result.success:
                 logger.info(
@@ -547,6 +550,7 @@ def lift_ban_web(
                 lift_request.incidente_id,
                 usuario_ejecutor=username,
                 motivo_cierre=lift_request.motivo_cierre,
+                notificar=notificar_evento_baneo,
             )
             if result.success:
                 logger.info(

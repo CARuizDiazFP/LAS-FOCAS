@@ -6,11 +6,14 @@ import os
 from pathlib import Path
 from typing import Dict, List
 
-# Paths configurables mediante variables de entorno
-TEMPLATES_DIR = Path(os.getenv("TEMPLATES_DIR", "/app/Templates"))
+from core.config import MESES_ES as _MESES_ES
+from core.config import reports_dir, templates_dir, uploads_dir
+
+# Paths configurables mediante variables de entorno (default único en core/config)
+TEMPLATES_DIR = templates_dir()
 SLA_TEMPLATE_PATH = Path(os.getenv("SLA_TEMPLATE_PATH", TEMPLATES_DIR / "Template_Informe_SLA.docx"))
-REPORTS_DIR = Path(os.getenv("REPORTS_DIR", "/app/data/reports"))
-UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "/app/data/uploads"))
+REPORTS_DIR = reports_dir()
+UPLOADS_DIR = uploads_dir()
 
 # Alias para compatibilidad con módulos existentes
 BASE_UPLOADS = UPLOADS_DIR
@@ -54,17 +57,4 @@ SLA_POR_SERVICIO: Dict[str, float] = {
 }
 
 # Lista de meses en español para encabezados
-MESES_ES: List[str] = [
-    "enero",
-    "febrero",
-    "marzo",
-    "abril",
-    "mayo",
-    "junio",
-    "julio",
-    "agosto",
-    "septiembre",
-    "octubre",
-    "noviembre",
-    "diciembre",
-]
+MESES_ES: List[str] = list(_MESES_ES)

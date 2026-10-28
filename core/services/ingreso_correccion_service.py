@@ -5,7 +5,7 @@
 """Resuelve y ejecuta los comandos de corrección `Forzar ingreso` / `Forzar egreso`
 (`docs/superpowers/plans/2026-09-23-correccion-ingresos-servicios.md`, Task 5).
 
-El parser de los comandos es puro y vive en `modules/slack_baneo_notifier/correccion_ingreso.py`
+El parser de los comandos es puro y vive en `core/services/ingreso_correccion_comandos.py`
 (Task 4): decide qué **forma** escribió el operador, nunca si esa forma es válida. Esa decisión —
 que depende del formulario original del hilo — es de este módulo. El wiring con el listener de
 Slack (detección del mensaje, posteo de la respuesta, flujo de "fecha pendiente") es de la Task 6;
@@ -21,7 +21,7 @@ acá no se postea nada ni se lee ningún evento: el caller pasa los datos del me
 3. `client.conversations_replies(channel, ts=thread_ts, limit=1)` — el mensaje raíz. Cubre los
    hilos históricos anteriores a las columnas de la Task 2. **Requiere el scope `channels:history`
    (o `groups:history`) en el panel de la Slack App** — no verificable desde código, mismo criterio
-   que `app_mentions:read` (`listener.py`) y `users:read` (`slack_user_resolver.py`). Si el scope
+   que `app_mentions:read` (`listener.py`) y `users:read` (`core/services/slack_usuarios.py`). Si el scope
    falta, la llamada falla y la cascada **degrada con gracia**: no se propaga ninguna excepción, se
    loguea un warning y se termina pidiendo la forma con fecha explícita.
 
@@ -100,14 +100,14 @@ from db.models.fo_monitor import (
     FomonIntervencionServicio,
 )
 from db.models.infra import Camara, Ingreso, IngresoCorreccion, IngresoSinMatch, IngresoTipo
-from modules.slack_baneo_notifier.camara_search import (
-    AmbiguousSearchError,
+from core.services.camara_busqueda_nombre import AmbiguousSearchError
+from core.text.mensaje_ingreso import (
     extraer_nombre_camara,
     extraer_slack_user_id_autorizacion,
     extraer_tipo_movimiento,
-    limpiar_ruido_operativo,
 )
-from modules.slack_baneo_notifier.correccion_ingreso import (
+from core.text.normalizacion import limpiar_ruido_operativo
+from core.services.ingreso_correccion_comandos import (
     ComandoForzarEgreso,
     ComandoForzarIngreso,
     IngresoAbiertoInfo,
@@ -129,7 +129,7 @@ from modules.slack_baneo_notifier.correccion_ingreso import (
     extraer_comando_forzar_egreso,
     extraer_comando_forzar_ingreso,
 )
-from modules.slack_baneo_notifier.slack_user_resolver import resolver_nombre_tecnico
+from core.services.slack_usuarios import resolver_nombre_tecnico
 
 logger = logging.getLogger("slack_baneo_worker.ingreso_correccion")
 
@@ -307,7 +307,7 @@ def _tipo_formulario_de_fila(ingreso: Ingreso) -> TipoFormulario:
 def _mensaje_raiz_del_hilo(client: Any, canal_id: str | None, thread_ts: str | None) -> dict | None:
     """Nivel 3: el mensaje raíz del hilo vía `conversations.replies`.
 
-    **Nunca lanza** — mismo contrato que `slack_user_resolver.resolver_nombre_tecnico`. Degrada a
+    **Nunca lanza** — mismo contrato que `slack_usuarios.resolver_nombre_tecnico`. Degrada a
     `None` ante cualquiera de los tres modos de falla reales: excepción (scope `channels:history`
     faltante, timeout de red, canal inaccesible), respuesta con `ok=False`, o respuesta sin
     `messages`. El caller cae entonces al pedido de fecha explícita, que no necesita el hilo."""

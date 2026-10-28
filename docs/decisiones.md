@@ -2981,3 +2981,17 @@ su propia ventana de mantenimiento.
 - Aplicado en `focas_dev` (decisión del usuario, 2026-10-27): `--incluir-sin-cambios --aplicar` borró 121.981
   `SIN_CAMBIOS` en 23 lotes y `VACUUM (FULL, ANALYZE)` (1,2 s) llevó la tabla de 61 MB a 45 MB (319.574 filas).
   La retención de 90 días no borró nada: el evento más viejo es del 2026-08-06. Prod no se tocó.
+
+## 2026-10-28 — Normalización de nombres en `core/text` (P11)
+
+- Contexto: la normalización de nombres de cámara, la cascada de búsqueda, los comandos de corrección de ingreso y
+  la resolución de usuarios Slack vivían en `modules/slack_baneo_notifier/` y `core/` los importaba "hacia arriba".
+- Decisión: capas `core/text/normalizacion.py` y `core/text/mensaje_ingreso.py` (texto puro),
+  `core/services/camara_busqueda_nombre.py`, `ingreso_correccion_comandos.py` y `slack_usuarios.py`. Los módulos
+  viejos (`camara_search`, `correccion_ingreso`, `slack_user_resolver`) quedan como shims de re-export.
+- Invariante con test: `core/` no importa `modules.slack_baneo_notifier` (`tests/test_core_text.py`).
+- Verificación: golden sobre 12.354 nombres y 36.161 mensajes (incl. 483 textos reales anonimizados) idéntico, y
+  cascada de 7.571 búsquedas reales en `focas_dev` idéntica antes/después.
+- Reimplementaciones de `_normalizar` medidas (490 a 25.665 diferencias sobre el corpus): no se unifican.
+- Rutas de datos: defaults únicos y relativos al repo en `core/config.py` (`uploads_dir()`, `reports_dir()`,
+  `templates_dir()`); `core/sla` pasa de `<repo>/tmp`/`<repo>/Reports` a `<repo>/data/...` (decisión del usuario).

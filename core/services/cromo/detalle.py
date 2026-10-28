@@ -158,7 +158,7 @@ _SQL_PELOS_DE_CABLE = text(
 
 
 # Misma forma que _SQL_PELOS_DE_CABLE, acotada a un único tubo/buffer — para el comando de Slack
-# "Info cable <nombre> B<N>" (modules/slack_baneo_notifier/cable_info.py), que necesita el listado
+# "Info cable <nombre> B<N>" (slack_baneo_notifier/cable_info.py), que necesita el listado
 # completo de pelos de UN buffer puntual, no del cable entero.
 _SQL_PELOS_DE_TUBO = text(
     f"""
@@ -318,7 +318,7 @@ def pelos_de_tubo_sync(session: Session, tubo_n_id: int) -> list[PeloDetalle]:
     """Listado completo de los pelos de UN tubo/buffer (matcheados o no, con `servicio_raw` crudo
     siempre visible) — versión síncrona y acotada a un tubo de la misma query/agrupación que usa
     `obtener_detalle_cable` para el cable entero. Para el comando de Slack "Info cable <nombre> B<N>"
-    (`modules/slack_baneo_notifier/cable_info.py`), que corre dentro de un callback síncrono de Slack
+    (`slack_baneo_notifier/cable_info.py`), que corre dentro de un callback síncrono de Slack
     Bolt y sólo necesita un buffer puntual, no el árbol completo del cable."""
     filas = session.execute(_SQL_PELOS_DE_TUBO, {"tubo_n_id": tubo_n_id}).all()
 

@@ -4,7 +4,8 @@
 
 """Arneses de regresión de la búsqueda de cámaras (`buscar_camara_o_botella_cromo`).
 
-Criterio de aceptación de cualquier cambio a `camara_search.py`/`camara_botella_busqueda.py`
+Criterio de aceptación de cualquier cambio a `core/text/normalizacion.py`, `core/services/camara_busqueda_nombre.py` (que
+reemplazaron a `camara_search.py`, hoy shim) o `camara_botella_busqueda.py`
 (`docs/relevamiento_ingresos_sin_match_2026-09-28.md`): **0 incorrectas nuevas** en los dos arneses,
 comparando el código base contra la rama sobre el mismo inventario (dev, read-only).
 

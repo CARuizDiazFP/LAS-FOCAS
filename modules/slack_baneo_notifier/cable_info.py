@@ -78,15 +78,13 @@ _RE_CABLE_BUFFER = re.compile(r"(?i)^(verificar|info)\s+cable\s+(.+?)\s+(?:b|buf
 # cualquiera de los dos regex — ningún código de cable real usa estos 4 caracteres.
 #
 # Público (promovido 2026-09-23, Task 4 del plan de corrección de ingresos/servicios): el mismo bug
-# aplica igual a "Forzar ingreso"/"Forzar egreso" (`modules/slack_baneo_notifier/correccion_ingreso.py`)
+# aplica igual a "Forzar ingreso"/"Forzar egreso" (`core/services/ingreso_correccion_comandos.py`)
 # — un técnico escribe "Forzar egreso *Cra Balcarce 302*" igual que escribía "info cable *F-VDP-JUR*".
 # Verificado (grep) que no tenía otros usos antes de renombrar: sólo los dos call-sites de este mismo
 # archivo.
-_RE_FORMATO_SLACK = re.compile(r"[*_`~]")
-
-
-def quitar_formato_slack(texto: str) -> str:
-    return _RE_FORMATO_SLACK.sub("", texto)
+# La implementación (y `_RE_FORMATO_SLACK`) viven ahora en `core/text/mensaje_ingreso.py` (P11);
+# se re-exporta acá porque el listener y los tests la importan desde este módulo.
+from core.text.mensaje_ingreso import quitar_formato_slack  # noqa: E402,F401
 
 
 def extraer_comando_info_cable(texto: str) -> Optional[str]:

@@ -11,7 +11,7 @@ misma cámara (la manipulación puede dañar bandejas de botellas vecinas).
 - Botellas: `CromoBotella.camara_id == camara_id AND vigente` (mismo filtro que
   `GET /api/infra/camaras/{id}/botellas`, `web/app/main.py`).
 - Botella 1: la hija SIN sufijo "Bot N" (convención "Botella 1 = cámara principal", ver
-  `modules/slack_baneo_notifier/camara_search.py`); si todas lo llevan, la de "Bot 1"; si tampoco
+  `core/text/normalizacion.py`); si todas lo llevan, la de "Bot 1"; si tampoco
   existe, la de número más bajo (`botella_1_inferida=True`).
 - Cables: vigentes, clase {51, 52, 59, 60} (`CLASES_CABLE`), con algún extremo en esas botellas.
   Un cable entre dos botellas de la misma cámara se cuenta una vez, en la objetivo si la toca.
@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 from core.services.cromo.camino_optico_service import CLASES_CABLE
 from core.services.cromo.verificador import ObjetoNoEncontrado, ServicioUnico, servicios_unicos_por_cable_sync
 from db.models.cromo import CromoBotella
-from modules.slack_baneo_notifier.camara_search import RE_BOT_SUFIJO
+from core.text.normalizacion import RE_BOT_SUFIJO
 
 
 @dataclass

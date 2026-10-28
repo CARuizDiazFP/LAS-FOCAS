@@ -73,6 +73,7 @@ def load_excel(path: str) -> pd.DataFrame:
     return df
 
 
+# No usa core.text.normalizacion.normalizar: además quita espacios/"_"/saltos de línea y NFD difiere en 490 de 48515 entradas del corpus ("°"→"deg" sólo con unidecode), medido 2026-10-28 (P11).
 def _clean_key(s: str) -> str:
     """Normaliza un nombre de columna facilitando comparaciones."""
 

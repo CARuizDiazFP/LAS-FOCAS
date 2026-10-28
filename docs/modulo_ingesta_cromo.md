@@ -278,7 +278,7 @@ Documentado en `docs/infra.md`, sección "Cámara padre para Botellas Cromo".
     6632435) y con una muestra de 300 botellas reales sin ratios inválidos remanentes.
   - `camara_botella_busqueda.py` (2026-08-23): cierra el gap de la búsqueda por nombre libre
     "Camara-only" — `buscar_camara_o_botella_cromo()` reusa sin modificar la cascada canónica de
-    `buscar_camara()` (`modules/slack_baneo_notifier/camara_search.py`) y, sólo si ésta no matchea
+    `buscar_camara()` (`core/services/camara_busqueda_nombre.py`; el viejo `camara_search.py` queda como shim) y, sólo si ésta no matchea
     nada en `app.camaras`, corre una cascada equivalente (ILIKE con nombre normalizado → AND-ILIKE
     por tokens, mismos filtros de números requeridos y de bots secundarios reusados, no
     reimplementados) contra `app.cromo_botellas` — el inventario real de Cromo tiene botellas que

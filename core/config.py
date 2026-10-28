@@ -9,6 +9,40 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+# Raíz del repo (en los contenedores el código vive en /app, así que el default da /app/data/...).
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# Única lista de meses en español para títulos de informes.
+MESES_ES: tuple[str, ...] = (
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+)
+
+
+def uploads_dir() -> Path:
+    """Directorio de adjuntos: env UPLOADS_DIR, o <repo>/data/uploads. No crea el directorio."""
+    return Path(os.getenv("UPLOADS_DIR", str(PROJECT_ROOT / "data" / "uploads")))
+
+
+def reports_dir() -> Path:
+    """Directorio de informes: env REPORTS_DIR, o <repo>/data/reports. No crea el directorio."""
+    return Path(os.getenv("REPORTS_DIR", str(PROJECT_ROOT / "data" / "reports")))
+
+
+def templates_dir() -> Path:
+    """Directorio de plantillas: env TEMPLATES_DIR, o <repo>/Templates. No crea el directorio."""
+    return Path(os.getenv("TEMPLATES_DIR", str(PROJECT_ROOT / "Templates")))
+
 
 def get_secret(secret_name: str, env_var: str | None = None, default: str = "") -> str:
     """Lee un secreto Docker y cae a variable de entorno durante la transición."""

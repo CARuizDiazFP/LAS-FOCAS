@@ -25,7 +25,7 @@ from modules.slack_baneo_notifier.camara_search import (
     _buscar_camara_intento,
 )
 
-MOD = "modules.slack_baneo_notifier.camara_search"
+MOD = "core.services.camara_busqueda_nombre"
 
 
 def _cam(id_: int, nombre: str) -> SimpleNamespace:

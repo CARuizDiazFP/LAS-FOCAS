@@ -80,6 +80,7 @@ def _login_admin(client: TestClient, monkeypatch) -> None:
 
 def test_create_ban_web_notifica_slack(monkeypatch):
     from core.services import baneo_operaciones
+    from web.app.routers import camaras as camaras_router
     from db import session as db_session
 
     client = TestClient(app)
@@ -100,7 +101,7 @@ def test_create_ban_web_notifica_slack(monkeypatch):
     )
     monkeypatch.setattr(baneo_operaciones, "get_settings", lambda: SimpleNamespace(slack=SimpleNamespace(bot_token="token")))
     monkeypatch.setattr(
-        baneo_operaciones,
+        camaras_router,
         "notificar_evento_baneo",
         lambda session, tipo, datos, token: llamadas.append((tipo, datos, token)),
     )
@@ -126,6 +127,7 @@ def test_create_ban_web_notifica_slack(monkeypatch):
 
 def test_lift_ban_web_notifica_slack(monkeypatch):
     from core.services import baneo_operaciones
+    from web.app.routers import camaras as camaras_router
     from db import session as db_session
 
     client = TestClient(app)
@@ -146,7 +148,7 @@ def test_lift_ban_web_notifica_slack(monkeypatch):
     )
     monkeypatch.setattr(baneo_operaciones, "get_settings", lambda: SimpleNamespace(slack=SimpleNamespace(bot_token="token")))
     monkeypatch.setattr(
-        baneo_operaciones,
+        camaras_router,
         "notificar_evento_baneo",
         lambda session, tipo, datos, token: llamadas.append((tipo, datos, token)),
     )

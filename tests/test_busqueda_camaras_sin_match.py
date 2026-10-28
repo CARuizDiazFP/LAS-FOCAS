@@ -20,7 +20,7 @@ from modules.slack_baneo_notifier import camara_search as cs
 from tests.soporte_postgres_real import requiere_postgres_real
 
 MODULE_CB = "core.services.cromo.camara_botella_busqueda"
-MODULE_CS = "modules.slack_baneo_notifier.camara_search"
+MODULE_CS = "core.services.camara_busqueda_nombre"
 
 
 def _cam(id_: int, nombre: str, padre: int | None = None) -> MagicMock:

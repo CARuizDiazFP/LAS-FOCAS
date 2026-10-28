@@ -6,13 +6,14 @@
 
 `crear_baneo_y_notificar` y `levantar_baneo_y_notificar` envuelven `create_ban`/`lift_ban` con el
 commit o rollback y el aviso a Slack; `listar_incidentes_activos` serializa los incidentes activos.
-El autor (`usuario_ejecutor`) lo decide cada app: sesión en el panel, body en la API.
+El autor (`usuario_ejecutor`) lo decide cada app: sesión en el panel, body en la API. El aviso a Slack
+lo inyecta cada router (`notificar`): `core/` no importa el worker de Slack (invariante de P11).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
@@ -26,9 +27,11 @@ from core.services.protection_service import (
     lift_ban,
 )
 from db.models.infra import Camara, CamaraEstado
-from modules.slack_baneo_notifier.eventos import notificar_evento_baneo
 
 logger = logging.getLogger(__name__)
+
+#: Firma de `notificar_evento_baneo` (worker de Slack): (sesión, evento, datos, bot_token).
+NotificadorBaneo = Callable[[Session, str, dict[str, Any], str | None], Any]
 
 # Largos máximos de los campos del request (alineados con db/models/infra.py, IncidenteBaneo).
 LARGO_TICKET = 64
@@ -37,10 +40,10 @@ LARGO_USUARIO = 128
 LARGO_MOTIVO = 512
 
 
-def _avisar_slack(session: Session, evento: str, datos: dict[str, Any]) -> None:
+def _avisar_slack(session: Session, notificar: NotificadorBaneo, evento: str, datos: dict[str, Any]) -> None:
     """Aviso a Slack del evento; un fallo se loguea y nunca cambia la respuesta."""
     try:
-        notificar_evento_baneo(session, evento, datos, get_settings().slack.bot_token)
+        notificar(session, evento, datos, get_settings().slack.bot_token)
     except Exception as exc:
         logger.warning("Error enviando aviso Slack de baneo (%s): %s", evento, exc)
 
@@ -54,6 +57,7 @@ def crear_baneo_y_notificar(
     ruta_protegida_id: int | None,
     motivo: str | None,
     usuario_ejecutor: str | None,
+    notificar: NotificadorBaneo,
 ) -> BanResult:
     """Crea el baneo; si tuvo éxito hace commit y avisa a Slack, si no hace rollback."""
     result = create_ban(
@@ -73,7 +77,7 @@ def crear_baneo_y_notificar(
         datos["ticket_asociado"] = ticket_asociado
         datos["usuario_ejecutor"] = usuario_ejecutor
         datos["motivo"] = motivo
-        _avisar_slack(session, "create", datos)
+        _avisar_slack(session, notificar, "create", datos)
     else:
         session.rollback()
     return result
@@ -85,6 +89,7 @@ def levantar_baneo_y_notificar(
     *,
     usuario_ejecutor: str | None,
     motivo_cierre: str | None,
+    notificar: NotificadorBaneo,
 ) -> LiftResult:
     """Levanta el baneo; si tuvo éxito hace commit y avisa a Slack, si no hace rollback."""
     result = lift_ban(
@@ -98,7 +103,7 @@ def levantar_baneo_y_notificar(
         datos = result.to_dict()
         datos["usuario_ejecutor"] = usuario_ejecutor
         datos["motivo_cierre"] = motivo_cierre
-        _avisar_slack(session, "lift", datos)
+        _avisar_slack(session, notificar, "lift", datos)
     else:
         session.rollback()
     return result

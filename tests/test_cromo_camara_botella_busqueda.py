@@ -10,7 +10,7 @@ Tests para:
  - core.services.cromo.camara_botella_busqueda._cascada_botella() con el algoritmo real (Intento
    1→2, filtro de bots secundarios, guardia de input degenerado) — sólo se mockean las queries hoja.
  - Cap de AmbiguousSearchError a 3 candidatos, incluido el camino directo de
-   modules.slack_baneo_notifier.camara_search.buscar_camara() (no pasa por esta función nueva).
+   core/services/camara_busqueda_nombre.buscar_camara() (no pasa por esta función nueva).
  - cantidad de AmbiguousSearchError tras la fusión Camara+CromoBotella nunca reporta menos de lo
    que Camara sola ya había encontrado (aunque exc.candidatos venga recortado a 3).
 """
@@ -217,17 +217,17 @@ class TestBuscarCamaraOBotellaCromo(unittest.TestCase):
 
 class TestAmbiguousSearchErrorCapDirecto(unittest.TestCase):
     """El cap a 3 aplica también al camino que NO pasa por esta función nueva: directamente desde
-    modules.slack_baneo_notifier.camara_search.buscar_camara()."""
+    core/services/camara_busqueda_nombre.buscar_camara()."""
 
     def test_buscar_camara_directo_nunca_excede_3_candidatos(self) -> None:
         cams = [MagicMock(id=i, nombre=f"Cra Test Zona {i}") for i in range(1, 8)]
         with (
             patch(
-                "modules.slack_baneo_notifier.camara_search._buscar_ilike_lista",
+                "core.services.camara_busqueda_nombre._buscar_ilike_lista",
                 return_value=cams,
             ),
             patch(
-                "modules.slack_baneo_notifier.camara_search._buscar_tokens_lista",
+                "core.services.camara_busqueda_nombre._buscar_tokens_lista",
                 return_value=cams,
             ),
             self.assertRaises(AmbiguousSearchError) as ctx,

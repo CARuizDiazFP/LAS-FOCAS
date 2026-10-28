@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +13,8 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List
 
 from pydantic import BaseModel, ValidationError, field_validator
 
+from core.config import reports_dir as _cfg_reports_dir
+from core.config import uploads_dir as _cfg_uploads_dir
 from core.services import office_client
 from modules.informes_repetitividad.service import (
     ReportConfig,
@@ -178,7 +179,7 @@ def _reports_href(path: Path, reports_dir: Path) -> str:
 
 
 async def _run_informe_repetitividad(args: InformeRepetitividadArgs, context: ToolContext) -> ToolResult:
-    uploads_dir = Path(os.getenv("UPLOADS_DIR", "/app/data/uploads"))
+    uploads_dir = _cfg_uploads_dir()
     reports_dir = REPORT_CONFIG.reports_dir
     reports_dir.mkdir(parents=True, exist_ok=True)
 
@@ -222,8 +223,8 @@ def _resolver_documento(input_path: str) -> Path:
     rechaza antes de tocar el disco.
     """
 
-    uploads_dir = Path(os.getenv("UPLOADS_DIR", "/app/data/uploads")).resolve()
-    reports_dir = Path(os.getenv("REPORTS_DIR", "/app/data/reports")).resolve()
+    uploads_dir = _cfg_uploads_dir().resolve()
+    reports_dir = _cfg_reports_dir().resolve()
     ruta = Path(input_path)
     if not ruta.is_absolute():
         ruta = uploads_dir / ruta
@@ -237,7 +238,7 @@ def _resolver_documento(input_path: str) -> Path:
 
 async def _run_convertir_doc(args: ConvertirDocArgs, context: ToolContext) -> ToolResult:
     origen = _resolver_documento(args.input_path)
-    reports_dir = Path(os.getenv("REPORTS_DIR", "/app/data/reports"))
+    reports_dir = _cfg_reports_dir()
     destino = reports_dir / f"{origen.stem}.pdf"
     try:
         await asyncio.to_thread(office_client.convertir_a_pdf, origen, destino)

@@ -7,7 +7,7 @@ existentes o recién dados de alta. "Botella" acá es un concepto de este módul
 homónimo de `CromoBotella` (`app.cromo_botellas`, módulo de ingesta Cromo Red, esquema separado).
 
 No reinventa la detección de "Bot N": reusa `RE_BOT_SUFIJO`
-(`modules/slack_baneo_notifier/camara_search.py`), la misma regex de negocio ya probada contra datos
+(`core/text/normalizacion.py`), la misma regex de negocio ya probada contra datos
 reales del listener de ingresos Slack — clase de un solo dígito a propósito, evita el falso positivo
 real "Bot 30 de Septiembre y J.M.Estrada" (no es la botella 30, es una calle que empieza con "30").
 
@@ -30,12 +30,12 @@ from sqlalchemy.orm import Session
 
 from db.models.cromo import CromoBotella
 from db.models.infra import Camara, CamaraEstado, CamaraOrigenDatos
-from modules.slack_baneo_notifier.camara_search import (
+from core.text.normalizacion import (
     RE_BOT_SUFIJO,
-    _limpiar_puntuacion,
-    _normalizar,
     expandir_abreviaturas_y_sinonimos,
+    limpiar_puntuacion,
     limpiar_ruido_operativo,
+    normalizar,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,15 +88,15 @@ def extraer_base(nombre: Optional[str]) -> Optional[str]:
 
 def normalizar_para_agrupar(nombre: Optional[str]) -> str:
     """Normaliza un nombre de cámara para comparar/agrupar — reusa la misma limpieza de puntuación +
-    normalización (unaccent + lowercase + colapso de espacios) que ya usa `camara_search.buscar_camara`,
+    normalización (unaccent + lowercase + colapso de espacios) que ya usa `camara_busqueda_nombre.buscar_camara`,
     sin la expansión de abreviaturas ni los sinónimos (esos son específicos de la búsqueda difusa de
     texto libre de técnicos, no aplican a comparar dos nombres ya estructurados de la DB)."""
-    return _normalizar(_limpiar_puntuacion(nombre or ""))
+    return normalizar(limpiar_puntuacion(nombre or ""))
 
 
 def normalizar_para_agrupar_extendido(nombre: Optional[str]) -> str:
     """Compone `normalizar_para_agrupar()` con `expandir_abreviaturas_y_sinonimos()`
-    (`modules/slack_baneo_notifier/camara_search.py`, mismas tablas `_ABREVIATURAS`/`_SINONIMOS` que ya
+    (`core/text/normalizacion.py`, mismas tablas `ABREVIATURAS`/`SINONIMOS` que ya
     usa `buscar_camara` para texto libre de técnicos) — colapsa abreviaturas viales y sinónimos
     ("Cámara"↔"Cra", "cf"→"") antes de comparar dos nombres ya estructurados de la DB.
 
@@ -127,7 +127,7 @@ def normalizar_para_agrupar_extendido(nombre: Optional[str]) -> str:
 
 # Caché del resolver: con ~10k raíces, normalizar todos los nombres en cada llamada costaba ~500 ms
 # de CPU (medido en dev, 2026-10-26). La normalización es una función pura del texto (tablas fijas de
-# `camara_search`), así que un nombre ya visto no se vuelve a procesar mientras viva el proceso.
+# `camara_busqueda_nombre`), así que un nombre ya visto no se vuelve a procesar mientras viva el proceso.
 _normalizar_extendido_cacheado = lru_cache(maxsize=32768)(normalizar_para_agrupar_extendido)
 
 

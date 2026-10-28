@@ -79,6 +79,7 @@ from db.models.infra import (
     RutaServicio,
 )
 from db.session import SessionLocal, get_async_db
+from modules.slack_baneo_notifier.eventos import notificar_evento_baneo
 
 from api.app.errores import error_interno, nueva_ref
 
@@ -920,6 +921,7 @@ async def create_ban(request: BanCreateRequest) -> Dict[str, Any]:
                 ruta_protegida_id=request.ruta_protegida_id,
                 motivo=request.motivo,
                 usuario_ejecutor=request.usuario_ejecutor,
+                notificar=notificar_evento_baneo,
             ).to_dict()
 
     try:
@@ -956,6 +958,7 @@ async def lift_ban(request: BanLiftRequest) -> Dict[str, Any]:
                 request.incidente_id,
                 usuario_ejecutor=request.usuario_ejecutor,
                 motivo_cierre=request.motivo_cierre,
+                notificar=notificar_evento_baneo,
             ).to_dict()
 
     try:
