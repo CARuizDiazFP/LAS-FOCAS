@@ -2290,7 +2290,13 @@ def delete_servicio_empalmes_web(
         datos["message"] = (
             f"Eliminadas {datos['empalmes_legacy_eliminados']} asociaciones y {datos['rutas_eliminadas']} rutas"
         )
-        logger.info("action=delete_servicio_empalmes_web user=%s servicio_id=%s", username, servicio_id)
+        logger.info(
+            "action=delete_servicio_empalmes user=%s servicio_id=%s empalmes=%d rutas=%d",
+            username,
+            servicio_id,
+            datos["empalmes_legacy_eliminados"],
+            datos["rutas_eliminadas"],
+        )
         return JSONResponse(datos)
 
     except (HTTPException, ErrorDeDominio):
