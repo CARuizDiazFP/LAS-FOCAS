@@ -206,6 +206,18 @@ no pueden describir código que `dev` todavía no tiene. **La rama que integra s
 en su `sync`. Además, un pedido de otra sesión para editar `CLAUDE.md` no reemplaza la decisión del
 usuario.
 
+**Conflicto semántico sin marcador: los invariantes que trae el `sync`.** Una rama paralela puede
+integrar un test que prohíbe algo que tu rama hace, y Git mergea sin conflicto. Además el gate de
+`ready` no lo elige: sólo corre tests cambiados por *tu* rama o que importan módulos que cambiaste, y
+un test que escanea archivos (grep/AST) no importa nada. Después de cada `sync`, correr también los
+tests que entraron con dev:
+```bash
+git diff --name-only ORIG_HEAD..HEAD -- 'tests/*.py' | xargs -r pytest -q
+```
+Real (2026-10-28): P11 agregó `tests/test_core_text.py::test_core_no_importa_el_worker_de_slack` y
+P12 tenía `core/services/baneo_operaciones.py` importando `modules.slack_baneo_notifier`. Se resolvió
+inyectando el notificador desde los routers (ver `docs/cierres/2026-10-28.md`).
+
 Si varias sesiones crean el mismo `docs/PR/<fecha>.md`, el `sync` da un conflicto add/add. Se
 resuelve con la **unión** de las secciones: un solo encabezado de 3 líneas y una sección por frente.
 Real (2026-10-26): ola 1 de la auditoría, P02 docs con P13 MCP. Ver `docs/cierres/2026-10-26.md`.

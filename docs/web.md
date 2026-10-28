@@ -127,6 +127,12 @@ creado y cerrado en el lifespan de `main.py`; lo usan los proxies a la API inter
 (`/api/servicios/*`, ingesta de Cámaras, `/clientes*`) con timeout por pedido, en lugar de abrir un
 cliente por request. `GET /api/infra/camaras` del panel **no** es un proxy: consulta `core/services/camaras_consulta.py`.
 
+> **Gotcha del lifespan.** Con `FastAPI(lifespan=...)`, Starlette **ignora** los `@app.on_event("startup"/"shutdown")`
+> registrados en otros módulos (p. ej. el subscriber de notificaciones de `web/admin_ws.py`). Por eso `_lifespan`
+> de `web/app/main.py` invoca a mano `app.router.on_startup` / `on_shutdown`, después de abrir el cliente HTTP y
+> antes de cerrarlo. Un handler nuevo con `@app.on_event` funciona sólo por esa llamada; preferir agregarlo al
+> lifespan directamente. Lo cubre `tests/test_web_http_interno.py`.
+
 ### Shell y navegación modular
 
 - El SPA ahora usa un **App Shell compartido** en `web/frontend/src/components/app-shell/AppShell.vue` para panel y admin.

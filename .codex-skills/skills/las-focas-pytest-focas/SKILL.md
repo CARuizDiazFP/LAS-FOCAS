@@ -708,6 +708,21 @@ trampas reales:
   pasar el historial y `_save_upload` a `to_thread` (P17, 2026-10-27), el fake recibió esas llamadas y
   los tests fallaron sin que el endpoint estuviera roto. Parchear la función de negocio
   (`web_informes.generar_informe_desde_excel`), no el mecanismo.
+- **Un test de "no bloquea el loop" puede pasar aunque el handler bloquee: validarlo por mutación.**
+  Real (P12, 2026-10-28): el test lanzaba el POST con `create_task`, dormía 0,02 s y *recién ahí*
+  empezaba a medir latidos; un bloqueo de 0,3 s ocurría antes del primer latido y el `max(hueco) < 0,2`
+  pasaba igual. Arreglo: arrancar el latido como tarea **antes** del request (cada ~0,02 s), asertar
+  hueco máximo < 0,15 s y un mínimo de latidos, y además `threading.get_ident()` del trabajo ≠ hilo del
+  loop. Prueba de que no es vacuo: un plugin que hace `asyncio.to_thread` inline debe hacerlo fallar.
+  ```python
+  # inline_thread.py (en el scratchpad): PYTHONPATH=<dir> pytest -p inline_thread <test>  → debe dar failed
+  import asyncio, pytest
+  @pytest.fixture(autouse=True)
+  def _to_thread_inline(monkeypatch):
+      async def _inline(fn, *a, **k):
+          return fn(*a, **k)
+      monkeypatch.setattr(asyncio, "to_thread", _inline)
+  ```
 - **"La cantidad de queries no crece con N": comparar 20 contra 200, no 5 contra 200.** Con pocas
   filas algunas etapas de `selectinload` no tienen padres y no consultan (12 vs 13 sentencias, falso
   rojo). Y `selectinload` parte cada 500 padres: con 500 filas aparecen 5 sentencias más, una por lote,
