@@ -77,52 +77,15 @@
   </dialog>
 
   <!-- Sub-modal: Dar Aviso por email -->
-  <dialog ref="avisoModalEl" class="infra-generic-modal aviso-modal" @click.self="cerrarAviso()" @cancel.prevent="cerrarAviso()">
-    <div class="modal-inner" v-if="avisoIncidente">
-      <div class="modal-header-row">
-        <h3 class="modal-title">📧 Dar Aviso — {{ avisoIncidente.ticket_asociado || 'Sin ticket' }}</h3>
-        <button class="close-btn" @click="cerrarAviso()">×</button>
-      </div>
-        <label class="form-label">Destinatarios <span class="req">*</span> <span class="aviso-hint">(separados por coma)</span></label>
-        <input v-model="avisoForm.to" type="text" placeholder="operador@empresa.com, supervisor@empresa.com" />
-        <label class="form-label">Con copia (CC) <span class="aviso-hint">(opcional)</span></label>
-        <input v-model="avisoForm.cc" type="text" placeholder="noc@empresa.com" />
-        <label class="form-label">Asunto <span class="req">*</span></label>
-        <input v-model="avisoForm.subject" type="text" />
-        <label class="form-label">Cuerpo del mensaje <span class="req">*</span> <span class="aviso-hint">(editable)</span></label>
-        <textarea v-model="avisoForm.body" rows="11" class="aviso-body-textarea"></textarea>
-        <div class="aviso-options">
-          <label class="aviso-checkbox-row">
-            <input v-model="avisoForm.include_xls" type="checkbox" />
-            <span>Adjuntar resumen XLS</span>
-          </label>
-          <label class="aviso-checkbox-row">
-            <input v-model="avisoForm.include_txt" type="checkbox" />
-            <span>Adjuntar tracking TXT</span>
-          </label>
-        </div>
-        <div class="modal-actions">
-          <button class="btn subtle" :disabled="avisoSending" @click="cerrarAviso()">Cancelar</button>
-          <button
-            class="btn primary small"
-            :disabled="avisoSending"
-            @click="downloadEml"
-          >📥 Descargar EML</button>
-          <button
-            class="btn warning"
-            :disabled="avisoSending || !avisoForm.to.trim() || !avisoForm.subject.trim() || !avisoForm.body.trim()"
-            @click="sendAviso"
-          >{{ avisoSending ? 'Enviando...' : '📧 Enviar Aviso' }}</button>
-        </div>
-    </div>
-  </dialog>
+  <AvisoEmailModal ref="avisoEmailModal" :notificar="notificar" />
 </template>
 
 <script setup lang="ts">
-import { watch } from 'vue';
+import { ref, watch } from 'vue';
+import type { IncidenteActivo } from '../../../api/infra';
 import type { Notificar } from '../../../composables/infra/tipos';
 import { useBaneosActivos } from '../../../composables/infra/useBaneosActivos';
-import { useNotificacionEmail } from '../../../composables/infra/useNotificacionEmail';
+import AvisoEmailModal from './AvisoEmailModal.vue';
 
 const props = defineProps<{ notificar: Notificar }>();
 const emit = defineEmits<{
@@ -148,16 +111,10 @@ const {
 watch(() => activeBans.value.length, (n) => emit('cantidad-cambiada', n));
 
 // --- Sub-modal Dar Aviso ---
-const {
-  avisoModalEl,
-  avisoIncidente,
-  avisoSending,
-  avisoForm,
-  abrir: abrirAviso,
-  cerrar: cerrarAviso,
-  sendAviso,
-  downloadEml,
-} = useNotificacionEmail(props.notificar);
+const avisoEmailModal = ref<InstanceType<typeof AvisoEmailModal> | null>(null);
+function abrirAviso(inc: IncidenteActivo) {
+  avisoEmailModal.value?.abrir(inc);
+}
 
 defineExpose({ abrir });
 </script>
@@ -195,11 +152,4 @@ defineExpose({ abrir });
 .active-ban-motivo { font-size: .83rem; color: var(--text); font-style: italic; border-left: 2px solid var(--border); padding-left: 8px; }
 .active-ban-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: .78rem; color: var(--muted); }
 .active-ban-actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
-
-/* Sub-modal Dar Aviso */
-.aviso-hint { font-size: .75rem; color: var(--muted); font-weight: 400; }
-.aviso-body-textarea { font-family: inherit; font-size: .84rem; line-height: 1.5; resize: vertical; min-height: 200px; }
-.aviso-options { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
-.aviso-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: .85rem; cursor: pointer; }
-.aviso-checkbox-row input[type=checkbox] { flex-shrink: 0; }
 </style>
