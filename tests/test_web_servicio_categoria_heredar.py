@@ -76,7 +76,7 @@ def _fake_async_client(capturar: list, respuesta=None):
         async def __aexit__(self, *a):
             return False
 
-        async def patch(self, url: str, json: Optional[dict] = None, headers: Optional[dict] = None):
+        async def patch(self, url: str, json: Optional[dict] = None, headers: Optional[dict] = None, timeout: float | None = None):
             capturar.append((url, json))
             return respuesta if respuesta is not None else _Resp()
 
@@ -92,7 +92,7 @@ def test_heredar_proxya_al_endpoint_interno(monkeypatch) -> None:
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_con_rol("admin", "admin"))
     llamadas: list = []
-    monkeypatch.setattr(web_main.httpx, "AsyncClient", _fake_async_client(llamadas))
+    monkeypatch.setattr("web.app.routers.servicios.cliente_api_interna", _fake_async_client(llamadas))
     client = TestClient(app)
     csrf = _login(client, "admin", "admin")
 
@@ -109,7 +109,7 @@ def test_heredar_pasa_el_409_sin_cliente_tal_cual(monkeypatch) -> None:
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_con_rol("admin", "admin"))
     llamadas: list = []
-    monkeypatch.setattr(web_main.httpx, "AsyncClient", _fake_async_client(llamadas, _Resp409()))
+    monkeypatch.setattr("web.app.routers.servicios.cliente_api_interna", _fake_async_client(llamadas, _Resp409()))
     client = TestClient(app)
     csrf = _login(client, "admin", "admin")
 
@@ -125,7 +125,7 @@ def test_heredar_rechaza_csrf_invalido(monkeypatch) -> None:
     monkeypatch.delenv("TESTING", raising=False)
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_con_rol("admin", "admin"))
     llamadas: list = []
-    monkeypatch.setattr(web_main.httpx, "AsyncClient", _fake_async_client(llamadas))
+    monkeypatch.setattr("web.app.routers.servicios.cliente_api_interna", _fake_async_client(llamadas))
     client = TestClient(app)
     _login(client, "admin", "admin")
 

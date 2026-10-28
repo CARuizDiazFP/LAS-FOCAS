@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio  # noqa: F401  (los tests parchean web_main.asyncio.to_thread)
 import os
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, List
 
@@ -14,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
+from web.app.http_interno import abrir_cliente_api_interna, cerrar_cliente_api_interna
 from core.config import get_secret
 from core.logging import setup_logging
 from web.admin_ws import mount_admin_websocket
@@ -83,7 +85,29 @@ def _session_middleware_options() -> dict[str, Any]:
         "max_age": WEB_SESSION_MAX_AGE,
     }
 
-app = FastAPI(title="LAS-FOCAS Web UI", version=BUILD_VERSION)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Abre el cliente httpx compartido de los proxies al API interno y lo cierra al apagar.
+
+    Con `lifespan=` Starlette ignora los `@app.on_event` (p. ej. los de `web/admin_ws.py`), así que
+    se invocan acá explícitamente (`router.on_startup` / `router.on_shutdown`).
+    """
+    await abrir_cliente_api_interna()
+    for handler in _app.router.on_startup:
+        await handler() if asyncio.iscoroutinefunction(handler) else handler()
+    try:
+        yield
+    finally:
+        try:
+            for handler in _app.router.on_shutdown:
+                await handler() if asyncio.iscoroutinefunction(handler) else handler()
+        finally:
+            await cerrar_cliente_api_interna()
+
+
+app = FastAPI(title="LAS-FOCAS Web UI", version=BUILD_VERSION, lifespan=_lifespan)
 
 # Errores (ver web/app/errores.py). HTTPException y RequestValidationError conservan los handlers de
 # FastAPI. El de `Exception` lo ejecuta ServerErrorMiddleware (fuera de los middlewares de usuario):

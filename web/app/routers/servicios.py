@@ -8,7 +8,6 @@ import json
 import re
 from typing import Any, Literal, Optional
 
-import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -26,6 +25,7 @@ from ..comun import (
     logger,
 )
 from ..dependencias import UsuarioSesion, requiere_csrf, usuario_admin, usuario_sesion
+from ..http_interno import cliente_api_interna
 from ..errores import (
     Conflicto,
     ErrorDeDominio,
@@ -672,12 +672,12 @@ async def servicios_ingest_web(
         files = {
             "file": (file.filename, content, file.content_type or "application/octet-stream"),
         }
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            response = await client.post(
-                f"{INTERNAL_API_BASE_URL}/servicios/ingest",
-                files=files,
-                headers=_internal_api_auth_headers(),
-            )
+        response = await cliente_api_interna().post(
+            f"{INTERNAL_API_BASE_URL}/servicios/ingest",
+            files=files,
+            headers=_internal_api_auth_headers(),
+            timeout=180.0,
+        )
 
         payload: dict[str, Any]
         payload = payload_de_upstream(response, "Error en ingesta", "servicios_ingest_proxy")
@@ -1884,12 +1884,12 @@ async def servicios_search_web(
     params = {k: v for k, v in params.items() if v not in (None, "")}
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"{INTERNAL_API_BASE_URL}/servicios/search",
-                params=params,
-                headers=_internal_api_auth_headers(),
-            )
+        response = await cliente_api_interna().get(
+            f"{INTERNAL_API_BASE_URL}/servicios/search",
+            params=params,
+            headers=_internal_api_auth_headers(),
+            timeout=30.0,
+        )
 
         payload: dict[str, Any]
         payload = payload_de_upstream(response, "Error consultando servicios", "servicios_list_proxy")
@@ -1922,12 +1922,12 @@ async def servicios_detail_web(
         return JSONResponse({"error": "ID requerido"}, status_code=400)
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"{INTERNAL_API_BASE_URL}/servicios/detail",
-                params={"id": id_consultado},
-                headers=_internal_api_auth_headers(),
-            )
+        response = await cliente_api_interna().get(
+            f"{INTERNAL_API_BASE_URL}/servicios/detail",
+            params={"id": id_consultado},
+            headers=_internal_api_auth_headers(),
+            timeout=30.0,
+        )
 
         payload: dict[str, Any]
         payload = payload_de_upstream(response, "Error consultando detalle de servicio", "servicio_detail_proxy")
@@ -1960,12 +1960,12 @@ async def servicio_categoria_web(
     interno, mismo patrón que `servicios_search_web`/`servicios_detail_web`."""
     username = usuario.username
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.patch(
-                f"{INTERNAL_API_BASE_URL}/servicios/{id}/categoria",
-                json={"categoria": body.categoria},
-                headers=_internal_api_auth_headers(),
-            )
+        response = await cliente_api_interna().patch(
+            f"{INTERNAL_API_BASE_URL}/servicios/{id}/categoria",
+            json={"categoria": body.categoria},
+            headers=_internal_api_auth_headers(),
+            timeout=30.0,
+        )
 
         payload: dict[str, Any]
         payload = payload_de_upstream(response, "Error actualizando categoría", "servicio_categoria_proxy")
@@ -1994,11 +1994,11 @@ async def servicio_categoria_heredar_web(
     sólo admin. Proxya al endpoint interno, mismo patrón que `servicio_categoria_web`."""
     username = usuario.username
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.patch(
-                f"{INTERNAL_API_BASE_URL}/servicios/{id}/categoria/heredar",
-                headers=_internal_api_auth_headers(),
-            )
+        response = await cliente_api_interna().patch(
+            f"{INTERNAL_API_BASE_URL}/servicios/{id}/categoria/heredar",
+            headers=_internal_api_auth_headers(),
+            timeout=30.0,
+        )
 
         payload: dict[str, Any]
         payload = payload_de_upstream(response, "Error restaurando la categoría heredada", "servicio_categoria_restaurar_proxy")
@@ -2031,12 +2031,12 @@ async def servicio_verificable_web(
     endpoint interno, mismo patrón que `servicio_categoria_web`."""
     username = usuario.username
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.patch(
-                f"{INTERNAL_API_BASE_URL}/servicios/{id}/verificable",
-                json={"es_verificable": body.es_verificable},
-                headers=_internal_api_auth_headers(),
-            )
+        response = await cliente_api_interna().patch(
+            f"{INTERNAL_API_BASE_URL}/servicios/{id}/verificable",
+            json={"es_verificable": body.es_verificable},
+            headers=_internal_api_auth_headers(),
+            timeout=30.0,
+        )
 
         payload: dict[str, Any]
         payload = payload_de_upstream(response, "Error actualizando verificabilidad", "servicio_verificabilidad_proxy")
@@ -2075,12 +2075,12 @@ async def servicio_prov_refrescar_web(
         # reintentos a PROV a `_PROV_REFRESCAR_MAX_REINTENTOS=1` (~61s de peor caso, ver
         # api/app/routes/servicios.py) — este timeout necesita margen sobre ese peor caso, no
         # sobre el default de 30s que usan las demás rutas (que no llaman a una API externa).
-        async with httpx.AsyncClient(timeout=70.0) as client:
-            response = await client.post(
-                f"{INTERNAL_API_BASE_URL}/servicios/prov/refrescar",
-                params={"id": id_consultado},
-                headers=_internal_api_auth_headers(),
-            )
+        response = await cliente_api_interna().post(
+            f"{INTERNAL_API_BASE_URL}/servicios/prov/refrescar",
+            params={"id": id_consultado},
+            headers=_internal_api_auth_headers(),
+            timeout=70.0,
+        )
 
         payload: dict[str, Any]
         payload = payload_de_upstream(response, "Error refrescando servicio desde PROV", "servicio_refresh_prov_proxy")
@@ -2115,12 +2115,12 @@ async def servicios_categoria_masiva_web(
         return JSONResponse({"error": "No se especificaron servicios a actualizar"}, status_code=400)
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.patch(
-                f"{INTERNAL_API_BASE_URL}/servicios/bulk-categoria",
-                json={"servicio_ids": body.servicio_ids, "categoria": body.categoria},
-                headers=_internal_api_auth_headers(),
-            )
+        response = await cliente_api_interna().patch(
+            f"{INTERNAL_API_BASE_URL}/servicios/bulk-categoria",
+            json={"servicio_ids": body.servicio_ids, "categoria": body.categoria},
+            headers=_internal_api_auth_headers(),
+            timeout=30.0,
+        )
 
         payload: dict[str, Any]
         payload = payload_de_upstream(response, "Error actualizando categoría", "servicio_categoria_proxy")

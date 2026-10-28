@@ -119,7 +119,7 @@ class TestProxyWebVerificable:
             async def __aexit__(self, exc_type, exc, tb):
                 return False
 
-            async def patch(self, url: str, json: dict | None = None, headers: dict | None = None):
+            async def patch(self, url: str, json: dict | None = None, headers: dict | None = None, timeout: float | None = None):
                 capturado.append((url, json))
                 return _Resp()
 
@@ -158,7 +158,7 @@ class TestProxyWebVerificable:
 
         monkeypatch.setattr(web_main.psycopg, "connect", lambda dsn: _Conn())
         capturado: list = []
-        monkeypatch.setattr(web_main.httpx, "AsyncClient", self._fake_async_client(capturado))
+        monkeypatch.setattr("web.app.routers.servicios.cliente_api_interna", self._fake_async_client(capturado))
 
         web_client = TestClient(web_app)
         csrf = web_client.post("/api/auth/login", json={"username": "admin", "password": "admin"}).json()["csrf"]
