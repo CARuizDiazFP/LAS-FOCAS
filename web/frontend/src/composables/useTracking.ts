@@ -3,6 +3,7 @@
 // Descripción: Utilidades reutilizables para consultar y descargar tracking de rutas FO en el panel web
 
 import { ApiError, requestDownload } from '../api/client';
+import { obtenerTrackingRuta } from '../api/infra';
 
 export interface TrackingPointInfo {
   sitio: string;
@@ -29,20 +30,8 @@ export interface TrackingDetailPayload {
   punta_b: TrackingPointInfo | null;
 }
 
-async function parseJsonResponse<T>(response: Response): Promise<T> {
-  const data = await response.json() as T & { error?: string };
-  if (!response.ok) {
-    throw new Error(data.error ?? `Error ${response.status}`);
-  }
-  return data;
-}
-
 export async function loadTrackingDetail(rutaId: number): Promise<TrackingDetailPayload> {
-  const response = await fetch(`/api/infra/rutas/${rutaId}/tracking`, {
-    credentials: 'include',
-    headers: { Accept: 'application/json' },
-  });
-  return parseJsonResponse<TrackingDetailPayload>(response);
+  return obtenerTrackingRuta(rutaId);
 }
 
 /**

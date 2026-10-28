@@ -21,12 +21,7 @@ SRC = Path(__file__).resolve().parents[1] / "web" / "frontend" / "src"
 
 # Archivos con `fetch(` aún sin migrar a la capa api/ (rutas relativas a web/frontend/src).
 PENDIENTES_FETCH: set[str] = {
-    "views/ReportsHistoryView.vue",
-    "views/tabs/VlanTab.vue",
     "views/tabs/InfraTab.vue",
-    "views/tabs/RepetitividadTab.vue",
-    "composables/useTracking.ts",
-    "views/tabs/ChatTab.vue",
 }
 
 # EventSource directo aún fuera de composables/ (se migran a useCorridaSse).
