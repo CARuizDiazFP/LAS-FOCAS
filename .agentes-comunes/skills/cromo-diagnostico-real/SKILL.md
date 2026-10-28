@@ -194,8 +194,9 @@ for epsg in ("EPSG:22195", "EPSG:22185", "EPSG:5347"):
    (`contar_semillas`) y un elemento de control inexistente, para probar que el guard sigue vivo.
    Ver `[[feedback-lista-truncada-no-es-fuente-de-verdad]]` y `docs/decisiones.md` (2026-09-21).
 
-10. **Un cambio a la búsqueda de cámaras (`camara_search.py`, `camara_botella_busqueda.py`,
-   `nodos_catalogo.py`) se acepta sólo con DOS arneses read-only contra `lasfocasdev-postgres`**, con
+10. **Un cambio a la búsqueda de cámaras (`core/text/normalizacion.py`,
+   `core/services/camara_busqueda_nombre.py`, `camara_botella_busqueda.py`, `nodos_catalogo.py`;
+   `camara_search.py` quedó como shim de re-export desde P11, 2026-10-28) se acepta sólo con DOS arneses read-only contra `lasfocasdev-postgres`**, con
    el código de `dev` y el de la rama sobre la MISMA muestra:
    - **Auto-recuperación**: N nombres del inventario (`ORDER BY id` + seed fija) buscados tal cual;
      criterio "cámara incorrecta ≤ `dev`".
