@@ -256,6 +256,17 @@ la ruta en el router **y** el ítem en `AppShell.vue`.
    `npm run build` es `vue-tsc --noEmit && vite build`, así que un solo comando verifica tipos y
    plantillas. El aviso de `agent_worktree.py start` ("enlazar desde el control") es anterior.
    El `vite.config` temporal que externalizaba MapLibre (2026-10-19) ya no hace falta.
+9. **Partir un componente con `<style scoped>` en hijos: cada regla va al componente dueño del
+   elemento, y el orden de las hojas no es el del original.** Un hijo de raíz única recibe también el
+   atributo scoped del padre en su raíz, y la hoja del hijo se emite **antes** que la del padre (el
+   padre importa al hijo en el script). Por eso una regla genérica del padre (`.infra-generic-modal {
+   max-width: 520px }`) le gana a una más específica del hijo con la misma especificidad. Las reglas
+   compartidas entre hermanos van a un `.css` común importado con `<style scoped src="./x.css">` en
+   cada hijo, junto con las que dependen de su orden (anchos). Por la misma razón, `:deep()` sobre la
+   raíz de un hijo es frágil: deja de aplicar si el hijo pasa a ser fragmento. Preferir una prop
+   (`anchoEstado` en `ViewerShell`). Verificar con el multiconjunto de clases antes y después y con el
+   CSS emitido en `dist/`, porque sin navegador no hay otra evidencia. Real: P10, 2026-10-28,
+   `InfraTab.vue` y `ViewerShell` (ver `docs/cierres/2026-10-28.md`).
 
 ## Relación con otras skills
 
