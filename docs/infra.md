@@ -2023,6 +2023,10 @@ runtime (python:3.11-slim-bookworm)  ← imagen final
 ### Cuándo reconstruir
 
 `build_base.sh` detecta automáticamente si `common-requirements.txt` cambió (hash SHA-256) y solo reconstruye cuando es necesario.
+El hash se calcula sobre el contenido normalizado (sin comentarios de línea ni en línea, sin líneas vacías ni
+espacios finales): editar un comentario no reconstruye la base; cambiar una versión o agregar un paquete sí.
+El valor va en el label `focas.requirements.hash` y en el tag `req-<12 caracteres>`; se consulta sin Docker con
+`./scripts/build_base.sh --print-hash` (P24, 2026-10-29).
 
 Casos que requieren rebuild manual:
 - Se agrega o actualiza un paquete en `common-requirements.txt`
@@ -2037,8 +2041,9 @@ Casos que requieren rebuild manual:
 # Forzar rebuild aunque no haya cambios
 ./scripts/build_base.sh --force
 
-# Build manual directo
-docker build -t focas-base:latest -f deploy/docker/base.Dockerfile .
+# Build manual directo (con el mismo label que pone el script)
+docker build --build-arg REQUIREMENTS_HASH=$(./scripts/build_base.sh --print-hash) \
+  -t focas-base:latest -f deploy/docker/base.Dockerfile .
 ```
 
 `Start` y `scripts/start_dev.sh` llaman a `build_base.sh` automáticamente antes de levantar el stack.

@@ -208,10 +208,13 @@ docker exec lasfocasdev-web rm -rf /tmp/wt          # siempre al terminar
   `latest` ni los `lasfocasdev-*`:
   ```bash
   docker buildx build --load -f deploy/docker/base.Dockerfile \
-    --build-arg REQUIREMENTS_HASH=$(sha256sum common-requirements.txt | cut -d' ' -f1) -t focas-base:<tag> .
+    --build-arg REQUIREMENTS_HASH=$(./scripts/build_base.sh --print-hash) -t focas-base:<tag> .
   docker buildx build --load --build-context focas-base:latest=docker-image://focas-base:<tag> \
     -f api/Dockerfile -t lasfocasdev-api:<tag> .
   ```
+  El hash sale siempre de `build_base.sh --print-hash` (contenido sin comentarios ni líneas vacías),
+  nunca de un `sha256sum` del archivo entero: con ese label, el próximo `build_base.sh` reconstruiría
+  la base aunque los paquetes sean los mismos (P24, 2026-10-29).
   **De a uno y con el piso de disco de `disk-analysis`** ("Piso de disco para agentes": 3 GB libres
   para arrancar), sin otras corridas pesadas en paralelo. En este host cada imagen nueva ocupa ~1,2 GB, y el build en paralelo
   con dos suites en contenedor llenó el disco en medio del cierre de otra sesión (ver `disk-analysis`).
