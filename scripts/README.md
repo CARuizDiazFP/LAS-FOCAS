@@ -84,7 +84,6 @@ reaplicarlos en otro entorno si hiciera falta.
 - `servicios_fusionar_identidades_duplicadas.py`: Detecta y fusiona pares de `app.servicios` que representan el mismo servicio real bajo dos filas.
 - `servicios_fusionar_por_cadena_prov.py`: Fusiona las filas de `app.servicios` que PROV identifica como el mismo servicio y deja el ID operativo (INSTALADO) como `servicio_id`.
 - `clientes_categoria_regularizar.py`: Regularización única de categorías por cliente (sync global, alias, Lista C6 y propagación; dry-run con rollback). Lee `data/clientes_c6_inicial.txt`.
-- `migrate_legacy_rutas.py`: Migra servicios legacy al modelo de rutas versionadas.
 
 #### Datos
 

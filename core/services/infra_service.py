@@ -893,10 +893,6 @@ class InfraService:
                 )
                 self.session.execute(stmt)
                 empalmes_asociados.add(empalme.id)
-
-            # También mantener relación legacy servicio<->empalme
-            if empalme not in servicio.empalmes:
-                servicio.empalmes.append(empalme)
         
         # Guardar puntos terminales (Punta A y B)
         self._update_puntos_terminales(ruta, parsed)
@@ -1011,11 +1007,7 @@ class InfraService:
                 self.session.execute(stmt)
                 empalmes_agregados += 1
                 empalmes_existentes_ids.add(empalme.id)
-            
-            # Mantener relación legacy
-            if empalme not in servicio.empalmes:
-                servicio.empalmes.append(empalme)
-        
+
         # Actualizar metadata de la ruta
         ruta.hash_contenido = content_hash
         ruta.raw_file_content = raw_content  # Preservar archivo original
@@ -1116,10 +1108,6 @@ class InfraService:
                 )
                 self.session.execute(stmt)
                 empalmes_asociados.add(empalme.id)
-
-            # Mantener relación legacy
-            if empalme not in servicio.empalmes:
-                servicio.empalmes.append(empalme)
 
         # Actualizar metadata
         ruta.hash_contenido = content_hash
@@ -1240,10 +1228,6 @@ class InfraService:
                 )
                 self.session.execute(stmt)
                 empalmes_asociados.add(empalme.id)
-
-            # Mantener relación legacy
-            if empalme not in servicio.empalmes:
-                servicio.empalmes.append(empalme)
 
         self.session.commit()
 
@@ -1410,9 +1394,6 @@ class InfraService:
                     self.session.execute(stmt)
                 
                 empalmes_asociados.add(empalme.id)
-            
-            if empalme not in old_servicio.empalmes:
-                old_servicio.empalmes.append(empalme)
         
         self.session.commit()
         

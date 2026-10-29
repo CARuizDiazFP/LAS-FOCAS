@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.services import tracking_operaciones as ops
-from core.services.infra_service import AnalysisResult, AnalysisStatus, UpgradeInfo
+from core.services.infra_service import AnalysisResult, AnalysisStatus, ResolveAction, ResolveResult, UpgradeInfo
 
 
 class SesionDoble:
@@ -71,41 +71,67 @@ def test_procesar_sin_ubicaciones_no_escribe():
     assert sesion.llamadas == []
 
 
-def test_procesar_cuenta_matches_y_hace_commit(monkeypatch):
+def _parse_valido(monkeypatch):
     monkeypatch.setattr(ops, "parse_tracking", lambda raw, nombre: SimpleNamespace(
-        servicio_id="111995",
-        get_topologia=lambda: [("1", "Cam A"), ("2", "Cam B")],
-        to_dict=lambda: {"ok": True},
+        servicio_id="111995", get_topologia=lambda: [("1", "Cam A"), ("2", "Cam B")],
     ))
-    monkeypatch.setattr(
-        ops, "_resolve_camara_o_registrar_sin_match",
-        lambda session, ubicacion, **_: object() if ubicacion == "Cam A" else None,
-    )
-    monkeypatch.setattr(
-        ops, "_get_or_create_empalme",
-        lambda session, tracking_id, camara: (SimpleNamespace(servicios=[], camara_id=None), True),
-    )
-    sesion = SesionDoble()
-    res = ops.procesar_tracking_legacy(sesion, "x", "FO 111995.txt")
+
+
+def _analisis(monkeypatch, estado):
+    monkeypatch.setattr(ops, "analyze_tracking_file", lambda *_: AnalysisResult(status=estado, servicio_id="111995"))
+
+
+def test_procesar_nuevo_crea_la_ruta_principal_con_create_new(monkeypatch):
+    """P22: el upload directo termina en una ruta (antes asociaba sólo por la tabla legada)."""
+    _parse_valido(monkeypatch)
+    _analisis(monkeypatch, AnalysisStatus.NEW)
+    pedidos = []
+
+    def _resolver(session, accion, raw, nombre):
+        pedidos.append(accion)
+        return ResolveResult(
+            success=True, action=accion, servicio_id="111995", ruta_id=7,
+            camaras_existentes=1, ubicaciones_sin_match=1, empalmes_creados=2,
+        )
+
+    monkeypatch.setattr(ops, "resolve_tracking_file", _resolver)
+    res = ops.procesar_tracking_legacy(SesionDoble(), "x", "FO 111995.txt")
+    assert pedidos == [ResolveAction.CREATE_NEW]
     assert (res.servicio_id, res.camaras_existentes, res.ubicaciones_sin_match, res.empalmes_registrados) == (
         "111995", 1, 1, 2,
     )
-    assert sesion.llamadas[-1] == "commit"
 
 
-def test_procesar_hace_rollback_si_falla(monkeypatch):
-    monkeypatch.setattr(ops, "parse_tracking", lambda raw, nombre: SimpleNamespace(
-        servicio_id="1", get_topologia=lambda: [("1", "X")], to_dict=lambda: {},
+def test_procesar_identico_no_escribe(monkeypatch):
+    _parse_valido(monkeypatch)
+    _analisis(monkeypatch, AnalysisStatus.IDENTICAL)
+    monkeypatch.setattr(ops, "resolve_tracking_file", lambda *_: pytest.fail("no debe resolver"))
+    res = ops.procesar_tracking_legacy(SesionDoble(), "x", "FO 111995.txt")
+    assert (res.servicio_id, res.camaras_existentes, res.ubicaciones_sin_match, res.empalmes_registrados) == (
+        "111995", 0, 0, 0,
+    )
+
+
+@pytest.mark.parametrize(
+    "estado", [AnalysisStatus.CONFLICT, AnalysisStatus.POTENTIAL_UPGRADE, AnalysisStatus.NEW_STRAND]
+)
+def test_procesar_con_rutas_distintas_pide_resolucion_sin_escribir(monkeypatch, estado):
+    _parse_valido(monkeypatch)
+    _analisis(monkeypatch, estado)
+    monkeypatch.setattr(ops, "resolve_tracking_file", lambda *_: pytest.fail("no debe resolver"))
+    with pytest.raises(ops.TrackingRequiereResolucion) as err:
+        ops.procesar_tracking_legacy(SesionDoble(), "x", "FO 111995.txt")
+    assert (err.value.servicio_id, err.value.estado) == ("111995", estado.value)
+
+
+def test_procesar_falla_de_resolve_levanta(monkeypatch):
+    _parse_valido(monkeypatch)
+    _analisis(monkeypatch, AnalysisStatus.NEW)
+    monkeypatch.setattr(ops, "resolve_tracking_file", lambda session, accion, *_: ResolveResult(
+        success=False, action=accion, error="Error interno (ref abcd)",
     ))
-
-    def _roto(*_, **__):
-        raise RuntimeError("falla")
-
-    monkeypatch.setattr(ops, "_resolve_camara_o_registrar_sin_match", _roto)
-    sesion = SesionDoble()
-    with pytest.raises(RuntimeError):
-        ops.procesar_tracking_legacy(sesion, "x", "FO 1.txt")
-    assert "rollback" in sesion.llamadas and "commit" not in sesion.llamadas
+    with pytest.raises(RuntimeError, match="ref abcd"):
+        ops.procesar_tracking_legacy(SesionDoble(), "x", "FO 111995.txt")
 
 
 def test_serializar_analisis_une_claves_de_panel_y_api():
@@ -253,12 +279,12 @@ def test_limpiar_empalmes_cuenta_borra_y_commitea():
             borradas.append(obj)
 
     r1, r2 = SimpleNamespace(empalmes=[1, 2]), SimpleNamespace(empalmes=[3])
-    servicio = SimpleNamespace(servicio_id="52547", empalmes=[1, 2, 3, 4], rutas=[r1, r2])
+    servicio = SimpleNamespace(servicio_id="52547", rutas=[r1, r2])
     sesion = Sesion(servicio)
     datos = ops.limpiar_empalmes_de_servicio(sesion, "52547")
     assert datos == {
         "status": "ok", "servicio_id": "52547",
-        "message": "Eliminadas 4 asociaciones legacy y 2 rutas",
-        "empalmes_legacy_eliminados": 4, "rutas_eliminadas": 2, "empalmes_rutas_eliminados": 3,
+        "message": "Eliminadas 3 asociaciones y 2 rutas",
+        "rutas_eliminadas": 2, "empalmes_rutas_eliminados": 3,
     }
-    assert borradas == [r1, r2] and servicio.empalmes == [] and sesion.llamadas == ["commit"]
+    assert borradas == [r1, r2] and sesion.llamadas == ["commit"]

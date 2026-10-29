@@ -25,7 +25,6 @@ from db.models.infra import (
     RutaServicio,
     Servicio,
     ruta_empalme_association,
-    servicio_empalme_association,
 )
 from db.models.infra import CamaraEstado as _CamaraEstado
 
@@ -37,12 +36,10 @@ LIMITE_MAXIMO = 500
 # 34.000 sentencias (lazy load por cámara raíz: empalmes, cables origen/destino, empalmes de botellas).
 # `Camara.cables` es una @property (`cables_origen + cables_destino`), por eso se cargan las dos.
 # Las botellas sólo aportan sus empalmes (`_collect_camara_rutas_info`); sus cables no se leen.
-# `Empalme.servicios` se lee sólo en la cámara raíz, cuando no hay rutas.
 # `Empalme.rutas` (y sus empalmes, puntos terminales y servicio, que lee `_collect_camara_rutas_info`)
 # también va por lote: desde que la relación tiene `order_by` por id, el lote y la carga individual
 # devuelven el mismo orden (antes, sin `order_by`, diferían en 151 empalmes de dev).
 _CARGA_POR_LOTE = (
-    selectinload(Camara.empalmes).selectinload(Empalme.servicios),
     selectinload(Camara.cables_origen),
     selectinload(Camara.cables_destino),
     selectinload(Camara.botellas).selectinload(Camara.empalmes),
@@ -118,17 +115,13 @@ def _collect_camara_rutas_info(camara: Any, *, incluir_botellas: bool = False) -
 
 
 def _collect_camara_servicios_ids(camara: Any, rutas_info: list[dict[str, Any]] | None = None) -> list[str]:
-    """Obtiene servicios asociados a una cámara desde rutas o relación legacy."""
+    """Servicios de una cámara: los de sus rutas, ordenados y sin repetir.
 
-    if rutas_info:
-        return sorted({str(ruta["servicio_id"]) for ruta in rutas_info if ruta.get("servicio_id")})
+    Sin `rutas_info`, los de las rutas de sus empalmes propios (`_collect_camara_rutas_info(camara)`)."""
 
-    servicios_ids: list[str] = []
-    for empalme in camara.empalmes:
-        for servicio in empalme.servicios:
-            if servicio.servicio_id and servicio.servicio_id not in servicios_ids:
-                servicios_ids.append(servicio.servicio_id)
-    return sorted(servicios_ids)
+    if rutas_info is None:
+        rutas_info = _collect_camara_rutas_info(camara)
+    return sorted({str(ruta["servicio_id"]) for ruta in rutas_info if ruta.get("servicio_id")})
 
 
 def normalizar_terminos(terminos: list[str]) -> list[str]:
@@ -152,14 +145,12 @@ def condicion_termino(termino: str, *, incluir_propios: bool = False) -> Any:
     en nombre, dirección, `fontine_id`, servicios, cables, estado u origen.
 
     Mismo criterio que el matching en Python que reemplaza: los servicios salen de las rutas de los
-    empalmes de la raíz y sus Botellas y, sólo si el grupo no tiene ninguna ruta, de la relación legacy
-    `servicio_empalme_association` de los empalmes propios; los cables son los de la raíz (origen o
-    destino). Estado y origen se resuelven en Python contra los valores del enum. `autoescape` neutraliza
+    empalmes de la raíz y sus Botellas; los cables son los de la raíz (origen o destino). Estado y origen se resuelven en Python contra los valores del enum. `autoescape` neutraliza
     `%` y `_` del término.
 
     `incluir_propios=True` (búsqueda que devuelve Botellas, `solo_raiz=False`): una Botella (fila con
-    `camara_padre_id`) también matchea por los servicios de sus empalmes PROPIOS (rutas y, si no tiene
-    rutas propias, legacy), que es lo que `_rutas_y_servicios` le muestra. Las raíces no cambian."""
+    `camara_padre_id`) también matchea por los servicios de las rutas de sus empalmes PROPIOS, que es lo
+    que `_rutas_y_servicios` le muestra. Las raíces no cambian."""
 
     termino_lower = termino.lower()
 
@@ -176,26 +167,12 @@ def condicion_termino(termino: str, *, incluir_propios: bool = False) -> Any:
         .join(grupo, grupo.id == Empalme.camara_id)
         .where(contiene(Servicio.servicio_id))
     )
-    grupo_r, raiz_r = _raiz_del_grupo()
-    grupos_con_rutas = (
-        select(raiz_r)
-        .select_from(ruta_empalme_association)
-        .join(Empalme, Empalme.id == ruta_empalme_association.c.empalme_id)
-        .join(grupo_r, grupo_r.id == Empalme.camara_id)
-    )
-    servicios_legacy = (
-        select(Empalme.camara_id)
-        .join(servicio_empalme_association, servicio_empalme_association.c.empalme_id == Empalme.id)
-        .join(Servicio, Servicio.id == servicio_empalme_association.c.servicio_id)
-        .where(contiene(Servicio.servicio_id))
-    )
 
     condiciones = [
         contiene(Camara.nombre),
         contiene(Camara.direccion),
         contiene(Camara.fontine_id),
         Camara.id.in_(servicios_por_ruta),
-        and_(Camara.id.in_(servicios_legacy), Camara.id.not_in(grupos_con_rutas)),
         Camara.id.in_(select(Cable.origen_camara_id).where(contiene(Cable.nombre))),
         Camara.id.in_(select(Cable.destino_camara_id).where(contiene(Cable.nombre))),
     ]
@@ -207,18 +184,7 @@ def condicion_termino(termino: str, *, incluir_propios: bool = False) -> Any:
             .join(Servicio, Servicio.id == RutaServicio.servicio_id)
             .where(contiene(Servicio.servicio_id))
         )
-        con_rutas_propias = select(Empalme.camara_id).join(
-            ruta_empalme_association, ruta_empalme_association.c.empalme_id == Empalme.id
-        )
-        condiciones.append(
-            and_(
-                Camara.camara_padre_id.is_not(None),
-                or_(
-                    Camara.id.in_(propios_por_ruta),
-                    and_(Camara.id.in_(servicios_legacy), Camara.id.not_in(con_rutas_propias)),
-                ),
-            )
-        )
+        condiciones.append(and_(Camara.camara_padre_id.is_not(None), Camara.id.in_(propios_por_ruta)))
     estados = [e for e in _CamaraEstado if termino_lower in e.value.lower()]
     if estados:
         condiciones.append(Camara.estado.in_(estados))

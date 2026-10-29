@@ -113,22 +113,15 @@ class IngresoTipo(str, Enum):
 # TABLAS ASOCIATIVAS (Many-to-Many)
 # =============================================================================
 
-# LEGACY, pero VIVA: el modelo nuevo es ruta_empalme_association (vía RutaServicio), aunque esta tabla
-# se sigue escribiendo y leyendo en paralelo (en dev, 2026-10-26: 2967 filas de 49 servicios).
-# - Escriben: core/services/infra_service.py (las altas/merges de tracking hacen
-#   `servicio.empalmes.append`), core/services/servicios_fusion_prov.py::aplicar_plan y
-#   scripts/servicios_fusionar_identidades_duplicadas.py (reasignan), y los borrados de
-#   api/app/routes/infra.py (limpiar asociaciones) y api/app/routes/servicios.py (placeholders).
-# - Leen: la búsqueda por servicio de api/app/routes/infra.py (`selectinload(Servicio.empalmes)`)
-#   y el chequeo de "placeholder tocado" de api/app/routes/servicios.py.
-# Para retirarla falta: pasar esas lecturas a RutaServicio.empalmes, dejar de escribirla en
-# infra_service, migrar las filas que no tengan ruta equivalente y recién ahí una migración que
-# la borre. Las nuevas implementaciones usan ruta_empalme_association.
+# RETIRADA (fase A, P22, 2026-10-29): ningún código la lee ni la escribe; la única fuente es
+# ruta_empalme_association (vía RutaServicio). Queda congelada como respaldo hasta la fase B (DROP TABLE
+# en otro deploy). Sus FK son ON DELETE CASCADE (migración 20261029_01) para que los borrados de
+# servicios y empalmes no tengan que limpiarla. Sin relaciones ORM: no agregar lecturas ni escrituras.
 servicio_empalme_association = Table(
     "servicio_empalme_association",
     Base.metadata,
-    Column("servicio_id", Integer, ForeignKey("app.servicios.id"), primary_key=True),
-    Column("empalme_id", Integer, ForeignKey("app.empalmes.id"), primary_key=True),
+    Column("servicio_id", Integer, ForeignKey("app.servicios.id", ondelete="CASCADE"), primary_key=True),
+    Column("empalme_id", Integer, ForeignKey("app.empalmes.id", ondelete="CASCADE"), primary_key=True),
     schema="app",
 )
 
@@ -191,7 +184,7 @@ class Camara(Base):
     )
 
     # Orden explícito por id (sin `order_by` dependía del plan de la consulta y difería entre la carga
-    # por lote y la individual). Aplica igual a `botellas` y a `Empalme.servicios`/`Empalme.rutas`.
+    # por lote y la individual). Aplica igual a `botellas` y a `Empalme.rutas`.
     empalmes = relationship(
         "Empalme", back_populates="camara", cascade="all, delete-orphan", order_by="Empalme.id"
     )
@@ -284,13 +277,6 @@ class Empalme(Base):
 
     camara = relationship("Camara", back_populates="empalmes")
     
-    # LEGACY: relación directa servicio<->empalme, todavía en uso (ver servicio_empalme_association)
-    servicios = relationship(
-        "Servicio",
-        secondary=servicio_empalme_association,
-        back_populates="empalmes",
-        order_by="Servicio.id",
-    )
     
     # Nueva relación: empalme pertenece a rutas
     rutas = relationship(
@@ -491,13 +477,6 @@ class Servicio(Base):
         order_by="RutaServicio.created_at",
     )
 
-    # LEGACY: relación directa servicio<->empalme, todavía en uso (ver servicio_empalme_association)
-    empalmes = relationship(
-        "Empalme",
-        secondary=servicio_empalme_association,
-        back_populates="servicios",
-        order_by="Empalme.id",
-    )
 
     historial_ids = relationship(
         "ServicioHistorialId",

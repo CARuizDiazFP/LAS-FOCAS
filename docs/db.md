@@ -156,10 +156,9 @@ de IDs + estado Baja/Activo).
 **Fusión de placeholders Cromo al liberar un `servicio_id` ya ocupado** (2026-08-26): como
 `servicio_id` es `UNIQUE`, el ID final calculado puede coincidir con el de OTRA fila ya existente —
 típicamente un placeholder `INFERIDO_CROMO` (ver abajo). Cuando esa fila es un placeholder puro
-(nunca tocado por tracking físico: sin filas en `rutas_servicio` ni en `servicio_empalme_association`
-colgadas), `ingest_servicios` reasigna sus referencias (`cromo_servicio_match.servicio_id`,
-`rutas_servicio.servicio_id`; `servicio_empalme_association` se borra, no se reasigna, por su PK
-compuesta `(servicio_id, empalme_id)`) y lo elimina, liberando el ID para la familia real — mismo
+(nunca tocado por tracking físico: sin filas en `rutas_servicio`), `ingest_servicios` reasigna sus
+referencias (`cromo_servicio_match.servicio_id`, `rutas_servicio.servicio_id`) y lo elimina (las filas
+de la tabla retirada `servicio_empalme_association` se van por su FK `ON DELETE CASCADE`), liberando el ID para la familia real — mismo
 patrón que el merge de Cámaras (`docs/decisiones.md`, entrada 2026-08-14). Si la fila en colisión NO
 es un placeholder puro (origen `MANUAL`/`INGEST_EXCEL`, o un placeholder ya usado por tracking) NO se
 fusiona automáticamente — la familia no pisa su `servicio_id`, pero el ID igual queda en `alias_ids`,
@@ -313,19 +312,28 @@ acepta el token `sin`). Nunca usar 6 como reemplazo.
 **Sin FK** entre `servicios.nombre_cliente` y `clientes`: el vínculo es por la clave calculada en Python
 (`normalizar_clave_cliente`) y la sync lo resuelve con una tabla temporal, en SQL set-based.
 
-### Tabla `servicio_empalme_association` (Legacy)
+### Tabla `servicio_empalme_association` (retirada, fase A)
 
-Tabla intermedia N-a-N entre `servicios` y `empalmes`. Es legacy pero **sigue viva**: el alta y los
-merges de tracking (`core/services/infra_service.py`) la escriben en paralelo a las rutas, y la leen la
-búsqueda por servicio de `api/app/routes/infra.py` y el chequeo de placeholders de
-`api/app/routes/servicios.py` (en dev, 2026-10-26: 2967 filas de 49 servicios). Qué falta para
-retirarla: ver el comentario sobre la tabla en `db/models/infra.py`.
-**Para nuevas implementaciones usar `rutas_servicio` + `ruta_empalme_association`.**
+Tabla intermedia N-a-N entre `servicios` y `empalmes`, del modelo anterior a las rutas. **Desde P22
+(2026-10-29, migración `20261029_01`) ningún código la lee ni la escribe**: la única fuente es
+`rutas_servicio` + `ruta_empalme_association`, y la verdad de una ruta es el tracking desde las ODF de los
+extremos (en segundo lugar, los pelos activos de Cromo con ID de servicio). Queda congelada como respaldo
+(dev: 2967 filas de 49 servicios; prod: 3204 de 55, medido el 2026-10-29) hasta la **fase B**, otra
+migración en otro deploy que hace `DROP TABLE`.
+
+- Sus dos FK son `ON DELETE CASCADE`: borrar un servicio (fusión PROV, placeholders) o un empalme
+  (cascada ORM de `Camara.empalmes`) ya no necesita limpiarla.
+- No tiene relaciones ORM (`Servicio.empalmes` y `Empalme.servicios` se quitaron).
+- Las filas sin equivalente en las rutas (13 del servicio 93153, iguales en dev y prod; restos del
+  re-tracking de la ruta 16 del 2026-01-27) **no se pasaron a rutas**, por decisión del usuario. Ningún
+  servicio tenía filas acá sin ninguna ruta.
+- Efecto visible: la columna `Servicios_Cat6` de la exportación de Cámaras sale de las rutas. En dev,
+  15 de 10.183 cámaras cambian: 11 pierden el 93153, 2 lo cambian de posición y 2 ganan el 83693.
 
 | Columna      | Tipo         | Descripción |
 |--------------|--------------|-------------|
-| `servicio_id`| FK → servicios (PK) | ID del servicio. |
-| `empalme_id` | FK → empalmes (PK)  | ID del empalme. |
+| `servicio_id`| FK → servicios (PK, `ON DELETE CASCADE`) | ID del servicio. |
+| `empalme_id` | FK → empalmes (PK, `ON DELETE CASCADE`)  | ID del empalme. |
 
 ---
 
@@ -642,7 +650,7 @@ por incidentes activos o ingresos abiertos.
 ### Servicios de sincronización
 
 - **Google Sheets** (`/sync/camaras`): `core/services/infra_sync.py` sincroniza desde la hoja "Camaras" configurada vía `INFRA_SHEET_ID`/`INFRA_SHEET_NAME`, actualizando `fontine_id`, coordenadas y estado.
-- **Tracking** (`/api/infra/upload_tracking`): procesa archivos TXT de tracking, crea servicios y registra empalmes. Desde 2026-08-23 **nunca crea una `Camara` nueva** — resuelve la ubicación con la búsqueda extendida Camara+CromoBotella (`core/services/cromo/camara_botella_busqueda.py`) y, si no matchea, registra un `IngresoSinMatch` (`origen="tracking"`) dejando `Empalme.camara_id=NULL`; ver `docs/infra.md`, sección "Ingresos sin match".
+- **Tracking** (`/api/infra/upload_tracking`): procesa archivos TXT de tracking con el flujo analyze/resolve (desde P22, 2026-10-29: crea la ruta `Principal` si el servicio no tiene rutas; si ya tiene y el archivo no es idéntico, 409). Desde 2026-08-23 **nunca crea una `Camara` nueva** — resuelve la ubicación con la búsqueda extendida Camara+CromoBotella (`core/services/cromo/camara_botella_busqueda.py`) y, si no matchea, registra un `IngresoSinMatch` (`origen="tracking"`) dejando `Empalme.camara_id=NULL`; ver `docs/infra.md`, sección "Ingresos sin match".
 
 ## Configuración de Servicios Automatizados
 
@@ -1559,6 +1567,7 @@ generarla (2026-10-26): 72 migraciones en una sola cadena lineal, raíz `2025100
 | `20261023_01` | `20261021_01` | 2026-10-23 | `20261023_01_ingresos_anulacion_y_mover.py` | Baja lógica de app.ingresos (anulado_at/por/motivo), origen del movimiento en app.ingresos_correcciones y fin de sus FKs (ids históricos) |
 | `20261027_01` | `20261023_01` | 2026-10-27 | `20261027_01_camaras_fontine_id_indice_duplicado.py` | Borra app.ix_camaras_fontine_id, índice UNIQUE duplicado exacto de la constraint camaras_fontine_id_key |
 | `20261027_02` | `20261027_01` | 2026-10-27 | `20261027_02_normalizar_esquema_cadena_vs_dev.py` | Normaliza (idempotente) las 9 diferencias entre una base creada desde la cadena de migraciones y la base de dev: 6 nombres de índice, un DEFAULT y 2 comentarios |
+| `20261029_01` | `20261027_02` | 2026-10-29 | `20261029_01_servicio_empalme_association_fk_cascade.py` | Fase A del retiro de app.servicio_empalme_association: sus dos FK pasan a ON DELETE CASCADE |
 <!-- tabla-migraciones:fin -->
 
 **Notas que no entran en la tabla** (leídas de cada migración):

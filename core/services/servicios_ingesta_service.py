@@ -266,12 +266,12 @@ def planear_fusiones(
         colision_por_servicio_id[fila.servicio_id] = fila
 
     # Placeholders candidatos a fusión: sólo los que NUNCA fueron tocados por tracking físico (sin
-    # filas en rutas_servicio ni en la tabla deprecada servicio_empalme_association) — el flag
-    # origen_datos=INFERIDO_CROMO por sí solo NO lo garantiza, porque
-    # core/services/infra_service.py::create_new reusa un Servicio ya existente (`if existing:
-    # servicio = existing`, puede ser un placeholder Cromo), le cuelga una RutaServicio y le hace
-    # `servicio.empalmes.append(...)`, todo SIN cambiarle origen_datos. Un hard delete no puede
-    # apoyarse en una medición puntual ("hoy son 0 en dev"), tiene que chequear el hecho.
+    # filas en rutas_servicio) — el flag origen_datos=INFERIDO_CROMO por sí solo NO lo garantiza,
+    # porque core/services/infra_service.py::create_new reusa un Servicio ya existente (`if existing:
+    # servicio = existing`, puede ser un placeholder Cromo) y le cuelga una RutaServicio, todo SIN
+    # cambiarle origen_datos. Un hard delete no puede apoyarse en una medición puntual ("hoy son 0 en
+    # dev"), tiene que chequear el hecho. La tabla legada servicio_empalme_association ya no cuenta
+    # (retirada en P22: las rutas son la única fuente; en dev y prod ningún servicio la tenía sin rutas).
     ids_placeholder_candidatos = [
         fila.id
         for fila in colision_por_servicio_id.values()
@@ -282,11 +282,7 @@ def planear_fusiones(
     if ids_placeholder_candidatos:
         tocados_stmt = text(
             """
-            SELECT DISTINCT servicio_id FROM (
-                SELECT servicio_id FROM app.rutas_servicio WHERE servicio_id = ANY(:ids)
-                UNION
-                SELECT servicio_id FROM app.servicio_empalme_association WHERE servicio_id = ANY(:ids)
-            ) t
+            SELECT DISTINCT servicio_id FROM app.rutas_servicio WHERE servicio_id = ANY(:ids)
             """
         )
         ids_con_rutas_o_empalmes = {
@@ -450,18 +446,7 @@ def aplicar_fusiones(session: Session, plan: PlanFusiones) -> None:
             text("UPDATE app.rutas_servicio SET servicio_id = :familia_id WHERE servicio_id = :placeholder_id"),
             {"familia_id": familia_id, "placeholder_id": placeholder_id},
         )
-        # Tercera tabla que referencia app.servicios sin ON DELETE CASCADE. Acá se BORRA en vez de
-        # reasignar, a propósito: su PK es compuesta `(servicio_id, empalme_id)` (verificado real),
-        # así que reasignar podría chocar contra esa PK si la familia real ya tuviera el mismo
-        # empalme_id que el placeholder. La tabla además está DEPRECATED ("mantener por
-        # retrocompatibilidad"; ver el comentario de servicio_empalme_association en db/models/infra.py), su
-        # reemplazo moderno es ruta_empalme_association vía RutaServicio, y en la práctica un
-        # placeholder puro nunca tiene filas acá (verificado 0 de 9054 en dev). Perder esta
-        # asociación deprecada de un placeholder que igual se está eliminando no tiene impacto.
-        session.execute(
-            text("DELETE FROM app.servicio_empalme_association WHERE servicio_id = :placeholder_id"),
-            {"placeholder_id": placeholder_id},
-        )
+        # `servicio_empalme_association` (retirada, P22) no se toca: su FK es ON DELETE CASCADE.
         session.execute(
             text("DELETE FROM app.servicios WHERE id = :placeholder_id"),
             {"placeholder_id": placeholder_id},

@@ -62,6 +62,7 @@ from core.services.tracking_operaciones import (
     ResultadoUploadTracking,
     TrackingOriginal,
     TrackingOriginalNoDisponible,
+    TrackingRequiereResolucion,
     TrackingSinServicioId,
     TrackingSinUbicaciones,
     decodificar_tracking,
@@ -413,10 +414,11 @@ async def _leer_tracking(file: UploadFile) -> str:
 async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadResponse:
     """Procesa un archivo de tracking de fibra óptica y puebla la base de datos.
 
-    Delega en `core.services.tracking_operaciones.procesar_tracking_legacy`: parsea el archivo,
-    crea o actualiza el servicio y registra cada empalme contra el inventario real (Cromo Red es la
-    fuente de verdad: una ubicación sin match no crea cámara, queda en `IngresoSinMatch` con
-    `origen="tracking"` y el empalme sin `camara_id`).
+    Delega en `core.services.tracking_operaciones.procesar_tracking_legacy`, que usa el flujo de
+    analyze/resolve: si el servicio no existe o no tiene rutas crea su ruta principal, si el archivo es
+    idéntico a una ruta no escribe nada y, si choca con rutas existentes, responde 409 para que se
+    resuelva por `/api/infra/trackings/analyze` + `resolve`. Cromo Red es la fuente de verdad: una
+    ubicación sin match no crea cámara, queda en `IngresoSinMatch` y el empalme sin `camara_id`.
 
     Args:
         file: Archivo .txt con el tracking de fibra óptica (máximo `MAX_TRACKING_MB`).
@@ -426,6 +428,7 @@ async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadRespons
 
     Raises:
         HTTPException 400: Si el archivo no tiene extensión .txt o no contiene datos válidos.
+        HTTPException 409: Si el tracking choca con rutas existentes del servicio.
         HTTPException 413: Si el archivo supera el tope.
         HTTPException 500: Si ocurre un error durante el procesamiento.
     """
@@ -455,6 +458,14 @@ async def upload_tracking(file: UploadFile = File(...)) -> TrackingUploadRespons
         raise HTTPException(
             status_code=400,
             detail="No se encontraron empalmes/ubicaciones en el archivo",
+        )
+    except TrackingRequiereResolucion as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"El servicio {exc.servicio_id} ya tiene rutas y el tracking no es idéntico ({exc.estado}): "
+                "resolvelo con /api/infra/trackings/analyze y /api/infra/trackings/resolve"
+            ),
         )
     except HTTPException:
         raise
@@ -811,8 +822,7 @@ async def delete_servicio_empalmes(servicio_id: str) -> Dict[str, Any]:
     """Elimina todas las asociaciones empalmes de un servicio.
 
     Esto permite "limpiar" un servicio para volver a asociarlo con nuevos empalmes.
-    Elimina tanto las asociaciones legacy (servicio_empalme_association) como
-    las rutas (rutas_servicio + ruta_empalme_association).
+    Elimina las rutas del servicio (rutas_servicio + ruta_empalme_association).
 
     ⚠️ PRECAUCIÓN: Esta operación es destructiva y no se puede deshacer.
 

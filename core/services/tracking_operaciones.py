@@ -23,12 +23,13 @@ from sqlalchemy.orm import Session, selectinload
 from core.parsers.tracking_parser import parse_tracking
 from core.services.infra_service import (
     AnalysisResult,
+    AnalysisStatus,
     ResolveAction,
     ResolveResult,
-    _get_or_create_empalme,
-    _resolve_camara_o_registrar_sin_match,
+    analyze_tracking_file,
+    resolve_tracking_file,
 )
-from db.models.infra import Camara, Empalme, RutaServicio, RutaTipo, Servicio
+from db.models.infra import RutaServicio, RutaTipo, Servicio
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,17 @@ class TrackingSinServicioId(ValueError):
 
 class TrackingSinUbicaciones(ValueError):
     """El archivo no tiene empalmes/ubicaciones."""
+
+
+class TrackingRequiereResolucion(ValueError):
+    """El tracking choca con rutas existentes del servicio (conflicto, posible upgrade o pelo nuevo).
+
+    El upload directo no decide: esos casos van por analyze/resolve."""
+
+    def __init__(self, servicio_id: str, estado: str) -> None:
+        super().__init__(f"{servicio_id}: {estado}")
+        self.servicio_id = servicio_id
+        self.estado = estado
 
 
 class TrackingOriginalNoDisponible(LookupError):
@@ -84,103 +96,57 @@ def decodificar_tracking(contenido: bytes) -> str:
 
 # --- Upload -----------------------------------------------------------------------------------------
 
-def _obtener_o_crear_servicio(session: Session, servicio_id: str, nombre_archivo: str) -> Servicio:
-    """Servicio existente (sólo pisa `nombre_archivo_origen` si cambió) o uno nuevo."""
-    servicio = session.query(Servicio).filter(Servicio.servicio_id == servicio_id).first()
-    if servicio:
-        if nombre_archivo and servicio.nombre_archivo_origen != nombre_archivo:
-            servicio.nombre_archivo_origen = nombre_archivo
-        return servicio
-
-    servicio = Servicio(servicio_id=servicio_id, nombre_archivo_origen=nombre_archivo)
-    session.add(servicio)
-    session.flush()
-    logger.info("action=crear_servicio servicio_id=%s nombre_archivo=%s", servicio_id, nombre_archivo)
-    return servicio
-
-
-def _registrar_empalme(
-    session: Session, servicio: Servicio, empalme_id: str, camara: Camara | None
-) -> tuple[Empalme, bool]:
-    """Registra el empalme y lo asocia al servicio; `camara` es `None` si la ubicación no matcheó.
-
-    `_get_or_create_empalme` nunca pisa con `None` un `camara_id` previo válido de una corrida
-    anterior cuando esta corrida no matchea.
-    """
-    tracking_id_completo = f"{servicio.servicio_id}_{empalme_id}"
-    empalme, es_nuevo = _get_or_create_empalme(session, tracking_id_completo, camara)
-    if servicio not in empalme.servicios:
-        empalme.servicios.append(servicio)
-    if es_nuevo:
-        logger.debug(
-            "action=registrar_empalme tracking_id=%s camara_id=%s servicio_id=%s",
-            tracking_id_completo,
-            empalme.camara_id,
-            servicio.servicio_id,
-        )
-    return empalme, es_nuevo
-
-
 def procesar_tracking_legacy(session: Session, raw_text: str, filename: str) -> ResultadoUploadTracking:
-    """Parsea el tracking, crea/actualiza el servicio y registra sus empalmes (commit al final).
+    """Upload directo de un tracking: lo resuelve con el flujo de analyze/resolve del panel.
 
-    Cromo Red es la fuente de verdad del inventario: nunca se crea una `Camara` nueva. Una ubicación
-    sin match queda como `IngresoSinMatch` (dentro de `_resolve_camara_o_registrar_sin_match`) y su
-    empalme sin `camara_id`: el procesamiento nunca se bloquea por eso.
+    Desde P22 (2026-10-29) el tracking termina siempre en una ruta (`ruta_empalme_association`); antes
+    asociaba los empalmes sólo por la tabla legada `servicio_empalme_association`, sin ruta.
+    - `NEW` (servicio inexistente o sin rutas): `CREATE_NEW`, que crea la ruta principal.
+    - `IDENTICAL`: no escribe nada (conteos en 0).
+    - Conflicto, posible upgrade o pelo nuevo: `TrackingRequiereResolucion`, sin escribir; esos casos
+      piden una decisión humana y van por `POST /api/infra/trackings/analyze` + `resolve`.
+
+    Cromo Red es la fuente de verdad del inventario: nunca se crea una `Camara` nueva (una ubicación sin
+    match queda como `IngresoSinMatch` y su empalme sin `camara_id`).
 
     Raises:
         TrackingSinServicioId: el nombre del archivo no trae ID de servicio (no escribe nada).
         TrackingSinUbicaciones: el archivo no trae empalmes/ubicaciones (no escribe nada).
+        TrackingRequiereResolucion: el tracking choca con rutas existentes (no escribe nada).
+        RuntimeError: el análisis o la creación fallaron (la creación ya hizo rollback).
     """
     result = parse_tracking(raw_text, filename)
     if not result.servicio_id:
         raise TrackingSinServicioId(filename)
-    topologia = result.get_topologia()
-    if not topologia:
+    if not result.get_topologia():
         raise TrackingSinUbicaciones(filename)
 
+    analisis = analyze_tracking_file(session, raw_text, filename)
+    if analisis.status == AnalysisStatus.IDENTICAL:
+        logger.info("action=upload_tracking servicio_id=%s status=IDENTICAL", result.servicio_id)
+        return ResultadoUploadTracking(result.servicio_id, 0, 0, 0)
+    if analisis.status == AnalysisStatus.ERROR:
+        raise RuntimeError(analisis.error or analisis.message)
+    if analisis.status != AnalysisStatus.NEW:
+        raise TrackingRequiereResolucion(result.servicio_id, analisis.status.value)
+
+    resuelto = resolve_tracking_file(session, ResolveAction.CREATE_NEW, raw_text, filename)
+    if not resuelto.success:
+        raise RuntimeError(resuelto.error or resuelto.message)
     logger.info(
-        "action=upload_tracking filename=%s servicio_id=%s empalmes=%d",
-        filename,
-        result.servicio_id,
-        len(topologia),
-    )
-    camaras_existentes = ubicaciones_sin_match = empalmes_registrados = 0
-    try:
-        servicio = _obtener_o_crear_servicio(session, result.servicio_id, filename)
-        servicio.raw_tracking_data = result.to_dict()
-
-        for empalme_id, ubicacion in topologia:
-            camara = _resolve_camara_o_registrar_sin_match(
-                session, ubicacion, filename=filename, servicio_id=result.servicio_id
-            )
-            if camara is not None:
-                camaras_existentes += 1
-            else:
-                ubicaciones_sin_match += 1
-            _, empalme_nuevo = _registrar_empalme(session, servicio, empalme_id, camara)
-            if empalme_nuevo:
-                empalmes_registrados += 1
-
-        session.commit()
-    except Exception:
-        session.rollback()
-        logger.exception("action=upload_tracking_error servicio_id=%s", result.servicio_id)
-        raise
-
-    logger.info(
-        "action=upload_tracking_complete servicio_id=%s camaras_existentes=%d "
+        "action=upload_tracking_complete servicio_id=%s ruta_id=%s camaras_existentes=%d "
         "ubicaciones_sin_match=%d empalmes=%d",
         result.servicio_id,
-        camaras_existentes,
-        ubicaciones_sin_match,
-        empalmes_registrados,
+        resuelto.ruta_id,
+        resuelto.camaras_existentes,
+        resuelto.ubicaciones_sin_match,
+        resuelto.empalmes_creados,
     )
     return ResultadoUploadTracking(
         servicio_id=result.servicio_id,
-        camaras_existentes=camaras_existentes,
-        ubicaciones_sin_match=ubicaciones_sin_match,
-        empalmes_registrados=empalmes_registrados,
+        camaras_existentes=resuelto.camaras_existentes,
+        ubicaciones_sin_match=resuelto.ubicaciones_sin_match,
+        empalmes_registrados=resuelto.empalmes_creados,
     )
 
 
@@ -333,37 +299,34 @@ def obtener_rutas_de_servicio(session: Session, identificador: str) -> dict[str,
 
 
 def limpiar_empalmes_de_servicio(session: Session, servicio_id: str) -> dict[str, Any] | None:
-    """Borra las asociaciones legacy y las rutas (con su cascada ORM) de un servicio; hace commit.
+    """Borra las rutas de un servicio (con su cascada ORM a `ruta_empalme_association`); hace commit.
 
     Los `Empalme` quedan vivos. Devuelve `None` si el servicio no existe (sin escribir).
     """
     servicio = (
         session.query(Servicio)
         .filter(Servicio.servicio_id == servicio_id)
-        .options(selectinload(Servicio.empalmes), selectinload(Servicio.rutas).selectinload(RutaServicio.empalmes))
+        .options(selectinload(Servicio.rutas).selectinload(RutaServicio.empalmes))
         .first()
     )
     if servicio is None:
         return None
 
-    legacy = len(servicio.empalmes)
     rutas = len(servicio.rutas)
     empalmes_rutas = sum(len(r.empalmes) for r in servicio.rutas)
 
-    servicio.empalmes = []
     for ruta in list(servicio.rutas):
         session.delete(ruta)
     session.commit()
 
     logger.info(
-        "action=delete_servicio_empalmes servicio_id=%s empalmes_legacy=%d rutas=%d empalmes_rutas=%d",
-        servicio_id, legacy, rutas, empalmes_rutas,
+        "action=delete_servicio_empalmes servicio_id=%s rutas=%d empalmes_rutas=%d",
+        servicio_id, rutas, empalmes_rutas,
     )
     return {
         "status": "ok",
         "servicio_id": servicio_id,
-        "message": f"Eliminadas {legacy} asociaciones legacy y {rutas} rutas",
-        "empalmes_legacy_eliminados": legacy,
+        "message": f"Eliminadas {empalmes_rutas} asociaciones y {rutas} rutas",
         "rutas_eliminadas": rutas,
         "empalmes_rutas_eliminados": empalmes_rutas,
     }

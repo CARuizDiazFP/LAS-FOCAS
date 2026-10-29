@@ -67,10 +67,11 @@ def test_filtro_servicio_usa_rutas():
     assert buscar_camaras_avanzada(_sesion([cam]), [flt_legacy], limit=10, offset=0).total == 0
 
 
-def test_servicio_cae_a_legacy_sin_rutas():
+def test_sin_rutas_no_cae_a_legacy():
+    """P22: sin rutas no hay servicios; la asociación legacy ya no se lee."""
     cam = _camara(1, "A", servicios_legacy=["SVC-LEGACY"])
     resultado = buscar_camaras_avanzada(_sesion([cam]), [], limit=10, offset=0)
-    assert resultado.camaras[0].servicios_ids == ["SVC-LEGACY"]
+    assert resultado.camaras[0].servicios_ids == []
 
 
 def test_paginacion_despues_de_filtrar():

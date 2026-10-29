@@ -150,6 +150,24 @@ def test_upload_tracking_sin_servicio_id_400_en_las_dos_apps(con_sesion):
     assert_forma(res_api.json(), {"detail": str})
 
 
+def test_upload_tracking_con_rutas_distintas_409_en_las_dos_apps(con_sesion, monkeypatch):
+    """P22: si el tracking choca con rutas existentes, el upload directo no decide y no escribe."""
+    from core.services import tracking_operaciones
+    from core.services.infra_service import AnalysisResult, AnalysisStatus
+
+    monkeypatch.setattr(
+        tracking_operaciones, "analyze_tracking_file",
+        lambda *_: AnalysisResult(status=AnalysisStatus.CONFLICT, servicio_id="111995"),
+    )
+    monkeypatch.setattr(tracking_operaciones, "resolve_tracking_file", lambda *_: pytest.fail("no debe resolver"))
+    archivo = {"file": ("FO 111995.txt", b"Empalme 1: Algun lugar", "text/plain")}
+    res_web = cliente_web(con_sesion).post("/api/infra/upload_tracking", files=archivo)
+    res_api = cliente_api().post("/api/infra/upload_tracking", files=archivo)
+    assert res_web.status_code == res_api.status_code == 409
+    assert "/api/infra/trackings/analyze" in res_web.json()["error"]
+    assert "/api/infra/trackings/analyze" in res_api.json()["detail"]
+
+
 def test_web_ban_create_ticket_65_caracteres_422(con_sesion):
     """D2: el panel aplica el mismo límite de la API (antes: 200 success:false 'Error inesperado')."""
     res = cliente_web(con_sesion).post(

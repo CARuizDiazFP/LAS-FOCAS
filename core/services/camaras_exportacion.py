@@ -76,9 +76,11 @@ def _tickets_por_servicio(session: Session) -> dict:
 
 
 def _servicios_de_camara(camara: Camara) -> list[str]:
+    """Servicios de las rutas de los empalmes propios, en el orden de los empalmes y sin repetir."""
     servicios: list[str] = []
     for empalme in camara.empalmes:
-        for srv in empalme.servicios:
+        for ruta in empalme.rutas:
+            srv = ruta.servicio
             if srv.servicio_id and srv.servicio_id not in servicios:
                 servicios.append(srv.servicio_id)
     return servicios
@@ -112,8 +114,11 @@ def filas_exportacion(
     session: Session, *, filter_status: str | None, servicio_id: str | None
 ) -> list[dict[str, object]]:
     """Filas de la exportación, ordenadas por nombre, con filtros opcionales de estado y servicio."""
-    # Empalmes y sus servicios por lote (`selectinload`), no una query lazy por cámara y por empalme.
-    query = session.query(Camara).options(selectinload(Camara.empalmes).selectinload(Empalme.servicios))
+    # Empalmes, sus rutas y el servicio de cada ruta por lote (`selectinload`), no una query lazy por
+    # cámara y por empalme.
+    query = session.query(Camara).options(
+        selectinload(Camara.empalmes).selectinload(Empalme.rutas).selectinload(RutaServicio.servicio)
+    )
     query = _filtrar_por_estado(query, filter_status)
     query = _filtrar_por_servicio(session, query, servicio_id)
     camaras = query.order_by(Camara.nombre).all()

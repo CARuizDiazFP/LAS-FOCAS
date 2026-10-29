@@ -2995,3 +2995,34 @@ su propia ventana de mantenimiento.
 - Reimplementaciones de `_normalizar` medidas (490 a 25.665 diferencias sobre el corpus): no se unifican.
 - Rutas de datos: defaults únicos y relativos al repo en `core/config.py` (`uploads_dir()`, `reports_dir()`,
   `templates_dir()`); `core/sla` pasa de `<repo>/tmp`/`<repo>/Reports` a `<repo>/data/...` (decisión del usuario).
+
+## 2026-10-29 — Retiro de `servicio_empalme_association`, fase A (P22)
+
+- Contexto: la tabla legada servicio↔empalme se seguía escribiendo y leyendo en paralelo a las rutas
+  (`rutas_servicio` + `ruta_empalme_association`). Dev: 2967 filas de 49 servicios; prod: 3204 de 55.
+- Criterio del usuario: la verdad de una ruta es el **tracking desde las ODF de los extremos**; en segundo
+  lugar, las rutas de los empalmes de pelos activos con ID de servicio (en la descripción o en el atributo
+  del pelo). Las rutas se muestran como principales, pero se pueden editar, porque Cromo muchas veces no
+  identifica los caminos redundantes. La tabla legada **no** es fuente.
+- Decisión: dos fases en dos deploys. La fase A (este frente) pasa las lecturas a las rutas, deja de escribir
+  la tabla, quita las relaciones ORM `Servicio.empalmes`/`Empalme.servicios` y pasa sus dos FK a
+  `ON DELETE CASCADE` (migración `20261029_01`, sin cambios de datos). La fase B (`DROP TABLE`) queda para
+  otro deploy, cuando la A esté verificada en prod.
+- Filas sin equivalente en las rutas: 13, todas del 93153 e iguales en dev y prod. Son restos del
+  re-tracking de su ruta 16 (2026-01-27): 11 de esas 13 cámaras ya no están en el camino actual. **Se
+  descartan** y no se pasan a rutas. Ningún servicio tenía filas legadas sin ninguna ruta (0 en dev y en
+  prod), así que no se pierde ningún camino.
+- Por qué la cascada: sin escrituras, las FK sin `ON DELETE` habrían hecho fallar el `DELETE` de servicios
+  (fusión PROV, placeholders de la ingesta) y el borrado de empalmes por la cascada ORM de `Camara.empalmes`.
+- `POST /api/infra/upload_tracking` (web y API) asociaba los empalmes sólo por la tabla legada, sin ruta
+  (0 llamadas en prod en 30 días, sin consumidor en el SPA). Decisión del usuario: se conserva la ruta y
+  delega en analyze/resolve. Con `NEW` crea la ruta `Principal`, con `IDENTICAL` no escribe nada y en los
+  demás casos responde 409.
+- `scripts/migrate_legacy_rutas.py` (creaba rutas a partir de la tabla legada) se borró, porque contradice
+  el criterio anterior.
+- Verificación en dev: la búsqueda por servicio (smart search raíz y con Botellas, listado) da resultados
+  idénticos en los 49 servicios. En el arnés `scripts/linea_base_busqueda_camaras.py`, las 60 consultas de
+  smart search son idénticas. Las 6 diferencias son de exportación y vienen de 15 de 10.183 cámaras en
+  `Servicios_Cat6`: 11 pierden el 93153 (los restos descartados), 2 lo cambian de posición (2661 y 2692)
+  y 2 ganan el 83693 (2705 y 27646: empalmes 2330/2331 de la ruta 49, que nunca se escribieron en la
+  tabla legada). `Ticket_Baneo` no cambia en ninguna.

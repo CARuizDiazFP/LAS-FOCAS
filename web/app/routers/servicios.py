@@ -32,6 +32,7 @@ from core.services.tracking_operaciones import (
     AccionResolveInvalida,
     RutaTipoInvalido,
     TrackingOriginalNoDisponible,
+    TrackingRequiereResolucion,
     TrackingSinServicioId,
     TrackingSinUbicaciones,
     buscar_servicio_por_identificador,
@@ -2113,7 +2114,8 @@ def upload_tracking_web(
     file: UploadFile = File(...),
     usuario: UsuarioSesion = Depends(usuario_sesion),
 ) -> JSONResponse:
-    """Procesa un archivo de tracking de fibra óptica."""
+    """Procesa un archivo de tracking: crea la ruta principal si el servicio no tiene rutas (ver
+    `procesar_tracking_legacy`); si choca con rutas existentes responde 409."""
 
     username, _ = usuario
 
@@ -2139,6 +2141,16 @@ def upload_tracking_web(
         return JSONResponse(
             {"error": "No se encontraron empalmes/ubicaciones en el archivo"},
             status_code=400
+        )
+    except TrackingRequiereResolucion as exc:
+        return JSONResponse(
+            {
+                "error": (
+                    f"El servicio {exc.servicio_id} ya tiene rutas y el tracking no es idéntico ({exc.estado}): "
+                    "resolvelo con /api/infra/trackings/analyze y /api/infra/trackings/resolve"
+                )
+            },
+            status_code=409,
         )
     except (HTTPException, ErrorDeDominio):
         raise
@@ -2291,14 +2303,11 @@ def delete_servicio_empalmes_web(
         if datos is None:
             return JSONResponse({"error": f"Servicio {servicio_id} no encontrado"}, status_code=404)
 
-        datos["message"] = (
-            f"Eliminadas {datos['empalmes_legacy_eliminados']} asociaciones y {datos['rutas_eliminadas']} rutas"
-        )
         logger.info(
             "action=delete_servicio_empalmes user=%s servicio_id=%s empalmes=%d rutas=%d",
             username,
             servicio_id,
-            datos["empalmes_legacy_eliminados"],
+            datos["empalmes_rutas_eliminados"],
             datos["rutas_eliminadas"],
         )
         return JSONResponse(datos)

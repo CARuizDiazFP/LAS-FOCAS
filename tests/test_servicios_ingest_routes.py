@@ -280,11 +280,8 @@ def test_ingest_fusiona_placeholder_cromo_puro_que_ocupa_el_servicio_id_final(cl
         ).scalar_one()
         assert match_servicio_id == familia.id
 
-        # `app.servicio_empalme_association` es la tercera tabla que referencia app.servicios sin
-        # ON DELETE CASCADE, y la fusión la limpia con un DELETE (no reasigna: PK compuesta + tabla
-        # DEPRECATED, ver el comentario en el endpoint). Este placeholder no tenía filas ahí — el caso
-        # común, 0 de 9054 en dev —, así que lo que cubre esta aserción es que el DELETE extra no
-        # rompe nada cuando no hay nada que borrar, y que no quedó ninguna fila colgada.
+        # `app.servicio_empalme_association` (retirada en P22) ya no se toca: su FK a app.servicios es
+        # ON DELETE CASCADE (migración 20261029_01), así que borrar el placeholder no deja filas colgadas.
         assert (
             session.execute(
                 text("SELECT COUNT(*) FROM app.servicio_empalme_association WHERE servicio_id = :id"),
@@ -399,10 +396,9 @@ def test_ingest_no_fusiona_placeholder_con_tracking_fisico_encima(client: TestCl
     `INFERIDO_CROMO` y sin divergir.
 
     `core/services/infra_service.py::create_new` reusa un Servicio existente (`if existing: servicio
-    = existing` — puede ser un placeholder Cromo), le cuelga una `RutaServicio` y le hace
-    `servicio.empalmes.append(...)`, todo SIN cambiarle `origen_datos`. Por eso el guard chequea el
-    HECHO (¿tiene filas en rutas_servicio / servicio_empalme_association?) y no sólo el flag: un hard
-    delete no puede apoyarse en que hoy sean 0 casos en dev.
+    = existing` — puede ser un placeholder Cromo) y le cuelga una `RutaServicio`, todo SIN cambiarle
+    `origen_datos`. Por eso el guard chequea el HECHO (¿tiene filas en rutas_servicio?) y no sólo el
+    flag: un hard delete no puede apoyarse en que hoy sean 0 casos en dev.
     """
     placeholder_id = _crear_placeholder_puro("900092")
     with SessionLocal() as session:
