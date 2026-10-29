@@ -219,7 +219,10 @@ la ruta en el router **y** el ítem en `AppShell.vue`.
   viewer pinta su propia caja de error), `scrollInfinito` (`false` si usa botón "Cargar más").
   **Trampa**: pasar siempre en `error` el error real, aunque `errorInline` sea `false`; con `error=""` la
   guarda de re-medición del sentinel se cumple tras un fallo y `cargar-mas` se emite en bucle (ServiciosView, P10).
-  Fuera del patrón queda `BotellasInventarioView` (paginación propia, pendiente).
+  Desde P24 (2026-10-29) no queda ningún viewer paginado fuera del patrón: `BotellasInventarioView` usa
+  **dos** `usePaginatedSearch` (inventario y huérfanas, cada uno con su error) y un solo `ViewerShell`
+  alimentado por la del modo activo (`activa = computed(...)`; en el template sus refs van con `.value`,
+  porque Vue sólo desenvuelve refs de primer nivel). Un viewer con modos así no comparte `error` entre listas.
 - **SSE de corridas**: `composables/useCorridaSse.ts` es el único cliente (reconexión con backoff, `?desde=`,
   eventos repetidos ignorados por id, cierre en `onBeforeUnmount`). No crear `EventSource` nuevos.
 - **Helpers de presentación** (etiquetas, íconos, mensajes de error) van en `src/utils/`; `api/` no
