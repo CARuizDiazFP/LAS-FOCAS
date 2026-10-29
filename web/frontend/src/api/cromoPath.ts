@@ -433,6 +433,7 @@ export interface ResumenInconsistenciasServicio {
   en_revision: number;
 }
 
+// ── Llamadas ──────────────────────────────────────────────────────────────
 
 /** Semillas de un Servicio. SQL local: no toca Cromo, así se puede pedir en la carga de la vista. */
 export async function listarPelosCamino(
