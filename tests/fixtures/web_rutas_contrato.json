@@ -778,6 +778,13 @@
   },
   {
     "tipo": "http",
+    "metodo": "GET",
+    "plantilla": "/api/infra/ban/{incidente_id}",
+    "muestra": "/api/infra/ban/muestra",
+    "endpoint": "get_ban_detail_web"
+  },
+  {
+    "tipo": "http",
     "metodo": "POST",
     "plantilla": "/api/infra/botellas/apropiar",
     "muestra": "/api/infra/botellas/apropiar",

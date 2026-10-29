@@ -343,6 +343,7 @@ Centralizado vía `core.logging.setup_logging`.
 - `POST /api/infra/ban/create` → Crear baneo. JSON body: `{ticket_asociado?, servicio_afectado_id, servicio_protegido_id, ruta_protegida_id?, motivo?, usuario_ejecutor?}`. Responde con `{success, incidente_id, camaras_baneadas, ...}`.
 - `POST /api/infra/ban/lift` → Levantar baneo. JSON body: `{incidente_id, motivo_cierre?, usuario_ejecutor?}`.
 - `GET /api/infra/ban/active` → Listado de baneos activos.
+- `GET /api/infra/ban/{incidente_id}` → Detalle del incidente con la plantilla guardada del aviso (`email_subject`, `email_body`) y `cantidad_camaras`; 404 si no existe (P24, 2026-10-29).
 - `POST /api/servicios/ingest` → proxy autenticado (admin + CSRF) hacia API interna para ingesta masiva de servicios SLA.
 - `GET /api/servicios/search` → proxy autenticado para búsqueda multipropósito con `limit/offset` (scroll infinito en `/servicios`).
 - `GET /api/servicios/detail?id=...` → proxy autenticado de detalle que resuelve el ID origen canónico para navegación histórica en `/servicios/ID/:idServicio`.
@@ -415,7 +416,7 @@ Cada tarjeta de incidente muestra:
 
 **Acción "📧 Dar Aviso"** — Abre un sub-modal con formulario de email enriquecido:
 - **Destinatarios persistidos**: los campos "Para" y "CC" se restauran automáticamente desde `localStorage` (`focas_baneo_to` / `focas_baneo_cc`). Se guardan al hacer clic en "Enviar Aviso" o "Descargar EML".
-- **Plantilla autocompletada**: el asunto se precarga como `[AVISO] BANEO de Camaras`; el cuerpo se genera con los datos del incidente (ticket, servicios, cámaras, fecha/hora, motivo) usando la plantilla estándar. La vista además intenta `GET /api/infra/ban/{id}` para usar la plantilla guardada en el incidente, pero el servicio `web` **no expone esa ruta** (existe sólo en `api/app/routes/infra.py`): la request cae en el catch-all del SPA, el `res.json()` falla y queda siempre la plantilla local.
+- **Plantilla autocompletada**: el asunto se precarga como `[AVISO] BANEO de Camaras`; el cuerpo se genera con los datos del incidente (ticket, servicios, cámaras, fecha/hora, motivo) usando la plantilla estándar. El modal no lee la plantilla guardada del incidente: desde P24 (2026-10-29) el panel expone `GET /api/infra/ban/{id}` con `email_subject`/`email_body`, pero el SPA todavía no la consume, y esos campos sólo los escribe el `download-eml` de la API.
 - El textarea del cuerpo es **editable** — el usuario puede modificar el texto antes de enviar.
 - Checkboxes: adjuntar resumen XLS y/o tracking TXT.
 - **Botón "📥 Descargar EML"**: genera y descarga un archivo `.eml` listo para abrir en el cliente de correo, llamando a `POST /api/infra/notify/download-eml` (multipart/form-data con `incident_id`, `recipients`, `subject`, `html_body`). También guarda los destinatarios en localStorage.

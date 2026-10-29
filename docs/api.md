@@ -2035,9 +2035,14 @@ Obtiene todos los incidentes de baneo activos.
 
 ### GET `/api/infra/ban/{incidente_id}`
 
-Obtiene el detalle de un incidente específico con las cámaras afectadas.
+Detalle de un incidente con la plantilla guardada del aviso y el conteo de cámaras. Desde P24
+(2026-10-29) el panel expone la misma ruta (con sesión) y las dos apps arman el cuerpo con
+`detalle_incidente_baneo()` de `core/services/baneo_aviso.py`.
 
-- **Respuesta 200:** Incluye datos del incidente y lista de cámaras afectadas.
+- **Respuesta 200:** `{id, ticket, servicio_afectado, servicio_protegido, email_subject, email_body,
+  cantidad_camaras}`. `email_subject`/`email_body` los guarda sólo `POST /api/infra/notify/download-eml`
+  de la API (el del panel no los persiste); son `null` si nunca se guardaron.
+- **404:** incidente inexistente (`detail` en la API, `error` en el panel).
 
 ### Notificación por correo de baneos
 

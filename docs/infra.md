@@ -1615,7 +1615,8 @@ Lista todos los incidentes de baneo activos con conteo de cámaras.
 ```
 
 ### GET /api/infra/ban/{incidente_id}
-Obtiene detalle de un incidente específico para componer el correo.
+Obtiene detalle de un incidente específico para componer el correo (plantilla guardada y conteo de cámaras).
+Existe en la API y, desde P24 (2026-10-29), también en el panel; ambas usan `detalle_incidente_baneo()`.
 
 ### POST /api/infra/ban/create
 Crea un nuevo baneo (Protocolo de Protección).

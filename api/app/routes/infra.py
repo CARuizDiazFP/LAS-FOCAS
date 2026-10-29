@@ -30,6 +30,7 @@ from core.services.baneo_operaciones import (
 from core.services.baneo_aviso import (
     EmailNotifyResultado,
     armar_eml_baneo,
+    detalle_incidente_baneo,
     enviar_aviso_baneo,
     estado_config_email,
     guardar_plantilla_aviso,
@@ -991,27 +992,10 @@ async def get_active_bans() -> Dict[str, Any]:
 @router.get("/api/infra/ban/{incidente_id}")
 async def get_ban_detail(incidente_id: int) -> Dict[str, Any]:
     """Obtiene el detalle de un incidente de baneo con datos de correo y conteo de cámaras."""
-    from core.services.protection_service import ProtectionService
 
     def _get_detail() -> Optional[Dict[str, Any]]:
         with SessionLocal() as session:
-            service = ProtectionService(session)
-            incidente = service.get_incidente_by_id(incidente_id)
-            if not incidente:
-                return None
-            camaras = service.get_camaras_for_servicio(
-                incidente.servicio_protegido_id,
-                incidente.ruta_protegida_id,
-            )
-            return {
-                "id": incidente.id,
-                "ticket": incidente.ticket_asociado,
-                "servicio_afectado": incidente.servicio_afectado_id,
-                "servicio_protegido": incidente.servicio_protegido_id,
-                "email_subject": incidente.email_subject,
-                "email_body": incidente.email_body,
-                "cantidad_camaras": len(camaras),
-            }
+            return detalle_incidente_baneo(session, incidente_id)
 
     try:
         result = await asyncio.to_thread(_get_detail)

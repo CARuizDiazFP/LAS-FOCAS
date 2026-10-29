@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from core.services.baneo_aviso import (
     armar_eml_baneo,
+    detalle_incidente_baneo,
     enviar_aviso_baneo,
     estado_config_email,
     parsear_destinatarios,
@@ -571,6 +572,25 @@ def lift_ban_web(
         raise
     except Exception as exc:
         return error_interno("lift_ban", exc, cuerpo={"success": False}, user=username)
+
+
+# Después de /ban/active y /ban/lift: un {incidente_id} declarado antes los capturaría (y daría 422).
+@router.get("/api/infra/ban/{incidente_id}")
+def get_ban_detail_web(incidente_id: int, usuario: UsuarioSesion = Depends(usuario_sesion)) -> JSONResponse:
+    """Detalle de un incidente de baneo con la plantilla guardada del aviso y el conteo de cámaras."""
+    username, _ = usuario
+    try:
+        from db.session import SessionLocal
+
+        with SessionLocal() as session:
+            detalle = detalle_incidente_baneo(session, incidente_id)
+    except (HTTPException, ErrorDeDominio):
+        raise
+    except Exception as exc:
+        return error_interno("get_ban_detail", exc, user=username, incidente_id=incidente_id)
+    if detalle is None:
+        raise NoEncontrado(f"Incidente {incidente_id} no encontrado")
+    return JSONResponse(detalle)
 
 
 # -----------------------------------------------------------------------------
