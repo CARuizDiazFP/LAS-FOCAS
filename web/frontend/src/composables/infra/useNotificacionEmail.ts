@@ -127,12 +127,14 @@ export function useNotificacionEmail(notificar: Notificar) {
     if (!avisoIncidente.value) return;
     saveAvisoDestinatarios();
     const toList = avisoForm.value.to.split(',').map(s => s.trim()).filter(Boolean);
+    // Cuerpo vacío → '' (no un div vacío): así el backend usa la plantilla por defecto del aviso.
+    const cuerpo = avisoForm.value.body.trim();
     try {
       const filename = await descargarEmlBaneo({
         incident_id: avisoIncidente.value.id,
         recipients: toList.join(', '),
         subject: avisoForm.value.subject.trim(),
-        html_body: textoPlanoAHtml(avisoForm.value.body.trim()),
+        html_body: cuerpo ? textoPlanoAHtml(cuerpo) : '',
         include_xls: avisoForm.value.include_xls,
         include_txt: avisoForm.value.include_txt,
       });
