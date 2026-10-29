@@ -45,9 +45,25 @@ comm -23 <(grep -oE '^[A-Z_][A-Z0-9_]*' .env.dev | sort -u) <(grep -oE '^[A-Z_][
 
 ```bash
 source .venv/bin/activate && LLM_PROVIDER=heuristic python -m pytest -q
+
+# ANTES del build: etiquetar el rollback. El build mueve `:latest` a la imagen nueva aunque prod siga
+# corriendo la vieja; sin este paso, la imagen que corre prod queda sin nombre para volver atrás.
+FECHA=$(date +%Y%m%d)
+for svc in api web nlp_intent office slack_baneo_worker botellas_recalculo_worker cromo_worker fo_monitor_worker; do
+  docker tag lasfocas-$svc:latest lasfocas-$svc:pre-deploy-$FECHA
+done
+
 docker compose -f deploy/compose.yml --env-file .env build \
   api web nlp_intent office slack_baneo_worker botellas_recalculo_worker cromo_worker fo_monitor_worker
 ```
+
+El etiquetado va **una sola vez por deploy**, antes del primer build. Si hay que volver a buildear
+(un test que falla, un fix integrado a `dev`), no se repite: el `:latest` ya es la imagen nueva sin
+verificar, y retaguearla pisaría el rollback. Verificar, por servicio, que el tag apunta a la imagen
+que corre prod (los dos comandos dan el mismo `sha256:`):
+`docker image inspect lasfocas-<svc>:pre-deploy-$FECHA --format '{{.Id}}'` y
+`docker inspect lasfocas-<svc> --format '{{.Image}}'`.
+La retención de esos tags sigue la sección "Rollback".
 
 Si un test falla, no se publica: el fix va por un worktree propio, se integra a `dev`, se vuelve a
 buildear y se verifica dentro de la imagen (`docker run --rm --entrypoint sh <img> -c 'grep ...'`).
@@ -311,9 +327,8 @@ de esos servicios; la retención sigue la sección "Rollback".
 ## Rollback
 
 - Imágenes: se conserva **sólo el último juego** (regla única en la skill `docker-cleanup` →
-  "Rollback de prod"). **Antes del build del paso 2** (que mueve `:latest` a la imagen nueva aunque
-  prod siga corriendo la vieja), etiquetar cada servicio que se va a reconstruir:
-  `docker tag lasfocas-<svc>:latest lasfocas-<svc>:pre-deploy-$(date +%Y%m%d)`. Volver
+  "Rollback de prod"). Los `:pre-deploy-<fecha>` se crean **en el paso 2, antes del build** (ver
+  ahí el comando y por qué no se repite en un segundo build). Volver
   atrás: `docker tag lasfocas-<svc>:pre-deploy-<fecha> lasfocas-<svc>:latest` y
   `up -d --no-deps --force-recreate` de esos servicios, desde el checkout de control.
 - Tras verificar el deploy (sección 6 y prueba del usuario), el juego anterior queda superado: los
