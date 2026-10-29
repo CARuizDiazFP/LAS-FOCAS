@@ -12,8 +12,7 @@ from fastapi.testclient import TestClient
 from api.app import oauth
 from api.app.main import app
 from core.services.cable_consultas import BufferDeCable, CableIdentificado, PeloEnBuffer, ServicioEnCable
-from db.session import get_async_db
-from tests.soporte_oauth import SesionFalsa, hacer_cliente, override_con, secreto_firma  # noqa: F401
+from tests.soporte_oauth import hacer_cliente, secreto_firma, sesion_falsa_instalada  # noqa: F401
 
 client = TestClient(app)
 MODULO = "api.app.routes.v1.cables"
@@ -22,12 +21,8 @@ CABLE = CableIdentificado(6605471, "F-MRT-001", "144", "Nodo Atento - Rack 1", "
 
 @pytest.fixture
 def sesion():
-    s = SesionFalsa(hacer_cliente("lf_cables", scopes=("cables:read",)), hacer_cliente())
-    app.dependency_overrides[get_async_db] = override_con(s)
-    try:
+    with sesion_falsa_instalada(app, hacer_cliente("lf_cables", scopes=("cables:read",)), hacer_cliente()) as s:
         yield s
-    finally:
-        app.dependency_overrides.pop(get_async_db, None)
 
 
 def _auth(client_id: str = "lf_cables", scopes=("cables:read",)) -> dict:

@@ -14,14 +14,12 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.soporte_login import connect_admin_ok, fake_async_session_local, login
 from tests.test_web_cromo_ingesta import (
     _AsyncSesionFake,
-    _connect_admin_ok,
     _CromoConfigFake,
-    _fake_async_session_local,
     _fake_httpx_async_client,
     _FakeCorrida,
-    _login,
 )
 from tests.test_web_rutas_contrato import muestra_de_ruta
 from web.app.dependencias import usuario_admin
@@ -221,9 +219,9 @@ def test_listener_get_500_con_ref(con_sesion, monkeypatch, caplog):
 
 def test_trigger_cromo_500_con_ref(monkeypatch, caplog):
     # CSRF inline sin excepción de tests y `csrf_token: str` obligatorio: hace falta login real.
-    monkeypatch.setattr(psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(psycopg, "connect", connect_admin_ok("admin"))
     cliente = _cliente()
-    csrf = _login(cliente, "admin", "admin")
+    csrf = login(cliente, "admin", "admin")
     monkeypatch.setattr(httpx, "AsyncClient", _AsyncClientRoto)
     res = cliente.post("/api/admin/ingesta/cromo/config/trigger", json={"csrf_token": csrf})
     _assert_ref(res, REF_INTERNO, 500, caplog, "cromo_scheduler_trigger", "user=admin")
@@ -258,9 +256,9 @@ def test_proxy_clientes_500_con_mensaje_fijo_y_ref(con_sesion, monkeypatch, capl
 
 
 def test_ingesta_camaras_500_con_mensaje_fijo_y_ref(monkeypatch, caplog):
-    monkeypatch.setattr(psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(psycopg, "connect", connect_admin_ok("admin"))
     cliente = _cliente()
-    csrf = _login(cliente, "admin", "admin")
+    csrf = login(cliente, "admin", "admin")
     monkeypatch.setattr(httpx, "AsyncClient", _AsyncClientRoto)
     res = cliente.post(
         "/api/admin/ingesta/camaras",
@@ -277,9 +275,9 @@ def test_cromo_no_configurado_503_sin_detalle(monkeypatch, caplog):
     def _config_rota():
         raise CromoConfigError(SECRETO)
 
-    monkeypatch.setattr(psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(psycopg, "connect", connect_admin_ok("admin"))
     cliente = _cliente()
-    csrf = _login(cliente, "admin", "admin")
+    csrf = login(cliente, "admin", "admin")
     monkeypatch.setattr(cromo_config, "get_cromo_config", _config_rota)
     res = cliente.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf})
     _assert_ref(res, _con_ref("Cromo no está configurado"), 503, caplog, "cromo_ingesta_iniciar", "user=admin")
@@ -293,15 +291,15 @@ def test_corrida_fallida_guarda_motivo_fijo_con_ref(monkeypatch, caplog):
     async def _iniciar_corrida_fake(sesion, *, usuario, psize, max_paginas, clases, params_extra=None):
         return _FakeCorrida(id=77, usuario=usuario)
 
-    monkeypatch.setattr(psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(psycopg, "connect", connect_admin_ok("admin"))
     cliente = _cliente()
-    csrf = _login(cliente, "admin", "admin")
+    csrf = login(cliente, "admin", "admin")
     monkeypatch.setattr(cromo_config, "get_cromo_config", lambda: _CromoConfigFake())
     monkeypatch.setattr(cromo_ingesta, "iniciar_corrida", _iniciar_corrida_fake)
     monkeypatch.setattr(httpx, "AsyncClient", _fake_httpx_async_client(excepcion=RuntimeError(SECRETO)))
     corrida = _FakeCorrida(id=77, estado="EN_CURSO")
     sesion = _AsyncSesionFake(corrida=corrida)
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     res = cliente.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf})
 

@@ -25,7 +25,8 @@ from core.services.ingreso_correccion_service import (
     registrar_egreso_web,
 )
 from db.models.infra import Camara, Ingreso, IngresoCorreccion, IngresoTipo
-from tests.test_web_ingest_camaras import _fake_session_local, _login
+from tests.soporte_login import login_con_rol
+from tests.test_web_ingest_camaras import _fake_session_local
 
 AHORA = datetime(2026, 9, 28, 15, 0, tzinfo=timezone.utc)
 INICIO = datetime(2026, 9, 10, 13, 21, tzinfo=timezone.utc)
@@ -194,7 +195,7 @@ def _cliente(monkeypatch, resultado: str | None = None) -> tuple[TestClient, lis
     monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
     monkeypatch.setattr("core.services.ingreso_correccion_service.registrar_egreso_web", _fake)
     client = TestClient(web_main.app)
-    _login(client, monkeypatch, role="user", password="userpass")
+    login_con_rol(client, monkeypatch, role="user", password="userpass")
     return client, llamadas
 
 

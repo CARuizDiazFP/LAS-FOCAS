@@ -39,7 +39,8 @@ from tests.test_web_infra_camera_state import (
     _ServicioIngresosSession,
     _SessionScope,
 )
-from tests.test_web_ingest_camaras import _fake_session_local, _login
+from tests.soporte_login import login_con_rol
+from tests.test_web_ingest_camaras import _fake_session_local
 
 REF = re.compile(r"^Error interno \(ref ([0-9a-f]{8})\)$")
 SECRETO = "secreto-interno-xyz"
@@ -300,7 +301,7 @@ def test_csrf_se_exige_fuera_de_testing(monkeypatch, url, cuerpo, funcion, ok):
     monkeypatch.setenv("TESTING", "false")
     llamadas = _instalar_servicio(monkeypatch, funcion, ok, ingreso=_ingreso())
     client = TestClient(_app())
-    csrf = _login(client, monkeypatch, role="admin", password="adminpass")
+    csrf = login_con_rol(client, monkeypatch, role="admin", password="adminpass")
 
     sin_token = client.post(url, json=cuerpo)
     token_falso = client.post(url, json={**cuerpo, "csrf_token": "token-falso"})

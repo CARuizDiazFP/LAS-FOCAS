@@ -6,61 +6,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import Optional
 from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient  # type: ignore
 
-from core.password import hash_password
+from tests.soporte_login import connect_admin_ok, fake_async_session_local, login
 from web.app.main import app
-
-
-class _Cur:
-    def __init__(self, row: Optional[tuple] = None) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params=None) -> None:
-        return None
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple) -> None:
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self) -> None:
-        return None
-
-
-def _connect_admin_ok(password: str = "adminpass"):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):
-        return _Conn((pwd_hash, "admin"))
-
-    return _connect
-
-
-def _login(client: TestClient, username: str, password: str) -> str:
-    res = client.post("/api/auth/login", json={"username": username, "password": password})
-    return res.json()["csrf"]
 
 
 class _FakeSyncSessionCtx:
@@ -85,23 +36,6 @@ def _fake_session_local(session: MagicMock):
     return _factory
 
 
-def _fake_async_session_local(sesion):
-    """Contexto `async with AsyncSessionLocal() as sesion:` fake — mismo patrón ya usado en
-    test_web_cromo_inventario.py y test_web_cromo_repoblar_cables.py."""
-
-    class _CM:
-        async def __aenter__(self):
-            return sesion
-
-        async def __aexit__(self, *a):
-            return False
-
-    def factory():
-        return _CM()
-
-    return factory
-
-
 def _spy_to_thread(llamadas: list):
     """Envoltorio discriminante para `asyncio.to_thread`: registra el callable recibido y delega en
     la implementación real, para probar que un cómputo pesado corre en un hilo aparte (no directo en
@@ -122,7 +56,7 @@ def test_viewer_duplicados_usa_cache_si_hay_hit(monkeypatch):
     from web.app import main as web_main
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
 
     grupo_cacheado = []  # lista vacía es un hit válido — distinto de None
 
@@ -141,7 +75,7 @@ def test_viewer_duplicados_usa_cache_si_hay_hit(monkeypatch):
     )
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.get("/api/admin/infra/botellas/viewer/duplicados")
     assert res.status_code == 200
     assert res.json()["grupos"] == []
@@ -152,7 +86,7 @@ def test_viewer_duplicados_cache_miss_cae_a_computo_sincrono(monkeypatch):
     from web.app import main as web_main
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
 
     async def _fake_leer_cache():
         return None
@@ -175,7 +109,7 @@ def test_viewer_duplicados_cache_miss_cae_a_computo_sincrono(monkeypatch):
     )
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.get("/api/admin/infra/botellas/viewer/duplicados")
     assert res.status_code == 200
     assert res.json()["grupos"] == []
@@ -190,7 +124,7 @@ def test_viewer_duplicados_refrescar_ignora_la_cache(monkeypatch):
     from web.app import main as web_main
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
 
     llamado = {"leer_cache": False, "detectar": False}
 
@@ -214,7 +148,7 @@ def test_viewer_duplicados_refrescar_ignora_la_cache(monkeypatch):
     )
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.get("/api/admin/infra/botellas/viewer/duplicados?refrescar=true")
     assert res.status_code == 200
     assert res.json()["grupos"] == []
@@ -228,7 +162,7 @@ def test_viewer_duplicados_refrescar_false_sigue_usando_la_cache(monkeypatch):
     from web.app import main as web_main
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
 
     llamado = {"leer_cache": False, "detectar": False}
 
@@ -246,7 +180,7 @@ def test_viewer_duplicados_refrescar_false_sigue_usando_la_cache(monkeypatch):
     )
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.get("/api/admin/infra/botellas/viewer/duplicados?refrescar=false")
     assert res.status_code == 200
     assert llamado["leer_cache"] is True
@@ -261,7 +195,7 @@ def test_viewer_duplicados_refrescar_computo_corre_en_hilo_separado(monkeypatch)
     from web.app import main as web_main
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
 
     hilos: dict[str, int] = {}
 
@@ -284,7 +218,7 @@ def test_viewer_duplicados_refrescar_computo_corre_en_hilo_separado(monkeypatch)
     )
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.get("/api/admin/infra/botellas/viewer/duplicados?refrescar=true")
 
     assert res.status_code == 200
@@ -302,7 +236,7 @@ def test_viewer_duplicados_incluye_sugerencia_placeholders_cuando_aplica(monkeyp
     from core.services.botella_duplicados_service import BotellaDuplicadaItem, GrupoBotellasDuplicadas
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
 
     grupo = GrupoBotellasDuplicadas(
         camara_padre_id=100,
@@ -329,7 +263,7 @@ def test_viewer_duplicados_incluye_sugerencia_placeholders_cuando_aplica(monkeyp
     )
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.get("/api/admin/infra/botellas/viewer/duplicados")
     assert res.status_code == 200
     sugerencia = res.json()["grupos"][0]["sugerencia_placeholders"]
@@ -345,7 +279,7 @@ def test_viewer_duplicados_sugerencia_placeholders_null_cuando_no_aplica(monkeyp
     from core.services.botella_duplicados_service import BotellaDuplicadaItem, GrupoBotellasDuplicadas
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
 
     grupo = GrupoBotellasDuplicadas(
         camara_padre_id=100,
@@ -371,7 +305,7 @@ def test_viewer_duplicados_sugerencia_placeholders_null_cuando_no_aplica(monkeyp
     )
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.get("/api/admin/infra/botellas/viewer/duplicados")
     assert res.status_code == 200
     assert res.json()["grupos"][0]["sugerencia_placeholders"] is None
@@ -395,9 +329,9 @@ def test_consolidar_rechaza_csrf_invalido(monkeypatch):
     # silenciosamente. Mismo workaround explícito ya usado en test_web_sla_flow.py/
     # test_web_infra_camera_state.py para este caso exacto.
     monkeypatch.setenv("TESTING", "false")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.post(
         "/api/infra/botellas/consolidar",
@@ -416,7 +350,7 @@ def test_consolidar_exitoso_encola_recalculo_duplicados(monkeypatch):
     from core.services.cromo.consolidacion_service import ResultadoConsolidacion
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
 
     resultado = ResultadoConsolidacion(id_destino_cromo=999)
@@ -433,7 +367,7 @@ def test_consolidar_exitoso_encola_recalculo_duplicados(monkeypatch):
     monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.post(
         "/api/infra/botellas/consolidar",
         json={"id_destino_cromo": 999, "ids_origen_cromo": [100], "csrf_token": "cualquiera"},
@@ -452,7 +386,7 @@ def test_consolidar_pasa_force_camera_association_al_servicio(monkeypatch):
     from core.services.cromo.consolidacion_service import ResultadoConsolidacion
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
 
     kwargs_recibidos: dict = {}
@@ -471,7 +405,7 @@ def test_consolidar_pasa_force_camera_association_al_servicio(monkeypatch):
     monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.post(
         "/api/infra/botellas/consolidar",
         json={
@@ -492,7 +426,7 @@ def test_consolidar_fallido_no_encola_recalculo_duplicados(monkeypatch):
     from core.services.cromo.consolidacion_service import ConsolidacionBotellaError
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
 
     def _fake_consolidar(session, **kwargs):
@@ -510,7 +444,7 @@ def test_consolidar_fallido_no_encola_recalculo_duplicados(monkeypatch):
     monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.post(
         "/api/infra/botellas/consolidar",
         json={"id_destino_cromo": 999, "ids_origen_cromo": [100], "csrf_token": "cualquiera"},
@@ -529,7 +463,7 @@ def test_apropiar_masivo_cache_miss_computo_corre_en_hilo_separado(monkeypatch):
     from web.app import main as web_main
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
 
     hilos: dict[str, int] = {}
 
@@ -551,7 +485,7 @@ def test_apropiar_masivo_cache_miss_computo_corre_en_hilo_separado(monkeypatch):
     )
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.post("/api/infra/botellas/apropiar-masivo", json={"csrf_token": "cualquiera"})
 
     assert res.status_code == 200
@@ -593,9 +527,9 @@ def test_exportar_inconsistencias_cache_miss_computo_corre_en_hilo_separado(monk
     from web.app import main as web_main
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     monkeypatch.setattr(
-        "db.session.AsyncSessionLocal", _fake_async_session_local(MagicMock())
+        "db.session.AsyncSessionLocal", fake_async_session_local(MagicMock())
     )
     monkeypatch.setattr(
         "core.services.cromo.orfanas_service.buscar_huerfanas",
@@ -622,7 +556,7 @@ def test_exportar_inconsistencias_cache_miss_computo_corre_en_hilo_separado(monk
     )
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.get("/api/admin/infra/botellas/inconsistencias/exportar")
 
     assert res.status_code == 200
@@ -652,9 +586,9 @@ def test_eliminar_botella_rechaza_csrf_invalido(monkeypatch):
     # Ver nota en test_consolidar_rechaza_csrf_invalido: algunos tests de Slack dejan
     # TESTING=true seteado a nivel de módulo sin revertirlo.
     monkeypatch.setenv("TESTING", "false")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.post(
         "/api/infra/botellas/eliminar",
@@ -671,7 +605,7 @@ def test_eliminar_botella_exitoso_encola_recalculo_duplicados(monkeypatch):
     from core.services.camara_botella_delete_service import ResultadoEliminacionBotella
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
 
     resultado = ResultadoEliminacionBotella(
@@ -690,7 +624,7 @@ def test_eliminar_botella_exitoso_encola_recalculo_duplicados(monkeypatch):
     monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.post(
         "/api/infra/botellas/eliminar",
         json={"origen": "cromo", "id": 100, "csrf_token": "cualquiera"},
@@ -708,7 +642,7 @@ def test_eliminar_botella_fallido_no_encola_recalculo_duplicados(monkeypatch):
     from core.services.camara_botella_delete_service import EliminacionBloqueadaError
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
 
     def _fake_eliminar(session, **kwargs):
@@ -726,7 +660,7 @@ def test_eliminar_botella_fallido_no_encola_recalculo_duplicados(monkeypatch):
     monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.post(
         "/api/infra/botellas/eliminar",
         json={"origen": "cromo", "id": 100, "csrf_token": "cualquiera"},
@@ -748,9 +682,9 @@ def test_eliminar_grupo_cromo_rechaza_csrf_invalido(monkeypatch):
     from web.app import main as web_main
 
     monkeypatch.setenv("TESTING", "false")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.post(
         "/api/infra/botellas/eliminar-grupo",
@@ -768,7 +702,7 @@ def test_eliminar_grupo_cromo_exitoso_encola_recalculo_duplicados(monkeypatch):
     from core.services.camara_botella_delete_service import ResultadoEliminacionGrupoCromo
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
 
     resultado = ResultadoEliminacionGrupoCromo(
@@ -792,7 +726,7 @@ def test_eliminar_grupo_cromo_exitoso_encola_recalculo_duplicados(monkeypatch):
     monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.post(
         "/api/infra/botellas/eliminar-grupo",
         json={"ids_cromo": [100, 200], "csrf_token": "cualquiera"},
@@ -815,7 +749,7 @@ def test_eliminar_grupo_cromo_fallido_no_encola_recalculo_duplicados(monkeypatch
     from core.services.camara_botella_delete_service import EliminacionBloqueadaError
 
     monkeypatch.setenv("TESTING", "true")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(MagicMock()))
 
     def _fake_eliminar_grupo(session, **kwargs):
@@ -833,7 +767,7 @@ def test_eliminar_grupo_cromo_fallido_no_encola_recalculo_duplicados(monkeypatch
     monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     res = client.post(
         "/api/infra/botellas/eliminar-grupo",
         json={"ids_cromo": [], "csrf_token": "cualquiera"},

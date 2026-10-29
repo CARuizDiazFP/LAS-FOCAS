@@ -4,60 +4,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
 
 from fastapi.testclient import TestClient  # type: ignore
 
-from core.password import hash_password
+from tests.soporte_login import connect_user_ok, login
 from web.app.main import app
-
-
-class _Cur:
-    def __init__(self, row: Optional[tuple] = None) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params=None) -> None:
-        return None
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple) -> None:
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self) -> None:
-        return None
-
-
-def _connect_user_ok(password: str = "userpass"):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):
-        return _Conn((pwd_hash, "user"))
-
-    return _connect
-
-
-def _login(client: TestClient, username: str, password: str) -> str:
-    res = client.post("/api/auth/login", json={"username": username, "password": password})
-    return res.json()["csrf"]
 
 
 def test_conectores_odf_requiere_autenticacion():
@@ -72,7 +23,7 @@ def test_conectores_odf_no_requiere_admin(monkeypatch):
     from web.app import main as web_main
     from core.services.cromo import odf_conectores as cromo_odf_conectores
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
 
     async def _conectores_de_odf_fake(sesion, odf_n_id):
         return cromo_odf_conectores.ResultadoConectoresOdf(
@@ -99,7 +50,7 @@ def test_conectores_odf_no_requiere_admin(monkeypatch):
     monkeypatch.setattr(cromo_odf_conectores, "conectores_de_odf", _conectores_de_odf_fake)
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/odfs/6642085/conectores")
     assert res.status_code == 200
@@ -120,7 +71,7 @@ def test_conectores_odf_no_encontrado_404(monkeypatch):
     from web.app import main as web_main
     from core.services.cromo import odf_conectores as cromo_odf_conectores
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
 
     async def _conectores_de_odf_fake(sesion, odf_n_id):
         raise cromo_odf_conectores.ObjetoNoEncontrado(f"No existe una ODF con n_id={odf_n_id}.")
@@ -128,7 +79,7 @@ def test_conectores_odf_no_encontrado_404(monkeypatch):
     monkeypatch.setattr(cromo_odf_conectores, "conectores_de_odf", _conectores_de_odf_fake)
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/odfs/999/conectores")
     assert res.status_code == 404

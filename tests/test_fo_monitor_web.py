@@ -25,7 +25,7 @@ def cliente(monkeypatch, tmp_path):
     app.add_exception_handler(ErrorDeDominio, manejar_error_de_dominio)
 
     @app.get("/_login/{rol}")
-    def _login(request: Request, rol: str):
+    def _ruta_login(request: Request, rol: str):
         request.session.update({"username": f"u-{rol}", "role": rol, "csrf": "tok"})
         return {"ok": True}
 

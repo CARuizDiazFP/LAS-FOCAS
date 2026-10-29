@@ -4,60 +4,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
 
 from fastapi.testclient import TestClient  # type: ignore
 
-from core.password import hash_password
+from tests.soporte_login import connect_user_ok, login
 from web.app.main import app
-
-
-class _Cur:
-    def __init__(self, row: Optional[tuple] = None) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params=None) -> None:
-        return None
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple) -> None:
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self) -> None:
-        return None
-
-
-def _connect_user_ok(password: str = "userpass"):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):
-        return _Conn((pwd_hash, "user"))
-
-    return _connect
-
-
-def _login(client: TestClient, username: str, password: str) -> str:
-    res = client.post("/api/auth/login", json={"username": username, "password": password})
-    return res.json()["csrf"]
 
 
 def test_detalle_cable_requiere_autenticacion():
@@ -72,7 +23,7 @@ def test_detalle_cable_no_requiere_admin(monkeypatch):
     from web.app import main as web_main
     from core.services.cromo import detalle as cromo_detalle
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
 
     async def _obtener_detalle_cable_fake(sesion, n_id):
         return cromo_detalle.DetalleCable(
@@ -102,7 +53,7 @@ def test_detalle_cable_no_requiere_admin(monkeypatch):
     monkeypatch.setattr(cromo_detalle, "obtener_detalle_cable", _obtener_detalle_cable_fake)
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/51/detalle")
     assert res.status_code == 200
@@ -119,7 +70,7 @@ def test_detalle_cable_no_encontrado_404(monkeypatch):
     from core.services.cromo import detalle as cromo_detalle
     from core.services.cromo.verificador import ObjetoNoEncontrado
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
 
     async def _obtener_detalle_cable_fake(sesion, n_id):
         raise ObjetoNoEncontrado(f"No existe un cable con n_id={n_id} en el inventario ingerido.")
@@ -127,7 +78,7 @@ def test_detalle_cable_no_encontrado_404(monkeypatch):
     monkeypatch.setattr(cromo_detalle, "obtener_detalle_cable", _obtener_detalle_cable_fake)
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/999/detalle")
     assert res.status_code == 404
@@ -142,7 +93,7 @@ def test_detalle_cable_serializa_tubos_pelos_y_distancia(monkeypatch):
     from core.services.cromo import detalle as cromo_detalle
     from core.services.cromo.verificador import ServicioEncontrado
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
 
     async def _obtener_detalle_cable_fake(sesion, n_id):
         pelo = cromo_detalle.PeloDetalle(
@@ -201,7 +152,7 @@ def test_detalle_cable_serializa_tubos_pelos_y_distancia(monkeypatch):
     monkeypatch.setattr(cromo_detalle, "obtener_detalle_cable", _obtener_detalle_cable_fake)
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/51/detalle")
     assert res.status_code == 200
@@ -226,7 +177,7 @@ def test_detalle_cable_serializa_tipo_servicio_linea_cliente_y_verificacion(monk
     from core.services.cromo import detalle as cromo_detalle
     from core.services.cromo.verificador import ServicioEncontrado
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
 
     fecha_status = datetime(2026, 8, 20, 10, 30, tzinfo=timezone.utc)
 
@@ -306,7 +257,7 @@ def test_detalle_cable_serializa_tipo_servicio_linea_cliente_y_verificacion(monk
     monkeypatch.setattr(cromo_detalle, "obtener_detalle_cable", _obtener_detalle_cable_fake)
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/51/detalle")
     assert res.status_code == 200
@@ -335,7 +286,7 @@ def test_detalle_cable_expone_en_cuarentena_por_pelo(monkeypatch):
     from web.app import main as web_main
     from core.services.cromo import detalle as cromo_detalle
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
 
     def _pelo(n_id: int, en_cuarentena: bool):
         return cromo_detalle.PeloDetalle(
@@ -360,7 +311,7 @@ def test_detalle_cable_expone_en_cuarentena_por_pelo(monkeypatch):
     monkeypatch.setattr(cromo_detalle, "obtener_detalle_cable", _obtener_detalle_cable_fake)
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/51/detalle")
     assert res.status_code == 200

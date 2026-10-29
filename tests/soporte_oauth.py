@@ -4,12 +4,14 @@
 
 from __future__ import annotations
 
-from typing import AsyncGenerator, Iterable, Optional
+from contextlib import contextmanager
+from typing import Any, AsyncGenerator, Iterable, Iterator, Optional
 
 import pytest
 
 from core.password import hash_password
 from db.models.api_clients import ApiClient
+from db.session import get_async_db
 
 SECRETO_TEST = "s3cr3to-de-test-para-firmar-jwt-de-al-menos-32-bytes"
 CLIENT_SECRET = "el-secreto-del-cliente-NOC"
@@ -70,3 +72,14 @@ def override_con(sesion: SesionFalsa):
         yield sesion
 
     return _dep
+
+
+@contextmanager
+def sesion_falsa_instalada(app: Any, *clientes: ApiClient) -> Iterator[SesionFalsa]:
+    """Instala una `SesionFalsa(*clientes)` como `get_async_db` de `app` y la quita al salir (aunque falle)."""
+    sesion = SesionFalsa(*clientes)
+    app.dependency_overrides[get_async_db] = override_con(sesion)
+    try:
+        yield sesion
+    finally:
+        app.dependency_overrides.pop(get_async_db, None)

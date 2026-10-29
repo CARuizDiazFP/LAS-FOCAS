@@ -7,6 +7,7 @@ from typing import Any, Optional
 import pytest
 from fastapi.testclient import TestClient  # type: ignore
 from core.password import hash_password
+from tests.soporte_login import login
 from web.app.main import app  # type: ignore
 
 
@@ -78,16 +79,11 @@ def _connect_user_ok(password: str = "userpass"):
     return _connect
 
 
-def _login(client: TestClient, username: str, password: str) -> str:
-    res = client.post("/api/auth/login", json={"username": username, "password": password})
-    return res.json()["csrf"]
-
-
 def test_admin_create_user(monkeypatch):
     from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
     # Crear usuario
     res = client.post("/api/admin/users", data={"username": "nuevo", "password": "x", "role": "ownergroup", "csrf_token": csrf})
     assert res.status_code == 200
@@ -98,7 +94,7 @@ def test_admin_create_user_forbidden_for_non_admin(monkeypatch):
     from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok("userpass"))
     client = TestClient(app)
-    csrf = _login(client, "user", "userpass")
+    csrf = login(client, "user", "userpass")
     res = client.post("/api/admin/users", data={"username": "nuevo", "password": "x", "csrf_token": csrf})
     assert res.status_code == 403
 
@@ -107,7 +103,7 @@ def test_change_password_happy_path(monkeypatch):
     from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok("oldpass"))
     client = TestClient(app)
-    csrf = _login(client, "user", "oldpass")
+    csrf = login(client, "user", "oldpass")
     res = client.post(
         "/api/users/change-password",
         data={"current_password": "oldpass", "new_password": "newpass", "csrf_token": csrf},
@@ -120,7 +116,7 @@ def test_admin_create_user_invalid_role(monkeypatch):
     from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
     res = client.post("/api/admin/users", data={"username": "bad", "password": "x", "role": "nope", "csrf_token": csrf})
     assert res.status_code == 400
 
@@ -129,7 +125,7 @@ def test_admin_create_user_guest_role(monkeypatch):
     from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
     res = client.post("/api/admin/users", data={"username": "guest", "password": "x", "role": "Invitado", "csrf_token": csrf})
     assert res.status_code == 200
     assert res.json()["status"] == "ok"
@@ -162,7 +158,7 @@ def test_servicios_baneos_update_recarga_worker(monkeypatch):
     monkeypatch.setattr(web_main.httpx, "AsyncClient", _AsyncClient)
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post(
         "/api/admin/servicios/baneos",
@@ -185,7 +181,7 @@ def test_servicios_baneos_update_rechaza_destino_invalido(monkeypatch):
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post(
         "/api/admin/servicios/baneos",
@@ -209,7 +205,7 @@ def test_admin_me_ok(monkeypatch):
     from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
-    _login(client, "admin", "admin")
+    login(client, "admin", "admin")
     res = client.get("/api/admin/me")
     assert res.status_code == 200
     data = res.json()
@@ -229,7 +225,7 @@ def test_admin_me_no_admin(monkeypatch):
     from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok("userpass"))
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
     res = client.get("/api/admin/me")
     assert res.status_code == 403
 
@@ -279,7 +275,7 @@ def test_admin_baneos_config_json(monkeypatch):
     from web.app import main as web_main
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     client = TestClient(app)
-    _login(client, "admin", "admin")
+    login(client, "admin", "admin")
     res = client.get("/api/admin/servicios/baneos/config")
     assert res.status_code == 200
     data = res.json()

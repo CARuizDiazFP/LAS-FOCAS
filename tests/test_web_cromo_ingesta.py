@@ -10,66 +10,13 @@ from typing import Any, Optional
 import pytest
 from fastapi.testclient import TestClient  # type: ignore
 
-from core.password import hash_password
+from tests.soporte_login import (
+    connect_admin_ok,
+    connect_user_ok,
+    fake_async_session_local,
+    login,
+)
 from web.app.main import app
-
-
-class _Cur:
-    def __init__(self, row: Optional[tuple] = None) -> None:
-        self._row = row
-        self.last_sql = ""
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params=None) -> None:
-        self.last_sql = sql
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple) -> None:
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self) -> None:
-        return None
-
-
-def _connect_admin_ok(password: str = "admin"):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):
-        return _Conn((pwd_hash, "admin"))
-
-    return _connect
-
-
-def _connect_user_ok(password: str = "userpass"):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):
-        return _Conn((pwd_hash, "user"))
-
-    return _connect
-
-
-def _login(client: TestClient, username: str, password: str) -> str:
-    res = client.post("/api/auth/login", json={"username": username, "password": password})
-    return res.json()["csrf"]
 
 
 class _CromoConfigFake:
@@ -132,20 +79,6 @@ class _AsyncSesionFake:
         self.agregados.append(obj)
 
 
-def _fake_async_session_local(sesion: _AsyncSesionFake):
-    class _CM:
-        async def __aenter__(self):
-            return sesion
-
-        async def __aexit__(self, *a):
-            return False
-
-    def factory():
-        return _CM()
-
-    return factory
-
-
 async def _background_noop(*args, **kwargs) -> None:
     return None
 
@@ -201,9 +134,9 @@ def _fake_httpx_async_client(respuesta: Optional[_RespHttpx] = None, capturar: O
 def test_iniciar_requiere_admin(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     client = TestClient(app)
-    csrf = _login(client, "user", "userpass")
+    csrf = login(client, "user", "userpass")
 
     res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf})
     assert res.status_code == 403
@@ -212,9 +145,9 @@ def test_iniciar_requiere_admin(monkeypatch):
 def test_iniciar_rechaza_csrf_invalido(monkeypatch, csrf_real):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     client = TestClient(app)
-    _login(client, "admin", "admin")
+    login(client, "admin", "admin")
 
     res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": "invalido"})
     assert res.status_code == 403
@@ -223,9 +156,9 @@ def test_iniciar_rechaza_csrf_invalido(monkeypatch, csrf_real):
 def test_iniciar_rechaza_psize_invalido(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf, "psize": 7})
     assert res.status_code == 400
@@ -236,9 +169,9 @@ def test_iniciar_rechaza_modo_invalido(monkeypatch):
     validarlo a mano contra `_MODOS_INGESTA_VALIDOS`, mismo criterio que ya usa para `psize`."""
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf, "modo": "TODO_MENOS_ODF"})
     assert res.status_code == 400
@@ -249,14 +182,14 @@ def test_iniciar_503_si_cromo_no_configurado(monkeypatch):
     from core.services.cromo import config as cromo_config
     from core.services.cromo.config import CromoConfigError
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
 
     def _config_rota():
         raise CromoConfigError("falta CROMO_BASE_URL")
 
     monkeypatch.setattr(cromo_config, "get_cromo_config", _config_rota)
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf})
     assert res.status_code == 503
@@ -268,7 +201,7 @@ def test_iniciar_happy_path_delega_al_worker_y_devuelve_corrida_id(monkeypatch):
     from core.services.cromo import config as cromo_config
     from core.services.cromo import ingesta as cromo_ingesta
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     monkeypatch.setattr(cromo_config, "get_cromo_config", lambda: _CromoConfigFake())
 
     async def _iniciar_corrida_fake(sesion, *, usuario, psize, max_paginas, clases, params_extra=None):
@@ -280,7 +213,7 @@ def test_iniciar_happy_path_delega_al_worker_y_devuelve_corrida_id(monkeypatch):
     monkeypatch.setattr(web_main.httpx, "AsyncClient", _fake_httpx_async_client(capturar=llamadas))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf, "psize": 10})
 
@@ -296,7 +229,7 @@ def test_iniciar_propaga_modo_solo_odf_como_params_extra(monkeypatch):
     from core.services.cromo import config as cromo_config
     from core.services.cromo import ingesta as cromo_ingesta
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     monkeypatch.setattr(cromo_config, "get_cromo_config", lambda: _CromoConfigFake())
 
     recibido: dict[str, Any] = {}
@@ -309,7 +242,7 @@ def test_iniciar_propaga_modo_solo_odf_como_params_extra(monkeypatch):
     monkeypatch.setattr(web_main.httpx, "AsyncClient", _fake_httpx_async_client(capturar=[]))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf, "modo": "SOLO_ODF"})
 
@@ -324,7 +257,7 @@ def test_iniciar_modo_completa_explicito_no_agrega_params_extra(monkeypatch):
     from core.services.cromo import config as cromo_config
     from core.services.cromo import ingesta as cromo_ingesta
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     monkeypatch.setattr(cromo_config, "get_cromo_config", lambda: _CromoConfigFake())
 
     recibido: dict[str, Any] = {}
@@ -337,7 +270,7 @@ def test_iniciar_modo_completa_explicito_no_agrega_params_extra(monkeypatch):
     monkeypatch.setattr(web_main.httpx, "AsyncClient", _fake_httpx_async_client(capturar=[]))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf, "modo": "COMPLETA"})
 
@@ -351,7 +284,7 @@ def test_iniciar_503_y_marca_fallida_si_worker_no_responde(monkeypatch):
     from core.services.cromo import config as cromo_config
     from core.services.cromo import ingesta as cromo_ingesta
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     monkeypatch.setattr(cromo_config, "get_cromo_config", lambda: _CromoConfigFake())
 
     async def _iniciar_corrida_fake(sesion, *, usuario, psize, max_paginas, clases, params_extra=None):
@@ -364,10 +297,10 @@ def test_iniciar_503_y_marca_fallida_si_worker_no_responde(monkeypatch):
 
     corrida = _FakeCorrida(id=77, estado="EN_CURSO")
     sesion = _AsyncSesionFake(corrida=corrida)
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf})
 
@@ -383,12 +316,12 @@ def test_iniciar_503_y_marca_fallida_si_worker_no_responde(monkeypatch):
 def test_cancelar_404_si_no_existe(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     sesion = _AsyncSesionFake(corrida=None)
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post("/api/admin/ingesta/cromo/corridas/1/cancelar", json={"csrf_token": csrf})
     assert res.status_code == 404
@@ -397,12 +330,12 @@ def test_cancelar_404_si_no_existe(monkeypatch):
 def test_cancelar_409_si_no_esta_en_curso(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     sesion = _AsyncSesionFake(corrida=_FakeCorrida(id=1, estado="OK"))
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post("/api/admin/ingesta/cromo/corridas/1/cancelar", json={"csrf_token": csrf})
     assert res.status_code == 409
@@ -411,13 +344,13 @@ def test_cancelar_409_si_no_esta_en_curso(monkeypatch):
 def test_cancelar_happy_path(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     corrida = _FakeCorrida(id=1, estado="EN_CURSO")
     sesion = _AsyncSesionFake(corrida=corrida)
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post("/api/admin/ingesta/cromo/corridas/1/cancelar", json={"csrf_token": csrf})
     assert res.status_code == 200
@@ -431,12 +364,12 @@ def test_cancelar_happy_path(monkeypatch):
 def test_detalle_404_si_no_existe(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     sesion = _AsyncSesionFake(corrida=None)
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "admin", "admin")
+    login(client, "admin", "admin")
 
     res = client.get("/api/admin/ingesta/cromo/corridas/1")
     assert res.status_code == 404
@@ -445,14 +378,14 @@ def test_detalle_404_si_no_existe(monkeypatch):
 def test_detalle_happy_path(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     corrida = _FakeCorrida(id=1, estado="OK", leidas=10)
     eventos = [(5, 100, 68, "CREADA", None, datetime.now(timezone.utc))]
     sesion = _AsyncSesionFake(corrida=corrida, filas_execute=eventos)
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "admin", "admin")
+    login(client, "admin", "admin")
 
     res = client.get("/api/admin/ingesta/cromo/corridas/1")
     assert res.status_code == 200
@@ -466,13 +399,13 @@ def test_detalle_happy_path(monkeypatch):
 def test_historico_happy_path(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     corridas = [_FakeCorrida(id=2), _FakeCorrida(id=1)]
     sesion = _AsyncSesionFake(filas_execute=corridas, escalar=2)
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "admin", "admin")
+    login(client, "admin", "admin")
 
     res = client.get("/api/admin/ingesta/cromo/corridas")
     assert res.status_code == 200
@@ -493,7 +426,7 @@ def test_stream_requiere_auth():
 def test_stream_corta_apenas_la_corrida_no_esta_en_curso(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     # Sin eventos nuevos y estado != EN_CURSO: el generador debe terminar en la primera vuelta.
     sesion = _AsyncSesionFake(filas_execute=[], escalar=("OK",))
 
@@ -504,10 +437,10 @@ def test_stream_corta_apenas_la_corrida_no_esta_en_curso(monkeypatch):
         return _ResultadoFake(filas=[])
 
     sesion.execute = execute_dispatch
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "admin", "admin")
+    login(client, "admin", "admin")
 
     with client.stream("GET", "/api/admin/ingesta/cromo/corridas/1/stream") as res:
         assert res.status_code == 200
@@ -535,12 +468,12 @@ class _FakeCromoConfigRow:
 def test_config_obtener_404_si_no_existe(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     sesion = _AsyncSesionFake(corrida=None)
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "admin", "admin")
+    login(client, "admin", "admin")
     res = client.get("/api/admin/ingesta/cromo/config")
     assert res.status_code == 404
 
@@ -548,16 +481,16 @@ def test_config_obtener_404_si_no_existe(monkeypatch):
 def test_config_obtener_happy_path(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
 
     class _Sesion(_AsyncSesionFake):
         async def get(self, modelo_cls, pk):
             return _FakeCromoConfigRow(habilitado=True, intervalo_horas=12)
 
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_Sesion()))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_Sesion()))
 
     client = TestClient(app)
-    _login(client, "admin", "admin")
+    login(client, "admin", "admin")
     res = client.get("/api/admin/ingesta/cromo/config")
 
     assert res.status_code == 200
@@ -569,9 +502,9 @@ def test_config_obtener_happy_path(monkeypatch):
 def test_config_guardar_requiere_admin(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     client = TestClient(app)
-    csrf = _login(client, "user", "userpass")
+    csrf = login(client, "user", "userpass")
 
     res = client.post(
         "/api/admin/ingesta/cromo/config",
@@ -583,9 +516,9 @@ def test_config_guardar_requiere_admin(monkeypatch):
 def test_config_guardar_rechaza_psize_invalido(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post(
         "/api/admin/ingesta/cromo/config",
@@ -597,9 +530,9 @@ def test_config_guardar_rechaza_psize_invalido(monkeypatch):
 def test_config_guardar_rechaza_clases_vacias(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post(
         "/api/admin/ingesta/cromo/config",
@@ -611,19 +544,19 @@ def test_config_guardar_rechaza_clases_vacias(monkeypatch):
 def test_config_guardar_happy_path_actualiza_y_pide_reload(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     fila = _FakeCromoConfigRow()
 
     class _Sesion(_AsyncSesionFake):
         async def get(self, modelo_cls, pk):
             return fila
 
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_Sesion()))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_Sesion()))
     llamadas: list = []
     monkeypatch.setattr(web_main.httpx, "AsyncClient", _fake_httpx_async_client(capturar=llamadas))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post(
         "/api/admin/ingesta/cromo/config",
@@ -644,13 +577,13 @@ def test_config_health_offline_si_worker_no_responde(monkeypatch):
     from web.app import main as web_main
     import httpx as httpx_module
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     monkeypatch.setattr(
         web_main.httpx, "AsyncClient", _fake_httpx_async_client(excepcion=httpx_module.ConnectError("caído"))
     )
 
     client = TestClient(app)
-    _login(client, "admin", "admin")
+    login(client, "admin", "admin")
     res = client.get("/api/admin/ingesta/cromo/config/health")
 
     assert res.status_code == 503
@@ -660,7 +593,7 @@ def test_config_health_offline_si_worker_no_responde(monkeypatch):
 def test_config_trigger_proxea_al_worker(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     monkeypatch.setattr(
         web_main.httpx,
         "AsyncClient",
@@ -668,7 +601,7 @@ def test_config_trigger_proxea_al_worker(monkeypatch):
     )
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
     res = client.post("/api/admin/ingesta/cromo/config/trigger", json={"csrf_token": csrf})
 
     assert res.status_code == 202
@@ -698,7 +631,7 @@ def test_iniciar_acepta_los_modos_de_la_red_pon(monkeypatch, modo):
     from core.services.cromo import config as cromo_config
     from core.services.cromo import ingesta as cromo_ingesta
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     monkeypatch.setattr(cromo_config, "get_cromo_config", lambda: _CromoConfigFake())
 
     recibido: dict[str, Any] = {}
@@ -711,7 +644,7 @@ def test_iniciar_acepta_los_modos_de_la_red_pon(monkeypatch, modo):
     monkeypatch.setattr(web_main.httpx, "AsyncClient", _fake_httpx_async_client(capturar=[]))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.post("/api/admin/ingesta/cromo", json={"csrf_token": csrf, "modo": modo})
 
@@ -724,7 +657,7 @@ def test_stream_reanuda_desde_el_ultimo_evento_visto(monkeypatch):
     `error` de negocio que antes disparaban un bucle de reconexión)."""
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok("admin"))
     sesion = _AsyncSesionFake(filas_execute=[], escalar=("OK",))
     vistos: list = []
 
@@ -736,9 +669,9 @@ def test_stream_reanuda_desde_el_ultimo_evento_visto(monkeypatch):
         return _ResultadoFake(filas=[])
 
     sesion.execute = execute_dispatch
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     client = TestClient(app)
-    _login(client, "admin", "admin")
+    login(client, "admin", "admin")
 
     with client.stream("GET", "/api/admin/ingesta/cromo/corridas/1/stream?desde=42") as res:
         b"".join(res.iter_bytes())

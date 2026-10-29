@@ -13,8 +13,7 @@ from fastapi.testclient import TestClient
 from api.app import oauth
 from api.app.main import app
 from core.services.servicio_traza import ResultadoTraza, ServicioResuelto
-from db.session import get_async_db
-from tests.soporte_oauth import SesionFalsa, hacer_cliente, override_con, secreto_firma  # noqa: F401
+from tests.soporte_oauth import SesionFalsa, hacer_cliente, secreto_firma, sesion_falsa_instalada  # noqa: F401
 
 client = TestClient(app)
 MODULO = "api.app.routes.v1.servicios"
@@ -35,16 +34,13 @@ BOTELLAS = ResultadoTraza(
 
 @pytest.fixture
 def sesion():
-    s = SesionFalsa(
+    with sesion_falsa_instalada(
+        app,
         hacer_cliente(),
         hacer_cliente("lf_sin_scope", scopes=()),
         hacer_cliente("lf_revocado", activo=False),
-    )
-    app.dependency_overrides[get_async_db] = override_con(s)
-    try:
+    ) as s:
         yield s
-    finally:
-        app.dependency_overrides.pop(get_async_db, None)
 
 
 def _auth(client_id: str = "lf_noc", scopes=("servicios:read",), **kw) -> dict:

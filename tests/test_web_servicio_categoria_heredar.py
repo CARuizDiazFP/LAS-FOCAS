@@ -9,46 +9,13 @@ from typing import Optional
 from fastapi.testclient import TestClient  # type: ignore
 
 from core.password import hash_password
+from tests.soporte_login import ConexionFila, login
 from web.app.main import app
-
-
-class _Cur:
-    def __init__(self, row: tuple) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def execute(self, sql: str, params=None) -> None:
-        return None
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def cursor(self):
-        return _Cur(self._row)
-
-    def commit(self) -> None:
-        return None
 
 
 def _connect_con_rol(rol: str, password: str):
     pwd_hash = hash_password(password)
-    return lambda dsn: _Conn((pwd_hash, rol))
+    return lambda dsn: ConexionFila((pwd_hash, rol))
 
 
 class _Resp:
@@ -83,10 +50,6 @@ def _fake_async_client(capturar: list, respuesta=None):
     return _AsyncClient
 
 
-def _login(client: TestClient, username: str, password: str) -> str:
-    return client.post("/api/auth/login", json={"username": username, "password": password}).json()["csrf"]
-
-
 def test_heredar_proxya_al_endpoint_interno(monkeypatch) -> None:
     from web.app import main as web_main
 
@@ -94,7 +57,7 @@ def test_heredar_proxya_al_endpoint_interno(monkeypatch) -> None:
     llamadas: list = []
     monkeypatch.setattr("web.app.routers.servicios.cliente_api_interna", _fake_async_client(llamadas))
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.patch("/api/servicios/7/categoria/heredar", json={"csrf_token": csrf})
 
@@ -111,7 +74,7 @@ def test_heredar_pasa_el_409_sin_cliente_tal_cual(monkeypatch) -> None:
     llamadas: list = []
     monkeypatch.setattr("web.app.routers.servicios.cliente_api_interna", _fake_async_client(llamadas, _Resp409()))
     client = TestClient(app)
-    csrf = _login(client, "admin", "admin")
+    csrf = login(client, "admin", "admin")
 
     res = client.patch("/api/servicios/7/categoria/heredar", json={"csrf_token": csrf})
 
@@ -127,7 +90,7 @@ def test_heredar_rechaza_csrf_invalido(monkeypatch) -> None:
     llamadas: list = []
     monkeypatch.setattr("web.app.routers.servicios.cliente_api_interna", _fake_async_client(llamadas))
     client = TestClient(app)
-    _login(client, "admin", "admin")
+    login(client, "admin", "admin")
 
     res = client.patch("/api/servicios/7/categoria/heredar", json={"csrf_token": "invalido"})
 
@@ -140,7 +103,7 @@ def test_heredar_requiere_admin(monkeypatch) -> None:
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_con_rol("user", "userpass"))
     client = TestClient(app)
-    csrf = _login(client, "user", "userpass")
+    csrf = login(client, "user", "userpass")
 
     res = client.patch("/api/servicios/7/categoria/heredar", json={"csrf_token": csrf})
 

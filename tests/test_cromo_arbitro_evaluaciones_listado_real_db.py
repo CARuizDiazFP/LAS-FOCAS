@@ -14,27 +14,17 @@ from sqlalchemy.pool import NullPool
 
 from core.services.cromo.arbitro import evaluaciones
 from db.session import async_engine
-from tests.soporte_postgres_real import requiere_postgres_real
+from tests.soporte_postgres_real import requiere_postgres_real, sesion_async_revertida
 
 pytestmark = requiere_postgres_real
 
 
 @pytest_asyncio.fixture
 async def sesion():
-    engine = create_async_engine(
-        async_engine.url.render_as_string(hide_password=False), poolclass=NullPool
-    )
-    async with engine.connect() as conn:
-        trans = await conn.begin()
-        try:
-            s = AsyncSession(bind=conn, join_transaction_mode="create_savepoint", expire_on_commit=False)
-            # Aísla el test de filas reales de la DB dev: todo dentro de la transacción revertida.
-            await s.execute(text("DELETE FROM app.cromo_arbitro_evaluacion"))
-            yield s
-            await s.close()
-        finally:
-            await trans.rollback()
-    await engine.dispose()
+    async with sesion_async_revertida() as s:
+        # Aísla el test de filas reales de la DB dev: todo dentro de la transacción revertida.
+        await s.execute(text("DELETE FROM app.cromo_arbitro_evaluacion"))
+        yield s
 
 
 async def _insertar(sesion, estado: str, horas: int, disparo: str = "NORMALIZADOR") -> int:

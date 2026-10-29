@@ -8,56 +8,8 @@ from typing import Any, Optional
 
 from fastapi.testclient import TestClient  # type: ignore
 
-from core.password import hash_password
+from tests.soporte_login import connect_user_ok, fake_async_session_local, login
 from web.app.main import app
-
-
-class _Cur:
-    def __init__(self, row: Optional[tuple] = None) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params=None) -> None:
-        return None
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple) -> None:
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self) -> None:
-        return None
-
-
-def _connect_user_ok(password: str = "userpass"):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):
-        return _Conn((pwd_hash, "user"))
-
-    return _connect
-
-
-def _login(client: TestClient, username: str, password: str) -> str:
-    res = client.post("/api/auth/login", json={"username": username, "password": password})
-    return res.json()["csrf"]
 
 
 class _ResultadoFake:
@@ -83,20 +35,6 @@ class _SesionFake:
         return _ResultadoFake(filas=self._filas)
 
 
-def _fake_async_session_local(sesion: _SesionFake):
-    class _CM:
-        async def __aenter__(self):
-            return sesion
-
-        async def __aexit__(self, *a):
-            return False
-
-    def factory():
-        return _CM()
-
-    return factory
-
-
 _FILA_CABLE = (
     51, "Cable Troncal 1", "72-BRUG", 72, "Troncal", "SBASE", "Botella A", "Botella B", True, 3,
 )
@@ -112,12 +50,12 @@ def test_inventario_cables_no_requiere_admin(monkeypatch):
     """Consulta de sólo lectura, mismo criterio que el verificador — alcanza con estar autenticado."""
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     sesion = _SesionFake(total=1, filas=[_FILA_CABLE])
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables")
     assert res.status_code == 200
@@ -131,11 +69,11 @@ def test_inventario_cables_no_requiere_admin(monkeypatch):
 def test_inventario_cables_sin_resultados(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake(total=0, filas=[])))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake(total=0, filas=[])))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables?q=no-existe")
     assert res.status_code == 200
@@ -147,12 +85,12 @@ def test_inventario_cables_sin_resultados(monkeypatch):
 def test_inventario_cables_limit_acotado_a_200(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     sesion = _SesionFake(total=0, filas=[])
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables?limit=9999")
     assert res.status_code == 200
@@ -163,8 +101,8 @@ def test_inventario_cables_query_params_pasan_a_buscar_cables(monkeypatch):
     from web.app import main as web_main
     from core.services.cromo import inventario as cromo_inventario
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
 
     llamada = {}
 
@@ -175,7 +113,7 @@ def test_inventario_cables_query_params_pasan_a_buscar_cables(monkeypatch):
     monkeypatch.setattr(cromo_inventario, "buscar_cables", _buscar_cables_fake)
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get(
         "/api/infra/cromo/cables"

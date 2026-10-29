@@ -4,70 +4,17 @@
 
 from __future__ import annotations
 
-from typing import Optional
 
 from fastapi.testclient import TestClient  # type: ignore
 
-from core.password import hash_password
+from tests.soporte_login import (
+    connect_admin_ok,
+    connect_user_ok,
+    login,
+)
 from web.app.main import app
 
 BOTELLA_N_ID = 9057909
-
-
-class _Cur:
-    def __init__(self, row: Optional[tuple] = None) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params=None) -> None:
-        return None
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple) -> None:
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self) -> None:
-        return None
-
-
-def _connect_ok(password: str, role: str):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):
-        return _Conn((pwd_hash, role))
-
-    return _connect
-
-
-def _connect_user_ok(password: str = "userpass"):
-    return _connect_ok(password, "user")
-
-
-def _connect_admin_ok(password: str = "adminpass"):
-    return _connect_ok(password, "admin")
-
-
-def _login(client: TestClient, username: str, password: str) -> str:
-    res = client.post("/api/auth/login", json={"username": username, "password": password})
-    return res.json()["csrf"]
 
 
 def test_separar_padre_requiere_autenticacion():
@@ -82,9 +29,9 @@ def test_separar_padre_requiere_autenticacion():
 def test_separar_padre_rechaza_no_admin(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.post(
         f"/api/infra/botellas/{BOTELLA_N_ID}/separar-padre",
@@ -97,9 +44,9 @@ def test_separar_padre_rechaza_csrf_invalido(monkeypatch):
     from web.app import main as web_main
 
     monkeypatch.setenv("TESTING", "false")  # ver nota en test_web_botellas_admin.py
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.post(
         f"/api/infra/botellas/{BOTELLA_N_ID}/separar-padre",
@@ -111,7 +58,7 @@ def test_separar_padre_rechaza_csrf_invalido(monkeypatch):
 def test_separar_padre_404_si_no_existe(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
 
     class _SessionLocalFake:
         def __enter__(self):
@@ -128,7 +75,7 @@ def test_separar_padre_404_si_no_existe(monkeypatch):
 
     monkeypatch.setattr("db.session.SessionLocal", lambda: _SessionLocalFake())
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     import core.services.cromo.separacion_service as separacion_service
 
@@ -148,7 +95,7 @@ def test_separar_padre_404_si_no_existe(monkeypatch):
 def test_separar_padre_400_si_colisiona(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
 
     class _SessionLocalFake:
         def __enter__(self):
@@ -165,7 +112,7 @@ def test_separar_padre_400_si_colisiona(monkeypatch):
 
     monkeypatch.setattr("db.session.SessionLocal", lambda: _SessionLocalFake())
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     import core.services.cromo.separacion_service as separacion_service
 
@@ -184,7 +131,7 @@ def test_separar_padre_400_si_colisiona(monkeypatch):
 def test_separar_padre_happy_path(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
 
     class _SessionLocalFake:
         def __enter__(self):
@@ -201,7 +148,7 @@ def test_separar_padre_happy_path(monkeypatch):
 
     monkeypatch.setattr("db.session.SessionLocal", lambda: _SessionLocalFake())
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     import core.services.cromo.separacion_service as separacion_service
 

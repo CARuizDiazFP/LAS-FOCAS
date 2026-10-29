@@ -5,87 +5,16 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Optional
 
 from fastapi.testclient import TestClient  # type: ignore
 
-from core.password import hash_password
+from tests.soporte_login import (
+    connect_admin_ok,
+    connect_user_ok,
+    fake_async_session_local,
+    login,
+)
 from web.app.main import app
-
-
-class _Cur:
-    def __init__(self, row: Optional[tuple] = None) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params=None) -> None:
-        return None
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple) -> None:
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self) -> None:
-        return None
-
-
-def _connect_ok(password: str, role: str):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):
-        return _Conn((pwd_hash, role))
-
-    return _connect
-
-
-def _connect_user_ok(password: str = "userpass"):
-    return _connect_ok(password, "user")
-
-
-def _connect_admin_ok(password: str = "adminpass"):
-    return _connect_ok(password, "admin")
-
-
-def _login(client: TestClient, username: str, password: str) -> str:
-    res = client.post("/api/auth/login", json={"username": username, "password": password})
-    return res.json()["csrf"]
-
-
-def _fake_async_session_local():
-    """Contexto `async with AsyncSessionLocal() as sesion:` fake — mismo patrón de
-    test_web_cromo_repoblar_cables.py/test_web_botellas_admin.py. La sesión en sí nunca se toca de
-    verdad: todo lo que la usa (`_obtener_servicio_categorizado`, `_senal_direccion_contra_odf`, y
-    las funciones de servicio de Cromo) está mockeado en cada test."""
-
-    class _CM:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, *a):
-            return False
-
-    def factory():
-        return _CM()
-
-    return factory
 
 
 BASE_LISTADO = "/api/admin/infra/servicios-odf/listado"
@@ -115,9 +44,9 @@ def test_listado_requiere_autenticacion():
 def test_listado_requiere_admin(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get(BASE_LISTADO)
     assert res.status_code == 403
@@ -127,8 +56,8 @@ def test_listado_400_offset_negativo(monkeypatch):
     from web.app import main as web_main
     import core.services.cromo.servicios_sin_odf as servicios_sin_odf
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     async def _fake_listar(sesion, *, limit, offset, categoria, q):
         raise ValueError(f"offset no puede ser negativo: {offset}")
@@ -136,7 +65,7 @@ def test_listado_400_offset_negativo(monkeypatch):
     monkeypatch.setattr(servicios_sin_odf, "listar_servicios_sin_odf", _fake_listar)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.get(BASE_LISTADO, params={"offset": -1})
     assert res.status_code == 400
@@ -146,8 +75,8 @@ def test_listado_400_categoria_desconocida(monkeypatch):
     from web.app import main as web_main
     import core.services.cromo.servicios_sin_odf as servicios_sin_odf
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     async def _fake_listar(sesion, *, limit, offset, categoria, q):
         raise ValueError(f"categoria desconocida: {categoria!r}")
@@ -155,7 +84,7 @@ def test_listado_400_categoria_desconocida(monkeypatch):
     monkeypatch.setattr(servicios_sin_odf, "listar_servicios_sin_odf", _fake_listar)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.get(BASE_LISTADO, params={"categoria": "NO_EXISTE"})
     assert res.status_code == 400
@@ -165,8 +94,8 @@ def test_listado_serializa_items_con_ambos_extremos_e_indice(monkeypatch):
     from web.app import main as web_main
     import core.services.cromo.servicios_sin_odf as servicios_sin_odf
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     item = servicios_sin_odf.ServicioSinOdf(
         id=101,
@@ -213,7 +142,7 @@ def test_listado_serializa_items_con_ambos_extremos_e_indice(monkeypatch):
     )
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.get(BASE_LISTADO)
     assert res.status_code == 200
@@ -266,8 +195,8 @@ def test_sugerencia_requiere_admin(monkeypatch):
     `_require_auth` la respuesta sería 404 (habría llegado al handler), no 403."""
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     async def _fake_detalle(sesion, servicio_id):
         return None
@@ -275,7 +204,7 @@ def test_sugerencia_requiere_admin(monkeypatch):
     monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get(_url_sugerencia(999))
     assert res.status_code == 403
@@ -284,8 +213,8 @@ def test_sugerencia_requiere_admin(monkeypatch):
 def test_sugerencia_404_si_no_existe(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     async def _fake_detalle(sesion, servicio_id):
         return None
@@ -293,7 +222,7 @@ def test_sugerencia_404_si_no_existe(monkeypatch):
     monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.get(_url_sugerencia(999))
     assert res.status_code == 404
@@ -304,8 +233,8 @@ def test_sugerencia_incluye_ambos_extremos_sugerencia_y_senal(monkeypatch):
     import core.services.cromo.servicios_sin_odf as servicios_sin_odf
     from core.services.cromo.direccion_comparacion import SenalDireccion
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     servicio_fake = SimpleNamespace(
         id=101, servicio_id="61943", nombre_cliente="Banco Comafi SA", direccion="AV MITRE 2525"
@@ -342,7 +271,7 @@ def test_sugerencia_incluye_ambos_extremos_sugerencia_y_senal(monkeypatch):
     monkeypatch.setattr(web_main.servicios, "_senal_direccion_contra_odf", _fake_senal)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.get(_url_sugerencia(101))
     assert res.status_code == 200
@@ -367,8 +296,8 @@ def test_sugerencia_serializa_cantidad_candidatas_mayor_a_uno(monkeypatch):
     import core.services.cromo.servicios_sin_odf as servicios_sin_odf
     from core.services.cromo.direccion_comparacion import SenalDireccion
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     servicio_fake = SimpleNamespace(
         id=101, servicio_id="61943", nombre_cliente="Banco Comafi SA", direccion="AV MITRE 2525"
@@ -398,7 +327,7 @@ def test_sugerencia_serializa_cantidad_candidatas_mayor_a_uno(monkeypatch):
     monkeypatch.setattr(web_main.servicios, "_senal_direccion_contra_odf", _fake_senal)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.get(_url_sugerencia(101))
     assert res.status_code == 200
@@ -415,8 +344,8 @@ def test_sugerencia_sin_olt_no_ofrece_sugerencia(monkeypatch):
     from web.app import main as web_main
     import core.services.cromo.servicios_sin_odf as servicios_sin_odf
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     servicio_fake = SimpleNamespace(id=202, servicio_id="70000", nombre_cliente="Cliente X", direccion=None)
 
@@ -440,7 +369,7 @@ def test_sugerencia_sin_olt_no_ofrece_sugerencia(monkeypatch):
     monkeypatch.setattr(servicios_sin_odf, "sugerencia_odf_para_servicio", _fake_sugerencia)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.get(_url_sugerencia(202))
     assert res.status_code == 200
@@ -465,8 +394,8 @@ def test_senal_direccion_requiere_admin(monkeypatch):
     antes de tocar la DB (con el guard viejo habría llegado al handler y devuelto 404)."""
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     async def _fake_detalle(sesion, servicio_id):
         return None
@@ -474,7 +403,7 @@ def test_senal_direccion_requiere_admin(monkeypatch):
     monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get(_url_senal_direccion(999), params={"odf_n_id": 555})
     assert res.status_code == 403
@@ -483,9 +412,9 @@ def test_senal_direccion_requiere_admin(monkeypatch):
 def test_senal_direccion_400_si_falta_odf_n_id(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.get(_url_senal_direccion(101))
     assert res.status_code == 400
@@ -494,8 +423,8 @@ def test_senal_direccion_400_si_falta_odf_n_id(monkeypatch):
 def test_senal_direccion_404_si_servicio_no_existe(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     async def _fake_detalle(sesion, servicio_id):
         return None
@@ -503,7 +432,7 @@ def test_senal_direccion_404_si_servicio_no_existe(monkeypatch):
     monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.get(_url_senal_direccion(999), params={"odf_n_id": 555})
     assert res.status_code == 404
@@ -515,8 +444,8 @@ def test_senal_direccion_404_si_odf_no_existe(monkeypatch):
     from web.app import main as web_main
     import core.services.cromo.servicios_sin_odf as servicios_sin_odf
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     servicio_fake = SimpleNamespace(id=101, servicio_id="61943", nombre_cliente="X", direccion="X 1")
 
@@ -546,7 +475,7 @@ def test_senal_direccion_404_si_odf_no_existe(monkeypatch):
     monkeypatch.setattr(web_main.servicios, "_senal_direccion_contra_odf", _fake_senal)
 
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.get(_url_senal_direccion(101), params={"odf_n_id": 999999})
     assert res.status_code == 404
@@ -559,8 +488,8 @@ def _mock_senal_direccion_ok(monkeypatch, senal, *, odf_n_id=555, direccion="AV 
     from web.app import main as web_main
     import core.services.cromo.servicios_sin_odf as servicios_sin_odf
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     servicio_fake = SimpleNamespace(id=101, servicio_id="61943", nombre_cliente="X", direccion=direccion)
 
@@ -597,7 +526,7 @@ def test_senal_direccion_serializa_coincide(monkeypatch):
 
     llamada = _mock_senal_direccion_ok(monkeypatch, SenalDireccion.COINCIDE)
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.get(_url_senal_direccion(101), params={"odf_n_id": 555})
     assert res.status_code == 200
@@ -610,7 +539,7 @@ def test_senal_direccion_serializa_no_coincide(monkeypatch):
 
     _mock_senal_direccion_ok(monkeypatch, SenalDireccion.NO_COINCIDE)
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.get(_url_senal_direccion(101), params={"odf_n_id": 555})
     assert res.status_code == 200
@@ -622,7 +551,7 @@ def test_senal_direccion_serializa_no_se_pudo_comparar(monkeypatch):
 
     _mock_senal_direccion_ok(monkeypatch, SenalDireccion.NO_SE_PUDO_COMPARAR)
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.get(_url_senal_direccion(101), params={"odf_n_id": 555})
     assert res.status_code == 200
@@ -641,9 +570,9 @@ def test_asociar_requiere_autenticacion():
 def test_asociar_requiere_admin(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.post(_url_asociar(101), json={"odf_n_id": 555})
     assert res.status_code == 403
@@ -653,9 +582,9 @@ def test_asociar_csrf_invalido_403(monkeypatch):
     from web.app import main as web_main
 
     monkeypatch.setenv("TESTING", "false")  # ver nota en test_web_botellas_admin.py
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.post(_url_asociar(101), json={"odf_n_id": 555, "csrf_token": "invalido"})
     assert res.status_code == 403
@@ -664,8 +593,8 @@ def test_asociar_csrf_invalido_403(monkeypatch):
 def test_asociar_404_si_servicio_no_existe(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     async def _fake_detalle(sesion, servicio_id):
         return None
@@ -673,7 +602,7 @@ def test_asociar_404_si_servicio_no_existe(monkeypatch):
     monkeypatch.setattr(web_main.servicios, "_obtener_servicio_categorizado", _fake_detalle)
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.post(_url_asociar(999), json={"odf_n_id": 555, "csrf_token": csrf})
     assert res.status_code == 404
@@ -687,8 +616,8 @@ def test_asociar_404_si_odf_no_existe(monkeypatch):
     import core.services.cromo.servicio_odf_override_service as override_service
     from core.services.cromo.direccion_comparacion import SenalDireccion
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     servicio_fake = SimpleNamespace(id=101, servicio_id="61943", nombre_cliente="X", direccion="X 1")
 
@@ -714,7 +643,7 @@ def test_asociar_404_si_odf_no_existe(monkeypatch):
     monkeypatch.setattr(override_service, "crear_override", _fake_crear_override)
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.post(_url_asociar(101), json={"odf_n_id": 999999, "csrf_token": csrf})
     assert res.status_code == 404
@@ -729,8 +658,8 @@ def test_asociar_ok_recalcula_senal_contra_odf_del_body(monkeypatch):
     import core.services.cromo.servicio_odf_override_service as override_service
     from core.services.cromo.direccion_comparacion import SenalDireccion
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(object()))
 
     servicio_fake = SimpleNamespace(id=101, servicio_id="61943", nombre_cliente="X", direccion="AV MITRE 2525")
 
@@ -763,7 +692,7 @@ def test_asociar_ok_recalcula_senal_contra_odf_del_body(monkeypatch):
     monkeypatch.setattr(override_service, "crear_override", _fake_crear_override)
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.post(
         _url_asociar(101),

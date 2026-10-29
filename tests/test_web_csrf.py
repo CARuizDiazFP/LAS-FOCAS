@@ -212,7 +212,7 @@ def _mini_app() -> FastAPI:
     mini.add_exception_handler(ErrorDeDominio, manejar_error_de_dominio)  # type: ignore[arg-type]
 
     @mini.get("/_login")
-    def _login(request: Request) -> dict[str, str]:
+    def _ruta_login(request: Request) -> dict[str, str]:
         request.session.update({"username": "u", "role": "admin", "csrf": "tok"})
         return {"ok": "1"}
 

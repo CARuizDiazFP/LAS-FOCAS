@@ -4,60 +4,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
 
 from fastapi.testclient import TestClient  # type: ignore
 
-from core.password import hash_password
+from tests.soporte_login import connect_user_ok, login
 from web.app.main import app
-
-
-class _Cur:
-    def __init__(self, row: Optional[tuple] = None) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params=None) -> None:
-        return None
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple) -> None:
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self) -> None:
-        return None
-
-
-def _connect_user_ok(password: str = "userpass"):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):
-        return _Conn((pwd_hash, "user"))
-
-    return _connect
-
-
-def _login(client: TestClient, username: str, password: str) -> str:
-    res = client.post("/api/auth/login", json={"username": username, "password": password})
-    return res.json()["csrf"]
 
 
 def test_detalle_odf_requiere_autenticacion():
@@ -72,7 +23,7 @@ def test_detalle_odf_no_requiere_admin(monkeypatch):
     from web.app import main as web_main
     from core.services.cromo import odf_detalle as cromo_odf_detalle
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
 
     async def _obtener_detalle_odf_fake(sesion, n_id):
         return cromo_odf_detalle.DetalleOdf(
@@ -99,7 +50,7 @@ def test_detalle_odf_no_requiere_admin(monkeypatch):
     monkeypatch.setattr(cromo_odf_detalle, "obtener_detalle_odf", _obtener_detalle_odf_fake)
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/odfs/901/detalle")
     assert res.status_code == 200
@@ -117,7 +68,7 @@ def test_detalle_odf_no_encontrado_404(monkeypatch):
     from core.services.cromo import odf_detalle as cromo_odf_detalle
     from core.services.cromo.verificador import ObjetoNoEncontrado
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
 
     async def _obtener_detalle_odf_fake(sesion, n_id):
         raise ObjetoNoEncontrado(f"No existe un ODF con n_id={n_id} en el inventario ingerido.")
@@ -125,7 +76,7 @@ def test_detalle_odf_no_encontrado_404(monkeypatch):
     monkeypatch.setattr(cromo_odf_detalle, "obtener_detalle_odf", _obtener_detalle_odf_fake)
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/odfs/999/detalle")
     assert res.status_code == 404
@@ -137,7 +88,7 @@ def test_detalle_odf_sin_cables_ni_vecinos(monkeypatch):
     from web.app import main as web_main
     from core.services.cromo import odf_detalle as cromo_odf_detalle
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
 
     async def _obtener_detalle_odf_fake(sesion, n_id):
         return cromo_odf_detalle.DetalleOdf(
@@ -164,7 +115,7 @@ def test_detalle_odf_sin_cables_ni_vecinos(monkeypatch):
     monkeypatch.setattr(cromo_odf_detalle, "obtener_detalle_odf", _obtener_detalle_odf_fake)
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/odfs/903/detalle")
     assert res.status_code == 200

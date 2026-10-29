@@ -18,12 +18,9 @@ from datetime import datetime, timezone
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.pool import NullPool
 
 from core.services.cromo import tracking_cache
-from db.session import async_engine
-from tests.soporte_postgres_real import requiere_postgres_real
+from tests.soporte_postgres_real import requiere_postgres_real, sesion_async_revertida
 
 pytestmark = requiere_postgres_real
 
@@ -34,16 +31,8 @@ _HACE_MUCHO = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 @pytest_asyncio.fixture
 async def sesion():
-    engine = create_async_engine(
-        async_engine.url.render_as_string(hide_password=False), poolclass=NullPool
-    )
-    async with engine.connect() as conn:
-        trans = await conn.begin()
-        try:
-            yield AsyncSession(bind=conn, join_transaction_mode="create_savepoint", expire_on_commit=False)
-        finally:
-            await trans.rollback()
-    await engine.dispose()
+    async with sesion_async_revertida() as s:
+        yield s
 
 
 async def _servicio_de_la_fila(sesion) -> object:

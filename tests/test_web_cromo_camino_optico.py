@@ -11,7 +11,6 @@ import pytest
 
 from fastapi.testclient import TestClient  # type: ignore
 
-from core.password import hash_password
 from core.services.cromo.camino_optico_service import (
     ESTADO_OK,
     ESTADO_SIN_SEMILLA,
@@ -20,74 +19,27 @@ from core.services.cromo.camino_optico_service import (
     PeloSemilla,
     ResultadoRegla,
 )
+from tests.soporte_login import connect_ok, login
 from web.app.main import app
 
 SERVICIO = 557
 
 
-class _Cur:
-    def __init__(self, row: Optional[tuple] = None) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params=None) -> None:
-        return None
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple) -> None:
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self) -> None:
-        return None
-
-
-def _connect_ok(password: str, role: str):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):
-        return _Conn((pwd_hash, role))
-
-    return _connect
-
-
-def _login(client: TestClient, username: str, password: str) -> str:
-    res = client.post("/api/auth/login", json={"username": username, "password": password})
-    return res.json()["csrf"]
-
-
 def _cliente_admin(monkeypatch) -> TestClient:
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_ok("adminpass", "admin"))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_ok("adminpass", "admin"))
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
     return client
 
 
 def _cliente_user(monkeypatch) -> TestClient:
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_ok("userpass", "user"))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_ok("userpass", "user"))
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
     return client
 
 

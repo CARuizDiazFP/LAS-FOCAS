@@ -9,56 +9,8 @@ from typing import Any, Optional
 
 from fastapi.testclient import TestClient  # type: ignore
 
-from core.password import hash_password
+from tests.soporte_login import connect_user_ok, fake_async_session_local, login
 from web.app.main import app
-
-
-class _Cur:
-    def __init__(self, row: Optional[tuple] = None) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params=None) -> None:
-        return None
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple) -> None:
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self) -> None:
-        return None
-
-
-def _connect_user_ok(password: str = "userpass"):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):
-        return _Conn((pwd_hash, "user"))
-
-    return _connect
-
-
-def _login(client: TestClient, username: str, password: str) -> str:
-    res = client.post("/api/auth/login", json={"username": username, "password": password})
-    return res.json()["csrf"]
 
 
 class _ResultadoFilas:
@@ -107,20 +59,6 @@ class _SesionFake:
         return self._existentes.get((modelo_cls, pk))
 
 
-def _fake_async_session_local(sesion: _SesionFake):
-    class _CM:
-        async def __aenter__(self):
-            return sesion
-
-        async def __aexit__(self, *a):
-            return False
-
-    def factory():
-        return _CM()
-
-    return factory
-
-
 _FILA_SERVICIO = (
     501,
     "SRV-001",
@@ -149,12 +87,12 @@ def test_por_cable_no_requiere_admin(monkeypatch):
     """A diferencia de la ingesta, el verificador es de sólo lectura: alcanza con estar autenticado."""
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     sesion = _SesionFake(respuestas={"FROM app.cromo_cables": [(51, "Cable Troncal", "72-BRUG", "A", "B")]})
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/51/servicios")
     assert res.status_code == 200
@@ -164,11 +102,11 @@ def test_por_cable_no_requiere_admin(monkeypatch):
 def test_por_cable_404_si_no_existe(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/999/servicios")
     assert res.status_code == 404
@@ -177,17 +115,17 @@ def test_por_cable_404_si_no_existe(monkeypatch):
 def test_por_cable_happy_path_con_servicios(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     sesion = _SesionFake(
         respuestas={
             "FROM app.cromo_cables": [(51, "Cable Troncal", "72-BRUG", "Botella A", "Botella B")],
             "cromo_pelos p\n    JOIN app.v_cromo_servicio_match_vigente": [_FILA_SERVICIO],
         }
     )
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/51/servicios")
     assert res.status_code == 200
@@ -203,11 +141,11 @@ def test_por_cable_happy_path_con_servicios(monkeypatch):
 def test_por_tubo_404_si_no_existe(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/tubos/999/servicios")
     assert res.status_code == 404
@@ -216,17 +154,17 @@ def test_por_tubo_404_si_no_existe(monkeypatch):
 def test_por_tubo_happy_path(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     sesion = _SesionFake(
         respuestas={
             "FROM app.cromo_tubos": [(129001, 51, 3, "AZUL")],
             "cromo_pelos p\n    JOIN app.v_cromo_servicio_match_vigente": [_FILA_SERVICIO],
         }
     )
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/tubos/129001/servicios")
     assert res.status_code == 200
@@ -241,11 +179,11 @@ def test_por_tubo_happy_path(monkeypatch):
 def test_por_botella_404_si_no_existe(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/botellas/999/servicios")
     assert res.status_code == 404
@@ -254,7 +192,7 @@ def test_por_botella_404_si_no_existe(monkeypatch):
 def test_por_botella_happy_path(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     sesion = _SesionFake(
         respuestas={
             "FROM app.cromo_botellas": [(68001, "ODF Central", 69, "CABA")],
@@ -262,10 +200,10 @@ def test_por_botella_happy_path(monkeypatch):
             "SELECT c.n_id, c.nombre": [(51, "Cable Troncal 1", 3)],
         }
     )
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/botellas/68001/servicios")
     assert res.status_code == 200
@@ -287,11 +225,11 @@ def test_por_odf_requiere_autenticacion():
 def test_por_odf_404_si_no_existe(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/odfs/999/servicios")
     assert res.status_code == 404
@@ -302,7 +240,7 @@ def test_por_odf_no_requiere_admin_happy_path(monkeypatch):
     autenticado."""
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     sesion = _SesionFake(
         respuestas={
             "SELECT n_id, nombre, tipo_elemento, localidad FROM app.cromo_odfs": [
@@ -312,10 +250,10 @@ def test_por_odf_no_requiere_admin_happy_path(monkeypatch):
             "FROM app.cromo_cables c\n    WHERE c.n_id IN (": [(111, "Cable A", 1)],
         }
     )
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/odfs/901/servicios")
     assert res.status_code == 200
@@ -334,7 +272,7 @@ def test_por_odf_sin_cables_asociados_devuelve_vacio_sin_error(monkeypatch):
     poblado sea bajo — ver brief de la Tarea 4."""
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     sesion = _SesionFake(
         respuestas={
             "SELECT n_id, nombre, tipo_elemento, localidad FROM app.cromo_odfs": [
@@ -342,10 +280,10 @@ def test_por_odf_sin_cables_asociados_devuelve_vacio_sin_error(monkeypatch):
             ],
         }
     )
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/odfs/902/servicios")
     assert res.status_code == 200
@@ -394,8 +332,8 @@ def test_elemento_vivo_404_si_cromo_dice_404(monkeypatch):
     import core.services.cromo.client as cromo_client_module
     import core.services.cromo.config as cromo_config_module
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
     monkeypatch.setattr(cromo_config_module, "get_cromo_config", _sin_validar_config_cromo)
     monkeypatch.setattr(
         cromo_client_module,
@@ -404,7 +342,7 @@ def test_elemento_vivo_404_si_cromo_dice_404(monkeypatch):
     )
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/elementos/999999/vivo")
     assert res.status_code == 404
@@ -416,8 +354,8 @@ def test_elemento_vivo_502_si_cromo_no_responde(monkeypatch):
     import core.services.cromo.client as cromo_client_module
     import core.services.cromo.config as cromo_config_module
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
     monkeypatch.setattr(cromo_config_module, "get_cromo_config", _sin_validar_config_cromo)
     monkeypatch.setattr(
         cromo_client_module,
@@ -426,7 +364,7 @@ def test_elemento_vivo_502_si_cromo_no_responde(monkeypatch):
     )
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/elementos/10178728/vivo")
     assert res.status_code == 502
@@ -438,10 +376,10 @@ def test_elemento_vivo_happy_path(monkeypatch):
     import core.services.cromo.config as cromo_config_module
     from db.models.cromo import CromoClase
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     clase_fake = CromoClase(clase=68, etiqueta="Botella FIST", entidad="BOTELLA")
     sesion = _SesionFake(existentes={(CromoClase, 68): clase_fake})
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     monkeypatch.setattr(cromo_config_module, "get_cromo_config", _sin_validar_config_cromo)
     monkeypatch.setattr(
         cromo_client_module,
@@ -458,7 +396,7 @@ def test_elemento_vivo_happy_path(monkeypatch):
     )
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/elementos/10178728/vivo")
     assert res.status_code == 200
@@ -484,7 +422,7 @@ def test_validar_datos_happy_path_arma_arbol(monkeypatch):
     import core.services.cromo.client as cromo_client_module
     import core.services.cromo.config as cromo_config_module
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     monkeypatch.setattr(cromo_config_module, "get_cromo_config", _sin_validar_config_cromo)
     monkeypatch.setattr(
         cromo_client_module,
@@ -513,7 +451,7 @@ def test_validar_datos_happy_path_arma_arbol(monkeypatch):
     )
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/validar/10178728")
     assert res.status_code == 200
@@ -531,7 +469,7 @@ def test_validar_datos_404_si_cromo_dice_404(monkeypatch):
     import core.services.cromo.client as cromo_client_module
     import core.services.cromo.config as cromo_config_module
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     monkeypatch.setattr(cromo_config_module, "get_cromo_config", _sin_validar_config_cromo)
     monkeypatch.setattr(
         cromo_client_module,
@@ -540,7 +478,7 @@ def test_validar_datos_404_si_cromo_dice_404(monkeypatch):
     )
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/validar/999999")
     assert res.status_code == 404

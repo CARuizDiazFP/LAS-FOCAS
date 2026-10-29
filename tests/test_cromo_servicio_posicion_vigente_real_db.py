@@ -24,13 +24,10 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.pool import NullPool
 
 from core.services.cromo import servicio_posicion_vigente as pv
 from core.services.cromo.tracking_service import ResumenCamino, TrackingGenerado
-from db.session import async_engine
-from tests.soporte_postgres_real import requiere_postgres_real
+from tests.soporte_postgres_real import requiere_postgres_real, sesion_async_revertida
 
 pytestmark = requiere_postgres_real
 
@@ -46,18 +43,8 @@ _PELO_2 = 7028863
 
 @pytest_asyncio.fixture
 async def sesion():
-    engine = create_async_engine(
-        async_engine.url.render_as_string(hide_password=False), poolclass=NullPool
-    )
-    async with engine.connect() as conn:
-        trans = await conn.begin()
-        try:
-            s = AsyncSession(bind=conn, join_transaction_mode="create_savepoint", expire_on_commit=False)
-            yield s
-            await s.close()
-        finally:
-            await trans.rollback()
-    await engine.dispose()
+    async with sesion_async_revertida() as s:
+        yield s
 
 
 async def _escalares(sesion, sql: str, **params) -> list:

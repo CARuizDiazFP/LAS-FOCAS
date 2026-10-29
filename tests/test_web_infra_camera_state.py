@@ -8,7 +8,6 @@ from typing import Any, Optional
 
 from fastapi.testclient import TestClient
 
-from core.password import hash_password
 from core.services.camara_estado_service import (
     ActualizacionEstadoResultado,
     CamaraEstadoContexto,
@@ -17,54 +16,9 @@ from core.services.camara_estado_service import (
 from db.models.infra import CamaraEstado, CamaraOrigenDatos, RutaTipo
 
 
+from tests.soporte_login import login_con_rol
 from web.app.main import app  # type: ignore  # noqa: E402
 from web.app.routers.camaras import _serialize_camara_response  # type: ignore  # noqa: E402
-
-
-class _Cur:
-    def __init__(self, row: Optional[tuple[Any, ...]] = None):
-        self._row = row
-        self.last_sql = ""
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params: tuple[Any, ...] | None = None):
-        self.last_sql = sql
-
-    def fetchone(self):
-        if "SELECT password_hash, role FROM app.web_users" in self.last_sql:
-            return self._row
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple[Any, ...]):
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self):
-        pass
-
-
-def _connect_ok(role: str, password: str):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):  # type: ignore
-        return _Conn((pwd_hash, role))
-
-    return _connect
 
 
 class _SessionScope:
@@ -150,20 +104,6 @@ class _InfraDetailSession(_FakeSession):
         if entity_name == "Ingreso":
             return _FakeQuery(many=self._ingresos)
         return _FakeQuery()
-
-
-def _login(client: TestClient, monkeypatch, *, role: str, password: str = "secret") -> str:
-    from web.app import main as web_main
-
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_ok(role, password))
-    response = client.post(
-        "/api/auth/login",
-        json={"username": role, "password": password},
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["ok"] is True
-    return data["csrf"]
 
 
 def _build_contexto() -> CamaraEstadoContexto:
@@ -271,7 +211,7 @@ def _build_ingresos() -> list[Any]:
 
 def test_get_camara_estado_forbidden_para_no_admin(monkeypatch):
     client = TestClient(app)
-    _login(client, monkeypatch, role="user", password="userpass")
+    login_con_rol(client, monkeypatch, role="user", password="userpass")
 
     response = client.get("/api/infra/camaras/7/estado")
 
@@ -283,7 +223,7 @@ def test_get_camara_estado_admin_devuelve_contexto(monkeypatch):
     from db import session as db_session
 
     client = TestClient(app)
-    _login(client, monkeypatch, role="admin", password="admin")
+    login_con_rol(client, monkeypatch, role="admin", password="admin")
 
     fake_session = _FakeSession()
     monkeypatch.setattr(db_session, "SessionLocal", _SessionScope(fake_session))
@@ -301,7 +241,7 @@ def test_get_camara_estado_admin_devuelve_contexto(monkeypatch):
 def test_update_camara_estado_rechaza_csrf_invalido(monkeypatch):
     monkeypatch.setenv("TESTING", "false")
     client = TestClient(app)
-    _login(client, monkeypatch, role="admin", password="admin")
+    login_con_rol(client, monkeypatch, role="admin", password="admin")
 
     response = client.post(
         "/api/infra/camaras/7/estado",
@@ -317,7 +257,7 @@ def test_update_camara_estado_admin_audita_y_confirma(monkeypatch):
     from db import session as db_session
 
     client = TestClient(app)
-    csrf = _login(client, monkeypatch, role="admin", password="admin")
+    csrf = login_con_rol(client, monkeypatch, role="admin", password="admin")
 
     fake_session = _FakeSession()
     contexto = _build_contexto()
@@ -384,7 +324,7 @@ def test_get_camara_detail_web_devuelve_resumen_operativo(monkeypatch):
     from db import session as db_session
 
     client = TestClient(app)
-    _login(client, monkeypatch, role="admin", password="admin")
+    login_con_rol(client, monkeypatch, role="admin", password="admin")
 
     fake_session = _InfraDetailSession(_build_fake_camara(), _build_aliases(), _build_auditoria(), _build_baneos())
     monkeypatch.setattr(db_session, "SessionLocal", _SessionScope(fake_session))
@@ -407,7 +347,7 @@ def test_get_camara_aliases_web_devuelve_alias_registrados(monkeypatch):
     from db import session as db_session
 
     client = TestClient(app)
-    _login(client, monkeypatch, role="user", password="userpass")
+    login_con_rol(client, monkeypatch, role="user", password="userpass")
 
     fake_session = _InfraDetailSession(_build_fake_camara(), _build_aliases(), _build_auditoria(), _build_baneos())
     monkeypatch.setattr(db_session, "SessionLocal", _SessionScope(fake_session))
@@ -426,7 +366,7 @@ def test_get_camara_registros_web_devuelve_auditoria_y_baneos(monkeypatch):
     from db import session as db_session
 
     client = TestClient(app)
-    _login(client, monkeypatch, role="user", password="userpass")
+    login_con_rol(client, monkeypatch, role="user", password="userpass")
 
     fake_session = _InfraDetailSession(
         _build_fake_camara(), _build_aliases(), _build_auditoria(), _build_baneos(), _build_ingresos()
@@ -493,7 +433,7 @@ def test_get_servicio_ingresos_web_devuelve_datos_reales(monkeypatch):
     from db import session as db_session
 
     client = TestClient(app)
-    _login(client, monkeypatch, role="user", password="userpass")
+    login_con_rol(client, monkeypatch, role="user", password="userpass")
 
     fake_session = _ServicioIngresosSession(_build_servicio(), _build_servicio_ingresos())
     monkeypatch.setattr(db_session, "SessionLocal", _SessionScope(fake_session))
@@ -523,7 +463,7 @@ def test_get_servicio_ingresos_web_404_si_servicio_no_existe(monkeypatch):
     from db import session as db_session
 
     client = TestClient(app)
-    _login(client, monkeypatch, role="user", password="userpass")
+    login_con_rol(client, monkeypatch, role="user", password="userpass")
 
     fake_session = _ServicioIngresosSession(None, [])
     monkeypatch.setattr(db_session, "SessionLocal", _SessionScope(fake_session))
@@ -553,7 +493,7 @@ def test_get_camara_registros_web_incluye_botella_label_y_tipo(monkeypatch):
     from db.models.infra import IngresoTipo
 
     client = TestClient(app)
-    _login(client, monkeypatch, role="user", password="userpass")
+    login_con_rol(client, monkeypatch, role="user", password="userpass")
 
     # Legacy Botella para caso 2: Cámara con camara_padre_id set (es hija de otra Cámara)
     legacy_botella_camara = SimpleNamespace(

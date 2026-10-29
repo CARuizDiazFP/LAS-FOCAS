@@ -8,8 +8,13 @@ from typing import Any, Optional
 
 from fastapi.testclient import TestClient  # type: ignore
 
-from core.password import hash_password
 from db.models.cromo import CromoBotella, CromoCable
+from tests.soporte_login import (
+    connect_admin_ok,
+    connect_user_ok,
+    fake_async_session_local,
+    login,
+)
 from web.app.main import app
 
 BOTELLA_N_ID = 9057909
@@ -35,62 +40,6 @@ CABLE_COMPLETO = {
     "inner": [],
     "at": [],
 }
-
-
-class _Cur:
-    def __init__(self, row: Optional[tuple] = None) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params=None) -> None:
-        return None
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple) -> None:
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self) -> None:
-        return None
-
-
-def _connect_ok(password: str, role: str):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):
-        return _Conn((pwd_hash, role))
-
-    return _connect
-
-
-def _connect_user_ok(password: str = "userpass"):
-    return _connect_ok(password, "user")
-
-
-def _connect_admin_ok(password: str = "adminpass"):
-    return _connect_ok(password, "admin")
-
-
-def _login(client: TestClient, username: str, password: str) -> str:
-    res = client.post("/api/auth/login", json={"username": username, "password": password})
-    return res.json()["csrf"]
 
 
 class _NestedCM:
@@ -140,20 +89,6 @@ class _SesionFake:
     async def refresh(self, obj: Any) -> None:
         if getattr(obj, "id", None) is None:
             obj.id = 1
-
-
-def _fake_async_session_local(sesion: _SesionFake):
-    class _CM:
-        async def __aenter__(self):
-            return sesion
-
-        async def __aexit__(self, *a):
-            return False
-
-    def factory():
-        return _CM()
-
-    return factory
 
 
 def _cliente_cromo_fake(respuestas: Optional[dict[int, dict]] = None, error: Optional[Exception] = None):
@@ -206,16 +141,16 @@ def test_cables_detectados_requiere_autenticacion():
 def test_cables_detectados_no_requiere_admin(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     sesion = _SesionFake({(CromoBotella, BOTELLA_N_ID): _botella_local()})
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     _parchear_cromo(
         monkeypatch,
         _cliente_cromo_fake({BOTELLA_N_ID: BOTELLA_VIGENTE, CABLE_N_ID: CABLE_COMPLETO}),
     )
 
     client = TestClient(app)
-    _login(client, "user", "userpass")  # rol "user", no admin
+    login(client, "user", "userpass")  # rol "user", no admin
 
     res = client.get(f"/api/infra/cromo/botellas/{BOTELLA_N_ID}/cables-detectados")
     assert res.status_code == 200
@@ -229,12 +164,12 @@ def test_cables_detectados_no_requiere_admin(monkeypatch):
 def test_cables_detectados_404_si_botella_no_existe_local(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
     _parchear_cromo(monkeypatch, _cliente_cromo_fake({}))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get(f"/api/infra/cromo/botellas/{BOTELLA_N_ID}/cables-detectados")
     assert res.status_code == 404
@@ -244,13 +179,13 @@ def test_cables_detectados_502_si_cromo_no_responde(monkeypatch):
     from web.app import main as web_main
     from core.services.cromo.client import CromoClientError
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     sesion = _SesionFake({(CromoBotella, BOTELLA_N_ID): _botella_local()})
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     _parchear_cromo(monkeypatch, _cliente_cromo_fake(error=CromoClientError("caído", status_code=503)))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get(f"/api/infra/cromo/botellas/{BOTELLA_N_ID}/cables-detectados")
     assert res.status_code == 502
@@ -268,9 +203,9 @@ def test_repoblar_cables_requiere_autenticacion():
 def test_repoblar_cables_rechaza_no_admin(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.post(f"/api/infra/botellas/{BOTELLA_N_ID}/repoblar-cables", json={})
     assert res.status_code == 403
@@ -280,9 +215,9 @@ def test_repoblar_cables_rechaza_csrf_invalido(monkeypatch):
     from web.app import main as web_main
 
     monkeypatch.setenv("TESTING", "false")  # ver nota en test_web_botellas_admin.py
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.post(
         f"/api/infra/botellas/{BOTELLA_N_ID}/repoblar-cables", json={"csrf_token": "invalido"}
@@ -293,9 +228,9 @@ def test_repoblar_cables_rechaza_csrf_invalido(monkeypatch):
 def test_repoblar_cables_happy_path_crea_cable_faltante(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     sesion = _SesionFake({(CromoBotella, BOTELLA_N_ID): _botella_local()})
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     _parchear_cromo(
         monkeypatch,
         _cliente_cromo_fake({BOTELLA_N_ID: BOTELLA_VIGENTE, CABLE_N_ID: CABLE_COMPLETO}),
@@ -309,7 +244,7 @@ def test_repoblar_cables_happy_path_crea_cable_faltante(monkeypatch):
     monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.post(
         f"/api/infra/botellas/{BOTELLA_N_ID}/repoblar-cables", json={"csrf_token": csrf}
@@ -336,9 +271,9 @@ def test_repoblar_cables_sin_pendientes_no_encola_recalculo(monkeypatch):
     from web.app import main as web_main
     from core.services.cromo.repoblacion_service import ResultadoRepoblarCables
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     sesion = _SesionFake({(CromoBotella, BOTELLA_N_ID): _botella_local()})
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     _parchear_cromo(monkeypatch, _cliente_cromo_fake({}))
 
     resultado_sin_op = ResultadoRepoblarCables(
@@ -366,7 +301,7 @@ def test_repoblar_cables_sin_pendientes_no_encola_recalculo(monkeypatch):
     monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.post(
         f"/api/infra/botellas/{BOTELLA_N_ID}/repoblar-cables", json={"csrf_token": csrf}
@@ -383,9 +318,9 @@ def test_repoblar_cables_con_corrida_real_encola_recalculo(monkeypatch):
     from web.app import main as web_main
     from core.services.cromo.repoblacion_service import ItemRepoblado, ResultadoRepoblarCables
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     sesion = _SesionFake({(CromoBotella, BOTELLA_N_ID): _botella_local()})
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     _parchear_cromo(monkeypatch, _cliente_cromo_fake({}))
 
     resultado_con_corrida = ResultadoRepoblarCables(
@@ -413,7 +348,7 @@ def test_repoblar_cables_con_corrida_real_encola_recalculo(monkeypatch):
     monkeypatch.setattr(web_main.cromo, "encolar_recalculo_duplicados_botellas", _fake_encolar)
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.post(
         f"/api/infra/botellas/{BOTELLA_N_ID}/repoblar-cables", json={"csrf_token": csrf}
@@ -437,9 +372,9 @@ def test_actualizar_nombre_requiere_autenticacion():
 def test_actualizar_nombre_rechaza_no_admin(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.patch(f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo"})
     assert res.status_code == 403
@@ -449,9 +384,9 @@ def test_actualizar_nombre_rechaza_csrf_invalido(monkeypatch):
     from web.app import main as web_main
 
     monkeypatch.setenv("TESTING", "false")
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     client = TestClient(app)
-    _login(client, "admin", "adminpass")
+    login(client, "admin", "adminpass")
 
     res = client.patch(
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre",
@@ -463,11 +398,11 @@ def test_actualizar_nombre_rechaza_csrf_invalido(monkeypatch):
 def test_actualizar_nombre_rechaza_vacio(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     sesion = _SesionFake({(CromoBotella, BOTELLA_N_ID): _botella_local()})
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.patch(
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "   ", "csrf_token": csrf}
@@ -482,11 +417,11 @@ def test_actualizar_nombre_404_si_no_existe_ni_local_ni_en_cromo(monkeypatch):
     from web.app import main as web_main
     from core.services.cromo.client import CromoClientError
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
     _parchear_cromo(monkeypatch, _cliente_cromo_fake(error=CromoClientError("no existe", status_code=404)))
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.patch(
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo nombre", "csrf_token": csrf}
@@ -499,13 +434,13 @@ def test_actualizar_nombre_crea_botella_desde_vivo_si_no_existe_local(monkeypatc
     crea y aplica igual la corrección de nombre pedida, en vez de devolver 404."""
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     sesion = _SesionFake()
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     _parchear_cromo(monkeypatch, _cliente_cromo_fake({BOTELLA_N_ID: BOTELLA_VIGENTE}))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.patch(
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre",
@@ -542,13 +477,13 @@ def test_actualizar_nombre_devuelve_el_n_id_real_si_la_cadena_redirige(monkeypat
         "tp": [{"type": 0, "nfrom": 0, "id_to": CABLE_N_ID, "class": 51}],
     }
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     sesion = _SesionFake()
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     _parchear_cromo(monkeypatch, _cliente_cromo_fake({BOTELLA_N_ID: obj_vacio, OTRO_N_ID: obj_vigente}))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.patch(
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre",
@@ -580,13 +515,13 @@ def test_actualizar_nombre_502_si_cromo_no_esta_configurado(monkeypatch):
     def _config_rota():
         raise CromoConfigError("Configuración de Cromo incompleta. Definir en el entorno: CROMO_USER")
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
     monkeypatch.setattr(cromo_config_module, "get_cromo_config", _config_rota)
     monkeypatch.setattr(cromo_client_module, "CromoClient", _cliente_cromo_fake({}))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.patch(
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo nombre", "csrf_token": csrf}
@@ -608,14 +543,14 @@ def test_actualizar_nombre_500_controlado_ante_error_inesperado(monkeypatch, cap
     async def _explota(*args: Any, **kwargs: Any):
         raise ValueError("boom inesperado")
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
     _parchear_cromo(monkeypatch, _cliente_cromo_fake({BOTELLA_N_ID: BOTELLA_VIGENTE}))
     monkeypatch.setattr(creacion_module, "crear_o_actualizar_botella_desde_vivo", _explota)
     caplog.set_level(logging.INFO, logger="web")
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.patch(
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo nombre", "csrf_token": csrf}
@@ -654,14 +589,14 @@ def test_actualizar_nombre_409_si_identidad_ya_resuelta(monkeypatch):
         "tp": [{"type": 0, "nfrom": 0, "id_to": CABLE_N_ID, "class": 51}],
     }
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     fila_ya_existente = CromoBotella(n_id=OTRO_N_ID, version_id=1, vmax=1, nombre="Ya existe", clase=68, payload_raw={})
     sesion = _SesionFake({(CromoBotella, OTRO_N_ID): fila_ya_existente})
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     _parchear_cromo(monkeypatch, _cliente_cromo_fake({BOTELLA_N_ID: obj_vacio, OTRO_N_ID: obj_vigente}))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.patch(
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo nombre", "csrf_token": csrf}
@@ -677,13 +612,13 @@ def test_actualizar_nombre_400_si_clase_excluida(monkeypatch):
 
     obj_clase_excluida = {"id": BOTELLA_N_ID, "n_id": BOTELLA_N_ID, "class": 120, "hist": [], "tp": []}
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     sesion = _SesionFake()
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     _parchear_cromo(monkeypatch, _cliente_cromo_fake({BOTELLA_N_ID: obj_clase_excluida}))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.patch(
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo nombre", "csrf_token": csrf}
@@ -696,13 +631,13 @@ def test_actualizar_nombre_502_si_cromo_no_responde(monkeypatch):
     from web.app import main as web_main
     from core.services.cromo.client import CromoClientError
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     sesion = _SesionFake()
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     _parchear_cromo(monkeypatch, _cliente_cromo_fake(error=CromoClientError("caído", status_code=503)))
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.patch(
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre", json={"nombre": "Nuevo nombre", "csrf_token": csrf}
@@ -721,15 +656,15 @@ def test_actualizar_nombre_no_llama_a_cromo_si_ya_existe_localmente(monkeypatch)
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             raise AssertionError("no debe instanciarse CromoClient si la Botella ya existe localmente")
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     botella = _botella_local()
     sesion = _SesionFake({(CromoBotella, BOTELLA_N_ID): botella})
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     monkeypatch.setattr(cromo_config_module, "get_cromo_config", _sin_validar_config_cromo)
     monkeypatch.setattr(cromo_client_module, "CromoClient", _ClienteQueExplotaSiSeInstancia)
 
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.patch(
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre",
@@ -743,12 +678,12 @@ def test_actualizar_nombre_no_llama_a_cromo_si_ya_existe_localmente(monkeypatch)
 def test_actualizar_nombre_happy_path_marca_editado_manual(monkeypatch):
     from web.app import main as web_main
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     botella = _botella_local()
     sesion = _SesionFake({(CromoBotella, BOTELLA_N_ID): botella})
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
     client = TestClient(app)
-    csrf = _login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
 
     res = client.patch(
         f"/api/infra/botellas/{BOTELLA_N_ID}/nombre",

@@ -12,10 +12,10 @@ from typing import Any, Optional
 
 from fastapi.testclient import TestClient
 
-from core.password import hash_password
 from db.models.infra import RutaTipo
 
 
+from tests.soporte_login import login_con_rol
 from web.app.main import app  # type: ignore  # noqa: E402
 
 
@@ -32,55 +32,6 @@ RAW_TRACKING_FIXTURE = "\n".join(
         "O-2000-2: 8",
     ]
 )
-
-
-def _connect_ok(role: str, password: str):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):  # type: ignore
-        class _Cur:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def execute(self, sql, params=None):
-                pass
-
-            def fetchone(self):
-                return (pwd_hash, role)
-
-        class _Conn:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def cursor(self):
-                return _Cur()
-
-            def commit(self):
-                pass
-
-        return _Conn()
-
-    return _connect
-
-
-def _login(client: TestClient, monkeypatch, *, role: str = "user", password: str = "secret") -> str:
-    from web.app import main as web_main
-
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_ok(role, password))
-    response = client.post(
-        "/api/auth/login",
-        json={"username": role, "password": password},
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["ok"] is True
-    return data["csrf"]
 
 
 class _SessionScope:
@@ -187,7 +138,7 @@ def _patch_session(monkeypatch, session):
 
 def test_get_servicio_odfs_404_si_no_existe(monkeypatch):
     client = TestClient(app)
-    _login(client, monkeypatch)
+    login_con_rol(client, monkeypatch)
 
     fake_session = _ServicioOdfsSession(servicio=None)
     _patch_session(monkeypatch, fake_session)
@@ -200,7 +151,7 @@ def test_get_servicio_odfs_404_si_no_existe(monkeypatch):
 
 def test_get_servicio_odfs_happy_path_transito_simple_y_enriquecimiento_camara(monkeypatch):
     client = TestClient(app)
-    _login(client, monkeypatch)
+    login_con_rol(client, monkeypatch)
 
     ruta = _build_ruta()
     servicio = _build_servicio("SRV-1", [ruta])
@@ -254,7 +205,7 @@ def test_get_servicio_odfs_happy_path_transito_simple_y_enriquecimiento_camara(m
 
 def test_get_servicio_odfs_ruta_sin_tracking_no_lanza_excepcion(monkeypatch):
     client = TestClient(app)
-    _login(client, monkeypatch)
+    login_con_rol(client, monkeypatch)
 
     ruta = _build_ruta(raw_file_content=None, nombre_archivo_origen=None)
     servicio = _build_servicio("SRV-2", [ruta])
@@ -279,7 +230,7 @@ def test_get_servicio_odfs_ruta_sin_tracking_no_lanza_excepcion(monkeypatch):
 
 def test_get_servicio_odfs_multiples_rutas_suman_totales(monkeypatch):
     client = TestClient(app)
-    _login(client, monkeypatch)
+    login_con_rol(client, monkeypatch)
 
     ruta_1 = _build_ruta(ruta_id=1, nombre="Principal", raw_file_content=RAW_TRACKING_FIXTURE)
     raw_ruta_2 = "\n".join(
@@ -329,7 +280,7 @@ def test_get_servicio_odfs_no_duplica_odf_compartida_entre_rutas(monkeypatch):
     contar distintos, no ocurrencias."""
 
     client = TestClient(app)
-    _login(client, monkeypatch)
+    login_con_rol(client, monkeypatch)
 
     raw_pelo_1 = "\n".join(
         [
@@ -383,7 +334,7 @@ def test_get_servicio_odfs_resuelve_por_numero_linea(monkeypatch):
     nuevo invoca el mismo camino de resolución sin romperse con un id no-numérico."""
 
     client = TestClient(app)
-    _login(client, monkeypatch)
+    login_con_rol(client, monkeypatch)
 
     ruta = _build_ruta(raw_file_content=None)
     servicio = _build_servicio("SRV-4", [ruta])

@@ -24,8 +24,9 @@ allowlist de DBs de dev/test, los tests se saltean (nunca corren) diciendo qué 
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from functools import lru_cache
-from typing import Optional
+from typing import Any, AsyncIterator, Optional
 
 import pytest
 
@@ -103,6 +104,31 @@ def _condicion_y_razon() -> tuple[bool, str]:
     return False, ""
 
 
+@asynccontextmanager
+async def sesion_async_revertida() -> AsyncIterator[Any]:
+    """`AsyncSession` contra la DB real dentro de una transacción que se revierte al salir.
+
+    Engine propio con `NullPool`: no hereda conexiones del pool de proceso de `db.session.async_engine`
+    (atadas al loop de otro `TestClient`). Con `join_transaction_mode="create_savepoint"` los `commit()`
+    del código bajo prueba quedan en savepoints y el rollback final los descarta.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from db.session import async_engine
+
+    engine = create_async_engine(async_engine.url.render_as_string(hide_password=False), poolclass=NullPool)
+    async with engine.connect() as conn:
+        trans = await conn.begin()
+        try:
+            sesion = AsyncSession(bind=conn, join_transaction_mode="create_savepoint", expire_on_commit=False)
+            yield sesion
+            await sesion.close()
+        finally:
+            await trans.rollback()
+    await engine.dispose()
+
+
 _saltear, _razon = _condicion_y_razon()
 
 #: Marcador para `pytestmark` de cada archivo de integración.
@@ -116,4 +142,5 @@ __all__ = [
     "hay_postgres_real",
     "motivo_db_no_permitida",
     "requiere_postgres_real",
+    "sesion_async_revertida",
 ]

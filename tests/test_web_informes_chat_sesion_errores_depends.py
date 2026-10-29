@@ -36,7 +36,7 @@ def _roto(*_args, **_kwargs):
     raise RuntimeError(SECRETO)
 
 
-def _login(monkeypatch, rol: str = "user") -> tuple[TestClient, str]:
+def _cliente_logueado(monkeypatch, rol: str = "user") -> tuple[TestClient, str]:
     """Login real (cookie + CSRF): el chat usa su propia dependencia y varios POST validan el CSRF siempre."""
     if rol == "admin":
         monkeypatch.setattr(psycopg, "connect", _connect_admin_ok("admin"))
@@ -169,7 +169,7 @@ def test_chat_sin_sesion_da_401_con_su_cuerpo_de_siempre(metodo, path, kwargs):
 
 
 def test_chat_mensaje_conserva_el_csrf(monkeypatch):
-    client, _csrf = _login(monkeypatch)
+    client, _csrf = _cliente_logueado(monkeypatch)
     monkeypatch.setenv("TESTING", "false")
     res = client.post("/api/chat/message", data={"text": "hola", "csrf_token": "malo"})
     assert res.status_code == 403
@@ -177,7 +177,7 @@ def test_chat_mensaje_conserva_el_csrf(monkeypatch):
 
 
 def test_flow_sla_conserva_el_csrf(monkeypatch):
-    client, _csrf = _login(monkeypatch)
+    client, _csrf = _cliente_logueado(monkeypatch)
     monkeypatch.setenv("TESTING", "false")
     res = client.post("/api/flows/sla", data={"mes": "1", "anio": "2025", "csrf_token": "malo"})
     assert res.status_code == 403
@@ -201,7 +201,7 @@ def test_login_error_inesperado_500_con_ref(monkeypatch, caplog):
 
 
 def test_cambio_de_contrasena_500_con_ref(monkeypatch, caplog):
-    client, csrf = _login(monkeypatch)
+    client, csrf = _cliente_logueado(monkeypatch)
     monkeypatch.setattr(psycopg, "connect", _roto)
     with caplog.at_level(logging.ERROR, logger="web"):
         res = client.post(
@@ -217,7 +217,7 @@ def test_cambio_de_contrasena_500_con_ref(monkeypatch, caplog):
 
 
 def test_alta_de_usuario_500_con_ref(monkeypatch, caplog):
-    client, csrf = _login(monkeypatch, "admin")
+    client, csrf = _cliente_logueado(monkeypatch, "admin")
     monkeypatch.setattr(psycopg, "connect", _roto)
     with caplog.at_level(logging.ERROR, logger="web"):
         res = client.post("/api/admin/users", data={"username": "nuevo", "password": "x", "csrf_token": csrf})
@@ -230,7 +230,7 @@ def test_alta_de_usuario_500_con_ref(monkeypatch, caplog):
 
 
 def test_historial_del_chat_500_con_ref(monkeypatch, caplog):
-    client, _csrf = _login(monkeypatch)
+    client, _csrf = _cliente_logueado(monkeypatch)
     monkeypatch.setattr(chat, "psycopg", SimpleNamespace(connect=_roto))
     with caplog.at_level(logging.WARNING, logger="web"):
         res = client.get("/api/chat/history")
@@ -250,7 +250,7 @@ class _OrquestadorRoto:
 
 
 def test_mcp_invoke_500_con_ref_conserva_status_y_message(monkeypatch, caplog):
-    client, _csrf = _login(monkeypatch)
+    client, _csrf = _cliente_logueado(monkeypatch)
     monkeypatch.setattr(app.state, "chat_orchestrator", _OrquestadorRoto(), raising=False)
     with caplog.at_level(logging.ERROR, logger="web"):
         res = client.post("/mcp/invoke", json={"tool": "PingTool"})
@@ -271,7 +271,7 @@ def _csv(contenido: bytes = b"a,b\n1,2\n"):
 def test_alarmas_ciena_500_con_ref(monkeypatch, caplog):
     import core.parsers.alarmas_ciena as parser
 
-    client, csrf = _login(monkeypatch)
+    client, csrf = _cliente_logueado(monkeypatch)
     monkeypatch.setattr(parser, "parsear_alarmas_ciena", _roto)
     with caplog.at_level(logging.ERROR, logger="web"):
         res = client.post("/api/tools/alarmas-ciena", data={"csrf_token": csrf}, files=_csv())
@@ -289,7 +289,7 @@ def test_alarmas_ciena_value_error_conserva_415_con_su_mensaje(monkeypatch):
     def _formato_no_soportado(_contenido):
         raise ValueError("Formato de CSV no reconocido")
 
-    client, csrf = _login(monkeypatch)
+    client, csrf = _cliente_logueado(monkeypatch)
     monkeypatch.setattr(parser, "parsear_alarmas_ciena", _formato_no_soportado)
     res = client.post("/api/tools/alarmas-ciena", data={"csrf_token": csrf}, files=_csv())
     assert res.status_code == 415
@@ -304,7 +304,7 @@ def test_alarmas_ciena_415_no_expone_texto_de_pandas(monkeypatch):
     def _roto(*_a, **_k):
         raise RuntimeError(interno)
 
-    client, csrf = _login(monkeypatch)
+    client, csrf = _cliente_logueado(monkeypatch)
     monkeypatch.setattr(parser.pd, "read_csv", _roto)
     contenido = b'"Unit","Class","Severity","Service"\n"a","b","c","d"\n'
     res = client.post("/api/tools/alarmas-ciena", data={"csrf_token": csrf}, files=_csv(contenido))
@@ -314,7 +314,7 @@ def test_alarmas_ciena_415_no_expone_texto_de_pandas(monkeypatch):
 
 
 def test_flow_sla_500_con_ref(monkeypatch, caplog):
-    client, csrf = _login(monkeypatch)
+    client, csrf = _cliente_logueado(monkeypatch)
     monkeypatch.setattr(informes.sla_service, "compute_from_db", _roto)
     with caplog.at_level(logging.ERROR, logger="web"):
         res = client.post("/api/flows/sla", data={"mes": "3", "anio": "2025", "csrf_token": csrf})
@@ -330,7 +330,7 @@ def test_flow_sla_value_error_conserva_422_con_su_mensaje(monkeypatch):
     def _sin_datos(**_kwargs):
         raise ValueError("No hay datos para el período")
 
-    client, csrf = _login(monkeypatch)
+    client, csrf = _cliente_logueado(monkeypatch)
     monkeypatch.setattr(informes.sla_service, "compute_from_db", _sin_datos)
     res = client.post("/api/flows/sla", data={"mes": "3", "anio": "2025", "csrf_token": csrf})
     assert res.status_code == 422
@@ -338,7 +338,7 @@ def test_flow_sla_value_error_conserva_422_con_su_mensaje(monkeypatch):
 
 
 def test_flow_repetitividad_500_registra_el_mismo_mensaje_en_el_historial(monkeypatch, caplog, historia):
-    client, csrf = _login(monkeypatch)
+    client, csrf = _cliente_logueado(monkeypatch)
     monkeypatch.setattr(informes, "reclamos_from_db", _roto)
     with caplog.at_level(logging.ERROR, logger="web"):
         res = client.post("/api/flows/repetitividad", data={"mes": "7", "anio": "2024", "csrf_token": csrf})
@@ -356,7 +356,7 @@ def test_flow_repetitividad_value_error_conserva_422_y_el_historial(monkeypatch,
     def _invalido(_mes, _anio):
         raise ValueError("Columnas faltantes")
 
-    client, csrf = _login(monkeypatch)
+    client, csrf = _cliente_logueado(monkeypatch)
     monkeypatch.setattr(informes, "reclamos_from_db", _invalido)
     res = client.post("/api/flows/repetitividad", data={"mes": "7", "anio": "2024", "csrf_token": csrf})
     assert res.status_code == 422
@@ -368,7 +368,7 @@ def test_flow_repetitividad_value_error_conserva_422_y_el_historial(monkeypatch,
 def test_sla_consumo_500_con_ref_y_mismo_mensaje_en_el_historial(monkeypatch, caplog, historia):
     from tests.test_web_sla_flow import _reclamos_excel_bytes, _servicios_excel_bytes
 
-    client, csrf = _login(monkeypatch)
+    client, csrf = _cliente_logueado(monkeypatch)
     monkeypatch.setattr(informes.sla_consumo_service, "generar_informe_sla_consumo", _roto)
     with caplog.at_level(logging.ERROR, logger="web"):
         res = client.post(

@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 from fastapi.testclient import TestClient
 
-from core.password import hash_password
+from tests.soporte_login import login_con_rol
 
 
 API_HEADERS = {"Authorization": "Bearer test-api-key"}
@@ -21,58 +21,6 @@ API_HEADERS = {"Authorization": "Bearer test-api-key"}
 
 # ── Helpers compartidos de login/sesión (mismo patrón que test_web_infra_camera_state.py y
 # test_web_botellas_admin.py: mock de psycopg.connect para no depender de una DB real) ──────────
-
-
-class _Cur:
-    def __init__(self, row: tuple[Any, ...] | None) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params: tuple[Any, ...] | None = None) -> None:
-        return None
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple[Any, ...]) -> None:
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self) -> None:
-        return None
-
-
-def _connect_ok(role: str, password: str):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):  # type: ignore
-        return _Conn((pwd_hash, role))
-
-    return _connect
-
-
-def _login(client: TestClient, monkeypatch, *, role: str, password: str = "secret") -> str:
-    from web.app import main as web_main
-
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_ok(role, password))
-    response = client.post("/api/auth/login", json={"username": role, "password": password})
-    assert response.status_code == 200
-    return response.json()["csrf"]
 
 
 class _FakeSyncSessionCtx:
@@ -166,7 +114,7 @@ def test_asociar_camaras_sin_admin_devuelve_403(monkeypatch):
     from web.app.main import app
 
     client = TestClient(app)
-    _login(client, monkeypatch, role="user", password="userpass")
+    login_con_rol(client, monkeypatch, role="user", password="userpass")
 
     response = client.post(
         "/api/admin/ingesta/camaras/asociar",
@@ -183,7 +131,7 @@ def test_asociar_camaras_csrf_invalido_devuelve_403(monkeypatch):
     # otro módulo de test puede haber dejado TESTING=true en el proceso, lo que saltearía el chequeo.
     monkeypatch.setenv("TESTING", "false")
     client = TestClient(app)
-    _login(client, monkeypatch, role="admin", password="admin")
+    login_con_rol(client, monkeypatch, role="admin", password="admin")
 
     response = client.post(
         "/api/admin/ingesta/camaras/asociar",
@@ -199,7 +147,7 @@ def test_asociar_camaras_caso_ids_vacio_devuelve_400(monkeypatch):
 
     monkeypatch.setenv("TESTING", "true")
     client = TestClient(app)
-    _login(client, monkeypatch, role="admin", password="admin")
+    login_con_rol(client, monkeypatch, role="admin", password="admin")
 
     response = client.post(
         "/api/admin/ingesta/camaras/asociar",
@@ -234,7 +182,7 @@ def test_asociar_camaras_camara_no_encontrada_devuelve_404(monkeypatch):
     )
 
     client = TestClient(web_main.app)
-    _login(client, monkeypatch, role="admin", password="admin")
+    login_con_rol(client, monkeypatch, role="admin", password="admin")
 
     response = client.post(
         "/api/admin/ingesta/camaras/asociar",
@@ -274,7 +222,7 @@ def test_asociar_camaras_motivo_vacio_usa_default(monkeypatch):
     monkeypatch.setattr("core.services.camara_ingest_service.asociar_nombres_a_camara", _fake_asociar)
 
     client = TestClient(web_main.app)
-    _login(client, monkeypatch, role="admin", password="admin")
+    login_con_rol(client, monkeypatch, role="admin", password="admin")
 
     response = client.post(
         "/api/admin/ingesta/camaras/asociar",
@@ -299,7 +247,7 @@ def test_marcar_revisado_masivo_sin_admin_devuelve_403(monkeypatch):
     from web.app.main import app
 
     client = TestClient(app)
-    _login(client, monkeypatch, role="user", password="userpass")
+    login_con_rol(client, monkeypatch, role="user", password="userpass")
 
     response = client.post(
         "/api/admin/infra/ingresos-sin-match/marcar-revisado-masivo",
@@ -314,7 +262,7 @@ def test_marcar_revisado_masivo_ids_vacio_devuelve_400(monkeypatch):
 
     monkeypatch.setenv("TESTING", "true")
     client = TestClient(app)
-    _login(client, monkeypatch, role="admin", password="admin")
+    login_con_rol(client, monkeypatch, role="admin", password="admin")
 
     response = client.post(
         "/api/admin/infra/ingresos-sin-match/marcar-revisado-masivo",
@@ -334,7 +282,7 @@ def test_marcar_revisado_masivo_devuelve_conteo_de_actualizados(monkeypatch):
     monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(fake_session))
 
     client = TestClient(app)
-    _login(client, monkeypatch, role="admin", password="admin")
+    login_con_rol(client, monkeypatch, role="admin", password="admin")
 
     response = client.post(
         "/api/admin/infra/ingresos-sin-match/marcar-revisado-masivo",
@@ -385,7 +333,7 @@ def test_ingresos_sin_match_filtra_por_origen_coma_separado(monkeypatch):
     monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(fake_session))
 
     client = TestClient(app)
-    _login(client, monkeypatch, role="admin", password="admin")
+    login_con_rol(client, monkeypatch, role="admin", password="admin")
 
     response = client.get("/api/admin/infra/ingresos-sin-match?origen=excel_camaras,slack")
 
@@ -404,7 +352,7 @@ def test_ingresos_sin_match_sin_origen_no_filtra(monkeypatch):
     monkeypatch.setattr("db.session.SessionLocal", _fake_session_local(fake_session))
 
     client = TestClient(app)
-    _login(client, monkeypatch, role="admin", password="admin")
+    login_con_rol(client, monkeypatch, role="admin", password="admin")
 
     response = client.get("/api/admin/infra/ingresos-sin-match")
 

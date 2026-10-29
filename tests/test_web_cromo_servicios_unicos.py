@@ -4,8 +4,8 @@
 
 """Task 10 del plan "Corrección ingresos + Servicios" (2026-09-23).
 
-Mismo patrón que `tests/test_web_cromo_verificador.py` (`_Cur`/`_Conn`/`_connect_user_ok`/`_login`/
-`_SesionFake`/`_fake_async_session_local`) — copiado, no factorizado (~18 copias de ese patrón en
+Mismo patrón que `tests/test_web_cromo_verificador.py` (`CursorFila`/`ConexionFila`/`connect_user_ok`/`login`/
+`_SesionFake`/`fake_async_session_local`) — copiado, no factorizado (~18 copias de ese patrón en
 el repo, factorizarlo está fuera de alcance de esta tarea).
 
 Dos gotchas de matching por substring propios de este archivo (ninguno de los otros archivos de
@@ -54,58 +54,10 @@ from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient  # type: ignore
 
-from core.password import hash_password
+from tests.soporte_login import connect_user_ok, fake_async_session_local, login
 from web.app import main as web_main
 from web.app.main import app
 from web.app.routers.cromo import _ResultadoRefrescoLote
-
-
-class _Cur:
-    def __init__(self, row: Optional[tuple] = None) -> None:
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql: str, params=None) -> None:
-        return None
-
-    def fetchone(self):
-        return self._row
-
-
-class _Conn:
-    def __init__(self, row: tuple) -> None:
-        self.cur = _Cur(row)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self) -> None:
-        return None
-
-
-def _connect_user_ok(password: str = "userpass"):
-    pwd_hash = hash_password(password)
-
-    def _connect(dsn: str):
-        return _Conn((pwd_hash, "user"))
-
-    return _connect
-
-
-def _login(client: TestClient, username: str, password: str) -> str:
-    res = client.post("/api/auth/login", json={"username": username, "password": password})
-    return res.json()["csrf"]
 
 
 class _ResultadoFilas:
@@ -149,22 +101,8 @@ class _SesionFake:
         return self._existentes.get((modelo_cls, pk))
 
 
-def _fake_async_session_local(sesion: _SesionFake):
-    class _CM:
-        async def __aenter__(self):
-            return sesion
-
-        async def __aexit__(self, *a):
-            return False
-
-    def factory():
-        return _CM()
-
-    return factory
-
-
 def _fake_async_session_local_secuencia(sesiones: list[_SesionFake]):
-    """Igual que `_fake_async_session_local`, pero devuelve una `_SesionFake` DISTINTA en cada
+    """Igual que `fake_async_session_local`, pero devuelve una `_SesionFake` DISTINTA en cada
     `async with AsyncSessionLocal()` sucesivo — el POST `/refrescar-prov` abre dos sesiones
     (lectura inicial + vencidos, después re-lectura tras el refresco) y necesita poder simular un
     estado "antes"/"después" distinto en cada una."""
@@ -247,11 +185,11 @@ def test_refrescar_prov_requiere_autenticacion():
 
 
 def test_por_cable_404_si_no_existe(monkeypatch):
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/999/servicios-unicos")
     assert res.status_code == 404
@@ -261,7 +199,7 @@ def test_por_cable_404_si_no_existe(monkeypatch):
 def test_por_cable_happy_path_con_frescura(monkeypatch):
     from db.models.cromo import CromoCable
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     ahora = datetime.now(timezone.utc)
     vieja = ahora - timedelta(hours=100)  # > 48h default -> vencida
     fresca = ahora - timedelta(hours=1)  # < 48h default -> no vencida
@@ -290,10 +228,10 @@ def test_por_cable_happy_path_con_frescura(monkeypatch):
         },
         existentes={(CromoCable, 51): cable},
     )
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/51/servicios-unicos")
     assert res.status_code == 200
@@ -317,16 +255,16 @@ def test_por_cable_servicio_nunca_sincronizado_es_vencido(monkeypatch):
     consulta de frescura de Task 7 (`IS NULL OR ... < corte`)."""
     from db.models.cromo import CromoCable
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     cable = CromoCable(n_id=51, nombre="Cable Troncal", capacidad="72-BRUG", vigente=True)
     sesion = _SesionFake(
         respuestas={_SQL_UNICOS_POR_CABLE: [_FILA_SERVICIO_UNICO]},
         existentes={(CromoCable, 51): cable},
     )
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/51/servicios-unicos")
     assert res.status_code == 200
@@ -341,12 +279,12 @@ def test_por_cable_servicio_nunca_sincronizado_es_vencido(monkeypatch):
 
 
 def test_por_buffer_404_buffer_inexistente_incluye_total_buffers(monkeypatch):
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     sesion = _SesionFake(respuestas={_SQL_CONTAR_BUFFERS: [(3,)]})
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/51/buffers/9/servicios-unicos")
     assert res.status_code == 404
@@ -358,7 +296,7 @@ def test_por_buffer_404_buffer_inexistente_incluye_total_buffers(monkeypatch):
 def test_por_buffer_happy_path(monkeypatch):
     from db.models.cromo import CromoCable
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     cable = CromoCable(n_id=51, nombre="Cable Troncal", capacidad="72-BRUG", vigente=True)
     sesion = _SesionFake(
         respuestas={
@@ -367,10 +305,10 @@ def test_por_buffer_happy_path(monkeypatch):
         },
         existentes={(CromoCable, 51): cable},
     )
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/51/buffers/3/servicios-unicos")
     assert res.status_code == 200
@@ -388,16 +326,16 @@ def test_por_buffer_con_fila_propia_pero_sin_pelos_no_es_404(monkeypatch):
     la ruta debe devolver 200 con `servicios: []`, no propagar un 404 espurio."""
     from db.models.cromo import CromoCable
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     cable = CromoCable(n_id=51, nombre="Cable Troncal", capacidad="72-BRUG", vigente=True)
     sesion = _SesionFake(
         respuestas={_SQL_TUBO_POR_ORDEN: [(129001, 2, "AZUL")]},
         existentes={(CromoCable, 51): cable},
     )
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/51/buffers/3/servicios-unicos")
     assert res.status_code == 200
@@ -410,12 +348,12 @@ def test_por_buffer_con_fila_propia_pero_sin_pelos_no_es_404(monkeypatch):
 
 
 def test_resolver_por_n_id_happy_path(monkeypatch):
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     sesion = _SesionFake(respuestas={_SQL_CABLE_POR_N_ID: [(10260935, "F-LEM-11-A", "48-BRUG")]})
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/resolver", params={"q": "10260935"})
     assert res.status_code == 200
@@ -423,11 +361,11 @@ def test_resolver_por_n_id_happy_path(monkeypatch):
 
 
 def test_resolver_por_nombre_no_encontrado(monkeypatch):
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/resolver", params={"q": "F-NO-EXISTE"})
     assert res.status_code == 404
@@ -437,7 +375,7 @@ def test_resolver_por_nombre_no_encontrado(monkeypatch):
 def test_resolver_por_nombre_ambiguo(monkeypatch):
     """Los dos pares de nombres duplicados reales conocidos del brief ("F-ALV-2335"/"F-LEM-11-A")
     son exactamente este caso: 2+ cables vigentes con el mismo nombre."""
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     sesion = _SesionFake(
         respuestas={
             _SQL_CABLE_POR_NOMBRE: [
@@ -446,10 +384,10 @@ def test_resolver_por_nombre_ambiguo(monkeypatch):
             ]
         }
     )
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.get("/api/infra/cromo/cables/resolver", params={"q": "F-LEM-11-A"})
     assert res.status_code == 409
@@ -462,12 +400,12 @@ def test_resolver_por_nombre_ambiguo(monkeypatch):
 
 
 def test_refrescar_prov_csrf_invalido(monkeypatch):
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
     monkeypatch.setenv("TESTING", "false")
 
     client = TestClient(app)
-    _login(client, "user", "userpass")
+    login(client, "user", "userpass")
 
     res = client.post(
         "/api/infra/cromo/cables/51/servicios-unicos/refrescar-prov",
@@ -477,12 +415,12 @@ def test_refrescar_prov_csrf_invalido(monkeypatch):
 
 
 def test_refrescar_prov_404_si_cable_no_existe(monkeypatch):
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(_SesionFake()))
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(_SesionFake()))
     monkeypatch.setenv("TESTING", "false")
 
     client = TestClient(app)
-    csrf = _login(client, "user", "userpass")
+    csrf = login(client, "user", "userpass")
 
     res = client.post(
         "/api/infra/cromo/cables/999/servicios-unicos/refrescar-prov",
@@ -497,7 +435,7 @@ def test_refrescar_prov_sin_vencidos_no_dispara_el_lote(monkeypatch):
     `_ejecutar_refresco_prov_lote` ni se llama (no hay nada que refrescar)."""
     from db.models.cromo import CromoCable
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     monkeypatch.setenv("TESTING", "false")
 
     ahora = datetime.now(timezone.utc)
@@ -525,7 +463,7 @@ def test_refrescar_prov_sin_vencidos_no_dispara_el_lote(monkeypatch):
     monkeypatch.setattr(web_main.cromo, "_ejecutar_refresco_prov_lote", lote_fake)
 
     client = TestClient(app)
-    csrf = _login(client, "user", "userpass")
+    csrf = login(client, "user", "userpass")
 
     res = client.post(
         "/api/infra/cromo/cables/51/servicios-unicos/refrescar-prov",
@@ -540,7 +478,7 @@ def test_refrescar_prov_sin_vencidos_no_dispara_el_lote(monkeypatch):
 def test_refrescar_prov_con_vencidos_completado(monkeypatch):
     from db.models.cromo import CromoCable
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     monkeypatch.setenv("TESTING", "false")
 
     ahora = datetime.now(timezone.utc)
@@ -568,7 +506,7 @@ def test_refrescar_prov_con_vencidos_completado(monkeypatch):
     monkeypatch.setattr(web_main.cromo, "_ejecutar_refresco_prov_lote", lote_fake)
 
     client = TestClient(app)
-    csrf = _login(client, "user", "userpass")
+    csrf = login(client, "user", "userpass")
 
     res = client.post(
         "/api/infra/cromo/cables/51/servicios-unicos/refrescar-prov",
@@ -585,7 +523,7 @@ def test_refrescar_prov_con_vencidos_completado(monkeypatch):
 def test_refrescar_prov_con_fallidos_es_parcial(monkeypatch):
     from db.models.cromo import CromoCable
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     monkeypatch.setenv("TESTING", "false")
 
     cable = CromoCable(n_id=51, nombre="Cable Troncal", capacidad="72-BRUG", vigente=True)
@@ -608,7 +546,7 @@ def test_refrescar_prov_con_fallidos_es_parcial(monkeypatch):
     monkeypatch.setattr(web_main.cromo, "_ejecutar_refresco_prov_lote", lote_fake)
 
     client = TestClient(app)
-    csrf = _login(client, "user", "userpass")
+    csrf = login(client, "user", "userpass")
 
     res = client.post(
         "/api/infra/cromo/cables/51/servicios-unicos/refrescar-prov",
@@ -623,7 +561,7 @@ def test_refrescar_prov_con_fallidos_es_parcial(monkeypatch):
 def test_refrescar_prov_502_si_prov_no_configurado(monkeypatch):
     from core.services.prov.config import ProvConfigError
 
-    monkeypatch.setattr(web_main.psycopg, "connect", _connect_user_ok())
+    monkeypatch.setattr(web_main.psycopg, "connect", connect_user_ok())
     monkeypatch.setenv("TESTING", "false")
 
     sesion = _SesionFake(
@@ -632,13 +570,13 @@ def test_refrescar_prov_502_si_prov_no_configurado(monkeypatch):
             _SQL_VENCIDOS_BATCH: [(501,)],
         }
     )
-    monkeypatch.setattr("db.session.AsyncSessionLocal", _fake_async_session_local(sesion))
+    monkeypatch.setattr("db.session.AsyncSessionLocal", fake_async_session_local(sesion))
 
     lote_fake = AsyncMock(side_effect=ProvConfigError("falta configurar PROV_BASE_URL"))
     monkeypatch.setattr(web_main.cromo, "_ejecutar_refresco_prov_lote", lote_fake)
 
     client = TestClient(app)
-    csrf = _login(client, "user", "userpass")
+    csrf = login(client, "user", "userpass")
 
     res = client.post(
         "/api/infra/cromo/cables/51/servicios-unicos/refrescar-prov",

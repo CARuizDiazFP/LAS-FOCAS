@@ -11,8 +11,7 @@ from fastapi.testclient import TestClient
 
 from api.app import oauth
 from api.app.main import app
-from db.session import get_async_db
-from tests.soporte_oauth import CLIENT_SECRET, SesionFalsa, hacer_cliente, override_con, secreto_firma  # noqa: F401
+from tests.soporte_oauth import CLIENT_SECRET, SesionFalsa, hacer_cliente, secreto_firma, sesion_falsa_instalada  # noqa: F401
 
 client = TestClient(app)
 URL = "/api/v1/oauth/token"
@@ -20,15 +19,12 @@ URL = "/api/v1/oauth/token"
 
 @pytest.fixture
 def sesion():
-    s = SesionFalsa(
+    with sesion_falsa_instalada(
+        app,
         hacer_cliente(),
         hacer_cliente("lf_inactivo", activo=False),
-    )
-    app.dependency_overrides[get_async_db] = override_con(s)
-    try:
+    ) as s:
         yield s
-    finally:
-        app.dependency_overrides.pop(get_async_db, None)
 
 
 def _form(**extra) -> dict:
