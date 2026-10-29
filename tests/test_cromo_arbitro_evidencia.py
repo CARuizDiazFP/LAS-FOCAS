@@ -94,7 +94,7 @@ async def test_trackings_del_servicio_registra_evidencia(monkeypatch, fuente, ha
         return "1"
 
     async def _semillas(_s, _id):
-        from tests.test_cromo_tracking_por_camino import _semilla
+        from tests.soporte_cromo_tracking import _semilla
 
         return [_semilla(10)]
 

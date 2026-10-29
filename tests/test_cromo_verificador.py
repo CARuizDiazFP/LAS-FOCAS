@@ -31,7 +31,7 @@ class _ResultadoFilas:
 
 
 class _SesionFake:
-    """Reemplaza sólo `execute`: matchea por substring de la consulta compilada, como en test_cromo_ingesta.py."""
+    """Reemplaza sólo `execute`: matchea por substring de la consulta compilada, como en tests/soporte_cromo_ingesta.py."""
 
     def __init__(self, respuestas: Optional[dict[str, list[tuple]]] = None) -> None:
         self._respuestas = respuestas or {}
