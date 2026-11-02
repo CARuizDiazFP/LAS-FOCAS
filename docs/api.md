@@ -2058,8 +2058,9 @@ Detalle de un incidente con la plantilla guardada del aviso y el conteo de cáma
 `detalle_incidente_baneo()` de `core/services/baneo_aviso.py`.
 
 - **Respuesta 200:** `{id, ticket, servicio_afectado, servicio_protegido, email_subject, email_body,
-  cantidad_camaras}`. `email_subject`/`email_body` los guarda sólo `POST /api/infra/notify/download-eml`
-  de la API (el del panel no los persiste); son `null` si nunca se guardaron.
+  cantidad_camaras}`. `email_subject`/`email_body`: Desde P27 (2026-11-02) los guardan, con la misma regla en la API y en el panel, `POST /api/infra/notify/download-eml`
+  y `POST /api/infra/notify/email` (este último sólo si el envío sale bien y es de un único incidente); son `null`
+  si nunca se guardaron.
 - **404:** incidente inexistente (`detail` en la API, `error` en el panel).
 
 ### Notificación por correo de baneos
@@ -2081,6 +2082,10 @@ si `SMTP_HOST` no está vacío (`EmailService.is_configured()`, `core/services/e
   `Servicio Afectado`, `Servicio Protegido`, `ID`, `Nombre`, `Fontine_ID`, `Dirección`, `Estado`, `Servicios`,
   `Latitud`, `Longitud`, `Fecha Inicio`, `Motivo`) e `include_txt` (default `true`: adjunta el TXT original del primer
   tracking con `raw_file_content` del servicio protegido).
+- **Guardado de la plantilla (P27):** si el envío sale bien y `incidente_ids` tiene **un solo** incidente,
+  guarda en él `subject` y `body`; el `body` (texto plano) se guarda envuelto como lo arma el panel
+  (`texto_a_html_aviso`: escapado, en un `div` con `white-space:pre-wrap`). Con varios incidentes no guarda.
+  Asunto o cuerpo vacíos no pisan lo guardado. Log `action=guardar_plantilla_aviso user=… incident_id=…` (sin el cuerpo).
 - **Respuesta 200 (`EmailNotifyResponse`):** `{"success", "message", "error", "recipients_count"}`.
   Responde **siempre 200**: SMTP sin configurar, IDs inexistentes o un error al enviar llegan como
   `success: false` (en el último caso con `error: "Error interno (ref …)"`).
@@ -2095,8 +2100,11 @@ si `SMTP_HOST` no está vacío (`EmailService.is_configured()`, `core/services/e
 Alternativa sin SMTP: genera un `.eml` para abrir y enviar desde el cliente de correo.
 
 - **Body (form-data):** `incident_id` (int, requerido), `recipients`, `subject`, `html_body`
-  (opcionales). Si llegan `subject` o `html_body`, **se guardan** en el incidente
-  (`email_subject`/`email_body`) DESPUÉS de generar el archivo y sólo si el incidente existe.
+  (opcionales). Si el incidente existe, guarda en él (`email_subject`/`email_body`) el asunto y el cuerpo
+  **finales del `.eml`** (con las `{{variables}}` ya reemplazadas), con la misma regla que el panel
+  (`armar_y_guardar_eml_baneo`, P27). Un asunto o cuerpo ausente o vacío arma el `.eml` con el valor por
+  defecto pero **no pisa** lo guardado (antes de P27 se guardaba la entrada cruda, incluido `''`). Si guardar
+  falla, el `.eml` se entrega igual (queda en el log).
 - **Adjuntos:** el TXT del tracking de la ruta protegida (o de la primera ruta del servicio con
   contenido), armado con `armar_eml_baneo` (`core/services/baneo_aviso.py`), el mismo que usa el panel; el XLS adjunto es el mismo que el de `notify/email` (`baneos_activos.xlsx`, hoja `Baneos_Activos`, mismas columnas; antes `camaras_baneadas_{ticket}.xlsx` / `Camaras_Baneadas`).
 - **Respuesta 200:** `message/rfc822` con `Content-Disposition: attachment;

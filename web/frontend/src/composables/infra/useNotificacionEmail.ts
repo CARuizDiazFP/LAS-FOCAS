@@ -86,7 +86,7 @@ export function useNotificacionEmail(notificar: Notificar) {
     void cargarPlantillaGuardada(inc.id, local);
   }
 
-  // Plantilla guardada del incidente (la escribe el download-eml de la API). Reemplaza la local campo por
+  // Plantilla guardada del incidente (la escriben la descarga del .eml y el envío, P27). Reemplaza la local campo por
   // campo sólo si el modal sigue en ese incidente y el usuario todavía no lo editó; si falla, queda la local.
   async function cargarPlantillaGuardada(incidenteId: number, local: { subject: string; body: string }) {
     try {

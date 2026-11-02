@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from core.services.baneo_aviso import (
-    armar_eml_baneo,
+    armar_y_guardar_eml_baneo,
     detalle_incidente_baneo,
     enviar_aviso_baneo,
     estado_config_email,
@@ -718,6 +718,7 @@ def send_email_notification_web(
                 incidente_ids=email_request.incidente_ids,
                 include_xls=email_request.include_xls,
                 include_txt=email_request.include_txt,
+                usuario=username,
             )
 
         logger.info(
@@ -772,8 +773,9 @@ def generate_eml_file(
     """Genera un archivo .eml descargable con el correo de notificación.
 
     Alternativa cuando no se puede usar SMTP directamente (ej: Office 365 sin App Password):
-    el usuario abre el .eml con su cliente de correo y lo envía a mano. El armado vive en
-    `core.services.baneo_aviso.armar_eml_baneo`, compartido con la API.
+    el usuario abre el .eml con su cliente de correo y lo envía a mano. El armado y el guardado del
+    asunto y el cuerpo en el incidente (P27) viven en `core.services.baneo_aviso.armar_y_guardar_eml_baneo`,
+    compartido con la API.
     """
     username, _ = usuario
 
@@ -785,12 +787,13 @@ def generate_eml_file(
         from db.session import SessionLocal
 
         with SessionLocal() as session:
-            eml = armar_eml_baneo(
+            eml = armar_y_guardar_eml_baneo(
                 session,
                 eml_request.incident_id,
                 destinatarios=destinatarios,
                 subject=eml_request.subject,
                 html_body=eml_request.html_body,
+                usuario=username,
                 include_xls=eml_request.include_xls,
                 include_txt=eml_request.include_txt,
             )

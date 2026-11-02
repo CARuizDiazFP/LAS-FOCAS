@@ -8,6 +8,7 @@ export interface NodoAviso {
   nodeName: string;
   textContent: string | null;
   childNodes: ArrayLike<NodoAviso>;
+  getAttribute?(nombre: string): string | null;
 }
 
 const TEXTO = 3;
@@ -15,6 +16,19 @@ const ELEMENTO = 1;
 const PARRAFOS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'TABLE', 'UL', 'OL']);
 const LINEAS = new Set(['DIV', 'TR', 'LI', 'SECTION', 'HEADER', 'FOOTER']);
 const OMITIDOS = new Set(['STYLE', 'SCRIPT', 'HEAD', 'TITLE']);
+
+/** El cuerpo que guardan el panel y el envío por SMTP (P27) es el envoltorio de `textoPlanoAHtml`: un único
+ * `div` con `white-space: pre-wrap`. Su texto vuelve tal cual, con los saltos y los espacios del usuario, para
+ * que guardar y reabrir no los colapse; `null` si el cuerpo es otra cosa (p. ej. la plantilla HTML vieja). */
+export function textoDeEnvoltorioPreWrap(raiz: NodoAviso): string | null {
+  const hijos = Array.from(raiz.childNodes).filter(
+    (n) => n.nodeType === ELEMENTO || (n.nodeType === TEXTO && (n.textContent ?? '').trim() !== ''),
+  );
+  if (hijos.length !== 1) return null;
+  const [div] = hijos;
+  if (div.nodeName !== 'DIV' || !/white-space\s*:\s*pre-wrap/i.test(div.getAttribute?.('style') ?? '')) return null;
+  return (div.textContent ?? '').trim();
+}
 
 /** Recorre el cuerpo hasta el primer `<hr>` (el pie "Generado por LAS-FOCAS" de los avisos guardados):
  * párrafos, títulos y tablas quedan separados por una línea en blanco; `div`, filas e ítems, por un salto;
@@ -42,10 +56,12 @@ export function textoDeNodoAviso(raiz: NodoAviso): string {
     .trim();
 }
 
-/** `email_body` lo guarda el `download-eml` de la API como HTML (documento completo de la plantilla vieja);
- * el modal edita texto plano y `textoPlanoAHtml` lo vuelve a envolver al descargar. Si ya es texto, va tal cual.
+/** `email_body` lo guardan como HTML el `download-eml` y el envío por SMTP, en el panel y en la API: el
+ * envoltorio de `textoPlanoAHtml` (desde P27) o, en los guardados viejos, el documento completo de la plantilla.
+ * El modal edita texto plano y `textoPlanoAHtml` lo vuelve a envolver al descargar. Si ya es texto, va tal cual.
  * `DOMParser` arma un documento inerte (no ejecuta scripts ni carga recursos) y sólo se lee su texto. */
 export function htmlAvisoATexto(html: string): string {
   if (!/<[a-z!/][^>]*>/i.test(html)) return html.trim();
-  return textoDeNodoAviso(new DOMParser().parseFromString(html, 'text/html').body);
+  const cuerpo = new DOMParser().parseFromString(html, 'text/html').body;
+  return textoDeEnvoltorioPreWrap(cuerpo) ?? textoDeNodoAviso(cuerpo);
 }

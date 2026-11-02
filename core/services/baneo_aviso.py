@@ -7,6 +7,8 @@
 `adjuntos_aviso_baneo` arma el XLS (una fila por cámara e incidente) y un TXT de tracking por
 incidente; `enviar_aviso_baneo` los junta y manda el correo; `estado_config_email` informa si el SMTP
 está configurado. Todo es bloqueante (DB y SMTP): la API lo ejecuta entero en `asyncio.to_thread`.
+Desde P27, descargar el `.eml` (`armar_y_guardar_eml_baneo`) y enviar por SMTP guardan en el incidente el
+asunto y el cuerpo del aviso con la misma regla en el panel y en la API (`guardar_plantilla_aviso`).
 """
 
 from __future__ import annotations
@@ -47,6 +49,11 @@ MENSAJE_SIN_SMTP = "Servicio de email no configurado"
 ERROR_SIN_SMTP = "SMTP no está configurado en el servidor"
 MENSAJE_SIN_INCIDENTES = "No se encontraron incidentes con los IDs especificados"
 ERROR_SIN_INCIDENTES = "incidente_ids vacíos o inválidos"
+
+# P27: mismo envoltorio que `web/frontend/src/utils/textoPlanoAHtml.ts`; `htmlAvisoATexto.ts` lo reconoce y
+# devuelve su texto tal cual, así el cuerpo guardado vuelve al textarea con sus saltos de línea.
+ENVOLTORIO_TEXTO_AVISO = '<div style="white-space:pre-wrap;font-family:inherit">'
+_ESCAPES_TEXTO_AVISO = str.maketrans({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})
 
 
 # Plantilla HTML por defecto del aviso (movida tal cual desde el panel); `{{variable}}` se reemplaza al armar.
@@ -225,8 +232,13 @@ def enviar_aviso_baneo(
     incidente_ids: list[int],
     include_xls: bool,
     include_txt: bool,
+    usuario: str | None = None,
 ) -> EmailNotifyResultado:
-    """Arma los adjuntos y envía el aviso (D6: SMTP sin configurar o sin incidentes → `success=False`)."""
+    """Arma los adjuntos y envía el aviso (D6: SMTP sin configurar o sin incidentes → `success=False`).
+
+    Si el envío sale bien y es de un único incidente, guarda en él el asunto y el cuerpo (P27); con varios
+    no, porque el cuerpo trae los datos de uno solo.
+    """
     servicio = get_email_service()
     if not servicio.is_configured():
         return EmailNotifyResultado(False, MENSAJE_SIN_SMTP, ERROR_SIN_SMTP)
@@ -240,6 +252,11 @@ def enviar_aviso_baneo(
     resultado = servicio.send_email(
         to=to, cc=cc, subject=subject, body=body, attachments=adjuntos or None
     )
+    if resultado.success and len(incidente_ids) == 1:
+        cuerpo = (body or "").strip()
+        _guardar_sin_cortar(
+            session, incidente_ids[0], subject, texto_a_html_aviso(cuerpo) if cuerpo else None, usuario
+        )
     return EmailNotifyResultado(
         success=resultado.success,
         message=resultado.message,
@@ -352,15 +369,86 @@ def detalle_incidente_baneo(session: Session, incidente_id: int) -> dict[str, An
     }
 
 
+def texto_a_html_aviso(texto: str) -> str:
+    """Cuerpo de texto plano como lo envuelve el panel (`textoPlanoAHtml.ts`): escapado, en un `div` pre-wrap."""
+    return f"{ENVOLTORIO_TEXTO_AVISO}{texto.translate(_ESCAPES_TEXTO_AVISO)}</div>"
+
+
 def guardar_plantilla_aviso(
-    session: Session, incidente_id: int, subject: str | None, html_body: str | None
+    session: Session,
+    incidente_id: int,
+    subject: str | None,
+    html_body: str | None,
+    *,
+    usuario: str | None = None,
 ) -> None:
-    """Persiste en el incidente el asunto y el cuerpo editados (sólo la API; un `None` no toca esa columna)."""
+    """Persiste en el incidente el asunto y el cuerpo del último aviso, pisando lo anterior (sin historial).
+
+    `None`, vacío o sólo espacios no tocan esa columna: vaciar el campo hace que el aviso use la plantilla
+    por defecto, pero no borra lo guardado. El log no lleva el cuerpo.
+    """
+    asunto = subject if (subject or "").strip() else None
+    cuerpo = html_body if (html_body or "").strip() else None
+    if asunto is None and cuerpo is None:
+        return
     incidente = session.query(IncidenteBaneo).filter(IncidenteBaneo.id == incidente_id).first()
     if incidente is None:
         return
-    if subject is not None:
-        incidente.email_subject = subject
-    if html_body is not None:
-        incidente.email_body = html_body
+    if asunto is not None:
+        incidente.email_subject = asunto
+    if cuerpo is not None:
+        incidente.email_body = cuerpo
     session.commit()
+    logger.info(
+        "action=guardar_plantilla_aviso user=%s incident_id=%d subject=%s body=%s",
+        usuario or "-", incidente_id, asunto is not None, cuerpo is not None,
+    )
+
+
+def _guardar_sin_cortar(
+    session: Session, incidente_id: int, subject: str | None, html_body: str | None, usuario: str | None
+) -> None:
+    """Guarda la plantilla sin tumbar el aviso: el correo ya salió o el `.eml` ya está armado."""
+    try:
+        guardar_plantilla_aviso(session, incidente_id, subject, html_body, usuario=usuario)
+    except Exception as exc:  # noqa: BLE001 — guardar es secundario; queda en el log con la ref del incidente
+        session.rollback()
+        logger.exception(
+            "action=guardar_plantilla_aviso_error user=%s incident_id=%d error=%s", usuario or "-", incidente_id, exc
+        )
+
+
+def armar_y_guardar_eml_baneo(
+    session: Session,
+    incidente_id: int,
+    *,
+    destinatarios: list[str],
+    subject: str | None,
+    html_body: str | None,
+    usuario: str | None = None,
+    include_xls: bool = True,
+    include_txt: bool = True,
+) -> EmlBaneo | None:
+    """`armar_eml_baneo` + guarda en el incidente el asunto y el cuerpo **finales** del `.eml` (P27).
+
+    Lo usan el panel y la API. Sólo se guarda lo que llegó con texto: un asunto o cuerpo vacío arma el
+    `.eml` con el valor por defecto, pero no pisa lo guardado.
+    """
+    eml = armar_eml_baneo(
+        session,
+        incidente_id,
+        destinatarios=destinatarios,
+        subject=subject,
+        html_body=html_body,
+        include_xls=include_xls,
+        include_txt=include_txt,
+    )
+    if eml is not None:
+        _guardar_sin_cortar(
+            session,
+            incidente_id,
+            eml.subject if (subject or "").strip() else None,
+            eml.html_body if (html_body or "").strip() else None,
+            usuario,
+        )
+    return eml

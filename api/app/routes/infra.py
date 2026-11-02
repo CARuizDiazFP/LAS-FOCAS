@@ -29,11 +29,10 @@ from core.services.baneo_operaciones import (
 )
 from core.services.baneo_aviso import (
     EmailNotifyResultado,
-    armar_eml_baneo,
+    armar_y_guardar_eml_baneo,
     detalle_incidente_baneo,
     enviar_aviso_baneo,
     estado_config_email,
-    guardar_plantilla_aviso,
     parsear_destinatarios,
 )
 from core.services.camaras_busqueda_avanzada import SearchRequest, buscar_camaras_avanzada
@@ -1092,6 +1091,7 @@ async def send_ban_notification_email(request: EmailNotifyRequest) -> EmailNotif
                 incidente_ids=request.incidente_ids,
                 include_xls=request.include_xls,
                 include_txt=request.include_txt,
+                usuario="api",
             )
 
     try:
@@ -1176,18 +1176,16 @@ async def download_ban_eml(
     """Genera y descarga un archivo .eml con el aviso de baneo y adjuntos."""
 
     def _armar():
+        # Guarda en el incidente el asunto y el cuerpo finales del .eml, con la misma regla que el panel
         with SessionLocal() as session:
-            eml = armar_eml_baneo(
+            return armar_y_guardar_eml_baneo(
                 session,
                 incident_id,
                 destinatarios=parsear_destinatarios(recipients),
                 subject=subject,
                 html_body=html_body,
+                usuario="api",
             )
-            # Guarda las ediciones de asunto/cuerpo que llegan en el formulario
-            if eml is not None and (subject is not None or html_body is not None):
-                guardar_plantilla_aviso(session, incident_id, subject, html_body)
-            return eml
 
     try:
         eml = await asyncio.to_thread(_armar)

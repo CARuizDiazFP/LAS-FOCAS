@@ -1625,10 +1625,12 @@ Crea un nuevo baneo (Protocolo de Protección).
 Levanta un baneo y restaura el estado de las cámaras.
 
 ### POST /api/infra/notify/email
-Envía notificación por correo de un baneo específico.
+Envía notificación por correo de un baneo específico. Si sale bien y es de un único incidente, guarda en él
+asunto y cuerpo (P27, `enviar_aviso_baneo`).
 
 ### POST /api/infra/notify/download-eml
-Genera archivo EML para descargar y abrir en Outlook.
+Genera archivo EML para descargar y abrir en Outlook, y guarda en el incidente el asunto y el cuerpo finales
+(P27, `armar_y_guardar_eml_baneo`; vacíos no pisan lo guardado). Misma regla en la API y en el panel.
 
 ## Archivos relacionados
 

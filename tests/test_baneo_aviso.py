@@ -49,6 +49,12 @@ class _Sesion:
     def query(self, modelo) -> _Consulta:
         return _Consulta(self._por_modelo[modelo.__name__])
 
+    def commit(self) -> None:  # el envío exitoso de un incidente guarda la plantilla (P27)
+        ...
+
+    def rollback(self) -> None:
+        ...
+
 
 def _ruta(id_: int, contenido: str | None, nombre: str | None = None):
     return SimpleNamespace(id=id_, raw_file_content=contenido, nombre_archivo_origen=nombre)
@@ -234,6 +240,7 @@ async def test_api_notify_email_no_bloquea_el_loop(monkeypatch):
     servicio = SimpleNamespace(is_configured=lambda: True, send_email=_send_email)
     monkeypatch.setattr(baneo_aviso, "get_email_service", lambda: servicio)
     monkeypatch.setattr(baneo_aviso, "adjuntos_aviso_baneo", lambda *_a, **_k: [])
+    monkeypatch.setattr(baneo_aviso, "guardar_plantilla_aviso", lambda *_a, **_k: None)  # P27, fuera de este test
 
     class _SesionFalsa:
         def __enter__(self): return self
