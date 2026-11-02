@@ -110,6 +110,10 @@ ln -s <checkout-de-control>/web/frontend/dist web/frontend/dist
 ln -s <checkout-de-control>/web/frontend/node_modules web/frontend/node_modules
 ```
 
+Sólo si la ruta **no existe**. Si el worktree ya buildeó (`dist/` real), `ln -s[fn] <origen> dist` no la
+reemplaza: crea el enlace **adentro** (`dist/dist`, que apunta a sí mismo si el origen es el propio
+worktree). Real: P24, 2026-10-29. Comprobar con `[ -e web/frontend/dist ] || ln -s …`.
+
 ### 3. Trabajar
 
 - Editar, testear y commitear normalmente en la rama propia. **Sin leases.**
@@ -221,6 +225,15 @@ inyectando el notificador desde los routers (ver `docs/cierres/2026-10-28.md`).
 Si varias sesiones crean el mismo `docs/PR/<fecha>.md`, el `sync` da un conflicto add/add. Se
 resuelve con la **unión** de las secciones: un solo encabezado de 3 líneas y una sección por frente.
 Real (2026-10-26): ola 1 de la auditoría, P02 docs con P13 MCP. Ver `docs/cierres/2026-10-26.md`.
+Con `git show :2:<archivo>` (tu lado) y `:3:` (el de dev) se sacan las dos versiones enteras para
+armar la unión sin editar marcadores a mano.
+
+**Un `sync` con conflicto deja al agente en `blocked`** hasta el próximo `ready` que pase, aunque el
+conflicto ya esté resuelto y commiteado. No es un fallo nuevo: correr `ready` (que vuelve a
+`ready_to_merge`). **Si la sesión se cortó durante un `ready`, el gate puede seguir corriendo**: antes de
+relanzarlo, `ps -eo pid,etime,cmd | grep '[a]gent_worktree.py ready'` y, si está vivo, esperarlo
+(`tail --pid=<pid> -f /dev/null`). Dos gates en paralelo duplican ~5 min de pytest sobre el mismo HEAD.
+Real: P24, 2026-11-02 (el `ready` sobrevivió al corte y terminó `ready_to_merge`).
 
 **Ejecutar `ready` e `integrate` en comandos separados, nunca encadenados.** Real (2026-09-21): un
 `ready ... ; integrate ...` en una sola invocación de shell fue denegado por el clasificador de
