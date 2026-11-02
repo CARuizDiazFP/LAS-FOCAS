@@ -53,6 +53,8 @@ metadata:
     - |
       curl -s http://127.0.0.1:8090/ | grep -oE 'index-[A-Za-z0-9_-]+\.css'    # hash servido
       curl -s http://127.0.0.1:8090/assets/<hash>.css | grep -o '<token-o-regla-nueva>'
+    - |
+      web/frontend/node_modules/.bin/esbuild <scratch>/entrada.ts --bundle --platform=node   --outfile=<scratch>/rt.cjs --log-level=warning && node <scratch>/rt.cjs
 ---
 
 # Nombre de archivo: SKILL.md
@@ -234,6 +236,25 @@ viejos por hash y un refresh normal puede no bastar.
 Documentar explícitamente en el PR diario (`docs/PR/YYYY-MM-DD.md`) que la verificación fue por
 bundle servido y no visual, y dejar la confirmación visual humana como pendiente explícito — no
 como implícitamente resuelto.
+
+### Lógica TS pura (utils/composables) sin runner de tests ni DOM
+
+El SPA no tiene `vitest` y en el host no hay `jsdom`/`happy-dom` ni Chromium: `vue-tsc` sólo prueba tipos.
+Para la **lógica** de un util (p. ej. una conversión HTML↔texto), bundlear las funciones reales con el
+`esbuild` que ya trae `node_modules` y correrlas en Node, con un script de entrada en el scratchpad:
+
+```bash
+web/frontend/node_modules/.bin/esbuild <scratch>/entrada.ts --bundle --platform=node   --outfile=<scratch>/rt.cjs --log-level=warning && node <scratch>/rt.cjs
+```
+
+Si la función usa `DOMParser`, separarla en una parte que reciba un árbol mínimo (`nodeType`,
+`nodeName`, `textContent`, `childNodes`, `getAttribute?`) y armar ese árbol con `html.parser` de la stdlib
+de Python, que decodifica entidades como el navegador (sí difiere en CRLF: el navegador los normaliza).
+Cuando dos utils son inversas (texto→HTML que se guarda y HTML→texto que lo relee), **probar la ida y
+vuelta varias veces seguidas**: real, P27 (2026-11-02): `htmlAvisoATexto` colapsaba con `\s+ → ' '` el
+`div` `pre-wrap` que arma `textoPlanoAHtml` y el cuerpo volvía en una sola línea; ningún test ni
+`vue-tsc` lo detectaba. Si el backend replica el formato (p. ej. `texto_a_html_aviso` en Python),
+comparar las dos salidas byte a byte en el mismo arnés.
 
 ## Checklist antes de cerrar una tarea de UI/color
 
