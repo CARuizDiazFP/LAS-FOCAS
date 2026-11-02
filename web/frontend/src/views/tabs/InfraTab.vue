@@ -474,10 +474,6 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
   border-color: var(--color-accent); color: var(--color-accent);
 }
 
-/* Botones extra (modificadores de .btn global) */
-.btn.danger { background: transparent; color: oklch(0.72 0.11 25); border: 1px solid color-mix(in srgb, var(--color-state-error) 50%, transparent); }
-.btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-error) 12%, transparent); }
-
 /* Dropdown descargar */
 .download-dropdown-wrapper { position: relative; }
 .dropdown-caret { display: inline-block; transition: transform .2s; font-size: .75rem; margin-left: 2px; }
