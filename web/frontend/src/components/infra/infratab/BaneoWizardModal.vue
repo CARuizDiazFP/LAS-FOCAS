@@ -178,9 +178,12 @@
 import type { Notificar } from '../../../composables/infra/tipos';
 import { useBaneoWizard } from '../../../composables/infra/useBaneoWizard';
 
-const props = defineProps<{ notificar: Notificar }>();
+const props = defineProps<{
+  notificar: Notificar;
+  /** Re-búsqueda de InfraTab: el modal la espera antes de apagar su indicador de carga (un `emit` no devuelve la promesa). */
+  refrescar: () => Promise<void>;
+}>();
 const emit = defineEmits<{
-  'baneo-creado': [];
   'subir-tracking': [];
 }>();
 
@@ -206,7 +209,7 @@ const {
   banGoPrev,
   downloadTrackingByRutaId,
   submitBan,
-} = useBaneoWizard(props.notificar, () => emit('baneo-creado'));
+} = useBaneoWizard(props.notificar, () => props.refrescar());
 
 // "Actualizar Tracking": cierra el wizard (sin resetearlo) y le pide a InfraTab que abra el selector
 // de archivo del flujo de tracking. El emit es sincrónico, así que el click() del input oculto sigue

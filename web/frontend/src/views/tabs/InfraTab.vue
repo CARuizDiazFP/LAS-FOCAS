@@ -32,7 +32,7 @@
     <BaneoWizardModal
       ref="baneoWizardModal"
       :notificar="notificar"
-      @baneo-creado="refrescarSiBuscado"
+      :refrescar="refrescarSiBuscado"
       @subir-tracking="elegirArchivo"
     />
 
@@ -40,14 +40,14 @@
     <TrackingResolveModal
       ref="trackingResolveModal"
       :notificar="notificar"
-      @tracking-resuelto="refrescarSiBuscado"
+      :refrescar="refrescarSiBuscado"
     />
 
     <!-- Modal: Baneos Activos (incluye el sub-modal Dar Aviso) -->
     <BaneosActivosModal
       ref="baneosActivosModal"
       :notificar="notificar"
-      @baneo-levantado="refrescarSiBuscado"
+      :refrescar="refrescarSiBuscado"
       @cantidad-cambiada="n => (cantidadBaneosActivos = n)"
     />
 
@@ -55,7 +55,7 @@
     <LimpiarServicioModal
       ref="limpiarServicioModal"
       :notificar="notificar"
-      @servicio-limpiado="refrescarSiBuscado"
+      :refrescar="refrescarSiBuscado"
     />
 
     <!-- Main content -->
