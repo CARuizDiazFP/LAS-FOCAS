@@ -1,10 +1,11 @@
 // Nombre de archivo: useNotificacionEmail.ts
 // Ubicación de archivo: web/frontend/src/composables/infra/useNotificacionEmail.ts
-// Descripción: Aviso por email de un baneo activo: plantilla local, envío, descarga del .eml y destinatarios guardados
+// Descripción: Aviso por email de un baneo activo: plantilla local o guardada del incidente, envío, descarga del .eml y destinatarios guardados
 
 import { ref } from 'vue';
+import { htmlAvisoATexto } from '../../utils/htmlAvisoATexto';
 import { textoPlanoAHtml } from '../../utils/textoPlanoAHtml';
-import { descargarEmlBaneo, notificarBaneoEmail, type IncidenteActivo } from '../../api/infra';
+import { descargarEmlBaneo, detalleBaneo, notificarBaneoEmail, type IncidenteActivo } from '../../api/infra';
 import type { Notificar } from './tipos';
 
 interface AvisoForm {
@@ -77,10 +78,25 @@ export function useNotificacionEmail(notificar: Notificar) {
     const ahora = new Date().toLocaleString('es-AR', {
       day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
     });
-    avisoForm.value.subject = '[AVISO] BANEO de Camaras';
-    avisoForm.value.body = buildAvisoBody(inc, ahora);
+    const local = { subject: '[AVISO] BANEO de Camaras', body: buildAvisoBody(inc, ahora) };
+    avisoForm.value.subject = local.subject;
+    avisoForm.value.body = local.body;
 
     avisoModalEl.value?.showModal();
+    void cargarPlantillaGuardada(inc.id, local);
+  }
+
+  // Plantilla guardada del incidente (la escribe el download-eml de la API). Reemplaza la local campo por
+  // campo sólo si el modal sigue en ese incidente y el usuario todavía no lo editó; si falla, queda la local.
+  async function cargarPlantillaGuardada(incidenteId: number, local: { subject: string; body: string }) {
+    try {
+      const detalle = await detalleBaneo(incidenteId);
+      if (avisoIncidente.value?.id !== incidenteId) return;
+      const asunto = detalle.email_subject?.trim() ?? '';
+      const cuerpo = detalle.email_body ? htmlAvisoATexto(detalle.email_body) : '';
+      if (asunto && avisoForm.value.subject === local.subject) avisoForm.value.subject = asunto;
+      if (cuerpo && avisoForm.value.body === local.body) avisoForm.value.body = cuerpo;
+    } catch { /* sin plantilla guardada: queda la local */ }
   }
 
   // Siempre se llama con paréntesis (el evento no debe llegar como `force`). Durante el envío no
