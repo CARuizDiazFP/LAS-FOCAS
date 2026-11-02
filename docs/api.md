@@ -302,7 +302,8 @@ Desde P12 el panel (`web/app/routers/camaras.py`, `servicios.py`) y la API (`api
 (matriz y decisiones en `docs/superpowers/specs/2026-10-27-p12-matriz-divergencias-web-api.md`):
 
 - **D1** `servicios` de cada cámara salen de las rutas del modelo vigente (ordenados, sin duplicados), no de
-  `servicio_empalme_association`; aplica a `GET /camaras`, `search` y `smart-search`.
+  `servicio_empalme_association`; aplica a `GET /camaras`, `search` y `smart-search`. Desde P22 (2026-10-29)
+  tampoco hay respaldo legacy cuando la cámara no tiene rutas: sin rutas, `servicios` es `[]`.
 - **D2** validación de la API en las dos apps: `limit` 1..500, enums de campo/operador, máx. 10 filtros,
   máx. 20 términos, `max_length` en los campos de baneo. **B4** `search` con `status`/`eq` y `value: []` ya no da 500.
 - **D3** `smart-search`: cada app conserva su universo (la API incluye Botellas y NO_OPERATIVA; el panel sólo raíces).
@@ -798,7 +799,8 @@ Búsqueda avanzada de cámaras con filtros combinables (lógica AND). Permite bu
 
 ### POST `/api/infra/upload_tracking`
 
-Procesa un archivo de tracking de fibra óptica (TXT) y puebla la base de datos con servicios, cámaras y empalmes.
+Procesa un archivo de tracking de fibra óptica (TXT) y lo resuelve con el mismo flujo que
+`/api/infra/trackings/analyze` + `resolve` (desde P22, 2026-10-29: el tracking termina siempre en una ruta).
 
 - **Autenticación:** requiere API key interna.
 - **Content-Type:** `multipart/form-data`
@@ -811,17 +813,17 @@ Procesa un archivo de tracking de fibra óptica (TXT) y puebla la base de datos 
 - **Lógica de procesamiento:**
   1. Extrae el ID del servicio desde el nombre del archivo usando regex (ej: `FO 111995 C2.txt` → `111995`).
   2. Parsea el contenido buscando líneas `Empalme <ID>: <Dirección/Ubicación>`.
-  3. Crea o actualiza el servicio en `app.servicios`.
-  4. Para cada empalme/ubicación:
-     - Resuelve una cámara o botella real con la búsqueda extendida `Camara + CromoBotella`.
-     - Si no hay match, registra un `IngresoSinMatch` y deja el empalme sin `camara_id` en lugar de crear una cámara nueva.
-     - Registra el empalme y la asociación servicio-empalme.
-  5. Guarda el tracking crudo en `raw_tracking_data` del servicio.
-  6. Devuelve `ubicaciones_sin_match` junto con el total de empalmes procesados para mostrar qué ubicaciones quedaron pendientes de revisión.
+  3. Analiza el tracking contra las rutas del servicio:
+     - `NEW` (el servicio no existe o no tiene rutas): crea la ruta `Principal` (`CREATE_NEW`), con sus
+       empalmes en `ruta_empalme_association` y el TXT original en `raw_file_content`.
+     - `IDENTICAL` (mismo hash que una ruta): no escribe nada; responde 200 con los conteos en 0.
+     - Conflicto, posible upgrade o pelo nuevo: responde **409** sin escribir; esos casos piden una decisión
+       y van por `analyze` + `resolve`.
+  4. Cada ubicación se resuelve contra una cámara o botella real (búsqueda extendida `Camara + CromoBotella`).
+     Si no hay match, registra un `IngresoSinMatch` y deja el empalme sin `camara_id`; nunca crea una cámara.
 
-- **Enriquecimiento progresivo:** las cámaras detectadas automáticamente pueden enriquecerse posteriormente con coordenadas y estado real mediante el endpoint `/sync/camaras` o edición manual.
-
-- **Idempotencia:** subir el mismo archivo dos veces no duplica datos; actualiza las asociaciones existentes.
+  Antes de P22 asociaba los empalmes al servicio sólo por la tabla legada `servicio_empalme_association`,
+  sin crear ninguna ruta.
 
 - **Respuesta 200:**
 
@@ -840,6 +842,7 @@ Procesa un archivo de tracking de fibra óptica (TXT) y puebla la base de datos 
 
 - **Códigos de error:**
   - `400`: archivo sin extensión `.txt`, ID de servicio no extraíble, o sin empalmes válidos.
+  - `409`: el servicio ya tiene rutas y el tracking no es idéntico (resolver con `analyze` + `resolve`).
   - `500`: error durante el procesamiento o persistencia (consultar logs `action=upload_tracking`).
 
 - **Ejemplo (cURL):**
@@ -1241,7 +1244,8 @@ Ejecuta la acción seleccionada tras el análisis.
 
 ### DELETE `/api/infra/servicios/{servicio_id}/empalmes`
 
-Elimina todas las asociaciones de empalmes de un servicio (limpia el servicio sin borrarlo).
+Elimina las rutas de un servicio (`rutas_servicio` y, en cascada, `ruta_empalme_association`) sin borrar el
+servicio ni los empalmes.
 
 - **Autenticación:** requiere sesión activa.
 - **Parámetros de ruta:**
@@ -1256,8 +1260,9 @@ Elimina todas las asociaciones de empalmes de un servicio (limpia el servicio si
   {
     "status": "ok",
     "servicio_id": "52547",
-    "empalmes_removed": 15,
-    "message": "Eliminados 15 empalmes del servicio 52547"
+    "message": "Eliminadas 15 asociaciones y 2 rutas",
+    "rutas_eliminadas": 2,
+    "empalmes_rutas_eliminados": 15
   }
   ```
 

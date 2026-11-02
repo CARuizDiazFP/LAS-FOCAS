@@ -506,7 +506,6 @@ class TestUbicacionesSinMatchPorAccion:
         servicio.id = 1
         servicio.servicio_id = "111995"
         servicio.rutas = []
-        servicio.empalmes = []
         mock_find.return_value = servicio
 
         service = InfraService(mock_session)
@@ -528,7 +527,6 @@ class TestUbicacionesSinMatchPorAccion:
         old_servicio.id = 1
         old_servicio.servicio_id = "999999"
         old_servicio.alias_ids = []
-        old_servicio.empalmes = []
         mock_session.query.return_value.filter.return_value.first.return_value = old_servicio
 
         service = InfraService(mock_session)

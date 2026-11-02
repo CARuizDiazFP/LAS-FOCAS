@@ -1125,8 +1125,8 @@ legacy toma el primer número de 4 dígitos o más del nombre (`nombre_archivo_a
   - CHECK de coherencia: una fila retirada tiene fecha y motivo;
   - índice único parcial `(servicio_id, conector_n_id) WHERE vigente`.
 - Retirar no borra: deja `vigente=false` y la fila queda como historial.
-- La fusión de Servicios por cadena PROV (`servicios_fusion_prov.py`) la reasigna igual que
-  `servicio_empalme_association`.
+- La fusión de Servicios por cadena PROV (`servicios_fusion_prov.py`) la reasigna (mueve el historial y
+  las vigentes que el sobreviviente no declaró).
 
 `declarar` valida todo o nada contra las posiciones posibles y toma
 `pg_advisory_xact_lock` por Servicio. Si la validación falla hace rollback, y re-declarar conserva

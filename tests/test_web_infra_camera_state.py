@@ -199,7 +199,7 @@ def _build_fake_camara() -> Any:
         punta_a=SimpleNamespace(sitio_descripcion="POP A"),
         punta_b=SimpleNamespace(sitio_descripcion="POP B"),
     )
-    empalme = SimpleNamespace(rutas=[ruta], servicios=[])
+    empalme = SimpleNamespace(rutas=[ruta])
     camara = SimpleNamespace(
         id=7,
         nombre="Cámara Canon Norte",
