@@ -60,6 +60,7 @@ COLUMNAS: dict[str, tuple[str, str]] = {
     "reclamos_sin_evento": ("Reclamos sin evento", "entero"),
     "semaforo": ("Semáforo", "texto"),
     "estado": ("Estado", "texto"),
+    "sla_entregado": ("SLA entregado (calculado, col. P)", "pct"),
     "sla_entregado_oficial": ("SLA entregado (oficial)", "pct"),
     "horas_reclamos_todos_oficial": ("Horas de reclamos (oficial)", "horas"),
     "horas_restantes_oficial": ("Horas restantes (oficial)", "horas"),
@@ -130,7 +131,7 @@ COLUMNAS: dict[str, tuple[str, str]] = {
 }
 
 # Columnas con formato "pct" que el origen ya entrega como fracción 0-1 (no como 0-100).
-COLUMNAS_FRACCION = frozenset({"sla_entregado_oficial"})
+COLUMNAS_FRACCION = frozenset({"sla_entregado", "sla_entregado_oficial"})
 
 COLORES_SEMAFORO: dict[str, str | None] = {m.ROJO: "C0392B", m.AMARILLO: "F1C40F", m.VERDE: "27AE60",
                                            m.SIN_COLOR: None}

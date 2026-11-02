@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
-from .engine import SLAComputation, ServiceMetrics
+from .informe import SLAComputation, ServiceMetrics
 
 
 def construir_preview(

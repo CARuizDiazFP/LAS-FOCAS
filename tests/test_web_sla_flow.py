@@ -7,7 +7,6 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
-import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,75 +15,18 @@ from web.app import main as web_main  # type: ignore  # noqa: E402
 from web.app.routers import informes as web_informes  # type: ignore  # noqa: E402
 from web.app.main import app  # type: ignore  # noqa: E402
 
+from tests import soporte_sla  # noqa: E402
 from tests.test_web_admin import _connect_user_ok  # noqa: E402
 
 
-def _excel_bytes(df: pd.DataFrame) -> bytes:
-    """Helper para crear archivos Excel en memoria."""
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:  # type: ignore[arg-type]
-        df.to_excel(writer, index=False)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
 def _servicios_excel_bytes() -> bytes:
-    """Crea un Excel de servicios fuera de SLA."""
-    df = pd.DataFrame(
-        [
-            {
-                "Tipo Servicio": "Fibra",
-                "Número Línea": "SRV-001",
-                "Nombre Cliente": "Cliente Test 1",
-                "Horas Reclamos Todos": "02:30:00",
-                "SLA Entregado": 0.95,
-            },
-            {
-                "Tipo Servicio": "Internet",
-                "Número Línea": "SRV-002",
-                "Nombre Cliente": "Cliente Test 2",
-                "Horas Reclamos Todos": "01:15:00",
-                "SLA Entregado": 0.98,
-            },
-        ]
-    )
-    return _excel_bytes(df)
+    """Excel de servicios con los encabezados reales (tests/soporte_sla.py)."""
+    return soporte_sla.servicios_excel()
 
 
 def _reclamos_excel_bytes() -> bytes:
-    """Crea un Excel de reclamos SLA."""
-    df = pd.DataFrame(
-        [
-            {
-                "Número Línea": "SRV-001",
-                "Número Reclamo": "R-001",
-                "Horas Netas Reclamo": "1.5",
-                "Horas Totales Cierre Problema Reclamo": "2.0",
-                "Horas Netas Cierre Problema Reclamo": "1:30:00",
-                "Tipo Solución Reclamo": "Corte Masivo",
-                "Fecha Inicio Reclamo": "2025-10-10 08:00",
-            },
-            {
-                "Número Línea": "SRV-001",
-                "Número Reclamo": "R-002",
-                "Horas Netas Reclamo": "1:00:00",
-                "Horas Totales Cierre Problema Reclamo": "1.5",
-                "Horas Netas Cierre Problema Reclamo": "1:00:00",
-                "Tipo Solución Reclamo": "Fibra Cortada",
-                "Fecha Inicio Reclamo": "2025-10-15 14:30",
-            },
-            {
-                "Número Línea": "SRV-002",
-                "Número Reclamo": "R-003",
-                "Horas Netas Reclamo": "0:45:00",
-                "Horas Totales Cierre Problema Reclamo": "1.0",
-                "Horas Netas Cierre Problema Reclamo": "0:45:00",
-                "Tipo Solución Reclamo": "Configuración",
-                "Fecha Inicio Reclamo": "2025-10-20 09:15",
-            },
-        ]
-    )
-    return _excel_bytes(df)
+    """Excel de reclamos con la columna P y fechas seriales, como el real."""
+    return soporte_sla.reclamos_excel()
 
 
 def _login_as_user(client: TestClient, monkeypatch, password: str = "userpass") -> str:
@@ -277,32 +219,8 @@ def test_sla_flow_use_db_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 
     # Mock de la función que genera desde DB
     def _fake_compute_from_db(mes: int, anio: int):  # noqa: ANN001
-        # Simular retorno exitoso desde DB - retorna SLAComputation
-        from core.sla import engine
-        import pandas as pd
-        from zoneinfo import ZoneInfo
-        
-        tz = ZoneInfo("America/Argentina/Buenos_Aires")
-        
-        # Crear datos mínimos para la computación con timezone
-        reclamos_df = pd.DataFrame({
-            "ticket_id": ["R-001"],
-            "service_id": ["SRV-001"],
-            "cliente": ["Cliente Test"],
-            "tipo_servicio": ["Fibra"],
-            "inicio": [pd.Timestamp("2025-10-10 08:00", tz=tz)],
-            "fin": [pd.Timestamp("2025-10-10 10:00", tz=tz)],
-            "duracion_h": [2.0],
-        })
-        
-        return engine.calcular_sla(
-            reclamos_df,
-            mes=mes,
-            anio=anio,
-            servicios=None,
-            merge_gap_minutes=15,
-        )
-    
+        return soporte_sla.computation_vacia(mes, anio)
+
     def _fake_generate_from_computation(computation, incluir_pdf: bool = False):  # noqa: ANN001
         # Simular generación del documento desde la computación
         from core.services.sla import SLAReportResult
@@ -416,15 +334,8 @@ def test_sla_excel_pdf_fallido_entrega_docx_y_pdf_error(monkeypatch: pytest.Monk
 
 def test_flow_sla_db_expone_pdf_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from core.services.sla import SLAReportResult
-    from core.sla import engine
 
-    computation = engine.calcular_sla(
-        pd.DataFrame(columns=["ticket_id", "service_id", "cliente", "tipo_servicio", "inicio", "fin", "duracion_h"]),
-        mes=10,
-        anio=2025,
-        servicios=None,
-        merge_gap_minutes=15,
-    )
+    computation = soporte_sla.computation_vacia(10, 2025)
     docx = tmp_path / "sla_202510.docx"
     docx.write_bytes(b"DOCX")
 

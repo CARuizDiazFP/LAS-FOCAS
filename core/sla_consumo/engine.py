@@ -27,7 +27,7 @@ SERVICIOS_COLUMNAS = [
     "presupuesto_h", "horas_netas", "horas_computables", "horas_excluidas", "horas_fo", "horas_fo_general",
     "horas_fo_cod3", "horas_carrier", "horas_otros", "horas_restantes", "horas_excedidas", "pct_real",
     "pct_visible", "aporte_fo_pct", "participacion_fo_pct", "reclamos", "eventos_reales", "reclamos_sin_evento",
-    "semaforo", "estado", "sla_entregado_oficial", "horas_reclamos_todos_oficial", "horas_restantes_oficial"]
+    "semaforo", "estado", "sla_entregado", "sla_entregado_oficial", "horas_reclamos_todos_oficial", "horas_restantes_oficial"]
 
 
 @dataclass
@@ -103,6 +103,7 @@ def _metricas_servicios(unificados: pd.DataFrame, acum: pd.DataFrame) -> pd.Data
     df["aporte_fo_pct"] = np.where(valido, df["horas_fo"] / p.where(valido, 1.0) * 100, np.nan)
     df["participacion_fo_pct"] = np.where(c > m.EPS_HORAS, df["horas_fo"] / c.where(c > m.EPS_HORAS, 1.0) * 100,
                                           np.nan)
+    df["sla_entregado"] = [m.sla_entregado(h) for h in c]
     df["semaforo"] = [m.semaforo_servicio(float(fo), float(ca + ot))
                       for fo, ca, ot in zip(df["horas_fo"], df["horas_carrier"], df["horas_otros"])]
     df["estado"] = [m.estado_presupuesto(float(h), pr) for h, pr in zip(c, p)]

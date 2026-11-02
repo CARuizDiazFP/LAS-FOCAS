@@ -163,24 +163,53 @@ def ingerir(servicios: pd.DataFrame, reclamos: pd.DataFrame, *, hash_servicios: 
     return ResultadoIngesta(ingesta_id, corte, False, insertados, actualizados, fotos, sin_cambios)
 
 
-def cargar_ventana(fecha_corte: dt.date, engine: Engine | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    engine = engine or engine_default
-    hasta = pd.Timestamp(fecha_corte + dt.timedelta(days=1), tz="America/Argentina/Buenos_Aires")
-    desde = hasta - pd.Timedelta(days=VENTANA_DIAS)
-    columnas_r = ", ".join(c for c in RECLAMOS_COLS)
-    with engine.connect() as conn:
-        reclamos = pd.read_sql(
-            text(f"SELECT {columnas_r} FROM app.reclamos WHERE fecha_inicio < :hasta "
-                 "AND (fecha_inicio >= :desde OR fecha_cierre >= :desde)"),  # solapan la ventana: se cuentan completos
-            conn, params={"desde": desde.to_pydatetime(), "hasta": hasta.to_pydatetime()})
-        servicios = pd.read_sql(
-            text(f"SELECT {', '.join(SERVICIOS_COLS)} FROM app.servicio_sla_snapshot WHERE fecha_corte = :c"),
-            conn, params={"c": fecha_corte})
+def _tipar_reclamos(reclamos: pd.DataFrame) -> pd.DataFrame:
     for col in ("horas_netas", "horas_netas_cierre", "horas_totales_problema", "horas_indisponibilidad_problema",
                 "horas_netas_escalamiento_carrier"):
         reclamos[col] = pd.to_numeric(reclamos[col], errors="coerce")
-    for col in SERVICIOS_COLS[4:]:
-        servicios[col] = pd.to_numeric(servicios[col], errors="coerce")
     reclamos["fecha_inicio"] = pd.to_datetime(reclamos["fecha_inicio"], utc=True).dt.tz_convert("America/Argentina/Buenos_Aires")
     reclamos["fecha_cierre"] = pd.to_datetime(reclamos["fecha_cierre"], utc=True).dt.tz_convert("America/Argentina/Buenos_Aires")
-    return reclamos, servicios
+    return reclamos
+
+
+def _tipar_servicios(servicios: pd.DataFrame) -> pd.DataFrame:
+    for col in SERVICIOS_COLS[4:]:
+        servicios[col] = pd.to_numeric(servicios[col], errors="coerce")
+    return servicios
+
+
+def _leer_reclamos_ventana(conn: Connection, fecha_corte: dt.date) -> pd.DataFrame:
+    hasta = pd.Timestamp(fecha_corte + dt.timedelta(days=1), tz="America/Argentina/Buenos_Aires")
+    desde = hasta - pd.Timedelta(days=VENTANA_DIAS)
+    reclamos = pd.read_sql(
+        text(f"SELECT {', '.join(RECLAMOS_COLS)} FROM app.reclamos WHERE fecha_inicio < :hasta "
+             "AND (fecha_inicio >= :desde OR fecha_cierre >= :desde)"),  # solapan la ventana: se cuentan completos
+        conn, params={"desde": desde.to_pydatetime(), "hasta": hasta.to_pydatetime()})
+    return _tipar_reclamos(reclamos)
+
+
+def cargar_ventana(fecha_corte: dt.date, engine: Engine | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Reclamos de los 365 días al corte y la foto de servicios de ESE corte (informe SLA consumido)."""
+    engine = engine or engine_default
+    with engine.connect() as conn:
+        reclamos = _leer_reclamos_ventana(conn, fecha_corte)
+        servicios = pd.read_sql(
+            text(f"SELECT {', '.join(SERVICIOS_COLS)} FROM app.servicio_sla_snapshot WHERE fecha_corte = :c"),
+            conn, params={"c": fecha_corte})
+    return reclamos, _tipar_servicios(servicios)
+
+
+def cargar_ventana_ultima_foto(fecha_corte: dt.date,
+                               engine: Engine | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Reclamos de los 365 días al corte y la última foto conocida de cada línea (informe SLA mensual).
+
+    El cálculo sólo toma de la foto el universo y el SLA prometido; los valores oficiales no intervienen,
+    así que sirve una foto posterior al corte (las fotos dependen de cuándo se subió "SLA consumido").
+    """
+    engine = engine or engine_default
+    with engine.connect() as conn:
+        reclamos = _leer_reclamos_ventana(conn, fecha_corte)
+        servicios = pd.read_sql(
+            text(f"SELECT DISTINCT ON (numero_linea) {', '.join(SERVICIOS_COLS)} FROM app.servicio_sla_snapshot "
+                 "ORDER BY numero_linea, fecha_corte DESC"), conn)
+    return reclamos, _tipar_servicios(servicios)

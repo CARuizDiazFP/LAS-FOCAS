@@ -18,7 +18,6 @@ from tests.test_web_sla_flow import (  # noqa: F401  (fixture autouse reutilizad
     _reclamos_excel_bytes,
     _reportes_en_tmp,
     _servicios_excel_bytes,
-    _excel_bytes,
 )
 from web.app.dependencias import UsuarioSesion
 from web.app.main import app  # type: ignore
@@ -26,6 +25,12 @@ from web.app.routers import informes as web_informes  # type: ignore
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 REF = re.compile(r"^Error interno \(ref ([0-9a-f]{8})\)$")
+
+
+def _excel_bytes(df: pd.DataFrame) -> bytes:
+    buffer = io.BytesIO()
+    df.to_excel(buffer, index=False, engine="openpyxl")
+    return buffer.getvalue()
 
 
 @pytest.fixture()

@@ -50,6 +50,15 @@ def presupuesto_horas(sla_prometido: object) -> float | None:
     return None if sla is None else (1 - sla / 100) * HORAS_ANIO
 
 
+def sla_entregado(horas_computables: float) -> float:
+    """SLA entregado en el año, como fracción: 1 − horas computables / 8760.
+
+    Con la columna P coincide con el "SLA Entregado" del Excel oficial en 7.228 de 7.228 servicios
+    (medido el 2026-11-02). Es el único cálculo de SLA del repositorio (P25).
+    """
+    return max(0.0, 1 - float(horas_computables) / HORAS_ANIO)
+
+
 def presupuesto_valido(presupuesto: object) -> bool:
     p = _numero(presupuesto)
     return p is not None and math.isfinite(p) and p > EPS_HORAS

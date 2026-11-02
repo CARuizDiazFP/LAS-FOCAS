@@ -6,12 +6,29 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import unicodedata
 
 import pandas as pd
 
-from core.sla.legacy_report import _normalize, _normalize_line_value
 from core.sla_consumo.clasificador import clasificar_cierre, valores_cliente_config
 from core.utils.excel_duraciones import TZ_AR, duracion_a_horas, fecha_excel
+
+def _normalize(text: str) -> str:
+    cleaned = unicodedata.normalize("NFKD", str(text)).encode("ASCII", "ignore").decode()
+    cleaned = cleaned.replace("/", " ").replace("_", " ")
+    return " ".join(cleaned.lower().strip().split())
+
+
+def _normalize_line_value(valor) -> str:
+    if valor is None or (isinstance(valor, float) and pd.isna(valor)):
+        return ""
+    if isinstance(valor, float) and valor.is_integer():
+        valor = int(valor)
+    texto = str(valor).strip()
+    if texto.endswith(".0") and texto.replace(".", "", 1).isdigit():
+        texto = texto[:-2]
+    return texto
+
 
 # encabezado normalizado (_normalize) → columna destino
 _RECLAMOS_MAP = {
@@ -130,6 +147,14 @@ def parse_servicios(content: bytes) -> pd.DataFrame:
     df["abono_usd"] = pd.to_numeric(df["abono_usd"], errors="coerce")
     df["cantidad_reclamos_todos"] = pd.to_numeric(df["cantidad_reclamos_todos"], errors="coerce").astype("Int64")
     return df.drop_duplicates(subset="numero_linea", keep="last").reset_index(drop=True)[SERVICIOS_COLS]
+
+
+def leer_domicilios(content: bytes) -> dict[str, str]:
+    """numero_linea → "Dirección Servicio" del Excel de servicios (sólo para el render del informe SLA)."""
+    df = _leer(content, {"numero linea": "numero_linea", "direccion servicio": "domicilio"}, ["numero_linea"],
+               "servicios")
+    return {linea: dom for linea, dom in zip(df["numero_linea"].map(_texto), df["domicilio"].map(_texto))
+            if linea is not None and dom is not None}
 
 
 def fecha_corte(reclamos: pd.DataFrame) -> dt.date:

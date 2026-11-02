@@ -1,264 +1,86 @@
 # Nombre de archivo: test_sla_legacy_report.py
 # Ubicación de archivo: tests/test_sla_legacy_report.py
-# Descripción: Pruebas del flujo legacy para generación del informe SLA
+# Descripción: Render del informe SLA (plantilla heredada) sobre el motor único: horas P, SLA calculado y fechas reales
 
 from __future__ import annotations
 
-import io
+import datetime as dt
 
-import pandas as pd
 import pytest
+from docx import Document
 
-from core.sla import legacy_report as legacy_report_module
 from core.services import sla as sla_service
+from tests import soporte_sla
 
 
-def _excel_bytes(df: pd.DataFrame) -> bytes:
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:  # type: ignore[arg-type]
-        df.to_excel(writer, index=False)
-    buffer.seek(0)
-    return buffer.read()
+def _generar(tmp_path, servicios: bytes, reclamos: bytes):
+    cfg = sla_service.SLAReportConfig(reports_dir=tmp_path, uploads_dir=tmp_path)
+    return sla_service.generate_report_from_excel_pair(servicios, reclamos, mes=10, anio=2025, config=cfg)
 
 
-@pytest.fixture
-def servicios_excel() -> bytes:
-    data = pd.DataFrame(
-        [
-            {
-                "Tipo Servicio": "Fibra",
-                "Número Primer Servicio": "SRV-BASE-01",
-                "Número Línea": "SRV-REAL-01",
-                "Nombre Cliente": "Cliente Demo",
-                "Horas Reclamos Todos": "01:30:00",
-                "SLA Entregado": 0.985,
-            }
-        ]
-    )
-    return _excel_bytes(data)
+def _filas(tabla) -> list[list[str]]:
+    return [[c.text for c in fila.cells] for fila in tabla.rows]
 
 
-@pytest.fixture
-def reclamos_excel() -> bytes:
-    data = pd.DataFrame(
-        [
-            {
-                "Número Primer Servicio": "SRV-BASE-01",
-                "Número Línea": "SRV-REAL-01",
-                "Número Reclamo": "R-001",
-                "Horas Netas Reclamo": "1.5",
-                "Horas Totales Cierre Problema Reclamo": "2.0",
-                "Horas Netas Cierre Problema Reclamo": "1:15:00",
-                "Tipo Solución Reclamo": "Corte",
-                "Fecha Inicio Reclamo": "2025-06-10 08:00",
-            },
-            {
-                "Número Primer Servicio": "SRV-BASE-01",
-                "Número Línea": "SRV-REAL-01",
-                "Número Reclamo": "R-002",
-                "Horas Netas Reclamo": "0:15:00",
-                "Horas Totales Cierre Problema Reclamo": "0.5",
-                "Horas Netas Cierre Problema Reclamo": "0:25:00",
-                "Tipo Solución Reclamo": "Fibra",
-                "Fecha Inicio Reclamo": "2025-06-10 10:00",
-            },
-        ]
-    )
-    return _excel_bytes(data)
+def test_identify_excel_kind() -> None:
+    assert sla_service.identify_excel_kind(soporte_sla.servicios_excel()) == "servicios"
+    assert sla_service.identify_excel_kind(soporte_sla.reclamos_excel()) == "reclamos"
 
 
-def test_identify_excel_kind(servicios_excel: bytes, reclamos_excel: bytes) -> None:
-    assert sla_service.identify_excel_kind(servicios_excel) == "servicios"
-    assert sla_service.identify_excel_kind(reclamos_excel) == "reclamos"
+def test_tabla_principal_suma_columna_p_y_calcula_sla(tmp_path) -> None:
+    documento = _generar(tmp_path, soporte_sla.servicios_excel(), soporte_sla.reclamos_excel())
+    assert documento.docx.exists() and documento.pdf is None
+
+    filas = _filas(Document(str(documento.docx)).tables[0])[1:]
+    # SRV-001: 1:30 + 1:00 de la columna P (la N vale 99 h por reclamo y no cuenta).
+    assert filas[0][:4] == ["Fibra", "SRV-002", "Cliente Test", "000:45:00"]
+    assert filas[1][:4] == ["Fibra", "SRV-001", "Cliente Test", "002:30:00"]
+    assert filas[1][4] == f"{(1 - 2.5 / 8760) * 100:.2f}%"  # 1 − horas / 8760, mayor SLA primero
 
 
-def test_generate_report_from_excel_pair(tmp_path, servicios_excel: bytes, reclamos_excel: bytes) -> None:
-    cfg = sla_service.SLAReportConfig(
-        reports_dir=tmp_path,
-        uploads_dir=tmp_path,
-    )
-
-    resultado = sla_service.generate_report_from_excel_pair(
-        servicios_excel,
-        reclamos_excel,
-        mes=6,
-        anio=2025,
-        incluir_pdf=False,
-        config=cfg,
-    )
-
-    assert resultado.docx.exists()
-    assert resultado.pdf is None
+def test_detalle_con_fechas_reales_y_domicilio(tmp_path) -> None:
+    """Hasta P25 el render leía el serial de Excel como 1970 y todas las fechas salían 01-ene-70."""
+    documento = _generar(tmp_path, soporte_sla.servicios_excel(), soporte_sla.reclamos_excel())
+    doc = Document(str(documento.docx))
+    texto = " ".join(c.text for t in doc.tables for f in t.rows for c in f.cells)
+    assert "10-oct-25" in texto and "15-oct-25" in texto
+    assert "01-ene-70" not in texto
+    assert "Av. Siempre Viva 742" in texto
+    detalle = next(_filas(t) for t in doc.tables if any(len(f) > 1 and f[1] == "R-001" for f in _filas(t)))
+    assert detalle[-1][0] == "Total" and detalle[-1][2] == "2.50"
 
 
-def test_generate_report_from_excel_pair_missing_column(tmp_path, servicios_excel: bytes, reclamos_excel: bytes) -> None:
-    servicios_df = pd.read_excel(io.BytesIO(servicios_excel))
-    servicios_df.drop(columns=["SLA Entregado"], inplace=True)
-    servicios_bytes = _excel_bytes(servicios_df)
-
-    with pytest.raises(ValueError) as excinfo:
-        sla_service.generate_report_from_excel_pair(
-            servicios_bytes,
-            reclamos_excel,
-            mes=6,
-            anio=2025,
-            incluir_pdf=False,
-            config=sla_service.SLAReportConfig(
-                reports_dir=tmp_path,
-                uploads_dir=tmp_path,
-            ),
-        )
-    assert "Faltan columnas en Excel de servicios" in str(excinfo.value)
+def test_reclamo_vinculado_por_primer_servicio(tmp_path) -> None:
+    servicios = soporte_sla.servicios_excel([soporte_sla.servicio("L-NUEVA", primer="PS-1")])
+    reclamos = soporte_sla.reclamos_excel([
+        soporte_sla.reclamo("R-9", "L-VIEJA", dt.time(2, 0), inicio=dt.datetime(2025, 10, 1, 8, 0), primer="PS-1"),
+    ])
+    filas = _filas(Document(str(_generar(tmp_path, servicios, reclamos).docx)).tables[0])[1:]
+    assert filas == [["Fibra", "L-VIEJA", "Cliente Test", "002:00:00", f"{(1 - 2 / 8760) * 100:.2f}%"]]
 
 
-def test_load_reclamos_usa_horas_netas_cierre_problema(reclamos_excel: bytes) -> None:
-    """Verifica que se usa la columna 'Horas Netas Cierre Problema Reclamo' (columna P)."""
-    dataset = legacy_report_module.load_reclamos_excel(reclamos_excel)
-    columna, origen = legacy_report_module._columna_horas_reclamos(dataset)
-
-    assert origen == "horas"
-    assert dataset.columns["horas"] == columna
-    valores = dataset.dataframe[columna].tolist()
-    assert valores[0] == pytest.approx(1.25, rel=1e-3)  # 1:15:00 = 1.25 horas
-    assert valores[1] == pytest.approx(25 / 60, rel=1e-3)  # 0:25:00 = 0.4167 horas
+def test_servicio_sin_reclamos_100_por_ciento(tmp_path) -> None:
+    servicios = soporte_sla.servicios_excel([soporte_sla.servicio("SRV-001"), soporte_sla.servicio("SRV-SIN")])
+    filas = _filas(Document(str(_generar(tmp_path, servicios, soporte_sla.reclamos_excel()).docx)).tables[0])[1:]
+    assert ["Fibra", "SRV-SIN", "Cliente Test", "000:00:00", "100.00%"] in filas
 
 
-def test_load_reclamos_sin_horas_netas_cierre_problema_error(reclamos_excel: bytes) -> None:
-    """Verifica que da error si falta la columna 'Horas Netas Cierre Problema Reclamo'."""
-    df = pd.read_excel(io.BytesIO(reclamos_excel))
-    df.drop(columns=["Horas Netas Cierre Problema Reclamo"], inplace=True)
+def test_falta_columna_p_es_error_claro(tmp_path) -> None:
+    import openpyxl, io  # noqa: E401
 
-    with pytest.raises(ValueError) as excinfo:
-        legacy_report_module.load_reclamos_excel(_excel_bytes(df))
-    assert "HORAS" in str(excinfo.value).upper()
-
-
-def test_load_servicios_prefiere_numero_linea(servicios_excel: bytes) -> None:
-    dataset = legacy_report_module.load_servicios_excel(servicios_excel)
-
-    assert dataset.columns["numero_linea"] == "Número Línea"
-    assert dataset.optional["numero_primer_servicio"] == "Número Primer Servicio"
-    assert dataset.dataframe.iloc[0]["Número Línea"] == "SRV-REAL-01"
+    wb = openpyxl.load_workbook(io.BytesIO(soporte_sla.reclamos_excel()))
+    ws = wb.active
+    col = [c.value for c in ws[1]].index("Horas Netas Cierre Problema Reclamo") + 1
+    ws.delete_cols(col)
+    buf = io.BytesIO()
+    wb.save(buf)
+    with pytest.raises(ValueError, match="horas_netas_cierre"):
+        _generar(tmp_path, soporte_sla.servicios_excel(), buf.getvalue())
 
 
-def test_load_reclamos_prefiere_numero_linea(reclamos_excel: bytes) -> None:
-    dataset = legacy_report_module.load_reclamos_excel(reclamos_excel)
-
-    assert dataset.columns["numero_linea"] == "Número Línea"
-    assert dataset.optional["numero_primer_servicio"] == "Número Primer Servicio"
-    assert dataset.dataframe.iloc[0]["Número Línea"] == "SRV-REAL-01"
-
-
-def test_matching_por_numero_linea_suma_horas(servicios_excel: bytes, reclamos_excel: bytes) -> None:
-    """Verifica que suma las horas de 'Horas Netas Cierre Problema Reclamo' correctamente."""
-    servicios_dataset = legacy_report_module.load_servicios_excel(servicios_excel)
-    reclamos_dataset = legacy_report_module.load_reclamos_excel(reclamos_excel)
-
-    service_line = servicios_dataset.dataframe.iloc[0][servicios_dataset.columns["numero_linea"]]
-    recl_linea_col = reclamos_dataset.columns["numero_linea"]
-    horas_columna, _ = legacy_report_module._columna_horas_reclamos(reclamos_dataset)
-
-    subset = reclamos_dataset.dataframe[reclamos_dataset.dataframe[recl_linea_col] == service_line]
-    assert len(subset) == 2
-    total = subset[horas_columna].sum()
-    # 1.25 (1:15:00) + 0.4167 (0:25:00) = 1.6667
-    assert total == pytest.approx(1.25 + 25 / 60, rel=1e-3)
-
-
-def test_normaliza_numero_linea_int_vs_str() -> None:
-    servicios_df = pd.DataFrame(
-        [
-            {
-                "Tipo Servicio": "EWS",
-                "Número Línea": 83241,
-                "Nombre Cliente": "Cirion",
-                "Horas Reclamos Todos": "00:00:00",
-                "SLA Entregado": 0.9968,
-            }
-        ]
-    )
-    reclamos_df = pd.DataFrame(
-        [
-            {
-                "Número Línea": "83241",
-                "Número Reclamo": "R-100",
-                "Horas Netas Reclamo": "0.5",
-                "Horas Netas Cierre Problema Reclamo": "00:45:00",
-                "Tipo Solución Reclamo": "Fibra",
-                "Fecha Inicio Reclamo": "2025-11-01",
-            }
-        ]
-    )
-
-    servicios_dataset = legacy_report_module.load_servicios_excel(_excel_bytes(servicios_df))
-    reclamos_dataset = legacy_report_module.load_reclamos_excel(_excel_bytes(reclamos_df))
-
-    srv_line = servicios_dataset.dataframe.iloc[0][servicios_dataset.columns["numero_linea"]]
-    recl_line_col = reclamos_dataset.columns["numero_linea"]
-
-    assert srv_line == "83241"
-    assert reclamos_dataset.dataframe.iloc[0][recl_line_col] == "83241"
-
-    horas_columna, _ = legacy_report_module._columna_horas_reclamos(reclamos_dataset)
-    subset = reclamos_dataset.dataframe[reclamos_dataset.dataframe[recl_line_col] == srv_line]
-    assert len(subset) == 1
-    # Usa 'Horas Netas Cierre Problema Reclamo' (columna P), que tiene valor 00:45:00 = 0.75
-    assert subset[horas_columna].iloc[0] == pytest.approx(0.75, rel=1e-3)
-
-
-def test_subset_usa_numero_primer_servicio_para_sumar() -> None:
-    servicios_df = pd.DataFrame(
-        [
-            {
-                "Tipo Servicio": "EWS",
-                "Número Línea": "40601",
-                "Número Primer Servicio": "40601",
-                "Nombre Cliente": "Cirion",
-                "Horas Reclamos Todos": "00:00:00",
-                "SLA Entregado": 0.9968,
-            }
-        ]
-    )
-    reclamos_df = pd.DataFrame(
-        [
-            {
-                "Número Línea": "83241",
-                "Número Primer Servicio": "40601",
-                "Número Reclamo": "R-200",
-                "Horas Netas Reclamo": "0.5",
-                "Horas Netas Cierre Problema Reclamo": "01:00:00",
-                "Tipo Solución Reclamo": "Fibra",
-                "Fecha Inicio Reclamo": "2025-11-02",
-            }
-        ]
-    )
-
-    servicios_dataset = legacy_report_module.load_servicios_excel(_excel_bytes(servicios_df))
-    reclamos_dataset = legacy_report_module.load_reclamos_excel(_excel_bytes(reclamos_df))
-
-    subset, linea_display = legacy_report_module._subset_reclamos_por_servicio(
-        servicios_dataset.dataframe.iloc[0],
-        servicios_dataset,
-        reclamos_dataset,
-    )
-
-    assert not subset.empty
-    assert linea_display == "83241"
-    horas_columna, _ = legacy_report_module._columna_horas_reclamos(reclamos_dataset)
-    total = subset[horas_columna].sum()
-    # Usa 'Horas Netas Cierre Problema Reclamo' (columna P), que tiene valor 01:00:00 = 1.0
-    assert total == pytest.approx(1.0, rel=1e-3)
-
-
-def test_horas_decimal_soporta_tipos_excel() -> None:
-    assert legacy_report_module._horas_decimal("01:30:00") == pytest.approx(1.5, rel=1e-3)
-
-    timestamp = pd.Timestamp("1900-01-02 06:50:26")
-    horas = legacy_report_module._horas_decimal(timestamp)
-    assert horas == pytest.approx(54.840555, rel=1e-3)
-
-    hora_simple = pd.Timestamp("1900-01-01 03:48:06").to_pydatetime().time()
-    assert legacy_report_module._horas_decimal(hora_simple) == pytest.approx(3.801666, rel=1e-3)
-
-    delta = pd.Timedelta(hours=2, minutes=30)
-    assert legacy_report_module._horas_decimal(delta) == pytest.approx(2.5, rel=1e-3)
+def test_pdf_fallido_no_rompe(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("core.sla.legacy_report.intentar_pdf", lambda docx, *, contexto: (None, "office caído"))
+    cfg = sla_service.SLAReportConfig(reports_dir=tmp_path, uploads_dir=tmp_path)
+    documento = sla_service.generate_report_from_excel_pair(
+        soporte_sla.servicios_excel(), soporte_sla.reclamos_excel(), mes=10, anio=2025, incluir_pdf=True, config=cfg)
+    assert documento.docx.exists() and documento.pdf is None and documento.pdf_error == "office caído"
