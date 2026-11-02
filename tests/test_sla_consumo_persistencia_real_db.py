@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import text
 
 from core.sla_consumo.parser import RECLAMOS_COLS, SERVICIOS_COLS
-from core.sla_consumo.persistencia import cargar_ventana, ingerir
+from core.sla_consumo.persistencia import cargar_ventana, completar_horas_cierre, ingerir
 from core.utils.excel_duraciones import TZ_AR
 from db.session import SessionLocal
 from tests.soporte_postgres_real import requiere_postgres_real
@@ -196,3 +196,45 @@ def test_ingesta_guarda_report_history_id(limpiar):
         valor = s.execute(text("SELECT report_history_id FROM app.sla_ingestas WHERE id = :i"),
                           {"i": r.ingesta_id}).scalar_one()
     assert valor == 4242
+
+
+def _horas_cierre(numero: str) -> float | None:
+    with SessionLocal() as s:
+        valor = s.execute(text("SELECT horas_netas_cierre FROM app.reclamos WHERE numero_reclamo = :n"),
+                          {"n": numero}).scalar_one()
+    return None if valor is None else float(valor)
+
+
+def test_ingesta_persiste_columna_p(limpiar):
+    reclamos = _reclamos(10.0)
+    reclamos["horas_netas_cierre"] = 8.25
+    ingerir(_servicios(), reclamos, hash_servicios=f"{_PREFIJO}s9", hash_reclamos="r9", usuario="t")
+    assert _horas_cierre(f"{_PREFIJO}1") == pytest.approx(8.25)
+    ventana, _ = cargar_ventana(dt.date(2026, 9, 1))
+    assert ventana.set_index("numero_reclamo").loc[f"{_PREFIJO}1", "horas_netas_cierre"] == pytest.approx(8.25)
+
+
+def test_resubir_par_completa_sola_la_p_faltante(limpiar):
+    """Reclamo ingerido antes de P25 (P en NULL): re-subir el mismo par la completa sin tocar nada más."""
+    ingerir(_servicios(), _reclamos(10.0, extra=True), hash_servicios=f"{_PREFIJO}s10", hash_reclamos="r10",
+            usuario="t")
+    with SessionLocal() as s:
+        s.execute(text("UPDATE app.reclamos SET horas_netas_cierre = 1.5 WHERE numero_reclamo = :n"),
+                  {"n": f"{_PREFIJO}2"})
+        s.commit()
+    con_p = _reclamos(10.0, extra=True)
+    con_p["horas_netas_cierre"] = 6.0
+    r = ingerir(_servicios(), con_p, hash_servicios=f"{_PREFIJO}s10", hash_reclamos="r10", usuario="t")
+    assert r.ya_ingestado is True and r.horas_cierre_completadas == 1
+    assert _horas_cierre(f"{_PREFIJO}1") == pytest.approx(6.0)
+    assert _horas_cierre(f"{_PREFIJO}2") == pytest.approx(1.5)  # ya tenía P: no se pisa
+    assert _horas(f"{_PREFIJO}1") == pytest.approx(10.0)
+
+
+def test_completar_ignora_reclamos_inexistentes(limpiar):
+    from db.session import engine
+
+    reclamos = _reclamos(1.0)
+    reclamos["horas_netas_cierre"] = 2.0
+    with engine.begin() as conn:
+        assert completar_horas_cierre(conn, reclamos) == 0

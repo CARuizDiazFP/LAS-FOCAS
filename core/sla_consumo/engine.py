@@ -57,7 +57,13 @@ def _clasificar(reclamos: pd.DataFrame) -> pd.DataFrame:
     df["codigo_cierre"] = pd.array([cierres[t].codigo for t in tipos], dtype="Int64")
     df["causa"] = df["grupo_cierre"].map(m.causa_de_grupo)
     df["cuenta_sla"] = df["grupo_cierre"] != GRUPO_CLIENTE
-    df["horas_netas"] = pd.to_numeric(df["horas_netas"], errors="coerce").astype(float).fillna(0.0)
+    # Desde acá `horas_netas` son las horas del SLA: la columna P ("Horas Netas Cierre Problema Reclamo"),
+    # la que reproduce el "SLA Entregado" oficial. Un reclamo sin P (ingerido antes de P25 y sin completar)
+    # cuenta 0 h y sale como inconsistencia.
+    horas_p = pd.to_numeric(df["horas_netas_cierre"], errors="coerce").astype(float)
+    df["sin_horas_cierre"] = horas_p.isna()
+    df["horas_netas"] = horas_p.fillna(0.0)
+    df = df.drop(columns="horas_netas_cierre")
     df["horas_computables"] = np.where(df["cuenta_sla"], df["horas_netas"], 0.0)
     df["horas_excluidas"] = np.where(df["cuenta_sla"], 0.0, df["horas_netas"])
     df["indicador"] = [m.indicador_reclamo(c, float(h)) for c, h in zip(df["causa"], df["horas_computables"])]
@@ -161,6 +167,7 @@ def _totales(clasificados, acum, no_vinc, svc, eventos, composicion, inc) -> dic
         "horas_fo_cod3": float(horas_causa[m.CAUSA_FO_COD3]),
         "horas_carrier": float(horas_causa[m.CAUSA_CARRIER]),
         "horas_otros": float(horas_causa[m.CAUSA_OTROS]),
+        "reclamos_sin_horas_cierre": int(clasificados["sin_horas_cierre"].sum()),
         "inconsistencias": int(len(inc)),
     }
 

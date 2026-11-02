@@ -47,6 +47,7 @@ export interface SlaConsumoResultado {
   reclamos_insertados?: number;
   reclamos_actualizados?: number;
   reclamos_sin_cambios?: number;
+  horas_cierre_completadas?: number;
   pdf_omitido?: string;
   totales?: SlaConsumoTotales;
   report_paths?: SlaConsumoReportPaths;
@@ -88,8 +89,11 @@ export function useSlaConsumo() {
       const sinCambios = data.reclamos_sin_cambios
         ? `, ${data.reclamos_sin_cambios} sin cambios (ya tenían datos de un corte más nuevo)`
         : '';
+      const completadas = data.horas_cierre_completadas
+        ? ` Se completaron las horas de cierre (columna P) de ${data.horas_cierre_completadas} reclamos.`
+        : '';
       const base = data.ya_ingestado
-        ? `Corte ${data.fecha_corte}: estos archivos ya estaban ingestados; informe regenerado.`
+        ? `Corte ${data.fecha_corte}: estos archivos ya estaban ingestados; informe regenerado.${completadas}`
         : `Corte ${data.fecha_corte}: ${data.reclamos_insertados ?? 0} reclamos nuevos, ${data.reclamos_actualizados ?? 0} actualizados${sinCambios}.`;
       mensaje.value = data.pdf_omitido ? `${base} PDF no generado: ${data.pdf_omitido}.` : base;
       tono.value = data.pdf_omitido ? 'info' : 'success';

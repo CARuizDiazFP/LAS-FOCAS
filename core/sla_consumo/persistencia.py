@@ -30,6 +30,7 @@ class ResultadoIngesta:
     reclamos_actualizados: int
     servicios_snapshot: int
     reclamos_sin_cambios: int = 0   # existentes cuyo último escritor tenía un corte más nuevo
+    horas_cierre_completadas: int = 0  # reclamos sin columna P (previos a P25) completados al re-subir el par
 
 
 def sha256(content: bytes) -> str:
@@ -102,6 +103,24 @@ def upsert_reclamos_df(conn: Connection, reclamos: pd.DataFrame, ingesta_id: int
     return insertados, actualizados, len(filas) - insertados - actualizados
 
 
+def completar_horas_cierre(conn: Connection, reclamos: pd.DataFrame) -> int:
+    """Llena horas_netas_cierre (columna P) sólo donde está en NULL; no toca ninguna otra columna.
+
+    Cubre los reclamos ingeridos antes de P25, cuando la P no se persistía: re-subir el mismo par
+    responde ``ya_ingestado`` y no pasa por el upsert.
+    """
+    filas = [{"n": _limpio(n), "p": _limpio(h)}
+             for n, h in zip(reclamos["numero_reclamo"], reclamos["horas_netas_cierre"]) if _limpio(h) is not None]
+    if not filas:
+        return 0
+    stmt = text("UPDATE app.reclamos SET horas_netas_cierre = :p "
+                "WHERE numero_reclamo = :n AND horas_netas_cierre IS NULL")
+    total = 0
+    for inicio in range(0, len(filas), 1000):
+        total += conn.execute(stmt, filas[inicio:inicio + 1000]).rowcount
+    return total
+
+
 def _upsert_snapshot(conn: Connection, servicios: pd.DataFrame, corte: dt.date, ingesta_id: int) -> int:
     if servicios.empty:
         return 0
@@ -128,7 +147,9 @@ def ingerir(servicios: pd.DataFrame, reclamos: pd.DataFrame, *, hash_servicios: 
             select(SlaIngesta).where(SlaIngesta.hash_servicios == hash_servicios,
                                      SlaIngesta.hash_reclamos == hash_reclamos)).first()
         if previa is not None:
-            return ResultadoIngesta(previa.id, previa.fecha_corte, True, 0, 0, 0)
+            completadas = completar_horas_cierre(conn, reclamos)
+            return ResultadoIngesta(previa.id, previa.fecha_corte, True, 0, 0, 0,
+                                    horas_cierre_completadas=completadas)
         ingesta_id = conn.execute(
             pg_insert(SlaIngesta.__table__).values(
                 fecha_corte=corte, hash_servicios=hash_servicios, hash_reclamos=hash_reclamos, usuario=usuario,
@@ -155,7 +176,7 @@ def cargar_ventana(fecha_corte: dt.date, engine: Engine | None = None) -> tuple[
         servicios = pd.read_sql(
             text(f"SELECT {', '.join(SERVICIOS_COLS)} FROM app.servicio_sla_snapshot WHERE fecha_corte = :c"),
             conn, params={"c": fecha_corte})
-    for col in ("horas_netas", "horas_totales_problema", "horas_indisponibilidad_problema",
+    for col in ("horas_netas", "horas_netas_cierre", "horas_totales_problema", "horas_indisponibilidad_problema",
                 "horas_netas_escalamiento_carrier"):
         reclamos[col] = pd.to_numeric(reclamos[col], errors="coerce")
     for col in SERVICIOS_COLS[4:]:

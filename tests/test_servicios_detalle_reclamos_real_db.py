@@ -29,7 +29,8 @@ def datos():
         for numero, linea, grupo in (("TSTD1", _LINEA, "Carrier"), ("TSTD2", _LINEA_VIEJA, "FO (excepto Cod 3)"),
                                      ("TSTD3", "000000", "Carrier"), ("TSTD4", _LINEA, "Cierre Cliente")):
             s.execute(text("""INSERT INTO app.reclamos (numero_reclamo, numero_linea, nombre_cliente, fecha_inicio,
-                              horas_netas, grupo_cierre) VALUES (:n, :l, 'TEST', now() - interval '10 days', 13.14, :g)"""),
+                              horas_netas, horas_netas_cierre, grupo_cierre)
+                              VALUES (:n, :l, 'TEST', now() - interval '10 days', 99, 13.14, :g)"""),
                       {"n": numero, "l": linea, "g": grupo})
         # Vinculado sólo por numero_primer_servicio (su línea no tiene relación con el servicio).
         s.execute(text("""INSERT INTO app.reclamos (numero_reclamo, numero_linea, numero_primer_servicio, nombre_cliente,
@@ -77,7 +78,8 @@ def test_detalle_trae_reclamos_y_sla_historico(datos, client):
     numeros = {r["numero_reclamo"] for r in reclamos}
     assert numeros == {"TSTD1", "TSTD2", "TSTD4", "TSTD5"}  # línea actual, alias y primer servicio; no el de otra línea
     r1 = next(r for r in reclamos if r["numero_reclamo"] == "TSTD1")
-    assert r1["pct_presupuesto"] == pytest.approx(50.0)
+    assert r1["pct_presupuesto"] == pytest.approx(50.0)  # con la columna P (13,14 h), no con la N (99 h)
+    assert (r1["horas_netas"], r1["horas_netas_cierre"]) == (pytest.approx(99.0), pytest.approx(13.14))
     assert r1["cuenta_sla"] is True
     r4 = next(r for r in reclamos if r["numero_reclamo"] == "TSTD4")
     assert r4["cuenta_sla"] is False and r4["pct_presupuesto"] is None

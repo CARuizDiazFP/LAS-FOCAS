@@ -30,7 +30,7 @@
             <th scope="col">Cierre</th>
             <th scope="col">Tipo solución</th>
             <th scope="col">Grupo</th>
-            <th scope="col">Horas netas</th>
+            <th scope="col">Horas netas cierre</th>
             <th scope="col">% presupuesto</th>
             <th scope="col">Carrier</th>
           </tr>
@@ -43,7 +43,7 @@
             <td>{{ fecha(reclamo.fecha_cierre) }}</td>
             <td>{{ reclamo.tipo_solucion ?? '—' }}</td>
             <td>{{ reclamo.grupo_cierre ?? '—' }}</td>
-            <td>{{ numero(reclamo.horas_netas) }}</td>
+            <td>{{ numero(reclamo.horas_netas_cierre) }}</td>
             <td>{{ reclamo.cuenta_sla ? numero(reclamo.pct_presupuesto, '%') : 'no cuenta' }}</td>
             <td>{{ reclamo.carrier ?? '—' }}</td>
           </tr>

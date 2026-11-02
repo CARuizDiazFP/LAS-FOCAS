@@ -24,6 +24,7 @@ export interface ReclamoServicio {
   grupo_cierre: string | null;
   codigo_cierre: number | null;
   horas_netas: number | null;
+  horas_netas_cierre: number | null;
   cuenta_sla: boolean;
   pct_presupuesto: number | null;
   carrier: string | null;

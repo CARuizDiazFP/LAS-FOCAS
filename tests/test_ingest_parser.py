@@ -19,6 +19,7 @@ def test_parse_reclamos_df_mapea_columnas_y_fechas():
                 "Fecha Inicio Problema Reclamo": "01/07/2024",
                 "Fecha Cierre Problema Reclamo": "02/07/2024",
                 "Horas Netas Problema Reclamo": "1,5",
+                "Horas Netas Cierre Problema Reclamo": "1,25",
                 "Latitud Reclamo": -34.6,
                 "Longitud Reclamo": -58.38,
             },
@@ -75,6 +76,8 @@ def test_parse_reclamos_df_mapea_columnas_y_fechas():
     # Horas netas en horas decimales y no negativas
     assert float(df_ok.iloc[0]["horas_netas"]) == 1.5
     assert float(df_ok.iloc[1]["horas_netas"]) == 0.75
+    assert float(df_ok.iloc[0]["horas_netas_cierre"]) == 1.25  # columna P, base del SLA
+    assert pd.isna(df_ok.iloc[1]["horas_netas_cierre"])  # sin la columna en la fila: NULL, no se inventa
 
 
 

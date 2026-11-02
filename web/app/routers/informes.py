@@ -491,6 +491,7 @@ async def generar_informe_sla_consumo_web(
         "fecha_corte": ingesta.fecha_corte.isoformat(), "ya_ingestado": ingesta.ya_ingestado,
         "reclamos_insertados": ingesta.reclamos_insertados, "reclamos_actualizados": ingesta.reclamos_actualizados,
         "reclamos_sin_cambios": ingesta.reclamos_sin_cambios,
+        "horas_cierre_completadas": ingesta.horas_cierre_completadas,
         "totales": informe.totales, "report_paths": report_paths,
     }
     if informe.pdf_omitido:

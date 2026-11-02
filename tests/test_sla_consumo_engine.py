@@ -27,7 +27,7 @@ def _s(linea, sla=SLA_26, primer=None, cliente="CLIENTE"):
 def _r(numero, linea, horas, tipo=FO, evento=None, dia=1, primer=None):
     fila = {c: None for c in RECLAMOS_COLS}
     fila.update(numero_reclamo=numero, numero_linea=linea, numero_primer_servicio=primer or linea,
-                horas_netas=horas, tipo_solucion=tipo, numero_evento=evento, nombre_cliente="CLIENTE",
+                horas_netas_cierre=horas, tipo_solucion=tipo, numero_evento=evento, nombre_cliente="CLIENTE",
                 fecha_inicio=pd.Timestamp(f"2026-09-{dia:02d} 10:00", tz=TZ_AR),
                 fecha_cierre=pd.Timestamp(f"2026-09-{dia:02d} 20:00", tz=TZ_AR))
     return fila
@@ -143,3 +143,21 @@ def test_totales_json_safe():
     res = _calc([_s("100")], [_r("1", "100", 4, FO)])
     for valor in res.totales.values():
         assert type(valor) in (int, float)
+
+
+def test_usa_columna_p_e_ignora_la_n():
+    fila = _r("1", "100", 4, FO)
+    fila["horas_netas"] = 40.0  # columna N: no cuenta para el SLA
+    res = _calc([_s("100")], [fila])
+    assert res.totales["horas_computables"] == pytest.approx(4)
+    assert res.servicios.iloc[0]["horas_computables"] == pytest.approx(4)
+
+
+def test_reclamo_sin_columna_p_cuenta_cero_y_se_informa():
+    from core.sla_consumo.impacto import INCONS_SIN_HORAS_CIERRE
+
+    res = _calc([_s("100")], [_r("1", "100", 4, FO), _r("2", "100", None, FO, dia=2)])
+    assert res.totales["reclamos_sin_horas_cierre"] == 1
+    assert res.totales["horas_computables"] == pytest.approx(4)
+    inc = res.inconsistencias[res.inconsistencias["tipo"] == INCONS_SIN_HORAS_CIERRE]
+    assert list(inc["numero_reclamo"]) == ["2"]

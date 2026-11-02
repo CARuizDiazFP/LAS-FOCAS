@@ -16,7 +16,7 @@ RECLAMOS_HEADERS = [
     "Número Reclamo", "Número Evento", "Número Línea Reclamo", "Número Primer Servicio", "Número Línea",
     "Tipo Servicio", "Nombre Cliente", "Fecha Inicio Problema Reclamo", "Fecha Cierre Problema Reclamo",
     "Horas Totales Problema Reclamo", "Horas Indisponibilidad Problema Reclamo",
-    "Horas Netas Problema Reclamo", "Horas Netas Escalamientos Carriers", "Sector Responsable Reclamo",
+    "Horas Netas Problema Reclamo", "Horas Netas Cierre Problema Reclamo", "Horas Netas Escalamientos Carriers", "Sector Responsable Reclamo",
     "Descripción Problema Reclamo", "Tipo Solución Reclamo", "Descripción Solución Reclamo",
     "Carrier Reclamo", "Número Reclamo Carrier",
 ]
@@ -39,9 +39,9 @@ def _xlsx(headers, filas) -> bytes:
 
 
 def _reclamo(numero, evento="-", linea=76232, netas=dt.datetime(1900, 1, 6, 3, 21, 2), tipo="Carrier",
-             inicio=45957.42457175926, cierre=45964.72430555556):
+             inicio=45957.42457175926, cierre=45964.72430555556, cierre_netas=dt.time(5, 30, 0)):
     return [numero, evento, linea, linea, linea, "RPV", "BANCO X", inicio, cierre,
-            dt.datetime(1900, 1, 7, 7, 11, 37), dt.datetime(1900, 1, 1, 3, 50, 35), netas,
+            dt.datetime(1900, 1, 7, 7, 11, 37), dt.datetime(1900, 1, 1, 3, 50, 35), netas, cierre_netas,
             dt.time(1, 53, 31), "NOC", "Enlace caído", tipo, "Se normalizó", "TELESPAZIO ARG SA", "jD"]
 
 
@@ -61,6 +61,7 @@ def test_parse_reclamos_convierte_horas_largas_eventos_y_descarta_totales():
     assert fila.loc["1226756", "numero_evento"] is None
     assert fila.loc["1227405", "numero_evento"] == "1229336"
     assert fila.loc["1227405", "horas_netas"] == pytest.approx(12.0)
+    assert fila.loc["1226756", "horas_netas_cierre"] == pytest.approx(5.5)  # columna P, aparte de la N
     assert fila.loc["1227405", "grupo_cierre"] == "FO Cod 3 (Corte en Bandeja)"
     assert fila.loc["1227405", "codigo_cierre"] == 3
     assert fila.loc["1226756", "numero_linea"] == "76232"

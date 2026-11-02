@@ -13,6 +13,7 @@ INCONS_CARRIER_CON_EVENTO = "Reclamo Carrier con evento"
 INCONS_EVENTO_MIXTO = "Evento con causas FO y no FO"
 INCONS_NO_VINCULADO = "Reclamo no vinculado a un servicio"
 INCONS_NO_EVALUABLE = "Servicio no evaluable (sin presupuesto válido)"
+INCONS_SIN_HORAS_CIERRE = "Reclamo sin Horas Netas Cierre (columna P)"
 
 
 def _validos(presupuesto: pd.Series) -> pd.Series:
@@ -143,6 +144,11 @@ def inconsistencias(acum: pd.DataFrame, no_vinculados: pd.DataFrame, servicios: 
                       "numero_reclamo": r["numero_reclamo"], "servicio_id": None,
                       "detalle": f"Línea {r.get('numero_linea')} "
                                  "fuera del universo de Servicios: sin presupuesto."})
+    if "sin_horas_cierre" in acum.columns:
+        for _, r in acum[acum["sin_horas_cierre"]].iterrows():
+            filas.append({"tipo": INCONS_SIN_HORAS_CIERRE, "numero_evento": r.get("numero_evento"),
+                          "numero_reclamo": r["numero_reclamo"], "servicio_id": r["servicio_id"],
+                          "detalle": "Ingerido sin la columna P: cuenta 0 h hasta completarlo desde el Excel."})
     for _, s in servicios[servicios["estado"] == m.ESTADO_NO_EVALUABLE].iterrows():
         filas.append({"tipo": INCONS_NO_EVALUABLE, "numero_evento": None, "numero_reclamo": None,
                       "servicio_id": s["servicio_id"], "detalle": "Falta SLA prometido o presupuesto válido."})

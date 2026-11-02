@@ -58,6 +58,7 @@ class ReclamoServicioResponse(BaseModel):
     grupo_cierre: str | None = None
     codigo_cierre: int | None = None
     horas_netas: float | None = None
+    horas_netas_cierre: float | None = None  # columna P: base del SLA (pct_presupuesto se calcula con ésta)
     cuenta_sla: bool = True
     pct_presupuesto: float | None = None
     carrier: str | None = None
@@ -391,13 +392,15 @@ async def _reclamos_del_servicio(db: AsyncSession, svc: Servicio) -> list[Reclam
     salida: list[ReclamoServicioResponse] = []
     for r in filas:
         horas = _float_o_none(r.horas_netas)
+        horas_cierre = _float_o_none(r.horas_netas_cierre)
         cuenta = r.grupo_cierre != GRUPO_CLIENTE
-        pct = (horas / presupuesto * 100) if (horas is not None and presupuesto and cuenta) else None
+        pct = (horas_cierre / presupuesto * 100) if (horas_cierre is not None and presupuesto and cuenta) else None
         salida.append(
             ReclamoServicioResponse(
                 numero_reclamo=r.numero_reclamo, numero_evento=r.numero_evento, numero_linea=r.numero_linea,
                 fecha_inicio=r.fecha_inicio, fecha_cierre=r.fecha_cierre, tipo_solucion=r.tipo_solucion,
-                grupo_cierre=r.grupo_cierre, codigo_cierre=r.codigo_cierre, horas_netas=horas, cuenta_sla=cuenta,
+                grupo_cierre=r.grupo_cierre, codigo_cierre=r.codigo_cierre, horas_netas=horas,
+                horas_netas_cierre=horas_cierre, cuenta_sla=cuenta,
                 pct_presupuesto=pct, carrier=r.carrier, descripcion_solucion=r.descripcion_solucion,
             )
         )

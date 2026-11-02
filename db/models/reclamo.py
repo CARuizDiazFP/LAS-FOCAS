@@ -24,8 +24,11 @@ class Reclamo(Base):
     grupo_cierre = Column(String(40), nullable=True, index=True)
     fecha_inicio = Column(DateTime(timezone=True), nullable=True, index=True)
     fecha_cierre = Column(DateTime(timezone=True), nullable=True, index=True)
-    # Horas decimales (no minutos). Base del SLA: Horas Netas Problema Reclamo.
+    # Horas decimales (no minutos). horas_netas = "Horas Netas Problema Reclamo" (columna N; la usa
+    # Repetitividad). Base del SLA desde P25: horas_netas_cierre = "Horas Netas Cierre Problema Reclamo"
+    # (columna P), la que reproduce el "SLA Entregado" oficial. NULL en filas ingeridas sin esa columna.
     horas_netas = Column(Numeric(12, 4), nullable=True)
+    horas_netas_cierre = Column(Numeric(12, 4), nullable=True)
     horas_totales_problema = Column(Numeric(12, 4), nullable=True)
     horas_indisponibilidad_problema = Column(Numeric(12, 4), nullable=True)
     horas_netas_escalamiento_carrier = Column(Numeric(12, 4), nullable=True)

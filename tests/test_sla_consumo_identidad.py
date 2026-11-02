@@ -20,7 +20,7 @@ def _s(primer, linea, sla, oficial_h=0.0, cliente="C"):
 
 def _r(numero, linea, primer):
     fila = {c: None for c in RECLAMOS_COLS}
-    fila.update(numero_reclamo=numero, numero_linea=linea, numero_primer_servicio=primer, horas_netas=1.0)
+    fila.update(numero_reclamo=numero, numero_linea=linea, numero_primer_servicio=primer, horas_netas_cierre=1.0)
     return fila
 
 

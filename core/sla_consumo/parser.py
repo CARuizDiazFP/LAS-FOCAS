@@ -26,6 +26,7 @@ _RECLAMOS_MAP = {
     "horas totales problema reclamo": "horas_totales_problema",
     "horas indisponibilidad problema reclamo": "horas_indisponibilidad_problema",
     "horas netas problema reclamo": "horas_netas",
+    "horas netas cierre problema reclamo": "horas_netas_cierre",
     "horas netas escalamientos carriers": "horas_netas_escalamiento_carrier",
     "sector responsable reclamo": "sector_responsable",
     "descripcion problema reclamo": "descripcion_problema",
@@ -34,10 +35,11 @@ _RECLAMOS_MAP = {
     "carrier reclamo": "carrier",
     "numero reclamo carrier": "numero_reclamo_carrier",
 }
+# horas_netas_cierre (columna P) es la base del SLA; horas_netas (columna N) se persiste para Repetitividad.
 _RECLAMOS_OBLIGATORIAS = ["numero_reclamo", "numero_linea", "nombre_cliente", "fecha_inicio",
-                          "fecha_cierre", "horas_netas", "tipo_solucion"]
+                          "fecha_cierre", "horas_netas", "horas_netas_cierre", "tipo_solucion"]
 _RECLAMOS_HORAS = ["horas_totales_problema", "horas_indisponibilidad_problema", "horas_netas",
-                   "horas_netas_escalamiento_carrier"]
+                   "horas_netas_cierre", "horas_netas_escalamiento_carrier"]
 RECLAMOS_COLS = list(dict.fromkeys(_RECLAMOS_MAP.values())) + ["codigo_cierre", "grupo_cierre"]
 
 _SERVICIOS_MAP = {

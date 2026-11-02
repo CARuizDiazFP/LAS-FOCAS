@@ -35,6 +35,7 @@ MAPPER: Dict[str, str] = {
     "fecha inicio problema reclamo": "fecha_inicio",
     "fecha cierre problema reclamo": "fecha_cierre",
     "horas netas problema reclamo": "horas_netas",
+    "horas netas cierre problema reclamo": "horas_netas_cierre",
     "descripcion solucion reclamo": "descripcion_solucion",
     "descripción solucion reclamo": "descripcion_solucion",
     "descripción solución reclamo": "descripcion_solucion",
@@ -52,6 +53,7 @@ RELEVANT_COLS = [
     "fecha_inicio",
     "fecha_cierre",
     "horas_netas",
+    "horas_netas_cierre",
     "descripcion_solucion",
     "latitud",
     "longitud",
@@ -127,9 +129,10 @@ def parse_reclamos_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, IngestSummary]:
         df[c] = df[c].map(fecha_excel)
         df[c] = pd.to_datetime(df[c], utc=True).dt.tz_convert(TZ_AR)
 
-    # Horas netas en horas decimales (acepta [h]:mm, serial Excel o coma decimal)
-    df["horas_netas"] = pd.to_numeric(df["horas_netas"].map(duracion_a_horas), errors="coerce")
-    df.loc[df["horas_netas"] < 0, "horas_netas"] = pd.NA
+    # Horas netas (N) y netas de cierre (P, base del SLA) en horas decimales ([h]:mm, serial Excel o coma)
+    for c in ["horas_netas", "horas_netas_cierre"]:
+        df[c] = pd.to_numeric(df[c].map(duracion_a_horas), errors="coerce")
+        df.loc[df[c] < 0, c] = pd.NA
 
     # GEO
     for c in ["latitud", "longitud"]:
