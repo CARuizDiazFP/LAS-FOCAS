@@ -235,6 +235,10 @@ sólo corre a mano por falta de créditos de Actions:
    `web/frontend/src`. Sin `web/frontend/node_modules` se saltea con el motivo "sin node_modules
    (correr npm ci)" y el gate igual pasa. Por eso, quien toque el frontend en un worktree tiene que
    correr `npm ci` en `web/frontend` antes de `ready`: los worktrees nacen sin `node_modules`.
+   **No** pasar el gate con el `node_modules` enlazado del control: puede estar desactualizado
+   respecto de `package-lock.json`. Real (P25, 2026-11-02): al control le faltaba `@types/geojson` y
+   `vue-tsc` dio 29 errores en FO Monitor, archivos que la sesión no tocó. Borrar el enlace
+   (`rm web/frontend/node_modules`, sin barra final) y correr `npm ci` (148 MB, 3 s) lo dejó en 0.
 
 Si el gate falla, `ready` sale con código 1, muestra el paso y su salida, y el agente queda en su
 estado. Si pasa, registra `quality_gate_passed` con el sha del HEAD. **`integrate` rechaza un HEAD
