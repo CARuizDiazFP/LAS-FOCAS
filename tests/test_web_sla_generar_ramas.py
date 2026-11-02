@@ -9,6 +9,7 @@ import logging
 import re
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
