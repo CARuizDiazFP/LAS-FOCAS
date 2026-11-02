@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from core.password import hash_password
+from web.app.dependencias import CSRF_HEADER
 from web.app.main import app
 
 
@@ -71,11 +72,13 @@ class _FakeSession:
 
 
 def _login_admin(client: TestClient, monkeypatch) -> None:
+    """Login real; el cliente queda mandando el token CSRF de la sesión, como la SPA."""
     from web.app import main as web_main
 
     monkeypatch.setattr(web_main.psycopg, "connect", _connect_admin_ok("admin"))
     res = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
     assert res.json()["ok"] is True
+    client.headers[CSRF_HEADER] = res.json()["csrf"]
 
 
 def test_create_ban_web_notifica_slack(monkeypatch):

@@ -7,12 +7,9 @@
 
 from __future__ import annotations
 
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-os.environ.setdefault("TESTING", "true")
 
 from core.services import camara_sugerencias, nodos_catalogo
 from core.services.cromo import camara_botella_busqueda as cb

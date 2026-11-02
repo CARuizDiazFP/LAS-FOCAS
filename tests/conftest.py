@@ -76,6 +76,17 @@ def pytest_sessionfinish(session, exitstatus) -> None:
         session.exitstatus = 1
 
 
+@pytest.fixture(autouse=True)
+def _sin_testing_heredado(monkeypatch):
+    """Cada test arranca sin `TESTING`, como producción: CSRF y clave de sesión se validan de verdad.
+
+    `TESTING=true` saltea CSRF; si viene del entorno (el gate de `scripts/agentes/calidad.py` lo exporta)
+    o lo dejó otro módulo, el resultado dependería de cómo y en qué orden se corre la suite. El test que
+    necesite el atajo lo pide con `monkeypatch.setenv("TESTING", "true")`, que se aplica después de éste.
+    """
+    monkeypatch.delenv("TESTING", raising=False)
+
+
 @pytest.fixture
 def con_sesion():
     """Sesión simulada de la SPA vía `app.dependency_overrides`; ver `tests/soporte_sesion.py`.

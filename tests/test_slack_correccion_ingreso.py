@@ -4,11 +4,8 @@
 
 from __future__ import annotations
 
-import os
 import unittest
 from datetime import datetime, timezone
-
-os.environ.setdefault("TESTING", "true")
 
 from modules.slack_baneo_notifier.correccion_ingreso import (
     ComandoForzarEgreso,

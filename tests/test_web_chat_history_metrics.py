@@ -2,11 +2,6 @@
 # Ubicación de archivo: tests/test_web_chat_history_metrics.py
 # Descripción: Pruebas de endpoints /api/chat/history y /api/chat/metrics y conversation_id
 
-import os
-
-os.environ.setdefault("TESTING", "true")
-
-
 from fastapi.testclient import TestClient  # type: ignore
 from web.app.main import app  # type: ignore
 from web.app.routers.chat import INTENT_COUNTER  # type: ignore

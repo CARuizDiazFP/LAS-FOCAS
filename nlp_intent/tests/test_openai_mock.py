@@ -12,12 +12,12 @@ import pathlib
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[2]))
 
 import os
+from unittest import mock
 
-# Indicar modo testing para saltar validación de OPENAI_API_KEY al importar config
-os.environ.setdefault("TESTING", "true")
-
-from nlp_intent.app.service import classify_text, settings as svc_settings  # noqa: E402
-from nlp_intent.app.schemas import IntentResponse  # noqa: E402
+# config de nlp_intent valida al importarse; TESTING=true dura sólo el import (no se filtra al resto de la suite).
+with mock.patch.dict(os.environ, {"TESTING": "true"}):
+    from nlp_intent.app.service import classify_text, settings as svc_settings  # noqa: E402
+    from nlp_intent.app.schemas import IntentResponse  # noqa: E402
 
 
 @dataclass

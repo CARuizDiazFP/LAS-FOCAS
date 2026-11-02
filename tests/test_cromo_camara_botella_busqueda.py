@@ -17,12 +17,9 @@ Tests para:
 
 from __future__ import annotations
 
-import os
 import unittest
 from typing import Any
 from unittest.mock import MagicMock, patch
-
-os.environ.setdefault("TESTING", "true")
 
 from modules.slack_baneo_notifier.camara_search import AmbiguousSearchError, buscar_camara
 from core.services.cromo.camara_botella_busqueda import (

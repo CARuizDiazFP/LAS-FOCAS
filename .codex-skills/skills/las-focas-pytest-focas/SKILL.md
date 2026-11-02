@@ -662,23 +662,39 @@ habría dado 500 apenas hubiera puntos terminales cargados (en dev y prod la tab
   suite focal). Antes de cerrar, `grep -rn "SimpleNamespace(<campo_existente>=" tests` y agregar el
   campo nuevo a cada doble, o leerlo en el router con un default sólo si el contrato lo justifica.
 
-## Tests web nuevos: fijar `TESTING` en el módulo y probar el 403 por introspección (lección 2026-10-23)
+## Tests web nuevos: `TESTING` explícito y 403 por introspección (lecciones 2026-10-23 y P26)
 
-- Los POST, PUT y PATCH de la SPA saltean el CSRF sólo con `TESTING=true`. Un módulo de tests nuevo
-  que no lo fije depende del entorno de quien corre pytest. Real: con `env -u TESTING` fallaron 5 de
-  30 tests de Servicios y 8 de Cromo, mientras el gate pasaba. Agregar al módulo:
+- Los POST, PUT y PATCH de la SPA saltean el CSRF sólo con `TESTING=true`. Real (2026-10-23): con
+  `env -u TESTING` fallaron 5 de 30 tests de Servicios y 8 de Cromo mientras el gate pasaba. Si un módulo
+  necesita el atajo para todos sus tests, el fixture del módulo sigue sirviendo (se aplica después del
+  de `conftest.py`):
   ```python
   @pytest.fixture(autouse=True)
   def _modo_test(monkeypatch):
       monkeypatch.setenv("TESTING", "true")
   ```
-  y verificarlo una vez con `env -u TESTING pytest <archivo>`.
-- **Un 403 que sólo aparece en una corrida focal suele ser `TESTING` heredado, no una regresión.** Varios
-  módulos (`test_slack_ingreso_*.py`, `test_slack_cable_info.py`) hacen `os.environ.setdefault("TESTING",
-  "true")` al importarse, y la suite completa los importa antes que los `test_web_*`. Real (P14,
-  2026-10-29): `test_web_cromo_camino_optico.py::test_excluir_pelos_en_lote_y_todos_ajenos_409` y
-  `::test_restaurar_pelo_no_excluido_404` dan 403 si el archivo se corre solo, también en `dev`. Para
-  descartarlo, correr la versión de `dev` del archivo (`git show origin/dev:<archivo>`) sola.
+  Con login real, preferir mandar el token (ver abajo): prueba el camino de la SPA.
+- **`TESTING` arranca sin definir en cada test, como en producción** (fixture autouse
+  `_sin_testing_heredado` de `tests/conftest.py`, P26 2026-11-02): CSRF se valida de verdad aunque el
+  entorno lo traiga (`scripts/agentes/calidad.py` exporta `TESTING=true`). Con login real, mandar el token
+  como la SPA: `client.headers[CSRF_HEADER] = login(client, …)` (`CSRF_HEADER` de
+  `web/app/dependencias.py`). Sólo si hace falta el atajo, `monkeypatch.setenv("TESTING", "true")` en el
+  test o en un fixture del archivo. Con `con_sesion` no hay `username` en la cookie y `requiere_csrf` no
+  decide: ahí `TESTING` da igual.
+- **Un helper de test que importan otros módulos es contrato: no cambiar su comportamiento por defecto.**
+  `_cliente_admin`/`_cliente_user` de `tests/test_web_cromo_camino_optico.py` los importan 6 módulos. Real
+  (P26): hacer que siempre mandaran el header CSRF rompió 9 tests de "token inválido en el body → 403"
+  en otros archivos (el header válido tiene prioridad sobre el body). Quedó como opción
+  (`con_csrf=True`). Antes de cambiar un helper: `git grep -n 'from tests.<módulo> import'`.
+- **Nunca escribir `os.environ` a nivel de módulo en un test.** pytest importa **todos** los módulos al
+  coleccionar, antes de correr el primer test: un `os.environ.setdefault(...)` al importarse rige para toda
+  la suite (el orden alfabético no importa) y no para una corrida focal. Real (P26): 10 módulos de
+  `tests/` y 4 de `nlp_intent/tests` ponían `TESTING=true`, y 4 tests de `test_web_baneos.py` y
+  `test_web_cromo_camino_optico.py` daban 403 sólo al correrlos solos. Si la necesidad es del import
+  (config de `nlp_intent`), acotarla: `with mock.patch.dict(os.environ, {"TESTING": "true"}): from … import …`.
+- **Un test que pasa en la suite y falla solo es dependencia de orden, no flakiness.** Barrido por archivo:
+  `for f in tests/test_web_*.py; do pytest -q -p no:cacheprovider "$f" >"$OUT/$(basename $f).log" 2>&1;
+  echo "$? $f" >>"$OUT/resumen.txt"; done` (~6 s de arranque por archivo; 54 archivos ≈ 15 min).
 - **El 403 de las rutas admin se prueba por introspección, no con una lista a mano.** Recorrer
   `router.routes` y, en cada `route.dependant`, buscar recursivamente `usuario_admin` (ver
   `test_toda_ruta_admin_da_403_a_un_usuario_comun` en `tests/test_web_servicios_errores_depends.py`).

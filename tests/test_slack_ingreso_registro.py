@@ -4,12 +4,9 @@
 
 from __future__ import annotations
 
-import os
 import unittest
 from typing import Any
 from unittest.mock import MagicMock, patch
-
-os.environ.setdefault("TESTING", "true")
 
 from core.services.cromo.camara_botella_busqueda import ResultadoBusquedaExtendida
 from tests.soporte_slack_ingreso import _resultado_camara

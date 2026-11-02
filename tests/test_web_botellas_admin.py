@@ -323,11 +323,7 @@ def test_consolidar_requiere_autenticacion():
 def test_consolidar_rechaza_csrf_invalido(monkeypatch):
     from web.app import main as web_main
 
-    # Algunos módulos de test (test_slack_cable_info.py, test_slack_ingreso_listener.py) hacen
-    # `os.environ.setdefault("TESTING", "true")` a nivel de módulo, sin revertirlo — si ya corrieron
-    # antes en el mismo proceso de pytest, "TESTING" queda en "true" y el chequeo de CSRF se saltea
-    # silenciosamente. Mismo workaround explícito ya usado en test_web_sla_flow.py/
-    # test_web_infra_camera_state.py para este caso exacto.
+    # Explícito aunque tests/conftest.py ya arranca cada test sin TESTING: este test prueba el CSRF.
     monkeypatch.setenv("TESTING", "false")
     monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     client = TestClient(app)
@@ -583,8 +579,7 @@ def test_eliminar_botella_requiere_autenticacion():
 def test_eliminar_botella_rechaza_csrf_invalido(monkeypatch):
     from web.app import main as web_main
 
-    # Ver nota en test_consolidar_rechaza_csrf_invalido: algunos tests de Slack dejan
-    # TESTING=true seteado a nivel de módulo sin revertirlo.
+    # Explícito aunque tests/conftest.py ya arranca cada test sin TESTING: este test prueba el CSRF.
     monkeypatch.setenv("TESTING", "false")
     monkeypatch.setattr(web_main.psycopg, "connect", connect_admin_ok())
     client = TestClient(app)
