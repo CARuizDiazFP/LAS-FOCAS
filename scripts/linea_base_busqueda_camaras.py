@@ -13,6 +13,10 @@ Sólo lecturas (SELECT). Variables de entorno para la base de DEV:
 
 Aborta con exit 2 si no es host local, puerto 5433 y base focas_dev (nunca producción, 5432).
 
+El panel exige una clave de sesión real (fail-closed desde P01): sin `.secrets/web_secret_key_v1.txt`
+legible, exportar una descartable, por ejemplo
+`WEB_SECRET_KEY="$(python -c 'import secrets;print(secrets.token_hex(32))')"`.
+
 Uso:
 
     python scripts/linea_base_busqueda_camaras.py grabar --salida DIR [--solo smart|export]
