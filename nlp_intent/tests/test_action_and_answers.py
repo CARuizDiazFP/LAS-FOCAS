@@ -5,17 +5,19 @@
 from __future__ import annotations
 
 import os
+from unittest import mock
 import sys
 import pathlib
 import asyncio
 
-os.environ.setdefault("TESTING", "true")
 os.environ.setdefault("LLM_PROVIDER", "heuristic")
 os.environ.setdefault("INTENT_ENABLE_ANSWERS", "true")
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[2]))
 
-from nlp_intent.app.service import analyze_intention  # noqa: E402
+# config de nlp_intent valida al importarse; TESTING=true dura sólo el import (no se filtra al resto de la suite).
+with mock.patch.dict(os.environ, {"TESTING": "true"}):
+    from nlp_intent.app.service import analyze_intention  # noqa: E402
 
 
 def _run(coro):

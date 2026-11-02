@@ -953,7 +953,10 @@ def test_env_dev_privada_sobrescribe_puertos_sin_tocar_el_control(
 def test_env_dev_privada_no_imprime_su_contenido(
     control: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (control / ".env.dev").write_text("POSTGRES_PASSWORD=Dev_secreto_no_mostrar\n", encoding="utf-8")
+    (control / ".env.dev").write_text(
+        "POSTGRES_PASSWORD=Dev_secreto_no_mostrar\n",  # secreto-ok: valor falso que el test busca en la salida
+        encoding="utf-8",
+    )
 
     codigo = _correr(["start", "--agent", "claude-api", "--task", "tarea-a"])
 

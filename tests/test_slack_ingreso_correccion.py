@@ -4,12 +4,9 @@
 
 from __future__ import annotations
 
-import os
 import unittest
 from typing import Any
 from unittest.mock import MagicMock, patch
-
-os.environ.setdefault("TESTING", "true")
 
 from core.services.ingreso_correccion_service import RESULTADO_PENDIENTE_FECHA
 from tests.soporte_postgres_real import requiere_postgres_real

@@ -9,6 +9,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 FAIL=0
+# Directorio propio por corrida: con rutas fijas en /tmp, dos sesiones en paralelo se pisaban la salida.
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 report() {
   echo "[ERROR] $1" >&2
@@ -22,27 +25,30 @@ if [ -n "$tracked_sensitive" ]; then
   printf '%s\n' "$tracked_sensitive" >&2
 fi
 
-if grep -nE 'POSTGRES_PASSWORD[[:space:]]*:' deploy/docker-compose.dev.yml deploy/compose.yml >/tmp/las-focas-postgres-password.txt; then
+if grep -nE 'POSTGRES_PASSWORD[[:space:]]*:' deploy/docker-compose.dev.yml deploy/compose.yml >"$TMP_DIR/compose.txt"; then
   report "Se encontró POSTGRES_PASSWORD en texto plano en el compose; usar POSTGRES_PASSWORD_FILE."
-  cat /tmp/las-focas-postgres-password.txt >&2
+  cat "$TMP_DIR/compose.txt" >&2
 fi
-rm -f /tmp/las-focas-postgres-password.txt
 
 if git grep -I -nE 'sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|xapp-[A-Za-z0-9-]{20,}|[0-9]{6,12}:[A-Za-z0-9_-]{30,}' -- . \
-  ':!Templates/**' ':!.gemini/**' ':!.github/agents/**' ':!docs/PR/**' ':!deploy/env.sample' ':!deploy/env.dev.sample' >/tmp/las-focas-secret-patterns.txt; then
+  ':!Templates/**' ':!.gemini/**' ':!.github/agents/**' ':!docs/PR/**' ':!deploy/env.sample' ':!deploy/env.dev.sample' >"$TMP_DIR/tokens.txt"; then
   report "Se detectaron patrones compatibles con tokens reales en archivos versionados."
-  cat /tmp/las-focas-secret-patterns.txt >&2
+  cat "$TMP_DIR/tokens.txt" >&2
 fi
-rm -f /tmp/las-focas-secret-patterns.txt
 
+# Una asignación sólo cuenta si su valor es literal: se aceptan vacío, el placeholder `cambiar_por_` y
+# los que el shell resuelve al correr (`$(cat .secrets/…)`, `${VAR}`, `$VAR`, con o sin comillas, y la
+# comilla invertida de la sustitución clásica, que en Markdown cierra un código vacío). Se
+# decide por asignación, no por línea: un literal al lado de un `$(…)` se sigue detectando. Un literal
+# falso a propósito (p. ej. en un test) se declara en su línea con `# secreto-ok: <motivo>`.
+ASIGNACION_LITERAL='(POSTGRES_PASSWORD|SMTP_PASS|WEB_SECRET_KEY|LAS_FOCAS_API_KEY)=(?!["'"'"']?\$[({A-Za-z_]|`|cambiar_por_|$)|OPENAI_API_KEY=sk-'
 if git grep -I -nE 'POSTGRES_PASSWORD=|SMTP_PASS=|WEB_SECRET_KEY=|LAS_FOCAS_API_KEY=|OPENAI_API_KEY=sk-' -- . \
   ':!.gemini/**' ':!.github/agents/**' ':!docs/**' ':!deploy/env.sample' ':!deploy/env.dev.sample' \
   ':!scripts/check_no_plaintext_secrets.sh' \
-  | grep -Ev '=(cambiar_por_|$)' >/tmp/las-focas-secret-assignments.txt; then
+  | grep -P "$ASIGNACION_LITERAL" | grep -Fv '# secreto-ok:' >"$TMP_DIR/asignaciones.txt"; then
   report "Se detectaron asignaciones sensibles con valores no permitidos."
-  cat /tmp/las-focas-secret-assignments.txt >&2
+  cat "$TMP_DIR/asignaciones.txt" >&2
 fi
-rm -f /tmp/las-focas-secret-assignments.txt
 
 if [ "$FAIL" -ne 0 ]; then
   exit 1

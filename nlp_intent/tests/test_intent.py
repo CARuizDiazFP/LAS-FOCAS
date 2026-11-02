@@ -6,15 +6,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+from unittest import mock
 
 import pathlib
 import sys
 
-# Forzar modo testing antes de importar el módulo que ejecuta validaciones de configuración
-os.environ.setdefault("TESTING", "true")
-
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[2]))
-from nlp_intent.app.service import classify_text, settings as svc_settings
+# config de nlp_intent valida al importarse; TESTING=true dura sólo el import (no se filtra al resto de la suite).
+with mock.patch.dict(os.environ, {"TESTING": "true"}):
+    from nlp_intent.app.service import classify_text, settings as svc_settings
 
 TEST_DATA = [
     ("hola", "Otros"),

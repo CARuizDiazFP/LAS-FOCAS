@@ -7,8 +7,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-import pytest
-
 from fastapi.testclient import TestClient  # type: ignore
 
 from core.services.cromo.camino_optico_service import (
@@ -20,26 +18,34 @@ from core.services.cromo.camino_optico_service import (
     ResultadoRegla,
 )
 from tests.soporte_login import connect_ok, login
+from web.app.dependencias import CSRF_HEADER
 from web.app.main import app
 
 SERVICIO = 557
 
 
-def _cliente_admin(monkeypatch) -> TestClient:
+def _cliente_admin(monkeypatch, *, con_csrf: bool = False) -> TestClient:
+    """Login real como admin. Con `con_csrf=True` manda el token de la sesión como la SPA (otros
+    módulos importan este helper y prueban el token inválido: por defecto no lo manda)."""
     from web.app import main as web_main
 
     monkeypatch.setattr(web_main.psycopg, "connect", connect_ok("adminpass", "admin"))
     client = TestClient(app)
-    login(client, "admin", "adminpass")
+    csrf = login(client, "admin", "adminpass")
+    if con_csrf:
+        client.headers[CSRF_HEADER] = csrf
     return client
 
 
-def _cliente_user(monkeypatch) -> TestClient:
+def _cliente_user(monkeypatch, *, con_csrf: bool = False) -> TestClient:
+    """Login real como user; `con_csrf` igual que en `_cliente_admin`."""
     from web.app import main as web_main
 
     monkeypatch.setattr(web_main.psycopg, "connect", connect_ok("userpass", "user"))
     client = TestClient(app)
-    login(client, "user", "userpass")
+    csrf = login(client, "user", "userpass")
+    if con_csrf:
+        client.headers[CSRF_HEADER] = csrf
     return client
 
 
@@ -1094,7 +1100,7 @@ def test_excluir_pelos_en_lote_y_todos_ajenos_409(monkeypatch):
         return [p for p in pelos_n_id if p != 5], [5]
 
     monkeypatch.setattr(pelos_excluidos, "excluir_pelos", _excluir)
-    client = _cliente_admin(monkeypatch)
+    client = _cliente_admin(monkeypatch, con_csrf=True)
 
     ok = client.post(_url_excluir(), json={"pelos_n_id": [9999999, 9999998, 5], "motivo": "Huérfano"})
     ajeno = client.post(_url_excluir(), json={"pelos_n_id": [1]})
@@ -1116,7 +1122,7 @@ def test_restaurar_pelo_no_excluido_404(monkeypatch):
         return pelo_n_id == 9999999
 
     monkeypatch.setattr(pelos_excluidos, "restaurar_pelo", _restaurar)
-    client = _cliente_admin(monkeypatch)
+    client = _cliente_admin(monkeypatch, con_csrf=True)
 
     assert client.post(_url_excluir(True), json={"pelo_n_id": 9999999}).status_code == 200
     assert client.post(_url_excluir(True), json={"pelo_n_id": 5}).status_code == 404
@@ -1125,26 +1131,20 @@ def test_restaurar_pelo_no_excluido_404(monkeypatch):
 # ── ODF confirmadas y trackings esperados (Tarea 4) ─────────────────────────────────────────
 
 
-@pytest.fixture(autouse=False)
-def _testing(monkeypatch):
-    """`_validar_csrf` se saltea con TESTING=true; sin esto estos tests dependen del orden."""
-    monkeypatch.setenv("TESTING", "true")
-
-
 def _url_odf(sufijo: str = "") -> str:
     return f"/api/admin/infra/servicios-odf/{SERVICIO}/odf-confirmadas{sufijo}"
 
 
-def test_confirmar_odf_exige_admin(monkeypatch, _testing):
+def test_confirmar_odf_exige_admin(monkeypatch):
     _fake_session(monkeypatch)
-    client = _cliente_user(monkeypatch)
+    client = _cliente_user(monkeypatch, con_csrf=True)
 
     res = client.post(_url_odf(), json={"odfs": [{"odf_n_id": 1, "rol": "EXTREMO"}]})
 
     assert res.status_code == 403
 
 
-def test_confirmar_odf_en_lote_valida_rol_y_mapea_inexistente_a_404(monkeypatch, _testing):
+def test_confirmar_odf_en_lote_valida_rol_y_mapea_inexistente_a_404(monkeypatch):
     from core.services.cromo import servicio_odf_confirmacion as svc
     from core.services.cromo.verificador import ObjetoNoEncontrado
 
@@ -1158,7 +1158,7 @@ def test_confirmar_odf_en_lote_valida_rol_y_mapea_inexistente_a_404(monkeypatch,
         return [{"odf_n_id": n, "rol": r} for n, r in odfs]
 
     monkeypatch.setattr(svc, "confirmar", _confirmar)
-    client = _cliente_admin(monkeypatch)
+    client = _cliente_admin(monkeypatch, con_csrf=True)
 
     ok = client.post(
         _url_odf(),
@@ -1178,16 +1178,16 @@ def test_confirmar_odf_en_lote_valida_rol_y_mapea_inexistente_a_404(monkeypatch,
     assert rol_malo.status_code == 422 and vacio.status_code == 422
 
 
-def test_confirmar_odf_servicio_inexistente_404(monkeypatch, _testing):
+def test_confirmar_odf_servicio_inexistente_404(monkeypatch):
     _fake_session(monkeypatch, existe=False)
-    client = _cliente_admin(monkeypatch)
+    client = _cliente_admin(monkeypatch, con_csrf=True)
 
     res = client.post(_url_odf(), json={"odfs": [{"odf_n_id": 1, "rol": "EXTREMO"}]})
 
     assert res.status_code == 404
 
 
-def test_desconfirmar_odf_404_si_no_estaba_vigente(monkeypatch, _testing):
+def test_desconfirmar_odf_404_si_no_estaba_vigente(monkeypatch):
     from core.services.cromo import servicio_odf_confirmacion as svc
 
     _fake_session(monkeypatch)
@@ -1200,16 +1200,16 @@ def test_desconfirmar_odf_404_si_no_estaba_vigente(monkeypatch, _testing):
 
     monkeypatch.setattr(svc, "desconfirmar", _desconfirmar)
     monkeypatch.setattr(svc, "listar", _listar)
-    client = _cliente_admin(monkeypatch)
+    client = _cliente_admin(monkeypatch, con_csrf=True)
 
     assert client.post(_url_odf("/desconfirmar"), json={"odf_n_id": 1}).status_code == 200
     assert client.post(_url_odf("/desconfirmar"), json={"odf_n_id": 2}).status_code == 404
-    assert _cliente_user(monkeypatch).post(
+    assert _cliente_user(monkeypatch, con_csrf=True).post(
         _url_odf("/desconfirmar"), json={"odf_n_id": 1}
     ).status_code == 403
 
 
-def test_declarar_trackings_esperados_valida_y_permite_null(monkeypatch, _testing):
+def test_declarar_trackings_esperados_valida_y_permite_null(monkeypatch):
     from core.services.cromo import servicio_odf_confirmacion as svc
 
     _fake_session(monkeypatch)
@@ -1220,17 +1220,17 @@ def test_declarar_trackings_esperados_valida_y_permite_null(monkeypatch, _testin
         return True
 
     monkeypatch.setattr(svc, "declarar_trackings_esperados", _declarar)
-    client = _cliente_admin(monkeypatch)
+    client = _cliente_admin(monkeypatch, con_csrf=True)
     url = f"/api/admin/infra/servicios-odf/{SERVICIO}/trackings-esperados"
 
     assert client.post(url, json={"cantidad": 6}).status_code == 200
     assert client.post(url, json={"cantidad": None}).status_code == 200
     assert client.post(url, json={"cantidad": 0}).status_code == 422
     assert declaradas == [(SERVICIO, 6), (SERVICIO, None)]
-    assert _cliente_user(monkeypatch).post(url, json={"cantidad": 2}).status_code == 403
+    assert _cliente_user(monkeypatch, con_csrf=True).post(url, json={"cantidad": 2}).status_code == 403
 
 
-def test_listar_odf_confirmadas_exige_admin_y_devuelve_lo_declarado(monkeypatch, _testing):
+def test_listar_odf_confirmadas_exige_admin_y_devuelve_lo_declarado(monkeypatch):
     from core.services.cromo import servicio_odf_confirmacion as svc
 
     _fake_session(monkeypatch)
@@ -1240,8 +1240,8 @@ def test_listar_odf_confirmadas_exige_admin_y_devuelve_lo_declarado(monkeypatch,
 
     monkeypatch.setattr(svc, "declaraciones_del_servicio", _decl)
 
-    assert _cliente_user(monkeypatch).get(_url_odf()).status_code == 403
-    cuerpo = _cliente_admin(monkeypatch).get(_url_odf()).json()
+    assert _cliente_user(monkeypatch, con_csrf=True).get(_url_odf()).status_code == 403
+    cuerpo = _cliente_admin(monkeypatch, con_csrf=True).get(_url_odf()).json()
     assert cuerpo == {"odf_confirmadas": [{"odf_n_id": 1, "rol": "EXTREMO"}], "trackings_esperados": 4}
 
 
