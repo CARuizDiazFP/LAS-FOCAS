@@ -1,88 +1,78 @@
 # Nombre de archivo: sla.md
 # Ubicación de archivo: docs/informes/sla.md
-# Descripción: Documentación del informe de SLA para consumo desde SPA y API
+# Descripción: Documentación del informe de SLA (motor único, columna P) para consumo desde SPA y API
 
 ## Resumen
 
-El informe de SLA analiza el cumplimiento de tiempos de resolución de tickets/reclamos comparando el **TTR** (Time To Resolve) real contra el **SLA objetivo**. Replica el comportamiento del sistema legacy Sandy, soportando:
+Desde P25 (2026-11-02) hay **un solo cálculo de SLA** en el repositorio: el de `core/sla_consumo`
+(`engine.calcular`). Lo usan el informe **SLA consumido** (`/api/reports/sla-consumo`, ver
+`docs/informes/sla_consumo.md`) y el **informe SLA mensual** de esta
+página, en sus dos modos:
 
-1. **Modo Excel (legacy)**: Dos archivos separados ("Servicios Fuera de SLA" + "Reclamos SLA").
-2. **Modo DB**: Consulta directa a la tabla `app.reclamos` con normalización automática.
+1. **Modo Excel**: dos archivos, "Servicios" (normalmente el filtrado "Servicios Fuera de SLA") y "Reclamos".
+2. **Modo base** ("Usar base de datos"): `app.reclamos` y las fotos de `app.servicio_sla_snapshot`.
 
-**Estado actual (2026-01-13)**: ✅ Flujo web completamente funcional. Corrección crítica aplicada para usar la columna correcta de horas (columna U "Horas Netas Reclamo"). El flujo moderno se consume desde la SPA Vue 3 y la API (el bot de Telegram se retiró el 2026-10-27).
+El informe mensual no calcula: `core/sla/informe.py` arma los datos desde el motor y
+`core/sla/legacy_report.py` los vuelca en la plantilla heredada (`Templates/Template_Informe_SLA.docx`).
 
-## Columnas esperadas y mapeos
+## Regla de cálculo
 
-### Archivo "Reclamos SLA"
+- **Horas**: columna P del Excel de reclamos, **"Horas Netas Cierre Problema Reclamo"**. Es la que se usó
+  siempre (confirmado por el usuario el 2026-10-29) y la única que reproduce el "SLA Entregado" oficial:
+  medido el 2026-11-02 con los Excel reales, coincide en **7.228 de 7.228** servicios (con la N, 6.136;
+  con la U, 5.185). La N ("Horas Netas Problema Reclamo") se sigue guardando porque la usa Repetitividad;
+  la U ("Horas Netas Reclamo") no se usa.
+- **SLA entregado** = 1 − horas computables / 8.760, sobre los **365 días** al corte. Computables = todas
+  las horas P salvo los cierres "Cliente" (`SLA_CIERRE_CLIENTE_VALORES`, vacía hoy).
+- **Diferencia con el oficial**: el sistema de origen redondea sus horas de otra forma; la diferencia
+  máxima medida es 2,7·10⁻⁶ (≈ 1,2 min/año). Mostrado con dos decimales, algún servicio en el borde del
+  redondeo puede diferir en 0,01 punto (3 de 388 en el golden del 2026-11-02).
+- **Vinculación reclamo → servicio**: por "Número Primer Servicio" si existe en el universo, si no por
+  "Número Línea" (`core/sla_consumo/identidad.py`).
+- Un reclamo **sin columna P** (ingerido antes de P25 y no completado) cuenta 0 h y se informa
+  (`totales.reclamos_sin_horas_cierre` y la inconsistencia "Reclamo sin Horas Netas Cierre (columna P)").
 
-Las columnas se mapean internamente con sinónimos para tolerar variaciones:
+## Modo Excel
 
-| Campo interno | Columna Excel esperada | Columna | Descripción |
-|---------------|------------------------|---------|-------------|
-| `id_reclamo` | "Número reclamo" | A | ID único del ticket |
-| `id_servicio` | "Número Línea" o "Número Primer Servicio" | D / C | ID del servicio afectado |
-| `cliente` | "Razón Social" o "Cliente" | - | Nombre del cliente |
-| `horas` | **"Horas Netas Reclamo"** | **U** | ⚠️ **Columna crítica**: tiempo neto de resolución |
+- Encabezados obligatorios de Reclamos: Número Reclamo, Número Línea, Nombre Cliente, Fecha Inicio/Cierre
+  Problema Reclamo, Horas Netas Problema Reclamo (N), **Horas Netas Cierre Problema Reclamo (P)** y Tipo
+  Solución Reclamo. De Servicios: Número Línea, Nombre Cliente, SLA Prometido y Horas Reclamos Todos
+  (`core/sla_consumo/parser.py`). Las fechas y horas se leen como las guarda Excel (seriales y `[h]:mm`).
+- El informe trae **un servicio por fila del Excel de Servicios**, de mayor a menor SLA, con todas las
+  horas P de sus reclamos del archivo (el export ya es de 12 meses) y el detalle de cada reclamo. La fecha
+  del detalle es "Fecha Inicio Problema Reclamo" (hasta P25 salía `01-ene-70` en todas las filas: el
+  serial de Excel se leía como 1970).
+- El modo Excel no escribe en la base (el que persiste es "SLA consumido").
 
-> **IMPORTANTE**: La columna "Horas Netas Reclamo" (U) es la única fuente válida para el cálculo de horas. NO se usa "Horas Netas Cierre Problema Reclamo" (columna P).
+## Modo base
 
-### Archivo "Servicios Fuera de SLA"
-
-- `ID`
-- `CLIENTE`
-- `SERVICIO`
-- `FECHA_APERTURA`
-- `FECHA_CIERRE`
-- `SLA_OBJETIVO_HORAS` (opcional)
-
-Mapeos admitidos: `TicketID`→`ID`, `Apertura`→`FECHA_APERTURA`, `Cierre`→`FECHA_CIERRE`, `SLA`→`SLA_OBJETIVO_HORAS`.
-
-## Cálculo
-- Se normalizan las columnas y se calcula `TTR_h = (FECHA_CIERRE - FECHA_APERTURA) / 3600`.
-- Se filtra por `FECHA_CIERRE` dentro del período indicado (mes/año).
-- Si falta `SLA_OBJETIVO_HORAS`, se usa `SLA_POR_SERVICIO` con fallback **24 h**.
-- Se excluyen casos sin fecha de cierre y se informa la cantidad excluida.
-- Cumplido cuando `TTR_h <= SLA_OBJETIVO_HORAS`.
-
-## Parámetros del período
-- Formato `mm/aaaa`.
-- Mes 1–12, año ≥ 2000.
+- Corte = último día del mes pedido; reclamos de los 365 días al corte (`app.reclamos`, columna
+  `horas_netas_cierre`); universo y SLA prometido = la **última foto conocida de cada línea** en
+  `app.servicio_sla_snapshot` (las fotos se cargan al subir "SLA consumido").
+- Servicios del informe: los que tienen algún reclamo **del mes** (cierre en el mes, o inicio en el mes si
+  no tiene cierre; mismo criterio que Repetitividad). Sus horas y su SLA son los de los 12 meses.
+- Medido en `focas_dev` el 2026-11-02: con corte 02/10/2026 coincide con la foto oficial en 7.228/7.228;
+  septiembre 2026 da 445 servicios y 99,736 % de promedio.
+- Mismo documento que el modo Excel (antes de P25 el modo base usaba otra plantilla y otro cálculo:
+  horas de reloj apertura→cierre del mes).
 
 ## Uso por Web Panel
 
 **Endpoint**: `POST /api/reports/sla` (`web/app/routers/informes.py::generar_informe_sla_web`, requiere
 sesión y `csrf_token` en el form). Campos del form: `mes`/`anio` (o `periodo_mes`/`periodo_anio`),
-`pdf_enabled`, `use_db` y `files` (multipart).
+`pdf_enabled`, `use_db` y `files` (multipart). Vista `/sla` de la SPA.
 
-**URL productiva**: `http://172.18.208.162:8080/sla`
-
-**URL dev**: `http://localhost:8090/sla`
-
-### Pasos:
-1. Acceder a la vista `/sla` de la SPA (requiere login).
-2. Arrastrar y soltar **dos archivos Excel obligatorios**:
-   - "Servicios Fuera de SLA.xlsx" (o similar)
-   - "Reclamos SLA.xlsx" (o similar)
-3. Indicar el período: mes (1-12) y año (2000-2100).
-4. Opcional: activar "Generar PDF" (lo convierte `office_service`; si falla, se entrega el DOCX y el aviso `pdf_error`).
-5. Opcional: activar "Usar base de datos" para ignorar archivos y consultar desde `app.reclamos`.
-6. Click en "Generar informe".
-7. El sistema devuelve JSON con las rutas de descarga (`report_paths`) del `.docx` y opcionalmente `.pdf`.
-
-Cada generación desde el panel web registra una entrada en `app.report_history` con usuario, período, fuente (`excel-legacy` o `db`), estado, duración, errores y enlaces de salida. La vista `/reports-history` consume ese histórico persistente.
-
-### Validaciones:
-- Se requieren **exactamente 2 archivos** si no se usa DB.
-- Ambos archivos deben tener extensión `.xlsx`.
-- El sistema identifica automáticamente cuál es "Servicios" y cuál es "Reclamos" por las columnas.
-- Errores claros se muestran en la UI (ej: "Debés adjuntar dos archivos: servicios y reclamos"). Una
-  plantilla faltante (`FileNotFoundError` en `core/sla/`) ya no muestra su texto: cae en el 500 genérico.
+- Sin `use_db` se requieren **exactamente 2 archivos `.xlsx`**; el tipo de cada uno se reconoce por sus
+  columnas (`legacy_report.identificar_excel`).
+- "Generar PDF" lo convierte `office_service` (`core/services/office_client.py`); si falla, se entrega el
+  DOCX y el aviso `pdf_error`.
 - Códigos de rechazo (`{"ok": false, "error": "..."}`, cada uno registrado en el historial): 403 CSRF
   inválido, 422 período no numérico o fuera de rango, 400 si no llegan exactamente dos archivos o uno
-  está vacío, 415 si un archivo no es `.xlsx`, 422 si un Excel no se reconoce o se repite el tipo, y 500
-  `Error interno (ref …)` ante un fallo inesperado (la ref permite ubicarlo en `Logs/web.log`).
+  está vacío, 415 si un archivo no es `.xlsx`, 422 si un Excel no se reconoce, se repite el tipo o le falta
+  una columna obligatoria (por ejemplo la P), y 500 `Error interno (ref …)` ante un fallo inesperado (la
+  ref permite ubicarlo en `Logs/web.log`).
+- Cada generación registra una entrada en `app.report_history` (fuente `excel-legacy` o `db`).
 
-### Respuesta exitosa:
 ```json
 {
   "ok": true,
@@ -95,145 +85,50 @@ Cada generación desde el panel web registra una entrada en `app.report_history`
 }
 ```
 
-`report_paths.pdf` sólo aparece si se pidió PDF y la conversión funcionó. Las rutas son relativas al
-directorio de informes (`_report_href`) y se descargan con `GET /reports/{ruta}` (mismo router, requiere
-sesión). El nombre del archivo depende del modo: Excel → `sla/AAAAMM/InformeSLA_<AAAAMMDD_HHMMSS>.docx`
-(`core/sla/legacy_report.py`); DB (`"source": "db"`) → `sla/AAAAMM/sla_AAAAMM.docx` (`core/sla/report.py`).
+`report_paths.pdf` sólo aparece si se pidió PDF y la conversión funcionó. En los dos modos el archivo es
+`sla/AAAAMM/InformeSLA_<AAAAMMDD_HHMMSS>.docx` y se descarga con `GET /reports/{ruta}` (requiere sesión).
 
-## Contratos y alineación
+## Otras rutas
 
-- La lógica de cálculo vive en backend y se consume desde UI web y API sin duplicación.
-- La interfaz moderna no depende de Jinja ni de JavaScript legacy; solo expone contratos JSON y enlaces de descarga.
-- Cualquier ajuste nuevo debe mantener validación de entrada, trazabilidad de report history y respuesta tipada.
+- `POST /api/flows/sla` (panel, sin consumidores en la SPA): un Excel de **reclamos** opcional; sin
+  archivo usa el modo base. Con archivo, el universo de servicios es la última foto de la base y los
+  servicios del informe, los que tienen reclamos del mes. Devuelve `metrics` con las claves de siempre.
+- API (`api/app/routes/reports.py`, API key): `POST /reports/sla` y `GET /reports/sla/preview`. Contrato en
+  `docs/api.md`. Desde P25, `disponibilidad_pct` es el SLA entregado a 12 meses y `downtime_h` las horas P
+  de esos 12 meses (antes: disponibilidad del mes con horas de reloj).
 
-## Límites y notas
-- Se muestran hasta 2000 filas en el detalle.
-- Horas calendario (horario laboral pendiente).
+## Paths y variables de entorno
 
-## Paths de salida
-- Archivos en `/app/data/reports/` dentro del contenedor.
-- Histórico operativo persistido en PostgreSQL (`app.report_history`).
+- Informes en `REPORTS_DIR` (`/app/data/reports/` en el contenedor); plantilla en
+  `SLA_TEMPLATE_PATH` (default `${TEMPLATES_DIR}/Template_Informe_SLA.docx`).
+- `OFFICE_SERVICE_BASE` (default `http://office:8090`): servicio que convierte el PDF; `web`/`api` no
+  tienen LibreOffice.
+- `SLA_TIMEZONE`, `SLA_MERGE_GAP_MINUTES` y `SLA_MIN_DOWNTIME_MINUTES` ya no existen (eran de la pila
+  retirada en P25).
 
-## Variables de entorno
+## Completar la columna P en una base existente
 
-**Configuradas en `deploy/compose.yml` para el servicio `web`:**
+Los reclamos ingeridos antes de P25 no tienen `horas_netas_cierre`. Dos formas de completarla (sólo
+escribe donde está en NULL):
 
-- `TEMPLATES_DIR=/app/Templates` — ruta base de plantillas dentro del contenedor.
-- `SLA_TEMPLATE_PATH=${TEMPLATES_DIR}/Template_Informe_SLA.docx` — ruta de la plantilla oficial (se resuelve automáticamente desde `TEMPLATES_DIR`).
-- `REPORTS_DIR=/app/data/reports` — destino de los informes generados.
-- `UPLOADS_DIR=/app/data/uploads` — ubicación temporal de archivos subidos.
-- `OFFICE_SERVICE_BASE` (default `http://office:8090`) — servicio que convierte el PDF (`core/services/office_client.py`); `web`/`api` no tienen LibreOffice.
-
-**Volúmenes montados:**
-```yaml
-volumes:
-  - ../Templates:/app/Templates:ro  # Plantillas en modo read-only
-  - reports_data:/app/data/reports
-  - uploads_data:/app/data/uploads
-```
-
-## Correcciones aplicadas (2025-11-11)
-
-### Problema 1: Logs vacíos
-**Causa**: La configuración de logging no forzaba escritura a archivo dentro del contenedor.
-
-**Solución**: Se centralizó el sistema de logging en `core/logging.py` para usar el directorio `Logs/` del proyecto, con `enable_file=True` forzado y variable de entorno `LOGS_DIR` para control externo.
-
-### Problema 2: Solo 1 de 2 archivos llegaba al endpoint
-**Causa**: El parámetro FastAPI estaba definido como:
-```python
-files: Union[List[UploadFile], UploadFile, None] = File(None)
-```
-
-Esto causaba ambigüedad en el parser multipart, resultando en que solo se recibiera el primer archivo.
-
-**Solución**: Se cambió a:
-```python
-files: List[UploadFile] = File(default=[])
-```
-
-Y se simplificó la normalización:
-```python
-archivos = [archivo for archivo in files if archivo and archivo.filename]
-```
-
-### Problema 3: Template no encontrado
-**Causa**: La variable de entorno `TEMPLATES_DIR` no estaba definida en el servicio `web` del `compose.yml`, aunque el volumen estaba montado.
-
-**Solución**: Se agregó `TEMPLATES_DIR: /app/Templates` en la sección `environment` del servicio `web`.
+- Re-subir el mismo par en "SLA consumido": responde "ya estaban ingestados" y completa
+  (`horas_cierre_completadas` en la respuesta).
+- `scripts/sla_completar_horas_cierre.py --reclamos <xlsx> [--aplicar]` (dry-run por defecto; instrucciones
+  en el encabezado del script). En `focas_dev` (2026-11-02): 4.517 completados, quedan 16 de una ingesta
+  posterior cuyo archivo no está.
 
 ## Tests
 
-### Tests unitarios del generador legacy:
-```bash
-pytest tests/test_sla_module.py -v
-# PASSED: test_sla_config
-# PASSED: test_load_servicios_excel
-# PASSED: test_generate_from_excel_pair
-```
+- `tests/test_sla_informe.py`: modo base (filtro del mes, ventana de 12 meses), contrato JSON y preview.
+- `tests/test_sla_legacy_report.py`: render (horas P, SLA calculado, fechas reales, columna P obligatoria).
+- `tests/test_api_reports_sla.py`, `tests/test_web_sla_flow.py`, `tests/test_web_sla_generar_ramas.py`:
+  contratos de las rutas. Fixtures con los encabezados reales en `tests/soporte_sla.py`.
+- Motor: `tests/test_sla_consumo_*.py`.
 
-### Validación dentro del contenedor:
-```bash
-# Verificar variable de entorno
-docker exec lasfocas-web env | grep TEMPLATES_DIR
-# Output: TEMPLATES_DIR=/app/Templates
+## Historia
 
-# Verificar template
-docker exec lasfocas-web ls -lh /app/Templates/Template_Informe_SLA.docx
-# Output: -rw-r--r-- 1 1001 1001 1.8M Sep 30 14:21 /app/Templates/Template_Informe_SLA.docx
-
-# Validar desde Python
-docker exec lasfocas-web python -c "from core.sla.config import SLA_TEMPLATE_PATH; print(f'SLA_TEMPLATE_PATH={SLA_TEMPLATE_PATH}'); print(f'Existe: {SLA_TEMPLATE_PATH.exists()}')"
-# Output: SLA_TEMPLATE_PATH=/app/Templates/Template_Informe_SLA.docx
-#         Existe: True
-```
-
-## Próximos pasos
-
-1. ~~**Ajustes de formato**: Revisar y ajustar detalles menores del formato del informe para coincidencia 100% con el legacy de Sandy.~~ ✅ Corregido 2026-01-13.
-2. **Tests de integración**: Agregar test end-to-end para el endpoint `/api/reports/sla`.
-3. **Documentación de API**: Actualizar `docs/api.md` con ejemplos de uso del endpoint SLA.
-4. **Modo DB**: Validar y documentar el flujo completo usando `use_db=true` con datos reales de `app.reclamos`.
-
----
-
-## Corrección crítica de columnas (2026-01-13)
-
-### Problema detectado
-
-El informe SLA mostraba valores de horas incorrectos. Al comparar con el Excel fuente:
-
-| Servicio | Excel Col U (correcto) | Informe mostraba |
-|----------|------------------------|------------------|
-| 85015    | 28:05:57               | 43:58:59         |
-| 85015    | 06:01:53               | 62:13:16         |
-
-### Causa
-
-La función `_columna_horas_reclamos()` en `core/sla/legacy_report.py` retornaba la columna incorrecta:
-
-```python
-# ANTES (incorrecto):
-return optional.get("horas_netas_cierre")  # Columna P
-
-# DESPUÉS (correcto):
-return columns.get("horas")  # Columna U
-```
-
-### Archivos modificados
-
-- `core/sla/legacy_report.py` - Función `_columna_horas_reclamos()` corregida
-- `core/sla/parser.py` - Eliminada columna fallback incorrecta de `RECLAMOS_REQUIRED`
-- `modules/informes_sla/processor.py` - Docstring actualizado
-- `tests/test_sla_legacy_report.py` - Test actualizado
-
-### Validación
-
-```bash
-# Verificar con datos reales
-docker exec lasfocas-web python -c "
-from core.sla.parser import RECLAMOS_REQUIRED
-print('Columna horas:', RECLAMOS_REQUIRED.get('horas'))
-"
-# Output: ['Horas Netas Reclamo']
-```
+- 2025-11 / 2026-01: correcciones del flujo web y un cambio a la columna U que el código nunca aplicó (el
+  render siempre leyó la P).
+- 2026-10-05: "SLA consumido" se construyó con la columna N (`docs/decisiones.md`), corregido en P25.
+- 2026-11-02 (P25): motor único sobre la columna P; se retiraron `core/sla/engine.py` (`calcular_sla`),
+  `core/sla/parser.py`, `core/sla/report.py` y `modules/informes_sla`.

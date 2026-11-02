@@ -743,6 +743,14 @@ La misma migración amplía `app.reclamos` (horas a `Numeric(12,4)`, columnas de
 grupo de cierre, `ingesta_id`, `first_seen_at`/`last_seen_at`) y crea la vista `app.v_eventos_sla`
 (reclamos agrupados por `numero_evento`).
 
+**Columna P (`20261102_01`, P25, 2026-11-02).** `app.reclamos.horas_netas_cierre` (Numeric(12,4), nullable)
+guarda "Horas Netas Cierre Problema Reclamo", la **base de todo cálculo de SLA** (reproduce el "SLA
+Entregado" oficial en 7.228/7.228 servicios). `horas_netas` sigue siendo la columna N ("Horas Netas
+Problema Reclamo") y la lee Repetitividad. Las filas previas quedan en NULL hasta completarlas desde el
+Excel: `scripts/sla_completar_horas_cierre.py` (dry-run por defecto) o re-subiendo el mismo par en "SLA
+consumido". En `focas_dev` ya está aplicada y completada (4.517 filas; 16 siguen en NULL). **Deploy a
+prod**: `alembic upgrade head` y después completar con el Excel de reclamos de prod (con autorización).
+
 ## Chat del panel web (`chat_sessions`, `chat_messages`)
 
 Historial del chatbot. Sin modelo ORM: las crean `20251007_01` y `20251008_01` con SQL crudo
@@ -1568,6 +1576,7 @@ generarla (2026-10-26): 72 migraciones en una sola cadena lineal, raíz `2025100
 | `20261027_01` | `20261023_01` | 2026-10-27 | `20261027_01_camaras_fontine_id_indice_duplicado.py` | Borra app.ix_camaras_fontine_id, índice UNIQUE duplicado exacto de la constraint camaras_fontine_id_key |
 | `20261027_02` | `20261027_01` | 2026-10-27 | `20261027_02_normalizar_esquema_cadena_vs_dev.py` | Normaliza (idempotente) las 9 diferencias entre una base creada desde la cadena de migraciones y la base de dev: 6 nombres de índice, un DEFAULT y 2 comentarios |
 | `20261029_01` | `20261027_02` | 2026-10-29 | `20261029_01_servicio_empalme_association_fk_cascade.py` | Fase A del retiro de app.servicio_empalme_association: sus dos FK pasan a ON DELETE CASCADE |
+| `20261102_01` | `20261029_01` | 2026-11-02 | `20261102_01_reclamos_horas_netas_cierre.py` | Agrega app.reclamos.horas_netas_cierre (columna P del Excel), base única del cálculo de SLA |
 <!-- tabla-migraciones:fin -->
 
 **Notas que no entran en la tabla** (leídas de cada migración):

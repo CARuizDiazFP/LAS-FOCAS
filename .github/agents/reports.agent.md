@@ -33,25 +33,19 @@ modules/informes_repetitividad/
 └── service.py     # API de servicio
 ```
 
-### Informes SLA
+### Informes SLA (motor único desde P25, columna P)
 ```
-modules/informes_sla/
-├── config.py
-├── processor.py
-├── report.py
-├── runner.py
-└── schemas.py
-```
-
-### Core SLA (Motor Legacy)
-```
-core/sla/
-├── __init__.py
-├── builder.py      # Construcción de reportes
-├── collector.py    # Recolección de datos
-├── exporter.py     # Exportación
-├── models.py       # Modelos internos
-└── processor.py    # Procesamiento
+core/sla_consumo/          # ÚNICO cálculo de SLA (engine.calcular): horas P, SLA entregado 12 meses
+├── parser.py              # Excel Servicios/Reclamos (seriales y [h]:mm reales)
+├── engine.py / metricas.py / identidad.py / impacto.py
+├── persistencia.py        # app.reclamos (horas_netas_cierre = P), fotos, ventana de 365 días
+└── xlsx_builder.py / docx_builder.py   # informe "SLA consumido"
+core/sla/                  # informe SLA mensual: no calcula
+├── informe.py             # arma InformeSla (Excel o base) y el contrato JSON (SLAComputation)
+├── legacy_report.py       # render en Templates/Template_Informe_SLA.docx + identificar_excel
+├── preview.py             # JSON de GET /reports/sla/preview
+└── config.py
+core/services/sla.py       # fachada que usan web (/api/reports/sla, /api/flows/sla) y API (/reports/sla)
 ```
 
 ## Plantillas

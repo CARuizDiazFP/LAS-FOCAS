@@ -22,7 +22,6 @@ triggers:
 globs:
   - "api/**"
   - "api_app/**"
-  - "modules/informes_sla/**"
   - "core/sla/**"
   - "Templates/**"
   - "docs/informes/sla.md"

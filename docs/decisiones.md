@@ -2865,7 +2865,7 @@ su propia ventana de mantenimiento.
 ## 2026-10-05 — Histórico de SLA consumido: persistir al generar
 
 - Contexto: El informe SLA sólo procesaba los Excel y no dejaba rastro; el detalle de un servicio no podía mostrar sus reclamos ni cómo evolucionó su SLA, y `/ingest/reclamos` guardaba horas mal (minutos, duraciones >24 h cortadas, día/mes invertidos).
-- Decisión: El informe de SLA consumido (`POST /api/reports/sla-consumo`) persiste lo que ingiere: reclamos (upsert por `numero_reclamo`), una foto de SLA por `(numero_linea, fecha_corte)` y un registro de ingesta con el hash del par de archivos, así que re-subir el mismo par responde `ya_ingestado`. La fecha de corte es automática (el máximo de `Fecha Cierre Problema Reclamo`), la ventana es de 365 días y la base son las `Horas Netas Problema Reclamo` en horas. Los cierres se agrupan en FO / FO Cod 3 / Carrier / Otros / Cierre Cliente; sólo Cierre Cliente no cuenta, con lista configurable en `SLA_CIERRE_CLIENTE_VALORES` (vacía hoy). `/ingest/reclamos` se corrigió (horas, >24 h, día/mes, "-" → NULL, IDs float). En `report_history` el período es el mes de la corrida y la fecha de corte va en `output_metadata`.
+- Decisión: El informe de SLA consumido (`POST /api/reports/sla-consumo`) persiste lo que ingiere: reclamos (upsert por `numero_reclamo`), una foto de SLA por `(numero_linea, fecha_corte)` y un registro de ingesta con el hash del par de archivos, así que re-subir el mismo par responde `ya_ingestado`. La fecha de corte es automática (el máximo de `Fecha Cierre Problema Reclamo`), la ventana es de 365 días y la base eran las `Horas Netas Problema Reclamo` (columna N) en horas. **Corregido el 2026-11-02 (P25): la base es la columna P, `Horas Netas Cierre Problema Reclamo`; ver la decisión de esa fecha.** Los cierres se agrupan en FO / FO Cod 3 / Carrier / Otros / Cierre Cliente; sólo Cierre Cliente no cuenta, con lista configurable en `SLA_CIERRE_CLIENTE_VALORES` (vacía hoy). `/ingest/reclamos` se corrigió (horas, >24 h, día/mes, "-" → NULL, IDs float). En `report_history` el período es el mes de la corrida y la fecha de corte va en `output_metadata`.
 - Alternativas: Seguir calculando al vuelo sin persistir; usar el SLA oficial `Horas Reclamos Todos` en vez de la suma de netas (difiere en 99 líneas; el usuario eligió netas el 2026-10-05).
 - Impacto: Migración `20261005_02` (aplicada sólo en dev; prod pendiente). El detalle de servicio devuelve `reclamos` y `sla_historico`. Ver `docs/informes/sla_consumo.md`.
 
@@ -3026,3 +3026,37 @@ su propia ventana de mantenimiento.
   `Servicios_Cat6`: 11 pierden el 93153 (los restos descartados), 2 lo cambian de posición (2661 y 2692)
   y 2 ganan el 83693 (2705 y 27646: empalmes 2330/2331 de la ruta 49, que nunca se escribieron en la
   tabla legada). `Ticket_Baneo` no cambia en ninguna.
+
+
+## 2026-11-02 — Un solo motor de SLA sobre la columna P (P25)
+
+- Contexto: había cuatro cálculos de SLA con números distintos para el mismo período. 1a (render del modo
+  Excel) copiaba el SLA del Excel y sumaba la columna P; 1b (`core/sla/engine.calcular_sla`, modo base, flujo
+  del chat y API `/reports/sla`) usaba horas de reloj del mes y con el Excel real daba 0 servicios (leía las
+  fechas seriales como 1970); 2 (SLA consumido) usaba la columna N; 3 (`modules/informes_sla`) medía TTR
+  ≤ 24 h y estaba huérfana. Con los Excel reales, el "SLA Entregado" oficial coincide con la P en 7.228 de
+  7.228 servicios (N: 6.136; U: 5.185).
+- Decisión (usuario, 2026-10-28 y 2026-10-29, y respuestas del 2026-11-02): la pila 2 (`core/sla_consumo`)
+  es el único motor y la base es la columna P. Concretamente:
+  - `app.reclamos.horas_netas_cierre` (migración `20261102_01`) guarda la P; `horas_netas` (N) queda para
+    Repetitividad. Lo ya persistido se completa desde el Excel (script dry-run por defecto o re-subiendo el
+    par en "SLA consumido"); no se recalcula con una migración de datos.
+  - El SLA entregado de un servicio es 1 − horas P computables / 8760 en los 365 días al corte.
+  - Las rutas de la 1b se conservan con las mismas claves JSON. `disponibilidad_pct` pasa a ser el SLA
+    entregado a 12 meses (antes, disponibilidad del mes con horas de reloj) y `downtime_h`, las horas P de
+    esos 12 meses. El modo base del panel usa el mismo documento que el modo Excel, con corte al fin de mes y
+    los servicios con reclamos del mes.
+  - Se retiraron `core/sla/engine.py`, `core/sla/parser.py`, `core/sla/report.py` y `modules/informes_sla`.
+  - Las dos `_clean_key` (ingesta de reclamos y Repetitividad) no se unifican: sobre los 70 encabezados
+    reales, aplicar una en lugar de la otra cambia el mapeo en 13 casos.
+- Alternativas: reinterpretar `horas_netas` como P (rompía Repetitividad); dejar el histórico con N y anotar
+  el corte (ventana de 12 meses incompleta durante un año); disponibilidad mensual con P en la 1b (métrica
+  sin equivalente oficial).
+- Impacto en informes ya emitidos: los informes de SLA consumido generados con la N cambian (con el par real:
+  excedidos 420 → 388, horas 44.769,4 → 40.458,6). El informe del modo Excel no cambia de números (golden con
+  los 388 servicios fuera de SLA: mismas 9.378 líneas y 777 tablas). Sólo cambian las fechas del detalle,
+  que antes salían todas `01-ene-70`, y 8 líneas en el último dígito: segundos o centésimas que antes se
+  truncaban mal, y 3 servicios cuyo SLA oficial y calculado difieren en ~1,2·10⁻⁶ y caen en el borde del
+  redondeo a 2 decimales. El modo base y la API `/reports/sla` cambian de métrica (ver arriba).
+- Detalle: `docs/informes/sla.md`, `docs/informes/sla_consumo.md`, `docs/PR/2026-11-02.md` §P25.
+

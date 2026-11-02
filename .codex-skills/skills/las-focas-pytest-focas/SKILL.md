@@ -34,7 +34,7 @@ metadata:
       pytest --cov=. --cov-report=term-missing
     - |
       # Verificar cobertura de módulo específico
-      pytest --cov=modules/informes_sla --cov-report=term-missing
+      pytest --cov=core/sla_consumo --cov-report=term-missing
 
       # Fallar si cobertura < 60%
       pytest --cov=core --cov-fail-under=60
@@ -269,7 +269,7 @@ def sample_alarma():
 
 ```bash
 # Verificar cobertura de módulo específico
-pytest --cov=modules/informes_sla --cov-report=term-missing
+pytest --cov=core/sla_consumo --cov-report=term-missing
 
 # Fallar si cobertura < 60%
 pytest --cov=core --cov-fail-under=60

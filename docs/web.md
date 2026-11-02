@@ -302,17 +302,17 @@ Centralizado vía `core.logging.setup_logging`.
 - `GET /api/chat/metrics` → métricas simples en memoria.
 - `POST /api/users/change-password` → Form: `current_password, new_password, csrf_token`.
 - `POST /api/admin/users` → Crear usuario (admin). Form: `username, password, role?, csrf_token`.
-- `POST /api/reports/sla` → informe SLA. FormData: `mes, anio, periodo_mes?, periodo_anio?, pdf_enabled?, use_db?, files*, csrf_token`. Respuesta: `{ok, message, report_paths: {docx, pdf?}, source, pdf_error?}` (`pdf_error`: motivo si se pidió PDF y `office_service` no lo generó; el SPA lo muestra en el estado).
+- `POST /api/reports/sla` → informe SLA. FormData: `mes, anio, periodo_mes?, periodo_anio?, pdf_enabled?, use_db?, files*, csrf_token`. Respuesta: `{ok, message, report_paths: {docx, pdf?}, source, pdf_error?}` (`pdf_error`: motivo si se pidió PDF y `office_service` no lo generó; el SPA lo muestra en el estado). Modo Excel y modo base usan el mismo cálculo (columna P) y el mismo documento desde P25.
 - `POST /api/reports/sla-consumo` → informe de **SLA consumido** (pestaña "SLA consumido" de `/sla`,
   `components/sla/SlaConsumoPanel.vue` + `composables/useSlaConsumo.ts`). FormData: `files` (exactamente
   dos `.xlsx`, Servicios y Reclamos; el tipo se identifica por contenido), `pdf_enabled?`, `csrf_token`.
   Persiste los reclamos en el histórico y registra la corrida en el historial de reportes con tipo
   `sla_consumo`. Respuesta: `{ok, message, fecha_corte, ya_ingestado, reclamos_insertados,
-  reclamos_actualizados, reclamos_sin_cambios, totales, report_paths: {xlsx, docx_ejecutivo,
+  reclamos_actualizados, reclamos_sin_cambios, horas_cierre_completadas, totales, report_paths: {xlsx, docx_ejecutivo,
   docx_exhaustivo, pdf_ejecutivo?, pdf_exhaustivo?}, pdf_omitido?}`. Errores: 400 (no son dos archivos
   o falta uno de los tipos), 415 (no `.xlsx` o vacío), 422 (Excel no reconocido o duplicado), 500 con
   ref. Ver `docs/informes/sla_consumo.md`.
-- `POST /api/flows/sla` → flujo SLA completo. FormData: `file?, mes, anio, use_db?, include_pdf?, eventos?, conclusion?, propuesta?, csrf_token`. Responde `{status, docx, pdf, pdf_error, report_paths, metrics, …}` (`pdf_error` null si no hubo falla).
+- `POST /api/flows/sla` → flujo SLA completo. FormData: `file?` (Excel de reclamos), `mes, anio, use_db?, include_pdf?, eventos?, conclusion?, propuesta?, csrf_token`. Responde `{status, docx, pdf, pdf_error, report_paths, metrics, …}` (`pdf_error` null si no hubo falla). Desde P25 `metrics` sale del motor único (SLA entregado a 12 meses, horas de la columna P); ver `docs/informes/sla.md`.
 - `POST /api/flows/repetitividad` → flujo Repetitividad. FormData: `file?, mes, anio, include_pdf?, csrf_token, with_geo?, use_db?`. Responde: `{docx, pdf?, pdf_generated?, pdf_error?, map_images, stats, source}` (`pdf_generated: false` y `pdf_error` cuando se pidió PDF y falló).
 - `POST /api/flows/comparador-fo` → Placeholder (501).
 - `POST /api/tools/compare-vlans` → JSON `{text_a, text_b, csrf_token}`. Devuelve `{only_a, common, only_b, vlans_a, vlans_b, total_a, total_b}`.

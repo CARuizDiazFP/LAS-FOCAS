@@ -29,7 +29,12 @@ Valores medidos con los archivos reales de `docs/Doc Privada/` (corrida del 2026
 - **Ventana**: 365 días hacia atrás desde la fecha de corte. Entran los reclamos que **solapan** la
   ventana (`fecha_inicio < fin AND (fecha_inicio >= inicio OR fecha_cierre >= inicio)`): un reclamo
   iniciado antes del comienzo de la ventana y cerrado dentro de ella se cuenta **completo**.
-- **Base**: `Horas Netas Problema Reclamo`, en **horas**.
+- **Base**: columna P, `Horas Netas Cierre Problema Reclamo`, en **horas** (desde P25, 2026-11-02; antes
+  la N, `Horas Netas Problema Reclamo`). Con la P la suma por servicio coincide con `Horas Reclamos Todos`
+  y el "SLA Entregado" oficial en 7.228/7.228 servicios; con la N, en 5.966 y 6.136. La N se sigue
+  guardando (`app.reclamos.horas_netas`) porque la usa Repetitividad. Un reclamo sin P cuenta 0 h y se
+  informa como inconsistencia y en `reclamos_sin_horas_cierre`. El servicio trae además `sla_entregado`
+  (1 − horas computables / 8760), el mismo cálculo que usa el informe SLA mensual (`docs/informes/sla.md`).
 - **Superposiciones**: las horas netas se suman **por reclamo, sin deduplicar** reclamos o eventos que se
   superponen en el tiempo, de modo que el mismo tiempo físico puede contarse más de una vez (regla del
   usuario: "Se suman las horas netas aunque existan superposiciones temporales. No deduplicar intervalos").
@@ -240,7 +245,10 @@ contra `office:8090/convert`) si se pidió; los builders no convierten.
 - En prod desde el deploy del 2026-10-14 (`main` `53e0fb9`, que incluye la migración
   `20261005_02_sla_consumo_historico`).
 
-## Cifras reales (dev, corte 2026-10-02, medidas el 2026-10-05)
+## Cifras reales (dev, corte 2026-10-02, medidas el 2026-10-05, con la columna N)
+
+Con la columna P (P25, medido el 2026-11-02 con el mismo par): 40.458,6 h, **388 excedidos**, 1975 dentro
+de SLA, 4865 sin consumo. Las cifras de abajo son las de la N y quedan como referencia histórica.
 
 7228 servicios, 4517 reclamos (todos vinculados), 2368 servicios con reclamos, 1948 dentro de SLA, **420
 excedidos**, 0 agotados, 4860 sin consumo, 402 eventos, 2184 filas Evento x Servicio, 2310 reclamos sin
@@ -257,9 +265,9 @@ como float.
 
 ## Nota de conciliación
 
-El SLA oficial del origen (`Horas Reclamos Todos` del Excel de servicios) difiere de la suma de horas
-netas de los reclamos en **99 líneas**. El informe usa las **horas netas** por decisión del usuario
-(2026-10-05). Para la línea 88102 ambas coinciden: 390,0589 h.
+Con la columna N (2026-10-05) el SLA oficial del origen (`Horas Reclamos Todos` del Excel de servicios)
+difería de la suma de horas netas de los reclamos; con la P (P25) coinciden en los 7.228 servicios, así
+que la diferencia era la columna, no la conciliación.
 
 Verificación de totales: Σ horas netas del Excel 44769,4097 h vs. 44769,4071 h en la base (la diferencia
 es el redondeo a 4 decimales al persistir).

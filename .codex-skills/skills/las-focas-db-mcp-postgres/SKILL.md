@@ -162,7 +162,7 @@ LIMIT 10;
 
 **Archivos de código relacionados:**
 - `modules/informes_repetitividad/processor.py` - Normalización de datos
-- `modules/informes_sla/processor.py` - Procesamiento SLA
+- `core/sla_consumo/persistencia.py` - Reclamos y fotos de SLA (`app.reclamos.horas_netas_cierre` = columna P, base del SLA)
 - `core/utils/timefmt.py` - Formateo de horas
 
 ### 3. Auditoría de Usuarios y Sesiones

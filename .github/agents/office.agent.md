@@ -36,9 +36,9 @@ Hay **un solo camino** desde P16 (2026-10-27): `office_service` (`office:8090`),
   (`DocumentoDemasiadoGrande`, `OfficeInalcanzable`, `OfficeTimeout`, `OfficeRechazo`) con `mensaje`
   para el usuario y `detalle` para el log; `intentar_pdf(docx, contexto=...)` nunca levanta y devuelve
   `(pdf, motivo)`. Timeout 150 s (cubre la cola de office), tope 50 MB, valida `%PDF`.
-- **Consumidores**: SLA (`core/sla/report.py`, `core/sla/legacy_report.py`), SLA consumido
+- **Consumidores**: SLA (`core/sla/legacy_report.py`), SLA consumido
   (`core/services/sla_consumo.py`, sólo el ejecutivo), Repetitividad
-  (`modules/informes_repetitividad/service.py`), `modules/informes_sla` (sin consumidores desde P19) y `ConvertirDocAPdf`.
+  (`modules/informes_repetitividad/service.py`) y `ConvertirDocAPdf`.
   Desde `async def` siempre por `asyncio.to_thread`.
 - **Hacia el usuario**: `pdf_error` en web (SLA, Repetitividad), `pdf_omitido` en SLA consumido,
   `X-PDF-Error` en la API de Repetitividad. Nunca un 500 por el PDF.

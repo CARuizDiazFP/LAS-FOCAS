@@ -1,4 +1,4 @@
-<!-- repository-map: {"source_commit": "ebfd977f675a", "generated_at_utc": "2026-10-28T11:20:31Z", "manifest_sha256": "fc86f80022b52feeada3e0566544708dfc6a1c23d53d5232f332e0037367fd42"} -->
+<!-- repository-map: {"source_commit": "caeca9b8e6a8", "generated_at_utc": "2026-11-02T16:46:12Z", "manifest_sha256": "a3aa03cd956d5552f582786c9f1ceb9d9ee02e08d2fee72538f4e97088ed1ad4"} -->
 # Nombre de archivo: REPOSITORY_MAP.md
 # Ubicación de archivo: docs/REPOSITORY_MAP.md
 # Descripción: Mapa canónico del repositorio por dominio (generado; no editar a mano)
@@ -47,8 +47,8 @@ Ingesta Cromo, cámaras, botellas, cables, ODFs, tracking de caminos ópticos y 
 
 Motor SLA, consumo histórico, repetitividad, parsers de Excel, plantillas DOCX y conversión PDF.
 
-- Raíces: `core/sla/`, `core/sla_consumo/`, `modules/informes_sla/`, `modules/informes_repetitividad/`, `office_service/`, `Templates/`, `modules/common/`, `core/parsers/`
-- Entradas: `core/sla/engine.py`, `core/sla/report.py`, `office_service/app/`
+- Raíces: `core/sla/`, `core/sla_consumo/`, `modules/informes_repetitividad/`, `office_service/`, `Templates/`, `modules/common/`, `core/parsers/`
+- Entradas: `core/sla_consumo/engine.py`, `core/sla/informe.py`, `office_service/app/`
 - Docs: `docs/informes/`, `docs/office_service.md`
 - Tests: `tests/test_sla*.py`, `tests/test_*repetitividad*.py`, `tests/test_office*.py`
 - Comandos: `pytest tests/test_sla_processor.py -q`

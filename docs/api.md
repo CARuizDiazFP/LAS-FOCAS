@@ -961,6 +961,9 @@ La categoría de un servicio sigue a la de su cliente (`docs/clientes_categoria.
 - **Comportamiento:**
   - Resuelve el servicio consultado y devuelve siempre el `id_origen` canónico.
   - Permite unificar el enrutamiento histórico del SPA en `/servicios/ID/{id_origen}`.
+  - `servicio.reclamos` (últimos 365 días, por línea, línea vieja o primer servicio): cada reclamo trae
+    `horas_netas` (columna N) y, desde P25, `horas_netas_cierre` (columna P, base del SLA);
+    `pct_presupuesto` se calcula con la P (`null` si el reclamo no la tiene o es de cierre Cliente).
 
 - **Respuesta ejemplo:**
   ```json
@@ -1712,21 +1715,24 @@ Notas:
 
 ### POST `/reports/sla`
 
-Genera el informe SLA de un período desde un Excel o desde la base (`api/app/routes/reports.py`,
-servicio `core/services/sla.py`).
+Genera el informe SLA mensual desde un Excel de reclamos o desde la base (`api/app/routes/reports.py`,
+servicio `core/services/sla.py`). Desde P25 (2026-11-02) el cálculo es el del motor único de
+`core/sla_consumo` (columna P, SLA entregado a 12 meses); ver `docs/informes/sla.md`.
 
 - **Autenticación:** API key interna.
 - **Content-Type:** `multipart/form-data`.
-- **Parámetros:** `file` (opcional, `.xlsx`), `periodo_mes` (1-12), `periodo_anio` (2000-2100),
-  `usar_db` (bool, default `false`), `incluir_pdf` (bool, default `false`) y los textos libres
-  `eventos`, `conclusion`, `propuesta`. Sin archivo (o con `usar_db=true`) se calcula desde la DB
-  (`sla_service.compute_from_db`).
+- **Parámetros:** `file` (opcional, `.xlsx` de **reclamos** con la columna P), `periodo_mes` (1-12),
+  `periodo_anio` (2000-2100), `usar_db` (bool, default `false`), `incluir_pdf` (bool, default `false`) y
+  los textos libres `eventos`, `conclusion`, `propuesta`. Sin archivo (o con `usar_db=true`) usa la base:
+  corte al último día del mes, reclamos de los 365 días previos y los servicios con reclamos del mes. Con
+  archivo, el universo de servicios es la última foto de `app.servicio_sla_snapshot` (422 si no hay fotos).
 - **Respuesta 200 (JSON):** `{"docx": "<ruta>", "pdf": "<ruta>" | null, "pdf_error": "<motivo>" | null, "preview": {...}}`
   (`pdf_error` sólo cuando se pidió PDF y `office_service` no lo generó), con los
   headers `X-Source` (`db` o `excel`), `X-Docx-Path`, `X-Servicios`, `X-Disponibilidad` y, si se
-  generó, `X-Pdf-Path`. Las rutas son del filesystem del contenedor `api`.
-- **Errores:** `400` si el archivo no es `.xlsx` o está vacío; `422` ante un `ValueError` del
-  cálculo; `500` con referencia (ver "Formato de errores").
+  generó, `X-Pdf-Path`. Las rutas son del filesystem del contenedor `api`. El DOCX es el mismo documento
+  que el panel (`sla/AAAAMM/InformeSLA_<sello>.docx`).
+- **Errores:** `400` si el archivo no es `.xlsx` o está vacío; `422` ante un `ValueError` (período inválido,
+  columna obligatoria faltante, sin fotos de servicios); `500` con referencia (ver "Formato de errores").
 - **Nota:** la SPA no usa este endpoint: `POST /api/reports/sla` del panel web
   (`web/app/routers/informes.py`) llama a `core.services.sla` directamente.
 
@@ -1743,6 +1749,13 @@ Vista JSON del cálculo SLA de un período, sin generar documentos.
   incidentes, tickets, mttr_h, mtbf_h}, "servicios": [{service_id, cliente, tipo_servicio,
   disponibilidad_pct, downtime_h, downtime_hhmm, incidentes_agrupados, tickets_unicos, mttr_h,
   mtbf_h}], "anexo": [...]}`.
+- **Semántica desde P25** (claves sin cambios): `disponibilidad_pct` = SLA entregado de los 12 meses al
+  fin del mes (1 − horas P / 8760; coincide con el oficial); `downtime_h` = horas P computables de esos 12
+  meses; `incidentes_agrupados` = eventos + reclamos sin evento; `tickets_unicos` = reclamos;
+  `mttr_h` = horas / incidentes; `mtbf_h` = promedio de horas entre el cierre de un reclamo y el inicio del
+  siguiente. En el resumen, `disponibilidad_pct` = 1 − Σ horas / (8760 · servicios). Cada fila de `anexo`
+  es un reclamo (`tickets` con un solo número, `duracion_h` = horas P, `causas` = grupo de cierre,
+  `dentro_sla` = `null`). Antes de P25 era la disponibilidad del mes con horas de reloj.
 - **Errores:** `501` con `usar_db=false` (el preview basado en Excel no está implementado); `500`
   con referencia si falla el cálculo contra la DB.
 - **Consumidores:** ninguno en `web/` ni `modules/` (verificado por grep).
