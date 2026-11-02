@@ -471,7 +471,7 @@ python -m pytest <mismos-archivos> -q -p no:randomly 2>&1 \
 # 4. El diff es la respuesta. Vacío = cero regresiones introducidas
 diff /tmp/fallos-baseline.txt /tmp/fallos-merged.txt
 
-git worktree remove /tmp/baseline --force
+git worktree remove /tmp/baseline   # sin --force: el worktree quedó limpio
 ```
 
 Claves:
@@ -481,6 +481,10 @@ Claves:
 - Correr sólo los archivos que fallan, no la suite completa — bajó la verificación de ~3 min a
   segundos por corrida.
 - El worktree `--detach` evita tocar la rama activa: no hace falta stash, revert ni cambiar de rama.
+- Quitarlo con `git worktree remove` **sin `--force`** (`--force` está prohibido en automático, ver
+  `agent-worktree`). Funciona aunque tenga el symlink a `.venv` y el `__pycache__` de la corrida.
+  Real (P14, 2026-11-02): un worktree de referencia en el scratchpad para `--collect-only` sobre
+  `origin/dev`, removido así sin errores.
 - Si el diff es vacío, se puede afirmar "cero regresiones" con evidencia; sin esta comparación, la
   única afirmación honesta es "hay 97 fallas y no sé de quién son".
 
@@ -585,6 +589,12 @@ habría dado 500 apenas hubiera puntos terminales cargados (en dev y prod la tab
       monkeypatch.setenv("TESTING", "true")
   ```
   y verificarlo una vez con `env -u TESTING pytest <archivo>`.
+- **Un 403 que sólo aparece en una corrida focal suele ser `TESTING` heredado, no una regresión.** Varios
+  módulos (`test_slack_ingreso_*.py`, `test_slack_cable_info.py`) hacen `os.environ.setdefault("TESTING",
+  "true")` al importarse, y la suite completa los importa antes que los `test_web_*`. Real (P14,
+  2026-10-29): `test_web_cromo_camino_optico.py::test_excluir_pelos_en_lote_y_todos_ajenos_409` y
+  `::test_restaurar_pelo_no_excluido_404` dan 403 si el archivo se corre solo, también en `dev`. Para
+  descartarlo, correr la versión de `dev` del archivo (`git show origin/dev:<archivo>`) sola.
 - **El 403 de las rutas admin se prueba por introspección, no con una lista a mano.** Recorrer
   `router.routes` y, en cada `route.dependant`, buscar recursivamente `usuario_admin` (ver
   `test_toda_ruta_admin_da_403_a_un_usuario_comun` en `tests/test_web_servicios_errores_depends.py`).
@@ -677,6 +687,51 @@ Comparar total **y** lista ordenada de ids (no sólo conjuntos), recorrer todas 
 versión nueva, incluir términos de borde (acentos, `%`, `_`, `\`, valores de enum) y términos reales
 sacados de la DB, y salir con exit 1 ante cualquier diferencia. Correr viejo y nuevo uno después del
 otro reduce la deriva de dev (los workers escriben). Sólo `SELECT`, y abortar si la DB no es focas_dev.
+
+## Partir un archivo de test grande o centralizar helpers duplicados (lección 2026-10-29, P14)
+
+Refactor de tests con resultado verificable: 3 archivos de 4587, 2806 y 1776 líneas quedaron en
+10 de 531 a 1146, y las copias de los helpers de login de 19 archivos `test_web_*.py` se juntaron en
+`tests/soporte_login.py`. La suite dio igual, test por test.
+
+- **Dónde va lo compartido**: en `tests/soporte_<tema>.py` (convención de `soporte_sesion.py`,
+  `soporte_oauth.py` y `soporte_postgres_real.py`), no en `conftest.py`. Un fixture `autouse` en
+  `conftest.py` se aplica a **todos** los tests. Importado en el módulo, sólo a ese módulo.
+- **Partición por AST, no a mano.**
+  - Cada test (`test_*`/`Test*`) va a su parte según su línea.
+  - Cada helper va a la única parte que lo usa, contando la clausura transitiva de los `Name`, los
+    argumentos (fixtures pedidas por parámetro) y los strings que coinciden con nombres de nivel
+    superior (`usefixtures`). Los fixtures `autouse` cuentan para todas las partes.
+  - Lo que usan dos o más partes va al `soporte_`.
+  - Copiar el texto de cada bloque tal cual, con sus comentarios de sección. Repetir en cada parte el
+    encabezado de imports, incluido cualquier `os.environ.setdefault(...)`, y después
+    `ruff check --fix --select F401` sobre las partes.
+  - El archivo original conserva el nombre y el blame. Los nombres de los tests no cambian (`-k`
+    sigue funcionando).
+- **Fixtures importadas desde el soporte**: el import lleva `# noqa: F401 - fixture`. Cada test que la
+  pide por argumento lleva `# noqa: F811 - fixture importada` en la línea que marca ruff (precedente:
+  `test_cromo_arbitro_evaluaciones_real_db.py`).
+- **Unificar sólo variantes equivalentes**: comparar `ast.unparse` sin anotaciones ni docstring, y
+  borrar una copia sólo si coincide.
+  - Si el valor por defecto difiere (`_connect_admin_ok()` con `"admin"` en un archivo y
+    `"adminpass"` en otro), pasarlo explícito en cada llamada.
+  - Las variantes con otro comportamiento quedan con nombre propio. Ejemplos: el `_Conn` de
+    `test_web_admin.py`, que registra el SQL, y un `_login` que crea su propio cliente
+    (`_cliente_logueado`).
+- **Imports cruzados entre módulos de test**: `from tests.test_x import _helper`. Antes de borrar un
+  helper, buscar quién lo importa (`grep -rn "from tests.test_" tests/`) y redirigirlo al soporte. En
+  P14 había 5 imports así.
+- **Verificación, en este orden.**
+  1. `--collect-only -q`, antes y después: comparar el **multiconjunto** de
+     `(familia, Clase::test[param])`, tratando como una sola familia los archivos que salieron del
+     mismo original. El diff exacto da cientos de diferencias, todas renombres.
+  2. Suite completa base y final con `--junitxml`, comparando `(clase, test, estado)`, no sólo los
+     totales.
+  3. Los `*_real_db.py` cuya fixture cambió, contra `focas_dev`, antes y después.
+  4. Después del `sync`, otra vez el `--collect-only` contra un worktree `--detach` de `origin/dev`.
+- **No editar tests mientras corre la línea base.** La recolección importa todo al arrancar, pero los
+  tests que escanean `tests/` en tiempo de ejecución verían los archivos nuevos. Analizar en modo
+  sólo lectura (o en una copia en el scratchpad) mientras tanto.
 
 ## E2E contra dev sin rebuild ni deploy (lección 2026-10-27, P16)
 
