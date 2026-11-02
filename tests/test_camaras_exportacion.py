@@ -31,7 +31,8 @@ def _camara(**kw):
 
 
 def _empalme(*ids):
-    return SimpleNamespace(servicios=[SimpleNamespace(servicio_id=i) for i in ids])
+    """Empalme con una ruta por servicio (P22: los servicios salen de las rutas, no de la tabla legada)."""
+    return SimpleNamespace(rutas=[SimpleNamespace(servicio=SimpleNamespace(servicio_id=i)) for i in ids])
 
 
 def test_fila_claves_y_orden():
@@ -183,6 +184,15 @@ def test_filtro_servicio_existente_restringe_a_sus_camaras(sesion_real):
     _sembrar_servicio(sesion_real, camaras, f"{PREFIJO}-SRV1")
     filas = ce.filas_exportacion(sesion_real, filter_status=None, servicio_id=f"{PREFIJO}-SRV1")
     assert [f["Nombre"] for f in filas] == [f"{PREFIJO}-A", f"{PREFIJO}-C"]
+
+
+@requiere_postgres_real
+def test_servicios_cat6_sale_de_las_rutas(sesion_real):
+    """P22: la columna se arma con las rutas de los empalmes, no con la tabla legada."""
+    camaras = _sembrar_camaras(sesion_real)
+    _sembrar_servicio(sesion_real, camaras, f"{PREFIJO}-SRV3")
+    filas = ce.filas_exportacion(sesion_real, filter_status=None, servicio_id=f"{PREFIJO}-SRV3")
+    assert [f["Servicios_Cat6"] for f in filas] == [f"{PREFIJO}-SRV3", f"{PREFIJO}-SRV3"]
 
 
 @requiere_postgres_real

@@ -47,14 +47,25 @@ def test_condicion_busca_en_cada_campo():
     sql = _sql("central")
     for columna in ("camaras.nombre", "camaras.direccion", "camaras.fontine_id", "servicios.servicio_id", "cables.nombre"):
         assert f"{columna} ILIKE" in sql, columna
-    assert "ruta_empalme_association" in sql and "servicio_empalme_association" in sql
+    assert "ruta_empalme_association" in sql
 
 
-def test_condicion_servicios_de_botellas_y_legacy_solo_sin_rutas():
+def test_condicion_servicios_solo_por_rutas_del_grupo():
+    """P22: la tabla legada `servicio_empalme_association` ya no participa (ni con el grupo sin rutas)."""
     sql = _sql("svc")
     # raíz del grupo: la propia cámara o la padre de la Botella
     assert "coalesce(camaras_1.camara_padre_id, camaras_1.id)" in sql
-    assert "NOT IN" in sql
+    assert "servicio_empalme_association" not in sql and "NOT IN" not in sql
+
+
+def test_condicion_propios_de_botella_sin_tabla_legada():
+    from sqlalchemy.dialects import postgresql
+
+    sql = str(cc.condicion_termino("svc", incluir_propios=True).compile(
+        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+    ))
+    assert "camaras.camara_padre_id IS NOT NULL" in sql
+    assert "servicio_empalme_association" not in sql
 
 
 def test_condicion_escapa_metacaracteres_de_like():
@@ -272,18 +283,16 @@ def test_rutas_info_usa_sitio_descripcion_de_las_puntas():
 
 
 def test_relaciones_de_infra_ordenadas_por_id():
-    """El orden de rutas/empalmes/botellas/servicios de la respuesta no depende del plan de la consulta:
+    """El orden de rutas/empalmes/botellas de la respuesta no depende del plan de la consulta:
     sin `order_by`, la carga por lote y la individual devolvían órdenes distintos."""
     from sqlalchemy import inspect
 
-    from db.models.infra import Camara, Empalme, Servicio
+    from db.models.infra import Camara, Empalme
 
     esperado = {
         (Camara, "empalmes"): ("empalmes", "id"),
         (Camara, "botellas"): ("camaras", "id"),
-        (Empalme, "servicios"): ("servicios", "id"),
         (Empalme, "rutas"): ("rutas_servicio", "id"),
-        (Servicio, "empalmes"): ("empalmes", "id"),
     }
     for (modelo, nombre), columna in esperado.items():
         orden = inspect(modelo).relationships[nombre].order_by
@@ -338,7 +347,7 @@ def _ruta(rid, servicio_id):
 
 
 def test_listar_camaras_servicios_ordenados():
-    emp = SimpleNamespace(rutas=[_ruta(1, "B"), _ruta(2, "A")], servicios=[])
+    emp = SimpleNamespace(rutas=[_ruta(1, "B"), _ruta(2, "A")])
     cam = _camara(id=1, empalmes=[emp], botellas=[])
     sesion = _SesionListado([cam])
     res = cc.listar_camaras(sesion, q=None, estado=None, limit=10)
@@ -346,11 +355,27 @@ def test_listar_camaras_servicios_ordenados():
     assert len(res[0].rutas_info) == 2
 
 
-def test_listar_camaras_sin_rutas_usa_legacy():
-    emp = SimpleNamespace(rutas=[], servicios=[SimpleNamespace(servicio_id="X")])
+def test_listar_camaras_sin_rutas_no_tiene_servicios():
+    """P22: sin rutas no hay servicios (antes caía a la tabla legada `servicio_empalme_association`)."""
+    emp = SimpleNamespace(rutas=[])
     cam = _camara(id=1, empalmes=[emp], botellas=[])
     res = cc.listar_camaras(_SesionListado([cam]), q=None, estado=None, limit=10)
-    assert res[0].rutas_info == [] and res[0].servicios_ids == ["X"]
+    assert res[0].rutas_info == [] and res[0].servicios_ids == []
+
+
+def test_servicios_ids_sin_rutas_info_usa_las_rutas_de_la_camara():
+    """La lista de Botellas del detalle llama sin `rutas_info`: salen de las rutas de sus empalmes."""
+    cam = _camara(id=1, empalmes=[SimpleNamespace(rutas=[_ruta(1, "B"), _ruta(2, "A")])], botellas=[])
+    assert cc._collect_camara_servicios_ids(cam) == ["A", "B"]
+
+
+def test_relaciones_legadas_servicio_empalme_retiradas():
+    from sqlalchemy import inspect
+
+    from db.models.infra import Empalme, Servicio
+
+    assert "servicios" not in inspect(Empalme).relationships
+    assert "empalmes" not in inspect(Servicio).relationships
 
 
 def test_listar_camaras_tope_de_limite():

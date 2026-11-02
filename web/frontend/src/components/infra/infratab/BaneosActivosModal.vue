@@ -87,9 +87,12 @@ import type { Notificar } from '../../../composables/infra/tipos';
 import { useBaneosActivos } from '../../../composables/infra/useBaneosActivos';
 import AvisoEmailModal from './AvisoEmailModal.vue';
 
-const props = defineProps<{ notificar: Notificar }>();
+const props = defineProps<{
+  notificar: Notificar;
+  /** Re-búsqueda de InfraTab: el modal la espera antes de apagar su indicador de carga (un `emit` no devuelve la promesa). */
+  refrescar: () => Promise<void>;
+}>();
 const emit = defineEmits<{
-  'baneo-levantado': [];
   // Cantidad de baneos de la última carga, para el badge del botón de InfraTab.
   'cantidad-cambiada': [cantidad: number];
 }>();
@@ -106,7 +109,7 @@ const {
   confirmLiftBan,
   formatDuracion,
   formatFecha,
-} = useBaneosActivos(props.notificar, () => emit('baneo-levantado'));
+} = useBaneosActivos(props.notificar, () => props.refrescar());
 
 watch(() => activeBans.value.length, (n) => emit('cantidad-cambiada', n));
 

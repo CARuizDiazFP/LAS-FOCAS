@@ -85,7 +85,7 @@ export function useTrackingAnalisis(notificar: Notificar, alLeer: (contenido: st
 
 /**
  * Análisis y resolución del tracking leído (modal de resolución).
- * @param alResolver se invoca tras resolver el tracking con éxito; `await` sólo cubre callbacks que devuelvan promesa: `emit` no devuelve la del listener del padre.
+ * @param alResolver se invoca tras resolver el tracking con éxito; se espera antes de apagar el indicador de carga (los modales pasan la re-búsqueda de InfraTab, no un `emit`).
  */
 export function useResolucionTracking(notificar: Notificar, alResolver: () => void | Promise<void>) {
   const trackingResolveModalEl = ref<HTMLDialogElement | null>(null);

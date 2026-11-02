@@ -17,8 +17,6 @@ export const CAUSAS_HUERFANO = [
 
 export type CausaHuerfano = (typeof CAUSAS_HUERFANO)[number];
 
-export const ESTADOS_HUERFANO = ['PENDIENTE', 'NORMALIZADO', 'DESCARTADO'] as const;
-
 const CAUSA_LABELS: Record<CausaHuerfano, string> = {
   CABLE_DESUSO: 'Cable en desuso',
   PELO_DANADO: 'Pelo dañado',

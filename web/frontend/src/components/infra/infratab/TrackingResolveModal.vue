@@ -146,8 +146,11 @@
 import type { Notificar } from '../../../composables/infra/tipos';
 import { useResolucionTracking } from '../../../composables/infra/useTrackingAnalisis';
 
-const props = defineProps<{ notificar: Notificar }>();
-const emit = defineEmits<{ 'tracking-resuelto': [] }>();
+const props = defineProps<{
+  notificar: Notificar;
+  /** Re-búsqueda de InfraTab: el modal la espera antes de apagar su indicador de carga (un `emit` no devuelve la promesa). */
+  refrescar: () => Promise<void>;
+}>();
 
 const {
   trackingResolveModalEl,
@@ -160,7 +163,7 @@ const {
   abrir,
   resolveTracking,
   cerrar,
-} = useResolucionTracking(props.notificar, () => emit('tracking-resuelto'));
+} = useResolucionTracking(props.notificar, () => props.refrescar());
 
 defineExpose({ abrir });
 </script>

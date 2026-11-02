@@ -331,6 +331,27 @@ def armar_eml_baneo(
     )
 
 
+def detalle_incidente_baneo(session: Session, incidente_id: int) -> dict[str, Any] | None:
+    """Detalle del incidente con la plantilla guardada del aviso (asunto y cuerpo) y el conteo de cámaras.
+
+    `None` si el incidente no existe. Lo sirven `GET /api/infra/ban/{id}` de la API y del panel (P24).
+    """
+    service = ProtectionService(session)
+    incidente = service.get_incidente_by_id(incidente_id)
+    if incidente is None:
+        return None
+    camaras = service.get_camaras_for_servicio(incidente.servicio_protegido_id, incidente.ruta_protegida_id)
+    return {
+        "id": incidente.id,
+        "ticket": incidente.ticket_asociado,
+        "servicio_afectado": incidente.servicio_afectado_id,
+        "servicio_protegido": incidente.servicio_protegido_id,
+        "email_subject": incidente.email_subject,
+        "email_body": incidente.email_body,
+        "cantidad_camaras": len(camaras),
+    }
+
+
 def guardar_plantilla_aviso(
     session: Session, incidente_id: int, subject: str | None, html_body: str | None
 ) -> None:

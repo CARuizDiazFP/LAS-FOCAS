@@ -99,3 +99,15 @@ Guía breve para crear, validar y aplicar migraciones Alembic sin sobrecargar el
    `20261023_01`): latente desde `20260923_01`, y se volvía frecuente al registrar `camara_id_anterior`
    en cada "mover ingreso". Se confirmó recreando la FK en una transacción revertida: el borrado falló
    con el error "append-only" del trigger.
+8. **Retirar una tabla legada (dejar de leerla y escribirla) exige revisar sus FKs antes que el código.**
+   Si sus FK no tienen `ON DELETE`, los borrados que antes la limpiaban, a mano o por una relación ORM
+   `secondary=`, empiezan a fallar con `ForeignKeyViolation` en cuanto quitás la relación o el
+   `DELETE` previo. Antes de tocar el código: `pg_get_constraintdef` de sus FK en dev **y** en prod
+   (los nombres pueden diferir) y una migración que las pase a `ON DELETE CASCADE`. Para el inventario,
+   grepear también los accesos inversos (`empalme.servicios.append`, no sólo `servicio.empalmes`) y los
+   dobles de test que simulan la relación (`SimpleNamespace(servicios=...)`): un fallback que se quita
+   rompe tests que la selección focal no elige, y sólo la suite completa los encontró. Las consultas
+   de verificación van contra `public.alembic_version`, no `app.`. Hallazgo real (2026-10-29, P22,
+   `servicio_empalme_association`, migración `20261029_01`): el escritor `procesar_tracking_legacy`
+   quedó fuera del grep del prompt, y el fallback de `_collect_camara_servicios_ids` lo usaba el XLS
+   del aviso de baneo. Ver `docs/cierres/2026-11-02.md`.

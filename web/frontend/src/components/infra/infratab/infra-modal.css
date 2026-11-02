@@ -7,8 +7,6 @@
 .close-btn { background: none; border: none; cursor: pointer; color: var(--muted); font-size: 1.3rem; margin-left: auto; }
 
 /* Botones extra (modificadores de .btn global) */
-.btn.danger { background: transparent; color: oklch(0.72 0.11 25); border: 1px solid color-mix(in srgb, var(--color-state-error) 50%, transparent); }
-.btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-error) 12%, transparent); }
 .btn.warning { background: transparent; color: var(--color-state-warn); border: 1px solid color-mix(in srgb, var(--color-state-warn) 50%, transparent); }
 .btn.warning:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-warn) 12%, transparent); }
 .btn.small { padding: 4px 10px; font-size: .78rem; }

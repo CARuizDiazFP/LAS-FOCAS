@@ -32,7 +32,7 @@
     <BaneoWizardModal
       ref="baneoWizardModal"
       :notificar="notificar"
-      @baneo-creado="refrescarSiBuscado"
+      :refrescar="refrescarSiBuscado"
       @subir-tracking="elegirArchivo"
     />
 
@@ -40,14 +40,14 @@
     <TrackingResolveModal
       ref="trackingResolveModal"
       :notificar="notificar"
-      @tracking-resuelto="refrescarSiBuscado"
+      :refrescar="refrescarSiBuscado"
     />
 
     <!-- Modal: Baneos Activos (incluye el sub-modal Dar Aviso) -->
     <BaneosActivosModal
       ref="baneosActivosModal"
       :notificar="notificar"
-      @baneo-levantado="refrescarSiBuscado"
+      :refrescar="refrescarSiBuscado"
       @cantidad-cambiada="n => (cantidadBaneosActivos = n)"
     />
 
@@ -55,7 +55,7 @@
     <LimpiarServicioModal
       ref="limpiarServicioModal"
       :notificar="notificar"
-      @servicio-limpiado="refrescarSiBuscado"
+      :refrescar="refrescarSiBuscado"
     />
 
     <!-- Main content -->
@@ -473,10 +473,6 @@ async function downloadCameras(format: 'xlsx' | 'csv', filterStatus: string | nu
 .upload-drop-zone.drag-over {
   border-color: var(--color-accent); color: var(--color-accent);
 }
-
-/* Botones extra (modificadores de .btn global) */
-.btn.danger { background: transparent; color: oklch(0.72 0.11 25); border: 1px solid color-mix(in srgb, var(--color-state-error) 50%, transparent); }
-.btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--color-state-error) 12%, transparent); }
 
 /* Dropdown descargar */
 .download-dropdown-wrapper { position: relative; }

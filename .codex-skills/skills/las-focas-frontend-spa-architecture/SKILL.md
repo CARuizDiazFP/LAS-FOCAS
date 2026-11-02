@@ -37,6 +37,9 @@ metadata:
       grep -n "src/main" web/frontend/index.html
     - |
       grep -n "from.*router" web/frontend/src/main.ts
+    - |
+      cls(){ sed -n '1,/<script/p' "$1" | grep -oE '<bloque>__[a-z-]+|btn [a-z]+|ph-[a-z-]+' | sort | uniq -c; }
+      diff <(cls <copia-original>.vue) <(cls src/views/<Vista>.vue)
 ---
 
 # Nombre de archivo: SKILL.md
@@ -219,13 +222,23 @@ la ruta en el router **y** el ítem en `AppShell.vue`.
   viewer pinta su propia caja de error), `scrollInfinito` (`false` si usa botón "Cargar más").
   **Trampa**: pasar siempre en `error` el error real, aunque `errorInline` sea `false`; con `error=""` la
   guarda de re-medición del sentinel se cumple tras un fallo y `cargar-mas` se emite en bucle (ServiciosView, P10).
-  Fuera del patrón queda `BotellasInventarioView` (paginación propia, pendiente).
+  Desde P24 (2026-10-29) no queda ningún viewer paginado fuera del patrón: `BotellasInventarioView` usa
+  **dos** `usePaginatedSearch` (inventario y huérfanas, cada uno con su error) y un solo `ViewerShell`
+  alimentado por la del modo activo (`activa = computed(...)`; en el template sus refs van con `.value`,
+  porque Vue sólo desenvuelve refs de primer nivel). Un viewer con modos así no comparte `error` entre listas.
 - **SSE de corridas**: `composables/useCorridaSse.ts` es el único cliente (reconexión con backoff, `?desde=`,
   eventos repetidos ignorados por id, cierre en `onBeforeUnmount`). No crear `EventSource` nuevos.
 - **Helpers de presentación** (etiquetas, íconos, mensajes de error) van en `src/utils/`; `api/` no
   depende de `utils/` (`utils/` puede importar de `api/`).
 - **Vistas grandes**: `InfraTab` se partió en `composables/infra/` + `components/infra/infratab/`; seguir
   ese patrón (orquestador + composables + modales con `defineExpose({ abrir })`) antes de pasar ~600 líneas.
+- **Un modal que tiene que esperar al padre recibe una prop función, no un `emit`.** `emit` no devuelve la
+  promesa del listener: con `alTerminar: () => emit('x')`, el `await alTerminar()` del composable no espera
+  nada y el indicador ("Activando…", "Levantando…") se apaga antes de que termine la re-búsqueda del padre.
+  Patrón: `refrescar: () => Promise<void>` como prop (InfraTab pasa `refrescarSiBuscado`), y el padre atrapa sus
+  propios errores para que una re-búsqueda fallida no se informe como fallo de la acción. Los eventos
+  sincrónicos (`subir-tracking`, `cantidad-cambiada`) siguen como `emit`. Real: P24, 2026-11-02 (4 modales de
+  InfraTab, ver `docs/cierres/2026-11-02.md`).
 
 ---
 
@@ -266,7 +279,13 @@ la ruta en el router **y** el ítem en `AppShell.vue`.
    raíz de un hijo es frágil: deja de aplicar si el hijo pasa a ser fragmento. Preferir una prop
    (`anchoEstado` en `ViewerShell`). Verificar con el multiconjunto de clases antes y después y con el
    CSS emitido en `dist/`, porque sin navegador no hay otra evidencia. Real: P10, 2026-10-28,
-   `InfraTab.vue` y `ViewerShell` (ver `docs/cierres/2026-10-28.md`).
+   `InfraTab.vue` y `ViewerShell` (ver `docs/cierres/2026-10-28.md`). Receta del multiconjunto: el rango
+   del template va **hasta `<script`**, no hasta `</template>`, porque los `<template #slot>` anidados cortan el
+   rango antes y el diff sale falso (P24, 2026-10-29, `BotellasInventarioView`):
+   ```bash
+   cls(){ sed -n '1,/<script/p' "$1" | grep -oE '<bloque>__[a-z-]+|btn [a-z]+|ph-[a-z-]+' | sort | uniq -c; }
+   diff <(cls <copia-original>.vue) <(cls src/views/<Vista>.vue)
+   ```
 
 ## Relación con otras skills
 

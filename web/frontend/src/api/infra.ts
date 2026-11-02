@@ -125,6 +125,21 @@ export async function baneosActivos(): Promise<{ incidentes?: IncidenteActivo[] 
   return requestJson<{ incidentes?: IncidenteActivo[] }>('/api/infra/ban/active');
 }
 
+/** Detalle de un incidente con la plantilla guardada del aviso (`email_subject`/`email_body`, HTML). */
+export interface DetalleBaneo {
+  id: number;
+  ticket: string | null;
+  servicio_afectado: string;
+  servicio_protegido: string;
+  email_subject: string | null;
+  email_body: string | null;
+  cantidad_camaras: number;
+}
+
+export async function detalleBaneo(incidenteId: number): Promise<DetalleBaneo> {
+  return requestJson<DetalleBaneo>(`/api/infra/ban/${incidenteId}`);
+}
+
 export async function levantarBaneo(body: { incidente_id: number }): Promise<Record<string, unknown>> {
   return requestJson<Record<string, unknown>>('/api/infra/ban/lift', {
     method: 'POST',

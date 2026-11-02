@@ -199,9 +199,9 @@ def cargar_filas(session: Session, ids: list[int]) -> dict[int, FilaServicio]:
 
 
 # Tablas con FK a app.servicios (auditadas en prod el 2026-09-30, 8 en total). Las que se reasignan
-# siempre: el perdedor no debe perder nada de esto. `servicio_empalme_association` tiene PK
-# (servicio_id, empalme_id): se inserta lo que falte y se borra lo del perdedor. Lo mismo
-# `servicio_posicion_vigente` (2026-10-21), con su índice único parcial entre las vigentes.
+# siempre: el perdedor no debe perder nada de esto. `servicio_posicion_vigente` (2026-10-21) se mueve
+# aparte, por su índice único parcial entre las vigentes. `servicio_empalme_association` (retirada, P22)
+# no se toca: sus filas del perdedor se van con su FK `ON DELETE CASCADE`.
 _REASIGNAR = ("cromo_servicio_match", "rutas_servicio", "cromo_servicio_odf_override", "cromo_tracking_cache")
 # Datos propios de PROV (se borran en cascada con el perdedor): se conservan los del sobreviviente;
 # sólo se mueven los del perdedor si el sobreviviente no tiene ninguno.
@@ -221,17 +221,7 @@ def aplicar_plan(session: Session, plan: PlanGrupo) -> dict[str, int]:
             )
             if tabla == "cromo_servicio_match":
                 movidos["matches"] += r.rowcount
-        session.execute(
-            text(
-                "INSERT INTO app.servicio_empalme_association (servicio_id, empalme_id) "
-                "SELECT :s, empalme_id FROM app.servicio_empalme_association WHERE servicio_id = :p "
-                "ON CONFLICT DO NOTHING"
-            ),
-            {"s": sid, "p": pid},
-        )
-        session.execute(text("DELETE FROM app.servicio_empalme_association WHERE servicio_id = :p"), {"p": pid})
-        # Posición vigente declarada: mismo patrón que la asociación de empalmes, pero el índice único
-        # es parcial (`WHERE vigente`). Se mueve el historial retirado y las vigentes en conectores que
+        # Posición vigente declarada: el índice único es parcial (`WHERE vigente`). Se mueve el historial retirado y las vigentes en conectores que
         # el sobreviviente no declaró; las vigentes duplicadas se borran (gana la del sobreviviente).
         session.execute(
             text(

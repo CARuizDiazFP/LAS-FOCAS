@@ -193,14 +193,14 @@ def test_rutas_de_servicio_500_con_ref(con_sesion, monkeypatch, caplog):
 
 
 def test_delete_empalmes_panel_forma_y_message(con_sesion, monkeypatch, caplog):
-    """El DELETE del panel suma `empalmes_rutas_eliminados` y conserva su `message` sin "legacy"."""
+    """El DELETE del panel devuelve lo que arma el servicio y loguea las asociaciones de rutas (P22)."""
     from contextlib import nullcontext
 
     con_sesion("admin", username="pepe")
     monkeypatch.setattr(servicios, "SessionLocal", lambda: nullcontext(object()))
     monkeypatch.setattr(servicios, "limpiar_empalmes_de_servicio", lambda _s, sid: {
-        "status": "ok", "servicio_id": sid, "message": "Eliminadas 4 asociaciones legacy y 2 rutas",
-        "empalmes_legacy_eliminados": 4, "rutas_eliminadas": 2, "empalmes_rutas_eliminados": 3,
+        "status": "ok", "servicio_id": sid, "message": "Eliminadas 3 asociaciones y 2 rutas",
+        "rutas_eliminadas": 2, "empalmes_rutas_eliminados": 3,
     })
     caplog.set_level(logging.INFO, logger="web")
 
@@ -208,11 +208,11 @@ def test_delete_empalmes_panel_forma_y_message(con_sesion, monkeypatch, caplog):
 
     assert res.status_code == 200
     assert res.json() == {
-        "status": "ok", "servicio_id": "52547", "message": "Eliminadas 4 asociaciones y 2 rutas",
-        "empalmes_legacy_eliminados": 4, "rutas_eliminadas": 2, "empalmes_rutas_eliminados": 3,
+        "status": "ok", "servicio_id": "52547", "message": "Eliminadas 3 asociaciones y 2 rutas",
+        "rutas_eliminadas": 2, "empalmes_rutas_eliminados": 3,
     }
     mensajes = [r.getMessage() for r in caplog.records if r.name == "web"]
-    assert "action=delete_servicio_empalmes user=pepe servicio_id=52547 empalmes=4 rutas=2" in mensajes
+    assert "action=delete_servicio_empalmes user=pepe servicio_id=52547 empalmes=3 rutas=2" in mensajes
 
 
 def test_upload_tracking_500_con_ref(con_sesion, monkeypatch, caplog):

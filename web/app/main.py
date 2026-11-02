@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from .http_interno import abrir_cliente_api_interna, cerrar_cliente_api_interna
-from core.config import get_secret
+from core.config import get_secret, templates_dir
 from core.logging import setup_logging
 from web.admin_ws import mount_admin_websocket
 from web.fo_monitor_routes import mount_fo_monitor_routes
@@ -141,8 +141,8 @@ async def log_requests(request, call_next):  # type: ignore
 # Rutas absolutas a static/templates basadas en la ubicación de este archivo (web/app/main.py)
 DIST_DIR = BASE_DIR / "frontend" / "dist"
 SPA_INDEX = DIST_DIR / "index.html"
-DEFAULT_TEMPLATES_PATH = Path(__file__).resolve().parents[2] / "Templates"
-TEMPLATES_ROOT = os.getenv("TEMPLATES_DIR", str(DEFAULT_TEMPLATES_PATH))
+# core/config: env TEMPLATES_DIR o <raíz>/Templates. El parents[2] de antes daba /Templates en la imagen.
+TEMPLATES_ROOT = str(templates_dir())
 # Variables de entorno para que los módulos de informes respeten rutas
 os.environ.setdefault("UPLOADS_DIR", str(UPLOADS_DIR))
 os.environ.setdefault("REPORTS_DIR", str(REPORTS_DIR))

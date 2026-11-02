@@ -13,10 +13,11 @@ ya presente en el `alias_ids` de otra fila "vigente" — la misma señal autorit
 `core/services/cromo/ingesta.py::_SQL_BUSCAR_SERVICIO` (fix hacia adelante del mismo ticket). Para
 cada par:
 
-1. Reasigna a la fila vigente las 3 tablas que referencian `app.servicios.id` sin `ON DELETE CASCADE`
-   salvo `rutas_servicio` (`cromo_servicio_match`, `servicio_empalme_association`, `rutas_servicio`) —
-   mismo trío que ya reasigna `api/app/routes/servicios.py::ingest_servicios` al fusionar
-   placeholders, auditado real contra `information_schema` (ver docs/decisiones.md, 2026-08-31).
+1. Reasigna a la fila vigente `cromo_servicio_match` y `rutas_servicio` — las tablas que reasigna
+   `core/services/servicios_ingesta_service.py` al fusionar placeholders, auditadas real contra
+   `information_schema` (ver docs/decisiones.md, 2026-08-31). La tabla legada
+   `servicio_empalme_association` (retirada en P22, 2026-10-29) ya no se reasigna: sus filas de la
+   superada se van con su FK `ON DELETE CASCADE`.
 2. Mezcla `alias_ids` de la superada dentro de la vigente (sin perder alias legítimos, ej. "C18").
 3. Libera el número contestado como `servicio_id` final de la vigente (el mismo criterio de
    "MAX-based ID final" que ya usa `consolidar_identidad_servicio`) y lo saca de `alias_ids` (ya no
@@ -84,8 +85,7 @@ _SQL_CONTAR_REFS = text(
     """
     SELECT
         (SELECT count(*) FROM app.cromo_servicio_match WHERE servicio_id = :id) AS matches,
-        (SELECT count(*) FROM app.rutas_servicio WHERE servicio_id = :id) AS rutas,
-        (SELECT count(*) FROM app.servicio_empalme_association WHERE servicio_id = :id) AS empalmes
+        (SELECT count(*) FROM app.rutas_servicio WHERE servicio_id = :id) AS rutas
     """
 )
 
@@ -125,10 +125,6 @@ def _fusionar_par(session, superada_id: int, vigente_id: int) -> dict[str, int]:
         text("UPDATE app.rutas_servicio SET servicio_id = :vigente WHERE servicio_id = :superada"),
         {"vigente": vigente_id, "superada": superada_id},
     )
-    session.execute(
-        text("UPDATE app.servicio_empalme_association SET servicio_id = :vigente WHERE servicio_id = :superada"),
-        {"vigente": vigente_id, "superada": superada_id},
-    )
 
     session.execute(
         text(
@@ -148,7 +144,7 @@ def _fusionar_par(session, superada_id: int, vigente_id: int) -> dict[str, int]:
         {"contestado": contestado, "vigente": vigente_id},
     )
 
-    return {"matches": refs.matches, "rutas": refs.rutas, "empalmes": refs.empalmes}
+    return {"matches": refs.matches, "rutas": refs.rutas}
 
 
 def main(apply: bool, solo_vigente_id: Optional[int]) -> None:
@@ -192,7 +188,7 @@ def main(apply: bool, solo_vigente_id: Optional[int]) -> None:
                 p.vigente_id,
             )
 
-        total_matches = total_rutas = total_empalmes = 0
+        total_matches = total_rutas = 0
         fusionados = 0
         for p in pares_simples:
             try:
@@ -201,20 +197,18 @@ def main(apply: bool, solo_vigente_id: Optional[int]) -> None:
                         conteos = _fusionar_par(session, p.superada_id, p.vigente_id)
                 else:
                     refs = session.execute(_SQL_CONTAR_REFS, {"id": p.superada_id}).first()
-                    conteos = {"matches": refs.matches, "rutas": refs.rutas, "empalmes": refs.empalmes}
+                    conteos = {"matches": refs.matches, "rutas": refs.rutas}
                 total_matches += conteos["matches"]
                 total_rutas += conteos["rutas"]
-                total_empalmes += conteos["empalmes"]
                 fusionados += 1
                 logger.info(
                     "action=fusionar_identidades evento=%s superada_id=%s vigente_id=%s "
-                    "matches=%d rutas=%d empalmes=%d",
+                    "matches=%d rutas=%d",
                     "fusionado" if apply else "candidato",
                     p.superada_id,
                     p.vigente_id,
                     conteos["matches"],
                     conteos["rutas"],
-                    conteos["empalmes"],
                 )
             except Exception as exc:  # noqa: BLE001 - un par con error no debe abortar el resto
                 logger.error(
@@ -227,12 +221,11 @@ def main(apply: bool, solo_vigente_id: Optional[int]) -> None:
         elapsed = time.perf_counter() - inicio
         logger.info(
             "action=fusionar_identidades modo=%s pares_procesados=%d matches_reasignados=%d "
-            "rutas_reasignadas=%d empalmes_reasignados=%d elapsed_seg=%.1f",
+            "rutas_reasignadas=%d elapsed_seg=%.1f",
             "aplicado" if apply else "reporte",
             fusionados,
             total_matches,
             total_rutas,
-            total_empalmes,
             elapsed,
         )
 

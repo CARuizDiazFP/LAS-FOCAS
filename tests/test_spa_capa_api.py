@@ -16,12 +16,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 SRC = Path(__file__).resolve().parents[1] / "web" / "frontend" / "src"
 
 CSRF_A_MANO = re.compile(r"csrf_token|X-CSRF-Token|\bcsrf\(\)")
 FETCH = re.compile(r"\bfetch\(")
 # Import (de una o varias líneas) desde el cliente HTTP; se captura la lista de nombres importados.
 IMPORT_CLIENT = re.compile(r"import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['\"][./]*(?:api/)?client['\"]", re.S)
+# `import * as x from './client'` da acceso a request/requestJson/requestDownload sin nombrarlos.
+IMPORT_CLIENT_NAMESPACE = re.compile(r"import\s+(?:type\s+)?\*\s+as\s+\w+\s+from\s*['\"][./]*(?:api/)?client['\"]")
 TRANSPORTE_HTTP = {"request", "requestJson", "requestDownload"}
 
 
@@ -61,7 +65,27 @@ def test_cliente_http_solo_desde_capa_api() -> None:
             usados = sorted(nombres & TRANSPORTE_HTTP)
             if usados:
                 infractores[r] = usados
+        if IMPORT_CLIENT_NAMESPACE.search(t):
+            infractores.setdefault(r, []).append("* as")
     assert not infractores, f"transporte HTTP de client.ts importado fuera de api/: {infractores}"
+
+
+@pytest.mark.parametrize(
+    ("fuente", "nombres", "namespace"),
+    [
+        ("import { requestJson, ApiError } from '../api/client';", " requestJson, ApiError ", False),
+        ("import {\n  request,\n} from './client';", "\n  request,\n", False),
+        ("import * as http from '../../api/client';", None, True),
+        ("import type * as T from './client';", None, True),
+        ("import { ApiError } from '../api/clientes';", None, False),
+    ],
+    ids=["llaves", "multilinea", "namespace", "namespace-type", "otro-modulo"],
+)
+def test_patrones_de_import_del_cliente(fuente: str, nombres: str | None, namespace: bool) -> None:
+    # Sin esto, un patrón roto haría pasar en vacío a test_cliente_http_solo_desde_capa_api.
+    encontrados = IMPORT_CLIENT.findall(fuente)
+    assert encontrados == ([nombres] if nombres is not None else [])
+    assert bool(IMPORT_CLIENT_NAMESPACE.search(fuente)) is namespace
 
 
 def test_sin_csrf_a_mano_fuera_de_api() -> None:

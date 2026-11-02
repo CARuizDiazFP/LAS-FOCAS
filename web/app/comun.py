@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request, UploadFile, status
 
-from core.config import get_secret
+from core.config import PROJECT_ROOT, get_secret, reports_dir, uploads_dir
 from core.services.report_history import ReportHistoryBackend, ReportHistoryService
 
 from .errores import ErrorDeDominio
@@ -32,11 +32,13 @@ DB_USER = os.getenv("POSTGRES_USER", "lasfocas")
 DB_PASS = get_secret("db_password_v1", "POSTGRES_PASSWORD")
 DB_DSN = f"dbname={DB_NAME} user={DB_USER} password={DB_PASS} host={DB_HOST} port={DB_PORT}"
 
-# Rutas de datos basadas en la ubicación de este archivo (web/app/comun.py)
+# Raíz de la app web (web/ en el repo, /app en la imagen): sólo para frontend/dist.
 BASE_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = BASE_DIR / "data"
-UPLOADS_DIR = DATA_DIR / "uploads"
-REPORTS_DIR = DATA_DIR / "reports"
+# Rutas de datos: las de core/config (env UPLOADS_DIR/REPORTS_DIR o <raíz>/data/...). En el contenedor dan
+# lo mismo que antes (/app/data/...); fuera de él ya no apuntan a web/data/, sino a las del resto del repo.
+DATA_DIR = PROJECT_ROOT / "data"
+UPLOADS_DIR = uploads_dir()
+REPORTS_DIR = reports_dir()
 DATA_DIR.mkdir(exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)

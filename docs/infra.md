@@ -1125,8 +1125,8 @@ legacy toma el primer número de 4 dígitos o más del nombre (`nombre_archivo_a
   - CHECK de coherencia: una fila retirada tiene fecha y motivo;
   - índice único parcial `(servicio_id, conector_n_id) WHERE vigente`.
 - Retirar no borra: deja `vigente=false` y la fila queda como historial.
-- La fusión de Servicios por cadena PROV (`servicios_fusion_prov.py`) la reasigna igual que
-  `servicio_empalme_association`.
+- La fusión de Servicios por cadena PROV (`servicios_fusion_prov.py`) la reasigna (mueve el historial y
+  las vigentes que el sobreviviente no declaró).
 
 `declarar` valida todo o nada contra las posiciones posibles y toma
 `pg_advisory_xact_lock` por Servicio. Si la validación falla hace rollback, y re-declarar conserva
@@ -1615,7 +1615,8 @@ Lista todos los incidentes de baneo activos con conteo de cámaras.
 ```
 
 ### GET /api/infra/ban/{incidente_id}
-Obtiene detalle de un incidente específico para componer el correo.
+Obtiene detalle de un incidente específico para componer el correo (plantilla guardada y conteo de cámaras).
+Existe en la API y, desde P24 (2026-10-29), también en el panel; ambas usan `detalle_incidente_baneo()`.
 
 ### POST /api/infra/ban/create
 Crea un nuevo baneo (Protocolo de Protección).
@@ -1644,7 +1645,7 @@ Genera archivo EML para descargar y abrir en Outlook.
 - `db/models/infra.py` - Modelos de cámaras (incl. `camara_padre_id`/`botellas`/`es_botella`), alias, auditoría e incidentes
 - `db/alembic/versions/20260810_01_camara_padre_botella.py` - Migración: columna `camara_padre_id`, índice, `CHECK` anti-autoreferencia, valor `INFERIDO` en `camara_origen_datos`
 - `core/services/botellas_unificadas_service.py` - Listado unificado Botellas Cromo + legado (`buscar_botellas_unificadas`, query `UNION ALL`)
-- `web/frontend/src/views/BotellasInventarioView.vue` - Submódulo "Botellas" del sidebar (scroll infinito + toggle tarjeta/lista, patrón `ServiciosView.vue`)
+- `web/frontend/src/views/BotellasInventarioView.vue` - Submódulo "Botellas" del sidebar (scroll infinito + toggle tarjeta/lista; desde P24, 2026-10-29, sobre `usePaginatedSearch` + `ViewerShell` como `ServiciosView.vue`, con una lista paginada por modo: inventario y huérfanas)
 - `web/frontend/src/views/BotellaDetalleUnificadaView.vue` - Shim de redirección por origen en `/infra/Camaras/Botellas/ID:id`
 - `web/frontend/src/components/infra/BotellaCard.vue` - Tarjeta mínima (origen, ID, nombre, estado) del submódulo Botellas
 - `web/frontend/src/api/botellas.ts` - Cliente frontend del listado unificado
@@ -2023,6 +2024,10 @@ runtime (python:3.11-slim-bookworm)  ← imagen final
 ### Cuándo reconstruir
 
 `build_base.sh` detecta automáticamente si `common-requirements.txt` cambió (hash SHA-256) y solo reconstruye cuando es necesario.
+El hash se calcula sobre el contenido normalizado (sin comentarios de línea ni en línea, sin líneas vacías ni
+espacios finales): editar un comentario no reconstruye la base; cambiar una versión o agregar un paquete sí.
+El valor va en el label `focas.requirements.hash` y en el tag `req-<12 caracteres>`; se consulta sin Docker con
+`./scripts/build_base.sh --print-hash` (P24, 2026-10-29).
 
 Casos que requieren rebuild manual:
 - Se agrega o actualiza un paquete en `common-requirements.txt`
@@ -2037,8 +2042,9 @@ Casos que requieren rebuild manual:
 # Forzar rebuild aunque no haya cambios
 ./scripts/build_base.sh --force
 
-# Build manual directo
-docker build -t focas-base:latest -f deploy/docker/base.Dockerfile .
+# Build manual directo (con el mismo label que pone el script)
+docker build --build-arg REQUIREMENTS_HASH=$(./scripts/build_base.sh --print-hash) \
+  -t focas-base:latest -f deploy/docker/base.Dockerfile .
 ```
 
 `Start` y `scripts/start_dev.sh` llaman a `build_base.sh` automáticamente antes de levantar el stack.

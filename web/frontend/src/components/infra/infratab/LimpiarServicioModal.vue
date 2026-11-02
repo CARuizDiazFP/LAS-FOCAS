@@ -30,8 +30,11 @@ import { ref } from 'vue';
 import { limpiarEmpalmesServicio } from '../../../api/infra';
 import type { Notificar } from '../../../composables/infra/tipos';
 
-const props = defineProps<{ notificar: Notificar }>();
-const emit = defineEmits<{ 'servicio-limpiado': [] }>();
+const props = defineProps<{
+  notificar: Notificar;
+  /** Re-búsqueda de InfraTab: el modal la espera antes de apagar su indicador de carga (un `emit` no devuelve la promesa). */
+  refrescar: () => Promise<void>;
+}>();
 
 const dialogEl = ref<HTMLDialogElement | null>(null);
 const limpiarServicioId = ref('');
@@ -54,7 +57,7 @@ async function submitLimpiar() {
     const data = await limpiarEmpalmesServicio(svcId);
     cerrar();
     props.notificar('success', 'Servicio limpiado', data.message ?? '');
-    emit('servicio-limpiado');
+    await props.refrescar();
   } catch (e: unknown) {
     props.notificar('error', 'Error al limpiar servicio', e instanceof Error ? e.message : String(e));
   } finally {

@@ -104,12 +104,20 @@ def test_adjuntos_none_sin_incidentes():
     assert adjuntos_aviso_baneo(sesion, [], include_xls=True, include_txt=True) is None
 
 
+def _ruta_de_servicio(ruta_id, servicio_id):
+    """Ruta mínima que recorre `_collect_camara_rutas_info` (P22: los servicios salen sólo de las rutas)."""
+    return SimpleNamespace(
+        id=ruta_id, servicio=SimpleNamespace(servicio_id=servicio_id, alias_ids=None), nombre="Principal",
+        tipo=SimpleNamespace(value="PRINCIPAL"), empalmes=[], punta_a=None, punta_b=None,
+    )
+
+
 @pytest.mark.filterwarnings("ignore::DeprecationWarning:openpyxl")
 def test_adjuntos_xls_con_columnas_union(monkeypatch):
     camara = SimpleNamespace(
         id=7, nombre="C7", fontine_id="F7", direccion="Calle 1", estado=SimpleNamespace(value="BANEADA"),
         latitud=-34.5, longitud=-58.4,
-        empalmes=[SimpleNamespace(rutas=[], servicios=[SimpleNamespace(servicio_id="S1"), SimpleNamespace(servicio_id="S1")])],
+        empalmes=[SimpleNamespace(rutas=[_ruta_de_servicio(1, "S1"), _ruta_de_servicio(2, "S1")])],
     )
 
     class _Proteccion:
@@ -267,7 +275,7 @@ def _camara_con_servicios():
     return SimpleNamespace(
         id=7, nombre="C7", fontine_id="F7", direccion="Calle 1", estado=SimpleNamespace(value="BANEADA"),
         latitud=-34.5, longitud=-58.4,
-        empalmes=[SimpleNamespace(rutas=[], servicios=[SimpleNamespace(servicio_id="S1")])],
+        empalmes=[SimpleNamespace(rutas=[_ruta_de_servicio(1, "S1")])],
     )
 
 
