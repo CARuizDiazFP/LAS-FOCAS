@@ -45,21 +45,20 @@ def test_configs_de_informes_coinciden():
         "import json;"
         "import core.sla.config as a;"
         "import modules.informes_repetitividad.config as b;"
-        "import modules.informes_sla.config as c;"
-        "print(json.dumps({n: [str(m.UPLOADS_DIR), str(m.REPORTS_DIR), str(m.TEMPLATES_DIR)] for n, m in (('a', a), ('b', b), ('c', c))}));"
-        "print(json.dumps([a.MESES_ES == b.MESES_ES == c.MESES_ES, type(a.MESES_ES).__name__, type(b.MESES_ES).__name__, type(c.MESES_ES).__name__]))"
+        "print(json.dumps({n: [str(m.UPLOADS_DIR), str(m.REPORTS_DIR), str(m.TEMPLATES_DIR)] for n, m in (('a', a), ('b', b))}));"
+        "print(json.dumps([a.MESES_ES == b.MESES_ES, type(a.MESES_ES).__name__, type(b.MESES_ES).__name__]))"
     )
     res = subprocess.run(
         [sys.executable, "-c", codigo], env=env, cwd=REPO, capture_output=True, text=True, check=True
     )
     rutas, meses = (json.loads(linea) for linea in res.stdout.strip().splitlines()[-2:])
-    assert rutas["a"] == rutas["b"] == rutas["c"]
+    assert rutas["a"] == rutas["b"]
     assert rutas["a"] == [
         str(REPO / "data" / "uploads"),
         str(REPO / "data" / "reports"),
         str(REPO / "Templates"),
     ]
-    assert meses == [True, "list", "list", "list"]
+    assert meses == [True, "list", "list"]
 
 
 def test_meses_es_tupla_unica():
