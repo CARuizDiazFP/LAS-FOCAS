@@ -772,6 +772,28 @@ versión nueva, incluir términos de borde (acentos, `%`, `_`, `\`, valores de e
 sacados de la DB, y salir con exit 1 ante cualquier diferencia. Correr viejo y nuevo uno después del
 otro reduce la deriva de dev (los workers escriben). Sólo `SELECT`, y abortar si la DB no es focas_dev.
 
+## Fixtures de Excel: celdas como las del export real (lección 2026-11-02, P25)
+
+El render del informe SLA imprimió `01-ene-70` en **todas** las fechas del detalle durante meses: sus tests
+armaban el Excel con strings (`"2025-06-10 08:00"`, `"1:15:00"`), y el export real trae seriales de Excel
+(`45957.42`) y duraciones `[h]:mm` como `datetime`/`time`. Con el Excel real (`docs/Doc Privada/`, nunca
+commitearlo) salía mal; con el fixture, bien.
+
+- **Fixture de Excel = encabezados y tipos de celda reales**: fechas con
+  `openpyxl.utils.datetime.to_excel(datetime)`, horas como `dt.time`/`dt.datetime(1900, 1, d, ...)`.
+  Para SLA y reclamos: `tests/soporte_sla.py` (`servicios_excel()`, `reclamos_excel()`, `servicio()`,
+  `reclamo()`).
+- **Golden contra el archivo real, fuera del repo**: antes de refactorizar un render o un parser, guardar
+  agregados por clave (horas, %, tickets) y el texto del DOCX en el scratchpad; después, comparar campo por
+  campo y explicar cada línea distinta. Sólo agregados en docs y PR (datos de clientes).
+- **No importar helpers privados de otro `test_*.py`** (`from tests.test_web_sla_flow import
+  _excel_bytes`): se rompe en cuanto ese archivo cambia. Lo compartido va a `tests/soporte_<tema>.py`.
+- **Docs generadas antes de la suite completa**: si tocaste `config/repository-map.json` o
+  `db/alembic/versions/`, correr antes `python scripts/generate_repository_map.py --write` y
+  `python scripts/gen_tabla_migraciones.py --verificar docs/db.md`. Si no,
+  `test_generate_repository_map` y `test_audit_agentic_environment` fallan y la corrida de ~7 min no sirve
+  (real: P25).
+
 ## Partir un archivo de test grande o centralizar helpers duplicados (lección 2026-10-29, P14)
 
 Refactor de tests con resultado verificable: 3 archivos de 4587, 2806 y 1776 líneas quedaron en
